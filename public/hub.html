@@ -1,0 +1,1765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Family Hub</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icons/hub-apple-touch.png">
+<meta name="theme-color" content="#1b2340">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Family Hub">
+<meta name="mobile-web-app-capable" content="yes">
+<style>
+  :root { --bg:#0f1320; --card:#1b2133; --text:#eef2fb; --muted:#9aa6c0; --accent:#4A90D9; --done:#3ec97a; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; overflow:hidden; }
+  body { display:flex; flex-direction:column; padding-top:env(safe-area-inset-top); }
+
+  /* Tab bar */
+  #tabbar { display:flex; gap:0; background:var(--card); box-shadow:0 2px 10px rgba(0,0,0,0.3); flex-shrink:0; z-index:5; }
+  #tabbar button { flex:1; background:none; border:none; color:var(--muted); font-size:15px; font-weight:600;
+    padding:16px 8px 12px; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:4px;
+    border-bottom:3px solid transparent; }
+  #tabbar button .ic { font-size:22px; }
+  #tabbar button.active { color:var(--text); border-bottom-color:var(--accent); }
+  #hub-settings-btn { flex:0 0 auto !important; padding:16px 14px 12px !important; font-size:20px !important; }
+
+  #views { flex:1; min-height:0; position:relative; }
+
+  /* Info button + popup — same pattern/API as app.html's own version
+     (infoBtn/showInfoPopup/window._infoTexts), duplicated here since this
+     file and app.html don't share a module system. Uses the same
+     --card/--border/--muted/--accent variables this file already defines,
+     so it matches the Hub's own look without needing its own palette. */
+  .info-btn {
+    display:inline-block; color:var(--muted); font-size:15px; cursor:pointer;
+    margin-left:5px; vertical-align:middle; line-height:1; user-select:none;
+  }
+  .info-btn:active { color:var(--accent); }
+  #info-popup-modal {
+    position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:9999;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  #info-popup-content {
+    background:var(--card); border:1px solid rgba(255,255,255,0.1); border-radius:14px;
+    padding:18px; max-width:420px; max-height:70vh; overflow-y:auto;
+    font-size:13px; line-height:1.6; color:var(--text);
+  }
+  #info-popup-close {
+    background:var(--accent); border:none; border-radius:8px;
+    padding:8px 18px; color:#fff; font-weight:600; font-size:13px; cursor:pointer;
+  }
+  .view { position:absolute; inset:0; display:none; flex-direction:column; }
+  .view.active { display:flex; }
+
+  /* Home tab's own sub-tab bar (Chores/To-Dos/Shopping) — visually
+     secondary to the main #tabbar (smaller text, no icon-on-top layout,
+     thinner active indicator) so it reads as "inside Home" rather than a
+     second identical-weight tab row competing with the real one above it. */
+  #home-subtabbar { display:flex; gap:0; background:rgba(255,255,255,0.03);
+    border-bottom:1px solid rgba(255,255,255,0.08); flex-shrink:0; }
+  #home-subtabbar button { flex:1; background:none; border:none; color:var(--muted);
+    font-size:13px; font-weight:600; padding:11px 8px; cursor:pointer;
+    display:flex; align-items:center; justify-content:center; gap:6px;
+    border-bottom:2px solid transparent; }
+  #home-subtabbar button .ic { font-size:15px; }
+  #home-subtabbar button.active { color:var(--text); border-bottom-color:var(--accent); }
+  #home-subviews { flex:1; min-height:0; position:relative; }
+  .subview { position:absolute; inset:0; display:none; flex-direction:column; }
+  .subview.active { display:flex; }
+
+  /* To-Dos view */
+  #todo-lists-row { display:flex; gap:8px; padding:14px 16px 10px; overflow-x:auto; flex-shrink:0; }
+  .todo-list-chip { background:var(--card); border:2px solid transparent; border-radius:14px; padding:10px 16px;
+    font-size:14px; font-weight:600; white-space:nowrap; cursor:pointer; color:var(--text); flex-shrink:0; }
+  .todo-list-chip.active { border-color:var(--accent); background:rgba(74,144,217,0.15); }
+  .todo-list-chip .count { color:var(--muted); font-weight:400; margin-left:5px; }
+  #todo-add-list-btn { background:transparent; border:2px dashed var(--muted); color:var(--muted); border-radius:14px;
+    padding:10px 16px; font-size:14px; cursor:pointer; flex-shrink:0; }
+
+  #todo-items-wrap { flex:1; overflow-y:auto; padding:4px 16px 16px; }
+  #todo-empty-lists { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    padding:24px; text-align:center; color:var(--muted); gap:14px; }
+  #todo-empty-lists .emoji { font-size:52px; }
+
+  .todo-item { display:flex; align-items:center; gap:12px; padding:12px 4px; border-bottom:1px solid rgba(255,255,255,0.06); }
+  .todo-item .check { width:26px; height:26px; border-radius:50%; border:2px solid var(--muted); flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; font-size:16px; color:transparent; cursor:pointer; }
+  .todo-item.done .check { background:var(--done); border-color:var(--done); color:#062; }
+  .todo-item.done .txt { text-decoration:line-through; color:var(--muted); }
+  .todo-item .txt { flex:1; font-size:16px; word-break:break-word; }
+  .todo-item .del { background:none; border:none; color:var(--muted); font-size:18px; cursor:pointer; padding:6px; flex-shrink:0; }
+
+  #todo-list-header { display:flex; align-items:center; gap:10px; padding:0 16px 10px; flex-shrink:0; }
+  #todo-list-header h2 { flex:1; font-size:18px; margin:0; }
+  #todo-list-header button { background:none; border:none; color:var(--muted); font-size:18px; cursor:pointer; padding:4px 8px; }
+
+  #todo-add-item-row { display:flex; gap:8px; padding:12px 16px calc(16px + env(safe-area-inset-bottom));
+    background:var(--card); flex-shrink:0; }
+  #todo-add-item-row input { flex:1; background:var(--bg); border:1px solid var(--muted); color:var(--text);
+    border-radius:12px; padding:12px 14px; font-size:16px; }
+  #todo-add-item-row button { background:var(--accent); color:#fff; border:none; border-radius:12px;
+    padding:0 20px; font-size:20px; cursor:pointer; }
+
+  #install-hint { position:fixed; left:12px; right:12px; bottom:calc(12px + env(safe-area-inset-bottom));
+    background:var(--card); border:1px solid var(--accent); border-radius:14px; padding:12px 14px;
+    display:none; align-items:center; gap:10px; font-size:13px; box-shadow:0 6px 20px rgba(0,0,0,0.4); z-index:20; }
+  #install-hint button { background:var(--accent); color:#fff; border:none; border-radius:10px; padding:8px 12px;
+    font-size:13px; cursor:pointer; flex-shrink:0; }
+  #install-hint .dismiss { background:none; color:var(--muted); padding:6px; }
+
+  /* Shopping List view */
+  #shopping-toolbar { display:flex; align-items:center; gap:10px; padding:14px 16px 10px; flex-shrink:0; }
+  #shopping-toolbar .store-label { font-size:12px; color:var(--muted); flex-shrink:0; }
+  #shopping-store-select { flex:1; max-width:160px; background:var(--card); color:var(--text); border:1px solid var(--muted);
+    border-radius:10px; padding:8px 10px; font-size:13px; }
+  #shopping-clear-btn { background:none; border:1px solid var(--muted); color:var(--muted); border-radius:10px;
+    padding:8px 12px; font-size:12px; cursor:pointer; white-space:nowrap; }
+  #shopping-mode-btn { background:var(--accent); border:none; color:#fff; border-radius:10px;
+    padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; }
+  #shopping-items-wrap { flex:1; overflow-y:auto; padding:4px 16px 16px; }
+  .shopping-item { display:flex; align-items:center; gap:10px; padding:12px 4px; border-bottom:1px solid rgba(255,255,255,0.06); }
+  .shopping-item .check { width:26px; height:26px; border-radius:50%; border:2px solid var(--muted); flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; font-size:16px; color:transparent; cursor:pointer; }
+  .shopping-item.done .check { background:var(--done); border-color:var(--done); color:#062; }
+  .shopping-item.done .txt { text-decoration:line-through; color:var(--muted); }
+  .shopping-item .txt { flex:1; font-size:16px; word-break:break-word; }
+  .shopping-item .buy-link { background:var(--accent); color:#fff; text-decoration:none; border-radius:9px;
+    padding:6px 10px; font-size:16px; flex-shrink:0; }
+  .shopping-item .del { background:none; border:none; color:var(--muted); font-size:18px; cursor:pointer; padding:6px; flex-shrink:0; }
+  #shopping-add-item-row { display:flex; gap:8px; padding:12px 16px calc(16px + env(safe-area-inset-bottom));
+    background:var(--card); flex-shrink:0; }
+  #shopping-add-item-row input { flex:1; background:var(--bg); border:1px solid var(--muted); color:var(--text);
+    border-radius:12px; padding:12px 14px; font-size:16px; }
+  #shopping-add-item-row button { background:var(--accent); color:#fff; border:none; border-radius:12px;
+    padding:0 20px; font-size:20px; cursor:pointer; }
+
+  /* Chores view (parent management — not the kid-facing /kids page) */
+  #chores-scroll { flex:1; overflow-y:auto; padding:14px 16px calc(16px + env(safe-area-inset-bottom)); }
+  .chores-section-head { display:flex; align-items:center; justify-content:space-between; margin:18px 0 10px; }
+  .chores-section-head:first-child { margin-top:0; }
+  .chores-section-head h2 { font-size:15px; margin:0; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); }
+  .chores-add-btn { background:var(--accent); color:#fff; border:none; border-radius:10px;
+    padding:7px 12px; font-size:13px; font-weight:600; cursor:pointer; }
+  .chore-row, .kid-row, .today-row { display:flex; align-items:center; gap:12px; background:var(--card);
+    border-radius:14px; padding:12px 14px; margin-bottom:8px; }
+  .chore-row .ic, .kid-row .ic { font-size:28px; width:34px; text-align:center; flex-shrink:0; }
+  .chore-row .info, .kid-row .info, .today-row .info { flex:1; min-width:0; }
+  .chore-row .title, .kid-row .name { font-weight:600; font-size:15px; }
+  .chore-row .meta, .kid-row .meta, .today-row .meta { font-size:12px; color:var(--muted); margin-top:2px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chore-row button, .kid-row button { background:none; border:none; color:var(--muted); font-size:18px;
+    cursor:pointer; padding:6px; flex-shrink:0; }
+  .today-row.done { opacity:0.5; }
+  .today-row select { background:var(--bg); color:var(--text); border:1px solid var(--muted); border-radius:8px;
+    padding:6px 8px; font-size:12px; flex-shrink:0; max-width:120px; }
+  .chores-empty { text-align:center; color:var(--muted); padding:20px; font-size:13px; }
+
+  /* Full-screen editor overlays (kid / chore) */
+  .editor-overlay { position:fixed; inset:0; background:var(--bg); z-index:30; display:none;
+    flex-direction:column; }
+  .editor-overlay.open { display:flex; }
+  .editor-head { display:flex; align-items:center; gap:12px; padding:16px; padding-top:calc(16px + env(safe-area-inset-top));
+    background:var(--card); flex-shrink:0; }
+  .editor-head h2 { flex:1; font-size:17px; margin:0; }
+  .editor-head button { background:none; border:none; color:var(--muted); font-size:22px; cursor:pointer; padding:4px; }
+  .editor-body { flex:1; overflow-y:auto; padding:16px; }
+  .editor-field { margin-bottom:16px; }
+  .editor-field label { display:block; font-size:12px; font-weight:600; color:var(--muted);
+    text-transform:uppercase; letter-spacing:0.04em; margin-bottom:6px; }
+  .editor-field input[type="text"], .editor-field input[type="number"], .editor-field input[type="time"],
+  .editor-field input[type="date"], .editor-field select, .editor-field textarea {
+    width:100%; background:var(--card); color:var(--text); border:1px solid var(--muted);
+    border-radius:10px; padding:11px 12px; font-size:15px; font-family:inherit;
+  }
+  .editor-field input[type="color"] { width:100%; height:44px; border:1px solid var(--muted); border-radius:10px;
+    background:var(--card); padding:4px; }
+  .editor-toggle-row { display:flex; align-items:center; justify-content:space-between; padding:10px 0; }
+  .editor-toggle-row span { font-size:14px; }
+  .editor-toggle-row input[type="checkbox"] { width:22px; height:22px; accent-color:var(--accent); }
+  .editor-chip-row { display:flex; flex-wrap:wrap; gap:8px; }
+  .editor-chip { background:var(--card); border:2px solid var(--muted); border-radius:10px; padding:8px 12px;
+    font-size:13px; cursor:pointer; color:var(--text); }
+  .editor-chip.active { border-color:var(--accent); background:rgba(74,144,217,0.18); }
+
+  /* ── Shopping Mode ── full-screen, one item at a time, big touch targets
+     since this runs on a wall-mounted touch device, not a phone held close
+     up. Deliberately larger text/buttons than the rest of the Hub's UI. */
+  #shopping-mode-overlay .editor-body { display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; padding:24px; }
+  .sm-progress { font-size:15px; font-weight:600; color:var(--muted); text-transform:uppercase;
+    letter-spacing:0.06em; margin-bottom:18px; }
+  .sm-item { font-size:44px; font-weight:700; line-height:1.25; max-width:90%;
+    word-break:break-word; margin-bottom:8px; }
+  .sm-buy-link { display:inline-block; background:var(--card); color:var(--accent); text-decoration:none;
+    border:1px solid var(--accent); border-radius:12px; padding:10px 18px; font-size:15px; font-weight:600; }
+  .sm-done { display:flex; flex-direction:column; align-items:center; gap:10px; }
+  .sm-done .emoji { font-size:64px; }
+  .sm-done h2 { font-size:26px; margin:0; }
+  .sm-done p { font-size:15px; color:var(--muted); margin:0; }
+  #shopping-mode-actions { display:flex; gap:10px; padding:16px; padding-bottom:calc(16px + env(safe-area-inset-bottom));
+    flex-shrink:0; }
+  #shopping-mode-actions button { flex:1; border:none; border-radius:14px; padding:20px 10px;
+    font-size:16px; font-weight:700; cursor:pointer; }
+  #sm-back-btn { background:var(--card); color:var(--text); flex:0 0 90px; }
+  #sm-back-btn:disabled { opacity:0.35; cursor:default; }
+  #sm-skip-btn { background:var(--card); color:var(--text); }
+  #sm-checkoff-btn { background:var(--done, #34d399); color:#062; flex:1.4; }
+  #shopping-mode-done-actions { display:none; padding:16px; padding-bottom:calc(16px + env(safe-area-inset-bottom)); }
+  #shopping-mode-done-actions button { width:100%; background:var(--accent); color:#fff; border:none;
+    border-radius:14px; padding:16px; font-size:16px; font-weight:700; cursor:pointer; }
+  .editor-save-row { display:flex; gap:10px; padding:16px; padding-bottom:calc(16px + env(safe-area-inset-bottom));
+    background:var(--card); flex-shrink:0; }
+  .editor-save-row button { flex:1; border:none; border-radius:12px; padding:13px; font-size:15px;
+    font-weight:600; cursor:pointer; }
+  .editor-save-row .save-btn { background:var(--accent); color:#fff; }
+  .editor-save-row .cancel-btn { background:var(--bg); color:var(--muted); border:1px solid var(--muted); }
+
+  /* ── Smart Home tab ── */
+  #smarthome-toolbar { display:flex; align-items:center; gap:10px; padding:14px 16px 8px; flex-shrink:0; }
+  #smarthome-add-btn { background:var(--accent); color:#fff; border:none; border-radius:10px;
+    padding:9px 16px; font-size:14px; font-weight:600; cursor:pointer; flex-shrink:0; }
+  #smarthome-items-wrap { flex:1; overflow-y:auto; padding:4px 16px 16px; display:flex; flex-direction:column; gap:10px; }
+  .sh-section { margin-bottom:18px; }
+  .sh-section h4 { font-size:12px; font-weight:700; letter-spacing:0.5px; text-transform:uppercase;
+    color:var(--muted); margin:0 0 8px 4px; }
+  .sh-cards { display:flex; flex-direction:column; gap:10px; }
+  .sh-card { background:var(--card); border-radius:14px; padding:14px 16px; display:flex; align-items:center; gap:14px; }
+  .sh-card .sh-name { flex:1; font-size:15px; font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sh-card-actions { display:flex; align-items:center; gap:2px; flex-shrink:0; }
+  .sh-card .sh-fav, .sh-card .sh-edit, .sh-card .sh-remove { background:none; border:none; color:var(--muted); font-size:18px; cursor:pointer; padding:6px; flex-shrink:0; }
+  .sh-card .sh-fav.active { color:#f5b400; }
+  .sh-toggle-switch { width:52px; height:30px; border-radius:999px; border:none; padding:3px; cursor:pointer;
+    position:relative; background:rgba(255,255,255,0.15); transition:background .2s; flex-shrink:0; touch-action:manipulation; }
+  .sh-toggle-switch.on { background:var(--accent); }
+  .sh-toggle-knob { display:block; width:24px; height:24px; border-radius:50%; background:#fff;
+    transition:transform .2s; box-shadow:0 1px 4px rgba(0,0,0,0.3); }
+  .sh-toggle-switch.on .sh-toggle-knob { transform:translateX(22px); }
+  .sh-climate-row { display:flex; align-items:center; gap:12px; flex-shrink:0; }
+  .sh-temp-btn { width:36px; height:36px; border-radius:50%; border:1px solid var(--muted);
+    background:var(--bg); color:var(--text); font-size:18px; cursor:pointer; touch-action:manipulation; line-height:1; }
+  .sh-temp-btn:disabled { opacity:0.3; cursor:default; }
+  .sh-climate-readout { min-width:52px; text-align:center; }
+  .sh-climate-target { font-size:19px; font-weight:800; line-height:1; }
+  .sh-climate-current { font-size:11px; color:var(--muted); margin-top:2px; }
+  .sh-trigger-btn { background:var(--accent); color:#fff; border:none; border-radius:999px;
+    padding:9px 18px; font-size:14px; font-weight:700; cursor:pointer; flex-shrink:0; touch-action:manipulation; }
+  .sh-trigger-btn:disabled { opacity:0.6; cursor:default; }
+  .sh-readonly-value { font-size:16px; font-weight:700; flex-shrink:0; }
+
+  /* Entity picker (search + list), same overlay pattern as the other editors */
+  #smarthome-picker .editor-body { padding:12px 16px 16px; }
+  #sh-picker-search { width:100%; box-sizing:border-box; background:var(--card); color:var(--text);
+    border:1px solid var(--muted); border-radius:10px; padding:12px 14px; font-size:16px; margin-bottom:10px; }
+  .sh-picker-item { display:flex; flex-direction:column; align-items:flex-start; width:100%; text-align:left;
+    background:none; border:none; border-bottom:1px solid rgba(255,255,255,0.08); padding:12px 4px; cursor:pointer; color:var(--text); }
+  .sh-picker-item .name { font-size:14px; }
+  .sh-picker-item .meta { font-size:11px; color:var(--muted); margin-top:2px; }
+</style>
+</head>
+<body>
+
+  <div id="tabbar">
+    <button id="tab-home" class="active"><span class="ic">🏠</span>Home</button>
+    <button id="tab-smarthome"><span class="ic">💡</span>Smart Home</button>
+    <button id="hub-settings-btn" title="Family Hub settings">⚙️</button>
+  </div>
+
+  <div id="views">
+    <div id="view-home" class="view active">
+      <div id="home-subtabbar">
+        <button id="subtab-chores" class="active"><span class="ic">🧹</span>Chores</button>
+        <button id="subtab-todos"><span class="ic">✅</span>To-Dos</button>
+        <button id="subtab-shopping"><span class="ic">🛒</span>Shopping</button>
+      </div>
+      <div id="home-subviews">
+        <div id="view-chores" class="subview active">
+          <div id="chores-scroll">
+            <div class="chores-section-head"><h2>Today</h2></div>
+            <div id="chores-today-list"><div class="chores-empty">Loading…</div></div>
+
+            <div class="chores-section-head"><h2>Kids</h2><button class="chores-add-btn" id="add-kid-btn">+ Add Kid</button></div>
+            <div id="chores-kids-list"><div class="chores-empty">Loading…</div></div>
+
+            <div class="chores-section-head"><h2>🎁 Redeemed Prizes</h2></div>
+            <div id="chores-redeemed-list"><div class="chores-empty">Loading…</div></div>
+
+            <div class="chores-section-head"><h2>Chores</h2><button class="chores-add-btn" id="add-chore-btn">+ Add Chore</button></div>
+            <div id="chores-chores-list"><div class="chores-empty">Loading…</div></div>
+          </div>
+        </div>
+
+        <div id="view-todos" class="subview">
+          <div id="todo-lists-row"></div>
+          <div id="todo-list-header" style="display:none">
+            <h2 id="todo-list-title"></h2>
+            <button id="todo-rename-btn" title="Rename">✏️</button>
+            <button id="todo-delete-list-btn" title="Delete list">🗑️</button>
+          </div>
+          <div id="todo-items-wrap"><div id="todo-empty-lists"><div class="emoji">📝</div><p>No lists yet — tap "+ New List" above to make one.</p></div></div>
+          <div id="todo-add-item-row" style="display:none">
+            <input type="text" id="todo-new-item-input" placeholder="Add an item…" autocomplete="off">
+            <button id="todo-new-item-btn">+</button>
+          </div>
+        </div>
+
+        <div id="view-shopping" class="subview">
+          <div id="shopping-toolbar">
+            <span class="store-label">Buy links search:</span>
+            <select id="shopping-store-select">
+              <option value="walmart">Walmart</option>
+              <option value="target">Target</option>
+              <option value="kroger">Kroger</option>
+              <option value="amazon">Amazon</option>
+            </select>
+            <button id="shopping-mode-btn">🛍️ Shopping Mode</button>
+            <button id="shopping-clear-btn">Clear checked</button>
+          </div>
+          <div id="shopping-items-wrap"><div id="todo-empty-lists"><div class="emoji">🛒</div><p>Nothing on the list yet.</p></div></div>
+          <div id="shopping-add-item-row">
+            <input type="text" id="shopping-new-item-input" placeholder="Add an item…" autocomplete="off">
+            <button id="shopping-new-item-btn">+</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="view-smarthome" class="view">
+      <div id="smarthome-toolbar">
+        <span style="flex:1;font-size:13px;color:var(--muted)">Tap a light to toggle it, drag the thermostat, or run a scene.</span>
+        <button id="smarthome-add-btn">+ Add</button>
+      </div>
+      <div id="smarthome-items-wrap">
+        <div id="smarthome-empty"><div class="emoji">🏠</div><p>Nothing added yet — tap "+ Add" to bring in a light, thermostat, or scene.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Kid editor overlay -->
+  <div class="editor-overlay" id="kid-editor">
+    <div class="editor-head">
+      <button id="kid-editor-close">✕</button>
+      <h2 id="kid-editor-title">Add Kid</h2>
+    </div>
+    <div class="editor-body">
+      <div class="editor-field"><label>Name</label><input type="text" id="kid-f-name" placeholder="e.g. Zoe"></div>
+      <div class="editor-field"><label>Avatar (emoji)</label><input type="text" id="kid-f-avatar" placeholder="🙂" maxlength="4"></div>
+      <div class="editor-field"><label>Color</label><input type="color" id="kid-f-color"></div>
+      <div class="editor-field">
+        <label>Chore list style</label>
+        <select id="kid-f-display-mode">
+          <option value="both">Pictures + words</option>
+          <option value="pictures">Pictures only</option>
+          <option value="words">Words only</option>
+        </select>
+      </div>
+      <div class="editor-toggle-row">
+        <span>Allowance</span>
+        <input type="checkbox" id="kid-f-allowance-enabled">
+      </div>
+      <div id="kid-f-allowance-fields" style="display:none">
+        <div class="editor-field">
+          <label>Allowance mode</label>
+          <select id="kid-f-allowance-mode">
+            <option value="per_chore">Pay per chore completed</option>
+            <option value="weekly_flat">Flat weekly amount</option>
+          </select>
+        </div>
+        <div class="editor-field" id="kid-f-weekly-rate-field">
+          <label>Weekly amount ($)</label>
+          <input type="number" id="kid-f-weekly-rate" min="0" step="0.01" placeholder="0.00">
+        </div>
+        <div class="editor-field"><label>Savings goal name (optional)</label><input type="text" id="kid-f-goal-name" placeholder="e.g. New bike"></div>
+        <div class="editor-field"><label>Savings goal amount ($)</label><input type="number" id="kid-f-goal-amount" min="0" step="0.01" placeholder="0.00"></div>
+      </div>
+    </div>
+    <div class="editor-save-row">
+      <button class="cancel-btn" id="kid-editor-cancel">Cancel</button>
+      <button class="save-btn" id="kid-editor-save">Save</button>
+    </div>
+  </div>
+
+  <!-- Kid stats/history overlay — same chrome as the kid editor above, but a
+       single generic content area populated dynamically instead of fixed
+       form fields, since this is a display, not a form. -->
+  <div class="editor-overlay" id="kid-stats-modal">
+    <div class="editor-head">
+      <button id="kid-stats-close">✕</button>
+      <h2 id="kid-stats-title">History</h2>
+    </div>
+    <div class="editor-body" id="kid-stats-body">
+      <p style="color:var(--muted)">Loading…</p>
+    </div>
+  </div>
+
+  <!-- Chore editor overlay -->
+  <div class="editor-overlay" id="chore-editor">
+    <div class="editor-head">
+      <button id="chore-editor-close">✕</button>
+      <h2 id="chore-editor-title">Add Chore</h2>
+    </div>
+    <div class="editor-body">
+      <div class="editor-field"><label>Title</label><input type="text" id="chore-f-title" placeholder="e.g. Feed the dog"></div>
+      <div class="editor-field"><label>Icon (emoji)</label><input type="text" id="chore-f-icon" placeholder="✅" maxlength="4"></div>
+      <div class="editor-toggle-row">
+        <span>🎁 Bonus chore (shared pool, anyone can claim)</span>
+        <input type="checkbox" id="chore-f-bonus">
+      </div>
+      <div id="chore-f-normal-fields">
+        <div class="editor-field">
+          <label>Who</label>
+          <div class="editor-chip-row" id="chore-f-assignee-chips"></div>
+        </div>
+        <div class="editor-field">
+          <label>Frequency</label>
+          <select id="chore-f-freq">
+            <option value="daily">Every day</option>
+            <option value="weekly">Certain days of the week</option>
+            <option value="once">Once</option>
+          </select>
+        </div>
+        <div class="editor-field" id="chore-f-byday-field" style="display:none">
+          <label>Days</label>
+          <div class="editor-chip-row" id="chore-f-byday-chips"></div>
+        </div>
+        <div class="editor-field" id="chore-f-ondate-field" style="display:none">
+          <label>Date</label>
+          <input type="date" id="chore-f-ondate">
+        </div>
+        <div class="editor-field"><label>Time (optional)</label><input type="time" id="chore-f-time"></div>
+        <div class="editor-toggle-row"><span>Carry over if not done</span><input type="checkbox" id="chore-f-carryover"></div>
+      </div>
+      <div class="editor-toggle-row"><span>Celebrate when finished 🎉</span><input type="checkbox" id="chore-f-celebrate" checked></div>
+      <div class="editor-toggle-row"><span>📷 Require a photo to mark done</span><input type="checkbox" id="chore-f-photo-required"></div>
+      <div class="editor-field"><label>💰 Pay per completion (optional)</label><input type="number" id="chore-f-pay" min="0" step="0.01" placeholder="0.00"></div>
+      <div class="editor-field"><label>Notes for the kid (optional)</label><textarea id="chore-f-notes" rows="2" placeholder="e.g. Don't forget behind the ears!"></textarea></div>
+    </div>
+    <div class="editor-save-row">
+      <button class="cancel-btn" id="chore-editor-cancel">Cancel</button>
+      <button class="save-btn" id="chore-editor-save">Save</button>
+    </div>
+  </div>
+
+  <!-- Family Hub settings overlay -->
+  <div class="editor-overlay" id="hub-settings-editor">
+    <div class="editor-head">
+      <button id="hub-settings-close">✕</button>
+      <h2>Family Hub Settings</h2>
+    </div>
+    <div class="editor-body">
+      <p style="font-size:12px;color:var(--muted);margin:0 0 16px">Turning a feature on or off here does the same thing as the matching toggle in the full app's Settings → Features — they're the same setting either way.</p>
+      <div class="editor-toggle-row">
+        <span>🧹 Chores</span>
+        <input type="checkbox" id="hs-chores-enabled">
+      </div>
+      <div class="editor-toggle-row">
+        <span>✅ To-Dos</span>
+        <input type="checkbox" id="hs-todo-enabled">
+      </div>
+      <div class="editor-toggle-row">
+        <span>🛒 Shopping</span>
+        <input type="checkbox" id="hs-shopping-enabled">
+      </div>
+      <div class="editor-toggle-row">
+        <span>🏠 Home (smart home controls)</span>
+        <input type="checkbox" id="hs-smarthome-enabled">
+      </div>
+    </div>
+  </div>
+
+  <div class="editor-overlay" id="smarthome-picker">
+    <div class="editor-head">
+      <button id="sh-picker-close">✕</button>
+      <h2>Add to Home</h2>
+    </div>
+    <div class="editor-body">
+      <input type="text" id="sh-picker-search" placeholder="Search entities…" autocomplete="off">
+      <div id="sh-picker-list"><p style="font-size:13px;color:var(--muted)">Loading…</p></div>
+    </div>
+  </div>
+
+  <div class="editor-overlay" id="shopping-mode-overlay">
+    <div class="editor-head">
+      <button id="shopping-mode-close">✕</button>
+      <h2>Shopping Mode</h2>
+    </div>
+    <div class="editor-body" id="shopping-mode-body"></div>
+    <div id="shopping-mode-actions">
+      <button id="sm-back-btn">← Back</button>
+      <button id="sm-skip-btn">Skip</button>
+      <button id="sm-checkoff-btn">✓ Check Off</button>
+    </div>
+    <div id="shopping-mode-done-actions">
+      <button id="sm-finish-btn">Done — Back to List</button>
+    </div>
+  </div>
+
+  <div id="install-hint">
+    <span style="flex:1">Add Family Hub to your Home Screen for quick access, no browser needed.</span>
+    <button id="install-btn">Install</button>
+    <button class="dismiss" id="install-dismiss">✕</button>
+  </div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// ── Tab switching ────────────────────────────────────────────────────────────
+const TAB_KEY = 'hub_active_tab';           // 'home' | 'smarthome'
+const SUBTAB_KEY = 'hub_active_subtab';      // 'chores' | 'todos' | 'shopping' — only meaningful within Home
+let lastEnabledState = { chores: true, todos: false, shopping: false, smarthome: false }; // refreshed by applyFeatureVisibility(); used so click handlers don't need their own API round-trip just to know what's currently clickable
+function showTab(tab) {
+  $('tab-home').classList.toggle('active', tab === 'home');
+  $('tab-smarthome').classList.toggle('active', tab === 'smarthome');
+  $('view-home').classList.toggle('active', tab === 'home');
+  $('view-smarthome').classList.toggle('active', tab === 'smarthome');
+  try { localStorage.setItem(TAB_KEY, tab); } catch {}
+  if (tab === 'smarthome') loadSmartHomeTab();
+}
+function showSubtab(subtab) {
+  $('subtab-chores').classList.toggle('active', subtab === 'chores');
+  $('subtab-todos').classList.toggle('active', subtab === 'todos');
+  $('subtab-shopping').classList.toggle('active', subtab === 'shopping');
+  $('view-chores').classList.toggle('active', subtab === 'chores');
+  $('view-todos').classList.toggle('active', subtab === 'todos');
+  $('view-shopping').classList.toggle('active', subtab === 'shopping');
+  try { localStorage.setItem(SUBTAB_KEY, subtab); } catch {}
+  if (subtab === 'chores') loadChoresTab();
+  if (subtab === 'todos') loadTodoLists();
+  if (subtab === 'shopping') loadShoppingList();
+}
+// Shared by the Home tab-button click handler, initial load, and the
+// settings-changed fallback — "enter Home" always means "show it, then pick
+// whichever subtab actually makes sense right now," not just switching the
+// top-level view and leaving whatever subtab was already showing (which
+// could by now be a disabled one with no visible button, if a setting
+// changed while looking at Smart Home).
+function enterHomeTab() {
+  showTab('home');
+  let subtab = 'chores';
+  try { subtab = localStorage.getItem(SUBTAB_KEY) || 'chores'; } catch {}
+  if (!lastEnabledState[subtab]) {
+    subtab = ['chores', 'todos', 'shopping'].find(t => lastEnabledState[t]);
+  }
+  if (subtab) {
+    showSubtab(subtab);
+  } else {
+    // Home is only reachable at all when at least one of the three is
+    // enabled (applyFeatureVisibility hides the whole Home tab otherwise —
+    // see below), so this is a defensive fallback, not an expected path.
+    $('home-subviews').innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:24px;text-align:center;color:var(--muted);gap:14px">
+        <div style="font-size:52px">🏠</div>
+        <p>Nothing turned on yet.<br>Tap ⚙️ above to turn one on.</p>
+      </div>`;
+  }
+}
+$('tab-home').addEventListener('click', enterHomeTab);
+$('tab-smarthome').addEventListener('click', () => showTab('smarthome'));
+$('subtab-chores').addEventListener('click', () => showSubtab('chores'));
+$('subtab-todos').addEventListener('click', () => showSubtab('todos'));
+$('subtab-shopping').addEventListener('click', () => showSubtab('shopping'));
+
+// ── To-Dos ───────────────────────────────────────────────────────────────────
+const api = async (path, opts = {}) => {
+  // no-store: several places here read a setting back immediately after
+  // writing it (e.g. toggling a feature, then re-checking which tabs should
+  // show) — without this, a browser could legally serve a cached pre-write
+  // response to that follow-up read. Confirmed live: the toggle's checkbox
+  // updated correctly (a local DOM change, no round-trip needed) but the tab
+  // it should have revealed stayed hidden until a second toggle attempt.
+  const res = await fetch(path, { cache: 'no-store', ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers||{}) } });
+  return res.json();
+};
+
+let todoLists = [];
+let activeListId = null;
+let activeListItems = [];
+
+async function loadTodoLists() {
+  try { todoLists = await api('/api/todo-lists'); } catch { todoLists = []; }
+  if (!todoLists.length) {
+    activeListId = null;
+    renderTodoListsRow();
+    $('todo-list-header').style.display = 'none';
+    $('todo-add-item-row').style.display = 'none';
+    $('todo-items-wrap').innerHTML = '<div id="todo-empty-lists"><div class="emoji">📝</div><p>No lists yet — tap "+ New List" above to make one.</p></div>';
+    return;
+  }
+  if (activeListId === null || !todoLists.some(l => l.id === activeListId)) {
+    activeListId = todoLists[0].id;
+  }
+  renderTodoListsRow();
+  await loadActiveListItems();
+}
+
+function renderTodoListsRow() {
+  const row = $('todo-lists-row');
+  row.innerHTML = todoLists.map(l => `
+    <button class="todo-list-chip ${l.id === activeListId ? 'active' : ''}" data-id="${l.id}">
+      ${escapeHtml(l.name)}${l.itemCount != null ? `<span class="count">${l.itemCount}</span>` : ''}
+    </button>`).join('') + `<button id="todo-add-list-btn">+ New List</button>`;
+  row.querySelectorAll('.todo-list-chip').forEach(b => b.addEventListener('click', () => {
+    activeListId = parseInt(b.dataset.id);
+    renderTodoListsRow();
+    loadActiveListItems();
+  }));
+  $('todo-add-list-btn').addEventListener('click', async () => {
+    const name = prompt('New list name:');
+    if (!name || !name.trim()) return;
+    const r = await api('/api/todo-lists', { method: 'POST', body: JSON.stringify({ name: name.trim() }) });
+    if (r && r.id) { activeListId = r.id; loadTodoLists(); }
+  });
+}
+
+async function loadActiveListItems() {
+  if (activeListId === null) return;
+  const list = todoLists.find(l => l.id === activeListId);
+  $('todo-list-header').style.display = 'flex';
+  $('todo-list-title').textContent = list ? list.name : '';
+  $('todo-add-item-row').style.display = 'flex';
+  try { activeListItems = await api(`/api/todo-lists/${activeListId}/items`); } catch { activeListItems = []; }
+  renderTodoItems();
+}
+
+function renderTodoItems() {
+  const wrap = $('todo-items-wrap');
+  if (!activeListItems.length) {
+    wrap.innerHTML = '<div id="todo-empty-lists"><div class="emoji">✨</div><p>Nothing here yet.</p></div>';
+    return;
+  }
+  wrap.innerHTML = activeListItems.map(it => `
+    <div class="todo-item ${it.done ? 'done' : ''}" data-id="${it.id}">
+      <div class="check">✓</div>
+      <div class="txt">${escapeHtml(it.text)}</div>
+      <button class="del" data-id="${it.id}">🗑️</button>
+    </div>`).join('');
+  wrap.querySelectorAll('.check').forEach(el => el.addEventListener('click', (e) => {
+    const id = parseInt(e.target.closest('.todo-item').dataset.id);
+    toggleTodoItem(id);
+  }));
+  wrap.querySelectorAll('.del').forEach(el => el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    deleteTodoItem(parseInt(el.dataset.id));
+  }));
+}
+
+async function toggleTodoItem(id) {
+  const item = activeListItems.find(i => i.id === id);
+  if (!item) return;
+  const wasDone = !!item.done;
+  item.done = wasDone ? 0 : 1; // optimistic
+  renderTodoItems();
+  try {
+    await api(`/api/todo-items/${id}`, { method: 'PUT', body: JSON.stringify({ done: !wasDone }) });
+  } catch {
+    item.done = wasDone ? 1 : 0; // revert
+    renderTodoItems();
+  }
+}
+async function deleteTodoItem(id) {
+  activeListItems = activeListItems.filter(i => i.id !== id); // optimistic
+  renderTodoItems();
+  try { await api(`/api/todo-items/${id}`, { method: 'DELETE' }); } catch { loadActiveListItems(); }
+}
+
+$('todo-new-item-btn').addEventListener('click', addTodoItem);
+$('todo-new-item-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') addTodoItem(); });
+async function addTodoItem() {
+  const input = $('todo-new-item-input');
+  const text = input.value.trim();
+  if (!text || activeListId === null) return;
+  input.value = '';
+  try {
+    const r = await api(`/api/todo-lists/${activeListId}/items`, { method: 'POST', body: JSON.stringify({ text }) });
+    if (r && r.id) { activeListItems.push(r); renderTodoItems(); }
+  } catch {}
+}
+
+$('todo-rename-btn').addEventListener('click', async () => {
+  const list = todoLists.find(l => l.id === activeListId);
+  if (!list) return;
+  const name = prompt('Rename list:', list.name);
+  if (!name || !name.trim() || name.trim() === list.name) return;
+  await api(`/api/todo-lists/${activeListId}`, { method: 'PUT', body: JSON.stringify({ name: name.trim() }) });
+  loadTodoLists();
+});
+$('todo-delete-list-btn').addEventListener('click', async () => {
+  const list = todoLists.find(l => l.id === activeListId);
+  if (!list) return;
+  if (!confirm(`Delete "${list.name}" and everything in it?`)) return;
+  await api(`/api/todo-lists/${activeListId}`, { method: 'DELETE' });
+  activeListId = null;
+  loadTodoLists();
+});
+
+function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// Info button + popup — same pattern/API as app.html's own version, kept
+// in sync by hand (no shared module system between the two files).
+window._infoTexts = window._infoTexts || {};
+let _infoIdCounter = 0;
+function infoBtn(text) {
+  const id = 'info-' + (_infoIdCounter++);
+  window._infoTexts[id] = text;
+  return `<span class="info-btn" onclick="showInfoPopup('${id}')" role="button" aria-label="More info">ⓘ</span>`;
+}
+function showInfoPopup(id) {
+  const text = window._infoTexts[id];
+  if (!text) return;
+  const existing = document.getElementById('info-popup-modal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'info-popup-modal';
+  modal.innerHTML = `<div id="info-popup-content">${text}<div style="text-align:right;margin-top:14px"><button id="info-popup-close">Got it</button></div></div>`;
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+  document.body.appendChild(modal);
+  document.getElementById('info-popup-close').addEventListener('click', () => modal.remove());
+}
+
+// Minimal inline toast — hub.html has no existing toast system to reuse (kept
+// the same name as kids.html's equivalent for consistency, but this is its
+// own separate definition since these are two different static files).
+function showToastKid(msg) {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--card);color:var(--text);padding:12px 18px;border-radius:12px;font-size:14px;z-index:60;box-shadow:0 6px 18px rgba(0,0,0,.4)';
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2500);
+}
+
+// ── Shopping list ────────────────────────────────────────────────────────────
+// Buy links search a plain store URL for the item text — no product matching,
+// no scraping, no API key. Same idea as a similar feature in another one of
+// this household's apps: a simple, user-selectable "which store" preference
+// (here: a real backend setting, shared across every device, rather than
+// per-browser localStorage — the wall-display widget below needs to see the
+// same choice too).
+function buyUrlFor(itemText, store) {
+  const q = encodeURIComponent(itemText);
+  switch (store) {
+    case 'target': return `https://www.target.com/s?searchTerm=${q}`;
+    case 'kroger': return `https://www.kroger.com/q/${q}`;
+    case 'amazon': return `https://www.amazon.com/s?k=${q}`;
+    case 'walmart':
+    default: return `https://www.walmart.com/search?query=${q}`;
+  }
+}
+
+let shoppingItems = [];
+let shoppingStore = 'walmart';
+
+async function loadShoppingList() {
+  try {
+    const [items, settings] = await Promise.all([api('/api/shopping-list'), api('/api/settings')]);
+    shoppingItems = items || [];
+    shoppingStore = (settings && settings.shopping_store) || 'walmart';
+  } catch { shoppingItems = []; }
+  $('shopping-store-select').value = shoppingStore;
+  renderShoppingItems();
+}
+
+function renderShoppingItems() {
+  const wrap = $('shopping-items-wrap');
+  if (!shoppingItems.length) {
+    wrap.innerHTML = '<div id="todo-empty-lists"><div class="emoji">🛒</div><p>Nothing on the list yet.</p></div>';
+    return;
+  }
+  wrap.innerHTML = shoppingItems.map(it => `
+    <div class="shopping-item ${it.done ? 'done' : ''}" data-id="${it.id}">
+      <div class="check">✓</div>
+      <div class="txt">${escapeHtml(it.text)}</div>
+      <a class="buy-link" href="${buyUrlFor(it.text, shoppingStore)}" target="_blank" rel="noopener" title="Buy">🛍️</a>
+      <button class="del" data-id="${it.id}">🗑️</button>
+    </div>`).join('');
+  wrap.querySelectorAll('.check').forEach(el => el.addEventListener('click', (e) => {
+    const id = parseInt(e.target.closest('.shopping-item').dataset.id);
+    toggleShoppingItem(id);
+  }));
+  wrap.querySelectorAll('.del').forEach(el => el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    deleteShoppingItem(parseInt(el.dataset.id));
+  }));
+  // Buy links use target="_blank" and are real <a> hrefs, so they need no click
+  // handler — but they DO sit inside a row whose checkbox/delete are also
+  // clickable, so nothing here should stopPropagation on them; letting the
+  // native link behavior fire is exactly what we want.
+}
+
+async function toggleShoppingItem(id) {
+  const item = shoppingItems.find(i => i.id === id);
+  if (!item) return;
+  const wasDone = !!item.done;
+  item.done = wasDone ? 0 : 1; // optimistic
+  renderShoppingItems();
+  try {
+    await api(`/api/shopping-items/${id}`, { method: 'PUT', body: JSON.stringify({ done: !wasDone }) });
+  } catch {
+    item.done = wasDone ? 1 : 0; // revert
+    renderShoppingItems();
+  }
+}
+async function deleteShoppingItem(id) {
+  shoppingItems = shoppingItems.filter(i => i.id !== id); // optimistic
+  renderShoppingItems();
+  try { await api(`/api/shopping-items/${id}`, { method: 'DELETE' }); } catch { loadShoppingList(); }
+}
+
+$('shopping-new-item-btn').addEventListener('click', addShoppingItem);
+$('shopping-new-item-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') addShoppingItem(); });
+async function addShoppingItem() {
+  const input = $('shopping-new-item-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  try {
+    const r = await api('/api/shopping-list', { method: 'POST', body: JSON.stringify({ text }) });
+    if (r && r.id) { shoppingItems.push(r); renderShoppingItems(); }
+  } catch {}
+}
+
+$('shopping-clear-btn').addEventListener('click', async () => {
+  if (!shoppingItems.some(i => i.done)) return;
+  if (!confirm('Clear every checked-off item?')) return;
+  await api('/api/shopping-list/clear-done', { method: 'POST' });
+  loadShoppingList();
+});
+
+// ── Shopping Mode ──────────────────────────────────────────────────────────
+// One item at a time, full-screen, for actually walking the store — Back/
+// Skip just move a cursor through a stable snapshot of not-yet-done items
+// taken when Shopping Mode opens (so Back can always go back to something,
+// unlike a shift/splice-based queue where a skipped item would be gone for
+// good). Check Off is the only action that touches the real list — Back and
+// Skip never call the API at all, purely local navigation.
+let smQueue = [];      // snapshot of not-done items when Shopping Mode opened, in list order
+let smIndex = 0;       // current position in smQueue
+let smCheckedIds = new Set(); // ids checked off during this session, for the end-of-list summary
+
+function openShoppingMode() {
+  smQueue = shoppingItems.filter(i => !i.done).map(i => ({ ...i }));
+  smIndex = 0;
+  smCheckedIds = new Set();
+  $('shopping-mode-overlay').classList.add('open');
+  renderShoppingModeStep();
+}
+function closeShoppingMode() {
+  $('shopping-mode-overlay').classList.remove('open');
+  loadShoppingList(); // picks up any check-offs made during the session
+}
+function renderShoppingModeStep() {
+  const body = $('shopping-mode-body');
+  const actions = $('shopping-mode-actions');
+  const doneActions = $('shopping-mode-done-actions');
+  if (smIndex >= smQueue.length) {
+    actions.style.display = 'none';
+    doneActions.style.display = 'block';
+    const skipped = smQueue.length - smCheckedIds.size;
+    body.innerHTML = `
+      <div class="sm-done">
+        <div class="emoji">🎉</div>
+        <h2>Reached the end of your list</h2>
+        <p>${smCheckedIds.size} checked off${skipped ? `, ${skipped} skipped — still on your list for next time` : ''}.</p>
+      </div>`;
+    return;
+  }
+  actions.style.display = 'flex';
+  doneActions.style.display = 'none';
+  const item = smQueue[smIndex];
+  body.innerHTML = `
+    <div class="sm-progress">${smIndex + 1} of ${smQueue.length}</div>
+    <div class="sm-item">${escapeHtml(item.text)}</div>
+    <a class="sm-buy-link" href="${buyUrlFor(item.text, shoppingStore)}" target="_blank" rel="noopener">🛍️ Buy Online</a>`;
+  $('sm-back-btn').disabled = smIndex === 0;
+}
+$('shopping-mode-btn').addEventListener('click', openShoppingMode);
+$('shopping-mode-close').addEventListener('click', closeShoppingMode);
+$('sm-finish-btn').addEventListener('click', closeShoppingMode);
+$('sm-back-btn').addEventListener('click', () => {
+  if (smIndex > 0) { smIndex--; renderShoppingModeStep(); }
+});
+$('sm-skip-btn').addEventListener('click', () => {
+  smIndex++;
+  renderShoppingModeStep();
+});
+$('sm-checkoff-btn').addEventListener('click', async () => {
+  const item = smQueue[smIndex];
+  smCheckedIds.add(item.id);
+  smIndex++;
+  renderShoppingModeStep(); // advance immediately — don't make the person wait on the network mid-flow
+  try {
+    await api(`/api/shopping-items/${item.id}`, { method: 'PUT', body: JSON.stringify({ done: true }) });
+    const real = shoppingItems.find(i => i.id === item.id);
+    if (real) real.done = 1; // keep the underlying list in sync for when Shopping Mode closes
+  } catch {
+    // Real failure — surfaced at the very end via loadShoppingList() re-fetching
+    // the true state when Shopping Mode closes, rather than interrupting the
+    // walkthrough with an error mid-flow for something recoverable by just
+    // re-checking it off from the normal list afterward if it didn't stick.
+  }
+});
+
+// ── Smart Home (Home Assistant Tier 2) ──────────────────────────────────────
+// Which entities show on this Hub is its own setting (smarthome_hub_entities,
+// a JSON array of entity ids) — separate from any entitystatus WIDGETS added
+// to a display's layout elsewhere. Same underlying /api/ha/* endpoints as
+// those widgets, just a different place choosing which entities to show and
+// a touch-native layout instead of a wall-display one.
+const HA_TOGGLE_DOMAINS_HUB = new Set(['light', 'switch', 'fan', 'input_boolean']);
+const HA_CLIMATE_DOMAINS_HUB = new Set(['climate']);
+const HA_TRIGGER_DOMAINS_HUB = new Set(['scene', 'script']);
+function haDomainOfHub(entityId) { return (entityId || '').split('.')[0]; }
+
+// Tier 4: entries are now { id, room, favorite } objects rather than plain id
+// strings — normalizeSmarthomeEntities() upgrades old-shape data on read, so
+// nobody's existing settings blob breaks when this ships. Written back in the
+// new shape on the next save; the old plain-string shape is never written again.
+function normalizeSmarthomeEntities(raw) {
+  let parsed;
+  try { parsed = JSON.parse(raw || '[]'); } catch { parsed = []; }
+  if (!Array.isArray(parsed)) parsed = [];
+  return parsed.map(entry => typeof entry === 'string'
+    ? { id: entry, room: '', favorite: false }
+    : { id: entry.id, room: entry.room || '', favorite: !!entry.favorite });
+}
+
+let smarthomeEntities = [];    // { id, room, favorite } objects, persisted in settings
+let smarthomeEntityData = {};  // id -> live state, fetched fresh each time the tab loads
+
+async function loadSmartHomeTab() {
+  let settings = {};
+  try { settings = await api('/api/settings'); } catch {}
+  smarthomeEntities = normalizeSmarthomeEntities(settings.smarthome_hub_entities);
+  if (!smarthomeEntities.length) {
+    $('smarthome-items-wrap').innerHTML = '<div id="smarthome-empty"><div class="emoji">🏠</div><p>Nothing added yet — tap "+ Add" to bring in a light, thermostat, or scene.</p></div>';
+    return;
+  }
+  $('smarthome-items-wrap').innerHTML = '<p style="font-size:13px;color:var(--muted)">Loading…</p>';
+  await Promise.all(smarthomeEntities.map(async (entry) => {
+    try {
+      const r = await fetch(`/api/ha/state/${encodeURIComponent(entry.id)}`);
+      const data = await r.json();
+      smarthomeEntityData[entry.id] = (data && data.entity_id) ? data : { error: (data && data.error) || 'Unavailable' };
+    } catch {
+      smarthomeEntityData[entry.id] = { error: 'Could not reach server' };
+    }
+  }));
+  renderSmartHomeItems();
+}
+
+async function saveSmarthomeEntities() {
+  try { await api('/api/settings', { method: 'PUT', body: JSON.stringify({ smarthome_hub_entities: JSON.stringify(smarthomeEntities) }) }); } catch {}
+}
+
+// Renders one entity's control row — same domain-based shape as before, now
+// taking the {id, room, favorite} entry so the ⭐/✏️ controls can go on
+// every card regardless of domain, instead of duplicating them per branch.
+function smartHomeCardHtml(entry) {
+  const id = entry.id;
+  const data = smarthomeEntityData[id];
+  const domain = haDomainOfHub(id);
+  const name = (data && data.friendly_name) || id;
+  if (!data) return '';
+  const favBtn = `<button class="sh-fav ${entry.favorite ? 'active' : ''}" data-id="${escapeHtml(id)}" aria-label="${entry.favorite ? 'Remove from Favorites' : 'Add to Favorites'}">${entry.favorite ? '⭐' : '☆'}</button>`;
+  const editBtn = `<button class="sh-edit" data-id="${escapeHtml(id)}" aria-label="Edit room">✏️</button>`;
+  const removeBtn = `<button class="sh-remove" data-id="${escapeHtml(id)}">🗑️</button>`;
+  const actions = `<div class="sh-card-actions">${favBtn}${editBtn}${removeBtn}</div>`;
+
+  if (data.error) {
+    return `<div class="sh-card"><span class="sh-name">${escapeHtml(name)}</span>
+      <span style="font-size:12px;color:var(--muted)">${escapeHtml(data.error)}</span>${actions}</div>`;
+  }
+  if (HA_TOGGLE_DOMAINS_HUB.has(domain)) {
+    const isOn = data.state === 'on';
+    return `<div class="sh-card">
+      <span class="sh-name">${escapeHtml(name)}</span>
+      <button type="button" class="sh-toggle-switch ${isOn ? 'on' : 'off'}" data-id="${escapeHtml(id)}" aria-label="Toggle ${escapeHtml(name)}">
+        <span class="sh-toggle-knob"></span>
+      </button>${actions}
+    </div>`;
+  }
+  if (HA_CLIMATE_DOMAINS_HUB.has(domain)) {
+    const hasTarget = typeof data.targetTemp === 'number';
+    return `<div class="sh-card">
+      <span class="sh-name">${escapeHtml(name)}</span>
+      <div class="sh-climate-row">
+        <button type="button" class="sh-temp-btn sh-temp-down" data-id="${escapeHtml(id)}" ${hasTarget ? '' : 'disabled'} aria-label="Lower temperature">−</button>
+        <div class="sh-climate-readout">
+          <div class="sh-climate-target">${hasTarget ? Math.round(data.targetTemp) + '°' : '—'}</div>
+          ${typeof data.currentTemp === 'number' ? `<div class="sh-climate-current">now ${Math.round(data.currentTemp)}°</div>` : ''}
+        </div>
+        <button type="button" class="sh-temp-btn sh-temp-up" data-id="${escapeHtml(id)}" ${hasTarget ? '' : 'disabled'} aria-label="Raise temperature">+</button>
+      </div>${actions}
+    </div>`;
+  }
+  if (HA_TRIGGER_DOMAINS_HUB.has(domain)) {
+    return `<div class="sh-card">
+      <span class="sh-name">${escapeHtml(name)}</span>
+      <button type="button" class="sh-trigger-btn" data-id="${escapeHtml(id)}">▶ ${domain === 'scene' ? 'Set Scene' : 'Run'}</button>${actions}
+    </div>`;
+  }
+  // Anything else (shouldn't normally happen — the picker only offers
+  // controllable domains — but handled defensively rather than silently
+  // dropping an entity someone somehow already had on their list).
+  return `<div class="sh-card">
+    <span class="sh-name">${escapeHtml(name)}</span>
+    <span class="sh-readonly-value">${escapeHtml(data.state)}${data.unit ? ' ' + escapeHtml(data.unit) : ''}</span>${actions}
+  </div>`;
+}
+
+// Favorites (flat, no room header) first, then grouped by room — same
+// first-seen-order-with-"Other"-last convention as the display.html Tier 4
+// widget, so the two surfaces feel consistent. Entities appear in Favorites
+// AND in their room section if both apply — favoriting is a "pin to the top
+// for quick reach" shortcut, not an exclusive category.
+function renderSmartHomeItems() {
+  const wrap = $('smarthome-items-wrap');
+  const favorites = smarthomeEntities.filter(e => e.favorite);
+  const rooms = [];
+  const byRoom = new Map();
+  smarthomeEntities.forEach(e => {
+    const key = e.room || '';
+    if (!byRoom.has(key)) { byRoom.set(key, []); rooms.push(key); }
+    byRoom.get(key).push(e);
+  });
+  rooms.sort((a, b) => (a === '' ? 1 : b === '' ? -1 : 0));
+  const anyRoomSet = rooms.some(r => r !== '');
+
+  let html = '';
+  if (favorites.length) {
+    html += `<div class="sh-section"><h4>Favorites</h4><div class="sh-cards">${favorites.map(smartHomeCardHtml).join('')}</div></div>`;
+  }
+  if (anyRoomSet) {
+    rooms.forEach(room => {
+      html += `<div class="sh-section"><h4>${escapeHtml(room || 'Other')}</h4><div class="sh-cards">${byRoom.get(room).map(smartHomeCardHtml).join('')}</div></div>`;
+    });
+  } else {
+    html += `<div class="sh-cards">${smarthomeEntities.map(smartHomeCardHtml).join('')}</div>`;
+  }
+  wrap.innerHTML = html;
+  wireSmartHomeTaps();
+}
+
+async function callHaActionHub(entityId, action, extra) {
+  try {
+    const body = { entityId, action, ...(extra || {}) };
+    const r = await fetch('/api/ha/call-action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || data.error) { console.error('HA action failed:', data.error || r.status); return false; }
+    // Same reasoning as display.html's own version of this function: re-fetch
+    // just this entity (the server already busted its cache for it) rather
+    // than wait for some periodic poll, so the tap feels responsive.
+    try {
+      const stateRes = await fetch(`/api/ha/state/${encodeURIComponent(entityId)}`);
+      const fresh = await stateRes.json();
+      smarthomeEntityData[entityId] = (fresh && fresh.entity_id) ? fresh : { error: (fresh && fresh.error) || 'Unavailable' };
+      renderSmartHomeItems();
+    } catch {}
+    return true;
+  } catch (e) {
+    console.error('HA action failed:', e);
+    return false;
+  }
+}
+
+function wireSmartHomeTaps() {
+  document.querySelectorAll('.sh-toggle-switch').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      callHaActionHub(btn.dataset.id, 'toggle').finally(() => { btn.disabled = false; });
+    });
+  });
+  document.querySelectorAll('.sh-temp-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      const entityId = btn.dataset.id;
+      const data = smarthomeEntityData[entityId];
+      if (!data || typeof data.targetTemp !== 'number') return;
+      const step = typeof data.tempStep === 'number' ? data.tempStep : 1;
+      const dir = btn.classList.contains('sh-temp-up') ? 1 : -1;
+      let next = data.targetTemp + dir * step;
+      if (typeof data.minTemp === 'number') next = Math.max(data.minTemp, next);
+      if (typeof data.maxTemp === 'number') next = Math.min(data.maxTemp, next);
+      btn.disabled = true;
+      callHaActionHub(entityId, 'set_temperature', { temperature: next }).finally(() => { btn.disabled = false; });
+    });
+  });
+  document.querySelectorAll('.sh-trigger-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = '✓ Done';
+      callHaActionHub(btn.dataset.id, 'trigger').finally(() => {
+        setTimeout(() => { btn.disabled = false; btn.textContent = original; }, 1500);
+      });
+    });
+  });
+  document.querySelectorAll('.sh-fav').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      const entry = smarthomeEntities.find(e => e.id === id);
+      if (!entry) return;
+      entry.favorite = !entry.favorite;
+      renderSmartHomeItems();
+      await saveSmarthomeEntities();
+    });
+  });
+  document.querySelectorAll('.sh-edit').forEach(btn => {
+    btn.addEventListener('click', () => openSmartHomeEditSheet(btn.dataset.id));
+  });
+  document.querySelectorAll('.sh-remove').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      if (!confirm('Remove this from your Home tab?')) return;
+      smarthomeEntities = smarthomeEntities.filter(e => e.id !== id);
+      delete smarthomeEntityData[id];
+      renderSmartHomeItems();
+      if (!smarthomeEntities.length) $('smarthome-items-wrap').innerHTML = '<div id="smarthome-empty"><div class="emoji">🏠</div><p>Nothing added yet — tap "+ Add" to bring in a light, thermostat, or scene.</p></div>';
+      await saveSmarthomeEntities();
+    });
+  });
+}
+
+// Small dynamically-created bottom-sheet (Hub's editor panels use a
+// full-screen .editor-overlay pattern elsewhere, which would mean adding a
+// whole new static overlay section to the page markup for one text field —
+// this follows app.html's lighter-weight "build the overlay on first use"
+// pattern instead, same shape as its own ha-entity-picker) for setting an
+// entity's room. A <datalist> of rooms already in use keeps naming
+// consistent — typing "Kitchen" twice by accident would otherwise silently
+// create two separate room sections.
+function openSmartHomeEditSheet(id) {
+  const entry = smarthomeEntities.find(e => e.id === id);
+  if (!entry) return;
+  const data = smarthomeEntityData[id];
+  const name = (data && data.friendly_name) || id;
+  const existingRooms = [...new Set(smarthomeEntities.map(e => e.room).filter(Boolean))];
+  let ov = $('sh-edit-sheet');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'sh-edit-sheet';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:600;background:rgba(0,0,0,0.5);display:flex;align-items:flex-end;justify-content:center';
+    ov.addEventListener('click', e => { if (e.target === ov) ov.style.display = 'none'; });
+    document.body.appendChild(ov);
+  }
+  ov.innerHTML = `
+    <div style="background:var(--bg);width:100%;max-width:520px;border-radius:18px 18px 0 0;padding:20px 20px 30px">
+      <h3 style="margin:0 0 16px">${escapeHtml(name)}</h3>
+      <div class="editor-field">
+        <label>Room</label>
+        <input type="text" id="sh-edit-room-input" value="${escapeHtml(entry.room || '')}" placeholder="e.g. Kitchen" list="sh-room-options">
+        <datalist id="sh-room-options">${existingRooms.map(r => `<option value="${escapeHtml(r)}">`).join('')}</datalist>
+      </div>
+      <div class="editor-save-row" style="padding:0"><button class="save-btn" id="sh-edit-save-btn">Save</button></div>
+    </div>`;
+  ov.style.display = 'flex';
+  $('sh-edit-save-btn').addEventListener('click', async () => {
+    entry.room = $('sh-edit-room-input').value.trim();
+    ov.style.display = 'none';
+    renderSmartHomeItems();
+    await saveSmarthomeEntities();
+  });
+}
+
+// ── Entity picker: search Home Assistant's full entity list, filtered to
+// only the domains this tab actually knows how to control — someone adding
+// a plain sensor here would land on a dead end with no interactive way to
+// use it, that's what the Entity Status WIDGET (a different surface) is for.
+let cachedHaEntitiesHub = null;
+function openSmartHomePicker() {
+  $('smarthome-picker').classList.add('open');
+  $('sh-picker-search').value = '';
+  loadPickerList();
+  setTimeout(() => $('sh-picker-search').focus(), 50);
+}
+function closeSmartHomePicker() { $('smarthome-picker').classList.remove('open'); }
+$('smarthome-add-btn').addEventListener('click', openSmartHomePicker);
+$('sh-picker-close').addEventListener('click', closeSmartHomePicker);
+
+async function loadPickerList() {
+  if (!cachedHaEntitiesHub) {
+    $('sh-picker-list').innerHTML = '<p style="font-size:13px;color:var(--muted)">Loading…</p>';
+    let all = [];
+    try { all = await api('/api/ha/entities'); } catch {}
+    if (!Array.isArray(all)) all = [];
+    const controllable = new Set([...HA_TOGGLE_DOMAINS_HUB, ...HA_CLIMATE_DOMAINS_HUB, ...HA_TRIGGER_DOMAINS_HUB]);
+    cachedHaEntitiesHub = all.filter(e => controllable.has(haDomainOfHub(e.entity_id)));
+  }
+  renderPickerList(cachedHaEntitiesHub);
+}
+function renderPickerList(items) {
+  const box = $('sh-picker-list');
+  const alreadyAdded = new Set(smarthomeEntities.map(e => e.id));
+  const available = items.filter(e => !alreadyAdded.has(e.entity_id));
+  if (!available.length) {
+    box.innerHTML = `<p style="font-size:13px;color:var(--muted)">${items.length ? 'Everything matching is already on your Home tab.' : 'No controllable entities found — make sure lights, thermostats, or scenes exist in Home Assistant, and that it\'s connected in the full app\'s Settings.'}</p>`;
+    return;
+  }
+  box.innerHTML = available.map(e => `
+    <button type="button" class="sh-picker-item" data-id="${escapeHtml(e.entity_id)}">
+      <span class="name">${escapeHtml(e.friendly_name)}</span>
+      <span class="meta">${escapeHtml(e.entity_id)} — ${escapeHtml(e.state)}</span>
+    </button>`).join('');
+  box.querySelectorAll('.sh-picker-item').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      smarthomeEntities.push({ id, room: '', favorite: false });
+      closeSmartHomePicker();
+      await saveSmarthomeEntities();
+      loadSmartHomeTab();
+    });
+  });
+}
+$('sh-picker-search').addEventListener('input', (e) => {
+  if (!cachedHaEntitiesHub) return;
+  const q = e.target.value.trim().toLowerCase();
+  const filtered = !q ? cachedHaEntitiesHub : cachedHaEntitiesHub.filter(en =>
+    en.friendly_name.toLowerCase().includes(q) || en.entity_id.toLowerCase().includes(q));
+  renderPickerList(filtered);
+});
+
+$('shopping-store-select').addEventListener('change', async (e) => {
+  shoppingStore = e.target.value;
+  await api('/api/settings', { method: 'PUT', body: JSON.stringify({ shopping_store: shoppingStore }) });
+  renderShoppingItems(); // re-render so existing Buy links immediately point at the new store
+});
+
+// Live updates: refresh to-dos when they change elsewhere (the full app, another
+// device with the Hub open, etc). Chores live-updates are handled inside the
+// iframe by kids.html itself.
+try {
+  const es = new EventSource('/api/live');
+  es.onmessage = (ev) => {
+    try {
+      const d = JSON.parse(ev.data);
+      if (d.topic === 'todos' && $('view-todos').classList.contains('active')) loadTodoLists();
+      if (d.topic === 'shopping' && $('view-shopping').classList.contains('active')) loadShoppingList();
+      if (d.topic === 'chores' && $('view-chores').classList.contains('active')) loadChoresTab();
+      // The real fix for "toggle a feature, checkbox updates instantly, but
+      // the tab never appears without a reload": the server broadcasts a
+      // 'settings' topic on every settings change (from the full app, this
+      // same Hub, another device syncing — anywhere), but until now nothing
+      // here was listening for it. A checkbox toggled from THIS Hub's own
+      // settings panel already updates live via toggleHubFeature() calling
+      // this same sync directly — this is what covers every OTHER case: the
+      // full app's Settings changed it, and this Hub tab was already open.
+      if (d.topic === 'settings') {
+        syncTabVisibilityAndFallback();
+        // The Smart Home entity LIST also lives in settings (smarthome_hub_entities)
+        // — a change from elsewhere (another device adding/removing an entity
+        // to their own view of this same shared setting) should refresh this
+        // tab's actual content too, not just its visibility, if it's the one
+        // currently open.
+        if ($('view-smarthome').classList.contains('active')) loadSmartHomeTab();
+      }
+    } catch {}
+  };
+} catch {}
+
+// ── Chores (parent management view) ─────────────────────────────────────────
+// Deliberately NOT the kid-facing /kids experience — this is the same kind of
+// management the full app's Chores tab offers (add/edit kids and chores,
+// reassign today's chores), just built natively for the Hub's own simpler UI
+// conventions (full-screen editor panels instead of the full app's modals).
+const KID_AVATARS_QUICK = ['🙂','😀','😎','🥳','🤓','😺','🦄','🐱','🐶','🐰','🦊','🐼'];
+const DAY_CODES = [['SU','Su'],['MO','Mo'],['TU','Tu'],['WE','We'],['TH','Th'],['FR','Fr'],['SA','Sa']];
+
+let choresState = { kids: [], chores: [], choreChart: null };
+let editingKidId = null;   // null = adding a new kid
+let editingChoreId = null; // null = adding a new chore
+let choreAssignees = new Set(); // selected kid ids for the chore editor, or has('all')
+let choreByday = new Set();
+
+async function loadChoresTab() {
+  let kids = [], chores = [], choreChart = null, redemptions = [];
+  try {
+    [kids, chores, choreChart, redemptions] = await Promise.all([
+      api('/api/kids'), api('/api/chores'), api('/api/chore-chart'),
+      api('/api/sticker-redemptions?limit=20'),
+    ]);
+  } catch {}
+  choresState = { kids: kids || [], chores: chores || [], choreChart };
+  renderTodayList();
+  renderKidsList();
+  renderRedeemedList(Array.isArray(redemptions) ? redemptions : []);
+  renderChoresListUI();
+}
+
+function kidName(id) { const k = choresState.kids.find(x => x.id === parseInt(id)); return k ? k.name : 'Unknown'; }
+function assigneeLabel(assignee) {
+  if (assignee === 'all') return 'Everyone';
+  return String(assignee).split(',').map(s => s.trim()).filter(Boolean).map(kidName).join(', ');
+}
+function freqLabel(c) {
+  if (c.freq === 'once') return c.on_date ? `Once on ${c.on_date}` : 'Once';
+  if (c.freq === 'daily') return 'Every day';
+  if (c.freq === 'weekly') return c.byday ? c.byday.split(',').join(', ') : 'Every day (weekly)';
+  return c.freq;
+}
+
+// ── Today's Chores ───────────────────────────────────────────────────────────
+function renderTodayList() {
+  const box = $('chores-today-list');
+  const cc = choresState.choreChart;
+  const items = (cc && cc.kids) ? cc.kids.flatMap(k => (k.chores || []).map(c => ({
+    ...c, kid_id: k.id, kid_name: k.name, kid_avatar: k.avatar, kid_color: k.color,
+  }))) : [];
+  if (!items.length) { box.innerHTML = '<div class="chores-empty">No chores today.</div>'; return; }
+  const otherKidOptions = (forKidId) => choresState.kids.filter(k => k.id !== forKidId)
+    .map(k => `<option value="${k.id}">${escapeHtml(k.name)}</option>`).join('');
+  box.innerHTML = items.map(c => `
+    <div class="today-row ${c.done ? 'done' : ''}">
+      <span class="ic">${c.icon || '✅'}</span>
+      <div class="info">
+        <div class="title">${escapeHtml(c.title)}${c.done ? ' ✓' : ''}${c.overdue ? ' <span style="color:#ffb454">(from before)</span>' : ''}</div>
+        <div class="meta" style="color:${c.kid_color || 'var(--muted)'}">${c.kid_avatar || ''} ${escapeHtml(c.kid_name)}</div>
+      </div>
+      ${c.done ? '' : `<select class="today-reassign" data-inst="${c.instance_id}" data-kid="${c.kid_id}">
+        <option value="">Reassign…</option>${otherKidOptions(c.kid_id)}
+      </select>`}
+    </div>`).join('');
+  box.querySelectorAll('.today-reassign').forEach(sel => sel.addEventListener('change', async (e) => {
+    const newKidId = e.target.value;
+    if (!newKidId) return;
+    const instId = e.target.dataset.inst;
+    e.target.disabled = true;
+    const r = await api(`/api/chore-instances/${instId}/reassign`, { method: 'PUT', body: JSON.stringify({ kid_id: Number(newKidId) }) });
+    if (r && r.ok) loadChoresTab();
+    else { showToastKid('❌ ' + ((r && r.error) || 'Could not reassign')); e.target.value = ''; e.target.disabled = false; }
+  }));
+}
+
+// ── Redeemed Prizes ──────────────────────────────────────────────────────────
+// Parent-facing, read-only: a combined feed of every kid's redeemed rewards,
+// most recent first. Display only — actually redeeming/undoing stays in the
+// full app's sticker sheet (openStickerSheet there), same as how allowance
+// payouts aren't managed from the Hub either; this is a "what's happened"
+// view, not a management surface.
+function renderRedeemedList(redemptions) {
+  const box = $('chores-redeemed-list');
+  if (!box) return;
+  if (!redemptions.length) { box.innerHTML = '<div class="chores-empty">No prizes redeemed yet.</div>'; return; }
+  box.innerHTML = redemptions.map(r => `
+    <div class="today-row">
+      <span class="ic">🎁</span>
+      <div class="info">
+        <div class="title">${escapeHtml(r.reward_title)}</div>
+        <div class="meta" style="color:${r.kid_color || 'var(--muted)'}">${r.kid_avatar || ''} ${escapeHtml(r.kid_name)} · ⭐ ${r.star_cost} · ${r.date}</div>
+      </div>
+    </div>`).join('');
+}
+
+// ── Kids list + editor ───────────────────────────────────────────────────────
+function renderKidsList() {
+  const box = $('chores-kids-list');
+  if (!choresState.kids.length) { box.innerHTML = '<div class="chores-empty">No kids yet. Tap "+ Add Kid" above.</div>'; return; }
+  box.innerHTML = choresState.kids.map(k => `
+    <div class="kid-row">
+      <span class="ic">${k.avatar || '🙂'}</span>
+      <div class="info">
+        <div class="name" style="color:${k.color || 'var(--text)'}">${escapeHtml(k.name)}</div>
+        <div class="meta">${k.display_mode === 'pictures' ? 'Pictures' : k.display_mode === 'words' ? 'Words' : 'Pictures + words'}${k.allowance_enabled ? ' · 💰 allowance on' : ''}</div>
+      </div>
+      <button class="kid-stats-btn" data-id="${k.id}" title="History">📊</button>
+      <button class="kid-edit-btn" data-id="${k.id}" title="Edit">✏️</button>
+      <button class="kid-del-btn" data-id="${k.id}" title="Delete">🗑️</button>
+    </div>`).join('');
+  box.querySelectorAll('.kid-stats-btn').forEach(b => b.addEventListener('click', () => openKidStats(choresState.kids.find(k => k.id === parseInt(b.dataset.id)))));
+  box.querySelectorAll('.kid-edit-btn').forEach(b => b.addEventListener('click', () => openKidEditor(choresState.kids.find(k => k.id === parseInt(b.dataset.id)))));
+  box.querySelectorAll('.kid-del-btn').forEach(b => b.addEventListener('click', async () => {
+    const k = choresState.kids.find(x => x.id === parseInt(b.dataset.id));
+    if (!k || !confirm(`Remove ${k.name}? This also deletes their chore history and allowance ledger.`)) return;
+    await api(`/api/kids/${k.id}`, { method: 'DELETE' });
+    loadChoresTab();
+  }));
+}
+
+function openKidEditor(kid) {
+  editingKidId = kid ? kid.id : null;
+  $('kid-editor-title').textContent = kid ? 'Edit Kid' : 'Add Kid';
+  $('kid-f-name').value = kid ? kid.name : '';
+  $('kid-f-avatar').value = kid ? (kid.avatar || '🙂') : KID_AVATARS_QUICK[Math.floor(Math.random() * KID_AVATARS_QUICK.length)];
+  $('kid-f-color').value = kid ? (kid.color || '#4A90D9') : '#4A90D9';
+  $('kid-f-display-mode').value = kid ? (kid.display_mode || 'both') : 'both';
+  $('kid-f-allowance-enabled').checked = !!(kid && kid.allowance_enabled);
+  $('kid-f-allowance-mode').value = kid ? (kid.allowance_mode || 'per_chore') : 'per_chore';
+  $('kid-f-weekly-rate').value = kid && kid.weekly_rate ? kid.weekly_rate : '';
+  $('kid-f-goal-name').value = kid ? (kid.savings_goal_name || '') : '';
+  $('kid-f-goal-amount').value = kid && kid.savings_goal_amount ? kid.savings_goal_amount : '';
+  $('kid-f-allowance-fields').style.display = $('kid-f-allowance-enabled').checked ? 'block' : 'none';
+  $('kid-editor').classList.add('open');
+}
+function closeKidEditor() { $('kid-editor').classList.remove('open'); }
+
+// Parent-facing history/stats view — streak, 7/30-day completion rate,
+// all-time total, and a day-by-day bar strip for the last 4 weeks, so a
+// parent can spot patterns (e.g. weekends slipping) without digging through
+// raw data. Ported from the full app's own Chores tab (openStatsSheet there)
+// so the same view is reachable from the Hub too, not just the full app —
+// same /api/kids/:id/stats endpoint, same computed values, just using this
+// Hub's own editor-overlay chrome instead of the app's bottom-sheet.
+async function openKidStats(kid) {
+  if (!kid) return;
+  $('kid-stats-title').textContent = `${kid.name}'s History`;
+  $('kid-stats-body').innerHTML = '<p style="color:var(--muted)">Loading…</p>';
+  $('kid-stats-modal').classList.add('open');
+  let data;
+  try {
+    data = await api(`/api/kids/${kid.id}/stats?days=28`);
+  } catch {
+    data = null;
+  }
+  // api() never throws on an HTTP error status — it just returns whatever
+  // JSON body came back (e.g. {error: '...'} on a 500), so a genuine failure
+  // has to be checked here explicitly rather than relying on the catch above
+  // to have caught it. Without this, a failed request would fall through to
+  // data.daily.map() below with data.daily actually undefined, and just crash
+  // instead of showing a real error message.
+  if (!data || data.error || !Array.isArray(data.daily)) {
+    $('kid-stats-body').innerHTML = '<p>❌ Could not load.</p>';
+    return;
+  }
+  const pctText = p => p === null ? '—' : `${p}%`;
+  const bars = data.daily.map(d => {
+    const pct = d.total ? Math.round((d.done / d.total) * 100) : null;
+    const color = pct === null ? 'var(--border)' : pct === 100 ? '#3ec97a' : pct > 0 ? '#ffb454' : '#fb7185';
+    const h = pct === null ? 6 : Math.max(6, Math.round(pct * 0.01 * 46));
+    const dow = new Date(d.date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'narrow' });
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:0">
+      <div title="${d.date}: ${d.total ? `${d.done}/${d.total} done` : 'nothing due'}" style="width:100%;max-width:14px;height:46px;display:flex;align-items:flex-end">
+        <div style="width:100%;height:${h}px;background:${color};border-radius:3px 3px 0 0"></div>
+      </div>
+      <div style="font-size:9px;color:var(--muted)">${dow}</div>
+    </div>`;
+  }).join('');
+  $('kid-stats-body').innerHTML = `
+    <div style="display:flex;gap:10px;margin-bottom:16px">
+      <div style="flex:1;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px;text-align:center">
+        <div style="font-size:22px;font-weight:800">${data.streak > 0 ? '🔥 ' + data.streak : '—'}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">day streak</div>
+      </div>
+      <div style="flex:1;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px;text-align:center">
+        <div style="font-size:22px;font-weight:800">${pctText(data.last7Pct)}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">last 7 days</div>
+      </div>
+      <div style="flex:1;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px;text-align:center">
+        <div style="font-size:22px;font-weight:800">${pctText(data.last30Pct)}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">last 30 days</div>
+      </div>
+    </div>
+    <div class="section-header" style="margin:0 0 8px">Last 4 weeks</div>
+    <div style="display:flex;gap:3px;align-items:flex-end;padding:8px 4px;background:var(--card);border:1px solid var(--border);border-radius:12px;margin-bottom:14px">${bars}</div>
+    <p style="font-size:12px;color:var(--muted);margin:0">✅ ${data.allTimeCompleted} chore${data.allTimeCompleted === 1 ? '' : 's'} completed all-time. Gray bars mean nothing was due that day, not a miss.</p>
+  `;
+}
+function closeKidStats() { $('kid-stats-modal').classList.remove('open'); }
+$('kid-stats-close').addEventListener('click', closeKidStats);
+
+$('kid-f-allowance-enabled').addEventListener('change', (e) => {
+  $('kid-f-allowance-fields').style.display = e.target.checked ? 'block' : 'none';
+});
+$('kid-editor-close').addEventListener('click', closeKidEditor);
+$('kid-editor-cancel').addEventListener('click', closeKidEditor);
+$('add-kid-btn').addEventListener('click', () => openKidEditor(null));
+$('kid-editor-save').addEventListener('click', async () => {
+  const name = $('kid-f-name').value.trim();
+  if (!name) { showToastKid('Please enter a name'); return; }
+  const body = {
+    name, avatar: $('kid-f-avatar').value.trim() || '🙂', color: $('kid-f-color').value,
+    display_mode: $('kid-f-display-mode').value,
+    allowance_enabled: $('kid-f-allowance-enabled').checked,
+    allowance_mode: $('kid-f-allowance-mode').value,
+    weekly_rate: Number($('kid-f-weekly-rate').value) || 0,
+    savings_goal_name: $('kid-f-goal-name').value.trim(),
+    savings_goal_amount: Number($('kid-f-goal-amount').value) || 0,
+  };
+  const r = editingKidId
+    ? await api(`/api/kids/${editingKidId}`, { method: 'PUT', body: JSON.stringify(body) })
+    : await api('/api/kids', { method: 'POST', body: JSON.stringify(body) });
+  if (r && r.error) { showToastKid('❌ ' + r.error); return; }
+  closeKidEditor();
+  loadChoresTab();
+});
+
+// ── Chores list + editor ─────────────────────────────────────────────────────
+function renderChoresListUI() {
+  const box = $('chores-chores-list');
+  if (!choresState.chores.length) { box.innerHTML = '<div class="chores-empty">No chores yet. Tap "+ Add Chore" above.</div>'; return; }
+  box.innerHTML = choresState.chores.map(c => `
+    <div class="chore-row" style="${c.active ? '' : 'opacity:.5'}">
+      <span class="ic">${c.icon || '✅'}</span>
+      <div class="info">
+        <div class="title">${escapeHtml(c.title)}${c.bonus ? ' 🎁' : ''}</div>
+        <div class="meta">${c.bonus ? 'Bonus — shared pool' : `${assigneeLabel(c.assignee)} · ${freqLabel(c)}`}${c.pay_amount ? ` · 💰$${Number(c.pay_amount).toFixed(2)}` : ''}${c.photo_required ? ' · 📷' : ''}</div>
+      </div>
+      <button class="chore-edit-btn" data-id="${c.id}" title="Edit">✏️</button>
+      <button class="chore-del-btn" data-id="${c.id}" title="Delete">🗑️</button>
+    </div>`).join('');
+  box.querySelectorAll('.chore-edit-btn').forEach(b => b.addEventListener('click', () => openChoreEditor(choresState.chores.find(c => c.id === parseInt(b.dataset.id)))));
+  box.querySelectorAll('.chore-del-btn').forEach(b => b.addEventListener('click', async () => {
+    const c = choresState.chores.find(x => x.id === parseInt(b.dataset.id));
+    if (!c || !confirm(`Delete "${c.title}"?`)) return;
+    await api(`/api/chores/${c.id}`, { method: 'DELETE' });
+    loadChoresTab();
+  }));
+}
+
+function renderAssigneeChips() {
+  const row = $('chore-f-assignee-chips');
+  const chips = [{ id: 'all', name: 'Everyone' }, ...choresState.kids.map(k => ({ id: String(k.id), name: k.name }))];
+  row.innerHTML = chips.map(k => `<div class="editor-chip ${choreAssignees.has(k.id) ? 'active' : ''}" data-id="${k.id}">${escapeHtml(k.name)}</div>`).join('');
+  row.querySelectorAll('.editor-chip').forEach(chip => chip.addEventListener('click', () => {
+    const id = chip.dataset.id;
+    if (id === 'all') { choreAssignees = new Set(['all']); }
+    else { choreAssignees.delete('all'); choreAssignees.has(id) ? choreAssignees.delete(id) : choreAssignees.add(id); if (!choreAssignees.size) choreAssignees.add('all'); }
+    renderAssigneeChips();
+  }));
+}
+function renderBydayChips() {
+  const row = $('chore-f-byday-chips');
+  row.innerHTML = DAY_CODES.map(([code, label]) => `<div class="editor-chip ${choreByday.has(code) ? 'active' : ''}" data-code="${code}">${label}</div>`).join('');
+  row.querySelectorAll('.editor-chip').forEach(chip => chip.addEventListener('click', () => {
+    const code = chip.dataset.code;
+    choreByday.has(code) ? choreByday.delete(code) : choreByday.add(code);
+    renderBydayChips();
+  }));
+}
+function updateChoreFreqFields() {
+  const freq = $('chore-f-freq').value;
+  $('chore-f-byday-field').style.display = freq === 'weekly' ? 'block' : 'none';
+  $('chore-f-ondate-field').style.display = freq === 'once' ? 'block' : 'none';
+}
+$('chore-f-freq').addEventListener('change', updateChoreFreqFields);
+$('chore-f-bonus').addEventListener('change', (e) => {
+  $('chore-f-normal-fields').style.display = e.target.checked ? 'none' : 'block';
+});
+
+function openChoreEditor(chore) {
+  editingChoreId = chore ? chore.id : null;
+  $('chore-editor-title').textContent = chore ? 'Edit Chore' : 'Add Chore';
+  $('chore-f-title').value = chore ? chore.title : '';
+  $('chore-f-icon').value = chore ? (chore.icon || '✅') : '✅';
+  $('chore-f-bonus').checked = !!(chore && chore.bonus);
+  $('chore-f-normal-fields').style.display = (chore && chore.bonus) ? 'none' : 'block';
+  choreAssignees = new Set();
+  if (!chore || chore.assignee === 'all') choreAssignees.add('all');
+  else String(chore.assignee).split(',').map(s => s.trim()).filter(Boolean).forEach(id => choreAssignees.add(id));
+  renderAssigneeChips();
+  $('chore-f-freq').value = chore ? (chore.freq || 'daily') : 'daily';
+  choreByday = new Set(chore && chore.byday ? chore.byday.split(',').filter(Boolean) : []);
+  renderBydayChips();
+  $('chore-f-ondate').value = chore ? (chore.on_date || '') : '';
+  updateChoreFreqFields();
+  $('chore-f-time').value = chore ? (chore.at_time || '') : '';
+  $('chore-f-carryover').checked = !!(chore && chore.carryover);
+  $('chore-f-celebrate').checked = chore ? !!chore.celebrate : true;
+  $('chore-f-photo-required').checked = !!(chore && chore.photo_required);
+  $('chore-f-pay').value = chore && chore.pay_amount ? chore.pay_amount : '';
+  $('chore-f-notes').value = chore ? (chore.notes || '') : '';
+  $('chore-editor').classList.add('open');
+}
+function closeChoreEditor() { $('chore-editor').classList.remove('open'); }
+$('chore-editor-close').addEventListener('click', closeChoreEditor);
+$('chore-editor-cancel').addEventListener('click', closeChoreEditor);
+$('add-chore-btn').addEventListener('click', () => openChoreEditor(null));
+$('chore-editor-save').addEventListener('click', async () => {
+  const title = $('chore-f-title').value.trim();
+  if (!title) { showToastKid('Please enter a chore name'); return; }
+  const freq = $('chore-f-freq').value;
+  const body = {
+    title, icon: $('chore-f-icon').value.trim() || '✅',
+    assignee: choreAssignees.has('all') ? 'all' : [...choreAssignees].join(','),
+    freq, byday: freq === 'weekly' ? [...choreByday].join(',') : '',
+    on_date: freq === 'once' ? $('chore-f-ondate').value : '',
+    at_time: $('chore-f-time').value || '',
+    carryover: $('chore-f-carryover').checked, celebrate: $('chore-f-celebrate').checked,
+    photo_required: $('chore-f-photo-required').checked, bonus: $('chore-f-bonus').checked,
+    pay_amount: Number($('chore-f-pay').value) || 0,
+    notes: $('chore-f-notes').value.trim(),
+  };
+  const r = editingChoreId
+    ? await api(`/api/chores/${editingChoreId}`, { method: 'PUT', body: JSON.stringify(body) })
+    : await api('/api/chores', { method: 'POST', body: JSON.stringify(body) });
+  if (r && r.error) { showToastKid('❌ ' + r.error); return; }
+  closeChoreEditor();
+  loadChoresTab();
+});
+
+// ── Install prompt (Android/Chrome) ─────────────────────────────────────────
+let _deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  _deferredInstallPrompt = e;
+  try {
+    if (!window.matchMedia('(display-mode: standalone)').matches) $('install-hint').style.display = 'flex';
+  } catch {}
+});
+$('install-btn').addEventListener('click', async () => {
+  if (!_deferredInstallPrompt) return;
+  _deferredInstallPrompt.prompt();
+  await _deferredInstallPrompt.userChoice;
+  _deferredInstallPrompt = null;
+  $('install-hint').style.display = 'none';
+});
+$('install-dismiss').addEventListener('click', () => { $('install-hint').style.display = 'none'; });
+
+// ── Service worker: app-shell caching so the Hub opens instantly even on a
+// flaky connection. Data (todo items, chores) still needs the network — this
+// only makes the shell (this page, the chores page, icons) load instantly. ──
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/hub-sw.js').catch(() => {});
+  });
+}
+
+// ── Feature visibility — a tab whose feature is switched off in the full
+// app's Settings shouldn't be reachable here either, not just hidden in the
+// full app's own nav. Runs before the initial tab activation below so the
+// very first tab shown is already a valid, enabled one.
+async function applyFeatureVisibility() {
+  let settings = {};
+  try { settings = await api('/api/settings'); } catch {}
+  const enabled = {
+    chores: settings.chores_enabled !== '0',   // chores defaults ON
+    todos: settings.todo_enabled === '1',       // to-do/shopping/smart home default OFF
+    shopping: settings.shopping_enabled === '1',
+    smarthome: settings.smarthome_enabled === '1',
+  };
+  lastEnabledState = enabled; // cached for click handlers — see enterHomeTab() above
+  // Home's 3 subtab buttons individually show/hide exactly like the old flat
+  // top-level tabs did. The Home tab ITSELF only makes sense to show at all
+  // if at least one of the three is on — hidden entirely otherwise, same
+  // "nothing to show, so don't show the door to it" logic the old code
+  // applied per-tab, just one level up now that they're nested under Home.
+  $('subtab-chores').style.display = enabled.chores ? '' : 'none';
+  $('subtab-todos').style.display = enabled.todos ? '' : 'none';
+  $('subtab-shopping').style.display = enabled.shopping ? '' : 'none';
+  const anyHomeFeature = enabled.chores || enabled.todos || enabled.shopping;
+  $('tab-home').style.display = anyHomeFeature ? '' : 'none';
+  $('tab-smarthome').style.display = enabled.smarthome ? '' : 'none';
+  return enabled;
+}
+
+// ── Family Hub settings overlay — lets someone turn Chores/To-Do/Shopping on
+// or off right from the Hub, without needing the full app. These are the
+// exact same settings the full app's Settings → Features toggles write to
+// (shared server-side storage, not a separate Hub-only copy), so a change
+// made here is automatically what the full app sees too, and vice versa —
+// there's no separate sync step needed, just the same setting read from both
+// places.
+function openHubSettings() {
+  $('hub-settings-editor').classList.add('open');
+  loadHubSettingsToggles();
+}
+function closeHubSettings() { $('hub-settings-editor').classList.remove('open'); }
+$('hub-settings-btn').addEventListener('click', openHubSettings);
+$('hub-settings-close').addEventListener('click', closeHubSettings);
+
+async function loadHubSettingsToggles() {
+  let settings = {};
+  try { settings = await api('/api/settings'); } catch {}
+  $('hs-chores-enabled').checked = settings.chores_enabled !== '0';
+  $('hs-todo-enabled').checked = settings.todo_enabled === '1';
+  $('hs-shopping-enabled').checked = settings.shopping_enabled === '1';
+  $('hs-smarthome-enabled').checked = settings.smarthome_enabled === '1';
+}
+
+// Re-checks feature visibility against current settings and, if whatever's
+// currently being looked at just got turned off, falls back appropriately —
+// two levels now: if the current SUBTAB (within Home) got disabled but
+// something else in Home is still on, just switch subtabs without leaving
+// Home. If the whole top-level tab being viewed got disabled, fall back to
+// the other top-level tab if it's usable, or the "nothing enabled" message
+// if not. Same logic whether the change came from THIS Hub instance's own
+// toggle, or from a 'settings' SSE broadcast triggered elsewhere. Extracted
+// into its own function specifically so the SSE handler below can share it
+// rather than duplicating the fallback logic.
+async function syncTabVisibilityAndFallback() {
+  const enabled = await applyFeatureVisibility();
+  let currentTab = 'home';
+  try { currentTab = localStorage.getItem(TAB_KEY) || 'home'; } catch {}
+  const anyHomeFeature = enabled.chores || enabled.todos || enabled.shopping;
+  const currentTabStillUsable = currentTab === 'home' ? anyHomeFeature : enabled.smarthome;
+
+  if (!currentTabStillUsable) {
+    if (currentTab === 'home' && enabled.smarthome) {
+      showTab('smarthome');
+    } else if (currentTab === 'smarthome' && anyHomeFeature) {
+      enterHomeTab();
+    } else {
+      document.getElementById('views').innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:24px;text-align:center;color:var(--muted);gap:14px">
+          <div style="font-size:52px">🏠</div>
+          <p>No Family Hub features are turned on yet.<br>Tap ⚙️ above to turn one on.</p>
+        </div>`;
+    }
+  } else if (currentTab === 'home') {
+    // Top-level tab is still fine, but the specific SUBTAB being looked at
+    // might not be — e.g. Shopping was on-screen and just got switched off
+    // while Chores/To-Dos are still available.
+    let currentSubtab = 'chores';
+    try { currentSubtab = localStorage.getItem(SUBTAB_KEY) || 'chores'; } catch {}
+    if (!enabled[currentSubtab]) {
+      const fallbackSubtab = ['chores', 'todos', 'shopping'].find(t => enabled[t]);
+      if (fallbackSubtab) showSubtab(fallbackSubtab);
+    }
+  }
+  return enabled;
+}
+
+async function toggleHubFeature(settingKey, checked) {
+  await api('/api/settings', { method: 'PUT', body: JSON.stringify({ [settingKey]: checked ? '1' : '0' }) });
+  await syncTabVisibilityAndFallback();
+}
+$('hs-chores-enabled').addEventListener('change', (e) => toggleHubFeature('chores_enabled', e.target.checked));
+$('hs-todo-enabled').addEventListener('change', (e) => toggleHubFeature('todo_enabled', e.target.checked));
+$('hs-shopping-enabled').addEventListener('change', (e) => toggleHubFeature('shopping_enabled', e.target.checked));
+$('hs-smarthome-enabled').addEventListener('change', (e) => toggleHubFeature('smarthome_enabled', e.target.checked));
+
+// ── Initial tab activation — deliberately LAST in the script, not near the
+// top where it originally was. 'home' is the default active tab, and
+// entering it synchronously calls a load function — if this ran before
+// every function/const it depends on (api, choresState, and friends,
+// several sections below) had actually been declared, referencing any of
+// them threw a "Cannot access before initialization" TDZ error. That bug was
+// latent even before the Chores tab became a native view (it was harmless
+// then, since the old iframe-based Chores tab had nothing to load), but
+// running this only after the whole script has finished declaring
+// everything is the correct fix regardless.
+(async () => {
+  const enabled = await applyFeatureVisibility();
+  let initialTab = 'home';
+  try { initialTab = localStorage.getItem(TAB_KEY) || 'home'; } catch {}
+  const anyHomeFeature = enabled.chores || enabled.todos || enabled.shopping;
+  // The remembered/default tab might now be disabled (a feature the person
+  // just turned off, or a stale localStorage value from before it was) — fall
+  // back to whichever top-level tab is actually usable rather than showing
+  // one with no reachable content.
+  if (initialTab === 'home' ? !anyHomeFeature : !enabled.smarthome) {
+    initialTab = anyHomeFeature ? 'home' : (enabled.smarthome ? 'smarthome' : null);
+  }
+  if (initialTab === 'home') {
+    enterHomeTab();
+  } else if (initialTab === 'smarthome') {
+    showTab('smarthome');
+  } else {
+    // Nothing enabled at all — an unusual but real edge case (e.g. Chores
+    // switched off and To-Do/Shopping/Smart Home never turned on). Say so
+    // plainly instead of showing a blank or broken-looking screen.
+    // Deliberately does NOT hide the whole tab bar — the settings gear
+    // button lives in there too, and it's the one way back out of this
+    // exact state without needing the full app.
+    document.getElementById('views').innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:24px;text-align:center;color:var(--muted);gap:14px">
+        <div style="font-size:52px">🏠</div>
+        <p>No Family Hub features are turned on yet.<br>Tap ⚙️ above to turn one on.</p>
+      </div>`;
+  }
+})();
+</script>
+</body>
+</html>

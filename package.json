@@ -1,0 +1,19 @@
+{
+  "name": "piazzahq",
+  "version": "1.81.8-beta.1",
+  "description": "Always-on Raspberry Pi calendar display with mobile control app",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "ask-sdk-core": "^2.14.0",
+    "ask-sdk-express-adapter": "^2.14.0",
+    "better-sqlite3": "^9.4.3",
+    "express": "^4.18.3",
+    "multer": "^2.0.0",
+    "nodemailer": "^6.9.13",
+    "ws": "^8.16.0"
+  }
+}
