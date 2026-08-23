@@ -5740,6 +5740,7 @@ function wireMiniCalNav() {
 let editModeActive = false;
 let _editIconHideTimer = null;
 let _editModeHaPollTimer = null;
+let _editModeEventsPollTimer = null;
 function wireDirectEditMode() {
   if (IS_PREVIEW && !ALLOW_EDIT_IN_PREVIEW) return;
   if (document.body._editModeWired) return; // wire the tap-to-reveal listener exactly once, ever
@@ -5787,6 +5788,21 @@ function enterEditMode() {
       if (await fetchHaEntities()) renderLayout();
     }, 8_000);
   }
+  // Same reasoning, same interval, for calendar events: feed opacity, source
+  // filters, and other calendar-widget settings are edited from the app while
+  // someone is often standing right at the display watching for it to land.
+  // Tiers 2 (per-feed) and 3 (master default) of the opacity system already
+  // push an 'events' broadcast over SSE on save, so this is a backstop for a
+  // missed/delayed push, not the primary path — same relationship this fast
+  // poll already has with HA's own SSE-adjacent update flow above.
+  // fetchEvents() is cheap (recent-range query only), so this costs nothing
+  // extra beyond one more request every 8s while Live Edit is open.
+  if (!_editModeEventsPollTimer) {
+    _editModeEventsPollTimer = setInterval(async () => {
+      await fetchEvents();
+      renderLayout();
+    }, 8_000);
+  }
 }
 function exitEditMode() {
   editModeActive = false;
@@ -5796,6 +5812,7 @@ function exitEditMode() {
   closeWidgetPicker();
   cancelPlacementMode();
   if (_editModeHaPollTimer) { clearInterval(_editModeHaPollTimer); _editModeHaPollTimer = null; }
+  if (_editModeEventsPollTimer) { clearInterval(_editModeEventsPollTimer); _editModeEventsPollTimer = null; }
 }
 function wireWidgetDragging() {
   document.querySelectorAll('#canvas .widget').forEach(el => {
