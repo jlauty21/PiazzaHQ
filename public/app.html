@@ -8897,10 +8897,18 @@ async function drawWidgetSettingsPanel() {
         <input type="checkbox" id="show-multiday-toggle" ${w.showMultiDay !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
       <div class="settings-row">
-        <label>Per-Feed Opacity (this display only)</label>
-        <p style="font-size:11px;color:var(--muted);margin:-2px 0 8px">Override a calendar's opacity for just this widget, without changing its global default in Calendar Feeds.</p>
-        <div id="feed-opacity-override-list" style="display:flex;flex-direction:column;gap:10px">
-          <div style="font-size:12px;color:var(--muted)">Loading calendars…</div>
+        <div class="acc-section" data-acc="fop">
+          <button class="acc-head" data-acc-toggle="fop" type="button">
+            <span class="acc-ic">🎨</span>
+            <span class="acc-text"><span class="acc-label">Per-Feed Opacity</span><span class="acc-sub">this display only</span></span>
+            <span class="acc-caret">▸</span>
+          </button>
+          <div class="acc-body" data-acc-body="fop" style="display:none">
+            <p style="font-size:11px;color:var(--muted);margin:0 0 8px">Override a calendar's opacity for just this widget, without changing its global default in Calendar Feeds.</p>
+            <div id="feed-opacity-override-list" style="display:flex;flex-direction:column;gap:10px">
+              <div style="font-size:12px;color:var(--muted)">Loading calendars…</div>
+            </div>
+          </div>
         </div>
       </div>
     `;
@@ -10167,6 +10175,20 @@ async function drawWidgetSettingsPanel() {
     $('show-multiday-toggle').addEventListener('change', (e) => {
       w.showMultiDay = e.target.checked;
     });
+    // Per-Feed Opacity accordion — standalone single section (not part of a
+    // grouped accordion like Displays/Settings), so just a plain open/close
+    // toggle rather than wireAccordion()'s collapse-the-other-sections behavior.
+    const fopToggle = document.querySelector('[data-acc-toggle="fop"]');
+    if (fopToggle) {
+      fopToggle.addEventListener('click', () => {
+        const sec = fopToggle.closest('.acc-section');
+        const body = sec.querySelector(':scope > .acc-body');
+        const caret = fopToggle.querySelector('.acc-caret');
+        const isOpen = sec.classList.toggle('open');
+        body.style.display = isOpen ? '' : 'none';
+        caret.textContent = isOpen ? '▾' : '▸';
+      });
+    }
   }
 
   $('layer-front-btn').addEventListener('click', () => { bringToFront(w); });

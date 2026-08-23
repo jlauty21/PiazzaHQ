@@ -3410,6 +3410,16 @@ app.put('/api/settings', (req, res) => {
   }
   const rows = db.prepare(`SELECT key, value FROM settings`).all();
   broadcastUpdate('settings');
+  // feed_default_opacity (the master opacity slider, tier 3 of the calendar-feed
+  // opacity resolution — see resolveEventOpacity()) is baked into each event's
+  // color_opacity server-side, not read live off state.settings by the client.
+  // The 'settings' topic above doesn't trigger a fetchEvents() on the display
+  // (it fires for many unrelated settings changes and would be wasteful if it
+  // did), so without this, a master-opacity change would silently sit until
+  // the 5-minute polling fallback caught up — unlike the per-feed (tier 2) and
+  // per-widget (tier 1) sliders, which already broadcast 'events' on save via
+  // PUT /api/feeds/:id and feel instant. This closes that gap.
+  if ('feed_default_opacity' in req.body) broadcastUpdate('events');
   res.json(Object.fromEntries(rows.map(r => [r.key, r.value])));
 });
 
