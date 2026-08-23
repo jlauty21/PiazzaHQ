@@ -3410,16 +3410,29 @@ app.put('/api/settings', (req, res) => {
   }
   const rows = db.prepare(`SELECT key, value FROM settings`).all();
   broadcastUpdate('settings');
-  // feed_default_opacity (the master opacity slider, tier 3 of the calendar-feed
-  // opacity resolution — see resolveEventOpacity()) is baked into each event's
-  // color_opacity server-side, not read live off state.settings by the client.
+  // 'feed_default_opacity' is baked into each event's color_opacity server-side
+  // (see resolveEventOpacity()), not read live off state.settings by the client.
   // The 'settings' topic above doesn't trigger a fetchEvents() on the display
   // (it fires for many unrelated settings changes and would be wasteful if it
   // did), so without this, a master-opacity change would silently sit until
   // the 5-minute polling fallback caught up — unlike the per-feed (tier 2) and
   // per-widget (tier 1) sliders, which already broadcast 'events' on save via
   // PUT /api/feeds/:id and feel instant. This closes that gap.
-  if ('feed_default_opacity' in req.body) broadcastUpdate('events');
+  if ('feed_default_opacity' in req.body) {
+    broadcastUpdate('events');
+    // broadcastUpdate() above only reaches THIS device's own connected SSE
+    // clients — on a multi-screen setup, a slave display is running its own
+    // separate server.js and only learns about this change by polling this
+    // (the host's) /api/sync/ping. That poll normally runs every 15s (SLOW),
+    // dropping to 1.5s (FAST) only while markHostEditing() has marked the
+    // host as actively being edited — previously only PUT /api/layouts/:orientation
+    // did this, so a master-opacity change reached a slave's own display up
+    // to 15s later than a layout change would, even though HOST_DATA_VERSION
+    // (and therefore the slave's "something changed, pull now" detection)
+    // was already bumped correctly regardless. Same fix applied to
+    // PUT /api/feeds/:id below, for tier 2.
+    markHostEditing();
+  }
   res.json(Object.fromEntries(rows.map(r => [r.key, r.value])));
 });
 
@@ -5259,6 +5272,12 @@ app.put('/api/feeds/:id', async (req, res) => {
 
   broadcastUpdate('feeds');
   broadcastUpdate('events');
+  // Same reasoning as the master-opacity fix in PUT /api/settings above: this
+  // broadcastUpdate() only reaches SSE clients on THIS device. A feed edit
+  // (opacity, color, "use global default," etc.) previously didn't mark the
+  // host as actively being edited, so a slave display picked it up on its
+  // normal 15s poll rather than the 1.5s fast one layout saves already get.
+  markHostEditing();
   res.json({ ...db.prepare(`SELECT * FROM ical_feeds WHERE id = ?`).get(req.params.id), sync_warning });
 });
 
