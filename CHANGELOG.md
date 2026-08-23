@@ -4,6 +4,21 @@ All notable changes to Piazza HQ (formerly Pi Calendar). The central server
 reads the top matching section here to pre-fill release notes when you
 publish a build.
 
+## 1.81.8-beta.3
+- **Documentation fix: `README.md` never actually documented the real
+  one-line install** (`curl -sSL https://piazzahq.com/install | bash`),
+  even though it's real, works today, and is what `install.sh`'s own
+  comment already referenced as if it existed in the README. What the
+  README called "Automated install (recommended for a new Pi)" still
+  required the project files to already be on the Pi somehow first — it
+  automated everything *after* that point, not the actual zero-to-running
+  path. Added a real "Quick install" section at the very top, describing
+  exactly what `bootstrap-install.sh` (on the mothership) does: fetch the
+  latest release, verify its checksum, unpack it, and hand off to the
+  bundled `install.sh` for the rest. Relabeled the old section
+  accordingly, since it's genuinely the second option now, not the
+  primary one for a brand-new Pi.
+
 ## 1.81.8-beta.2
 - **New: an updated, corrected `LICENSE`** — free license key for personal
   use (no subscription, no cost, ever), commercial/company/organizational

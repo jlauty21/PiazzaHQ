@@ -9,6 +9,42 @@ A self-hosted always-on calendar display for Raspberry Pi, controlled from any b
 
 ---
 
+## Quick install (recommended)
+
+On a fresh Raspberry Pi, connected to the internet, run this one line:
+
+```bash
+curl -sSL https://piazzahq.com/install | bash
+```
+
+That's it — no manual steps before it, nothing to download or copy over
+yourself first. It fetches the latest release directly, verifies it, unpacks
+it to `~/piazzahq`, and hands off to the setup below automatically (Node.js,
+system packages, the systemd service, and kiosk autostart all get configured
+for you). Reboot when it finishes and the display comes up on its own.
+
+This is a **fresh-install-only** command — it deliberately refuses to run
+again if `~/piazzahq` already exists, so it can never overwrite real data
+(your database, uploaded photos) on a device that's already set up. Already
+running Piazza HQ and just want the latest version? Use **Settings →
+Software Update** in the app itself instead — that's the safe way to update
+an existing install, not this command.
+
+If setup gets interrupted partway through (e.g. lost network mid-install)
+and `~/piazzahq` exists but the app isn't actually running yet, pick up
+right where it left off with:
+
+```bash
+bash ~/piazzahq/install.sh
+```
+
+Prefer to see every step yourself, or don't have a fresh internet-connected
+Pi to run the one-liner on (copying the project over by hand — USB, `scp`,
+`git clone`)? Everything below covers the same setup manually, plus the
+`install.sh` script this quick path itself hands off to.
+
+---
+
 ## Setup on Raspberry Pi
 
 ### 1. Install Node.js
@@ -105,9 +141,11 @@ Weather is provided free by [Open-Meteo](https://open-meteo.com/) — no API key
 
 ---
 
-## Automated install (recommended for a new Pi)
+## Already have the files? Run `install.sh` directly
 
-Instead of running the setup steps by hand, use the included `install.sh`. It's
+If you got the project onto the Pi some other way (USB, `scp`, `git clone`,
+or the "Quick install" section above already unpacked it for you), use the
+included `install.sh` instead of doing the manual steps below by hand. It's
 **safe to run on a fresh Pi or to re-run on an existing one** — it installs only
 what's missing and never touches your data or existing configuration.
 
