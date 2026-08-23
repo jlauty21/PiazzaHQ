@@ -4279,6 +4279,47 @@ function eventPillColor(e, widget) {
   return hexWithOpacity(hex, opacity);
 }
 
+// Chalkboard's own CSS (body[data-theme="chalkboard"] .mc-ev-pill) forces the
+// full-day pill's background fully transparent, !important — a deliberate
+// legibility choice for that theme's hand-drawn look. But it meant NONE of
+// the three opacity tiers (widget override / per-feed / master default) ever
+// painted anything on the pill: every event looked identical under
+// chalkboard regardless of opacity setting, which read as "opacity doesn't
+// work" even though eventPillColor() above was resolving it correctly the
+// whole time — confirmed by the real report this was built to fix.
+// Recomputes the SAME already-resolved color+opacity from eventPillColor(),
+// but capped to a low max alpha instead of zero, so different opacity
+// settings stay visibly different without getting bright enough to hurt the
+// legibility that rule exists to protect. Only called for the 'highlight'
+// pill style specifically — the 'dot' full-day style and every other
+// calendar-color call site (Mini Calendar's own dots, Agenda/Upcoming/Today,
+// the ongoing strip, multi-day bars/stripe/line) were never touched by that
+// CSS rule and already worked correctly under any theme.
+// inline !important is required to beat the stylesheet rule's own
+// !important — among tied !important declarations, inline wins on
+// specificity, so this is the one legitimate use of !important in an
+// inline style anywhere in this file.
+const CHALKBOARD_PILL_MAX_ALPHA = 0.35;
+function eventPillBackgroundStyle(e, widget) {
+  const color = eventPillColor(e, widget);
+  if (document.body.dataset.theme !== 'chalkboard') return `background:${color}`;
+  let r = 74, g = 144, b = 217, a = 1; // fallback: the same default blue eventPillColor() itself falls back to
+  const rgbaMatch = /rgba?\(([^)]+)\)/.exec(color);
+  if (rgbaMatch) {
+    const parts = rgbaMatch[1].split(',').map(s => parseFloat(s));
+    if (parts.length >= 3) { [r, g, b] = parts; if (parts.length > 3) a = parts[3]; }
+  } else {
+    const hexMatch = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color || '');
+    if (hexMatch) {
+      let h = hexMatch[1];
+      if (h.length === 3) h = h.split('').map(c => c + c).join('');
+      r = parseInt(h.slice(0, 2), 16); g = parseInt(h.slice(2, 4), 16); b = parseInt(h.slice(4, 6), 16);
+    }
+  }
+  const cappedAlpha = Math.max(0, Math.min(1, a)) * CHALKBOARD_PILL_MAX_ALPHA;
+  return `background:rgba(${r}, ${g}, ${b}, ${cappedAlpha.toFixed(3)}) !important`;
+}
+
 // Returns a source identifier for an event: 'local' for manually-added events,
 // or the iCal feed's id for subscribed-calendar events.
 function eventSourceId(e) {
@@ -4729,13 +4770,15 @@ function renderMiniCalGrid(widget) {
       }
       // 'highlight' (default): colored pill background — PLUS an inner dot
       // unconditionally, not just when a theme happens to render it well.
-      // Some themes (chalkboard, currently) force the pill's background
-      // transparent for legibility reasons of their own and never provide
-      // any substitute, which left full-day events with literally no way to
-      // tell which calendar they came from just by looking — this dot is
-      // that substitute, present regardless of theme, closing that gap for
-      // chalkboard today and any future theme that does the same thing.
-      return `<div class="mc-ev-pill" style="background:${eventPillColor(e, widget)}"><span class="mc-ev-dot mc-ev-pill-dot" style="background:${eventPillColor(e, widget)}"></span>${prefix}${e.title}</div>`;
+      // The dot is a substitute color indicator for chalkboard (see
+      // eventPillBackgroundStyle()'s own comment) — that theme's stylesheet
+      // forces the pill's OWN background transparent for legibility, so
+      // without the dot, full-day events would have no way at all to show
+      // which calendar they came from. eventPillBackgroundStyle() now also
+      // lets the pill itself show a legibility-capped tint of the same
+      // opacity-resolved color under chalkboard, so the dot isn't the only
+      // place the three opacity tiers are visible there anymore.
+      return `<div class="mc-ev-pill" style="${eventPillBackgroundStyle(e, widget)}"><span class="mc-ev-dot mc-ev-pill-dot" style="background:${eventPillColor(e, widget)}"></span>${prefix}${e.title}</div>`;
     }).join('');
     const moreHtml = moreCount > 0 ? `<div class="mc-ev-more" data-base-more="${moreCount}">+${moreCount} more</div>` : `<div class="mc-ev-more" data-base-more="0" style="display:none"></div>`;
 
