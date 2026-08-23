@@ -4228,14 +4228,149 @@ function renderWeatherHourly(widget) {
 
 // Color palette for event pills (cycles per-event so different events are visually distinct,
 // but falls back to the event's own color if it has one assigned)
-function eventPillColor(e) {
-  return e.color || '#4A90D9';
+// Converts a hex color (#rgb or #rrggbb) + this event's feed's opacity
+// (0-100; undefined/100 = fully opaque) into whatever CSS color value is
+// actually needed — the hex string unchanged when fully opaque (the
+// overwhelmingly common case, and every existing call site already
+// expects a plain hex/CSS-color string), or an rgba() string once the
+// feed's opacity has been turned down. Only iCal feeds carry
+// color_opacity at all (see the PUT /api/feeds/:id endpoint and the two
+// SQL queries that attach it to each ical-sourced event) — local
+// (manually-added) events never have this field, so they're completely
+// unaffected regardless, exactly matching the request's own scope
+// ("calendar feeds," not events in general). One function, every call
+// site (Mini Calendar dots, Agenda/Upcoming/Today background tints, and
+// anything added later) automatically gets this — nothing else needed
+// to change.
+// hex + opacity (0-100) -> whatever CSS color value is actually needed —
+// the hex unchanged when fully opaque (the common case), an rgba() string
+// once opacity drops below 100. Shared by eventPillColor() below and
+// anywhere else that needs this same conversion.
+function hexWithOpacity(hex, opacity) {
+  if (opacity === undefined || opacity === null || opacity >= 100) return hex;
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return hex; // not a recognizable hex color — fall back rather than risk an invalid rgba()
+  let h = m[1];
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(100, opacity)) / 100})`;
+}
+
+// This event's color, with opacity applied — only iCal feeds carry
+// opacity at all (local/manually-added events never have color_opacity,
+// so they're always rendered at full strength regardless of widget).
+// Opacity resolves in two tiers, same pattern as every other global-
+// setting-plus-per-widget-override in this app: a WIDGET can override a
+// specific feed's opacity for itself alone (widget.feedOpacityOverride,
+// an {feedId: percentage} map — set from that widget's own settings
+// panel, see renderCalendarAdvancedSettings and friends), falling back to
+// the feed's own global default (e.color_opacity, set from the Calendar
+// Feeds section) when this widget has no override for that particular
+// feed. Different displays showing the same feed can therefore genuinely
+// disagree about how loud that calendar looks, without needing to change
+// the feed's own global setting (which every OTHER widget/display still
+// reads from by default).
+function eventPillColor(e, widget) {
+  const hex = e.color || '#4A90D9';
+  const override = widget && widget.feedOpacityOverride && e.feed_id != null
+    ? widget.feedOpacityOverride[e.feed_id]
+    : undefined;
+  const opacity = (override !== undefined && override !== null) ? override : e.color_opacity;
+  return hexWithOpacity(hex, opacity);
 }
 
 // Returns a source identifier for an event: 'local' for manually-added events,
 // or the iCal feed's id for subscribed-calendar events.
 function eventSourceId(e) {
   return e.source === 'ical' ? ('feed:' + e.feed_id) : 'local';
+}
+
+// Distinct list of subscribed iCal feeds currently visible in state.events —
+// derived from events already in memory (each carries feed_id/feed_name/
+// color/color_opacity, see the SELECT in server.js's /api/events) rather
+// than a separate fetch just for this. Used only by the per-widget feed-
+// opacity-override settings section below; if a feed has no events in the
+// currently-loaded window it simply won't appear here until it does — an
+// acceptable tradeoff for a settings-panel convenience list, not something
+// that affects actual rendering anywhere.
+function distinctFeedsFromEvents() {
+  const byId = new Map();
+  (state.events || []).forEach(e => {
+    if (e.source !== 'ical' || e.feed_id == null || byId.has(e.feed_id)) return;
+    byId.set(e.feed_id, { id: e.feed_id, name: e.feed_name || `Feed ${e.feed_id}`, color: e.color || '#4A90D9', color_opacity: e.color_opacity ?? 100 });
+  });
+  return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// ── Per-widget feed opacity override — shared by every widget type that
+// shows a feed's color (Mini Calendar, Agenda, Upcoming, Today). One
+// render+wire pair here rather than duplicating this section four times;
+// each widget's own settings function just calls these two with itself.
+// Data shape: widget.feedOpacityOverride = { [feedId]: percentage }. A
+// feed absent from this map falls back to its own global opacity (set in
+// the Calendar Feeds section) — see eventPillColor()'s own doc comment
+// for the full two-tier resolution.
+function renderFeedOpacityOverrideSection(w) {
+  const feeds = distinctFeedsFromEvents();
+  if (!feeds.length) return '';
+  const overrides = w.feedOpacityOverride || {};
+  return `
+    <div class="was-section-label">🎨 Per-Feed Opacity (this display only)</div>
+    <p style="font-size:11px;color:rgba(255,255,255,0.5);margin:-4px 0 10px">Override a calendar's opacity for just this widget, without changing its global default in Calendar Feeds.</p>
+    ${feeds.map(f => {
+      const hasOverride = overrides[f.id] !== undefined && overrides[f.id] !== null;
+      const val = hasOverride ? overrides[f.id] : f.color_opacity;
+      return `
+      <div class="was-row fop-row" data-feed-id="${f.id}" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <label style="margin-bottom:0;display:flex;align-items:center;gap:8px">
+            <span style="width:10px;height:10px;border-radius:50%;background:${f.color};display:inline-block;flex-shrink:0"></span>
+            ${escapeHtmlD(f.name)}
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:rgba(255,255,255,0.55);cursor:pointer">
+            Override
+            <input type="checkbox" class="fop-toggle" data-feed-id="${f.id}" ${hasOverride?'checked':''} style="width:16px;height:16px;accent-color:var(--accent)">
+          </label>
+        </div>
+        <div class="was-range-row fop-slider-row" style="${hasOverride?'':'display:none'}">
+          <input type="range" class="fop-slider" data-feed-id="${f.id}" min="10" max="100" step="5" value="${val}">
+          <span class="was-range-val fop-slider-val" data-feed-id="${f.id}">${val}%</span>
+        </div>
+      </div>`;
+    }).join('')}
+  `;
+}
+function wireFeedOpacityOverrideSection(w) {
+  document.querySelectorAll('.fop-toggle').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      const feedId = e.target.dataset.feedId;
+      const row = document.querySelector(`.fop-row[data-feed-id="${feedId}"]`);
+      const sliderRow = row ? row.querySelector('.fop-slider-row') : null;
+      w.feedOpacityOverride = w.feedOpacityOverride || {};
+      if (e.target.checked) {
+        if (sliderRow) sliderRow.style.display = '';
+        const slider = row.querySelector('.fop-slider');
+        w.feedOpacityOverride[feedId] = parseInt(slider.value, 10);
+      } else {
+        if (sliderRow) sliderRow.style.display = 'none';
+        delete w.feedOpacityOverride[feedId];
+      }
+      rerenderSingleWidget(w.id);
+      scheduleLayoutSave();
+    });
+  });
+  document.querySelectorAll('.fop-slider').forEach(slider => {
+    slider.addEventListener('input', (e) => {
+      const feedId = e.target.dataset.feedId;
+      const val = parseInt(e.target.value, 10);
+      w.feedOpacityOverride = w.feedOpacityOverride || {};
+      w.feedOpacityOverride[feedId] = val;
+      const label = document.querySelector(`.fop-slider-val[data-feed-id="${feedId}"]`);
+      if (label) label.textContent = val + '%';
+      rerenderSingleWidget(w.id);
+      scheduleLayoutSave();
+    });
+  });
 }
 
 // Applies a widget's content filters (which calendars to show, whether to include
@@ -4447,7 +4582,7 @@ function renderMiniCalGrid(widget) {
           grid-row: ${week + 1};
           grid-column: ${bar.startCol + 1} / span ${bar.span};
           margin-top: calc(var(--cal-font) * 2 + 5px + ${bar.lane} * (var(--cal-font) * 1.5 + 2px));
-          background:${eventPillColor(bar.event)};
+          background:${eventPillColor(bar.event, widget)};
         ">${bar.event.title}</div>
       `)
   ).join('');
@@ -4570,7 +4705,7 @@ function renderMiniCalGrid(widget) {
         const colorTimed = e.color_timed === undefined ? true : e.color_timed !== 0;
         const marker = !colorCodingOn ? '' : decorIcon
           ? `<span class="mc-ev-decor-icon">${decorIcon}</span>`
-          : (colorTimed ? `<span class="mc-ev-dot" style="background:${eventPillColor(e)}"></span>` : '');
+          : (colorTimed ? `<span class="mc-ev-dot" style="background:${eventPillColor(e, widget)}"></span>` : '');
         // calShowEndTime: "9:00–10:00" instead of just "9:00" — off by default
         // since Grid cells are already tight on space; only applies to timed,
         // single-day events (an all-day/multi-day event never reaches this
@@ -4590,7 +4725,7 @@ function renderMiniCalGrid(widget) {
       }
       if (fullDayDotStyle) {
         // 'dot' style: same row shape a timed event uses, no highlight.
-        return `<div class="mc-ev-text"><span class="mc-ev-dot" style="background:${eventPillColor(e)}"></span>${prefix}${e.title}</div>`;
+        return `<div class="mc-ev-text"><span class="mc-ev-dot" style="background:${eventPillColor(e, widget)}"></span>${prefix}${e.title}</div>`;
       }
       // 'highlight' (default): colored pill background — PLUS an inner dot
       // unconditionally, not just when a theme happens to render it well.
@@ -4600,7 +4735,7 @@ function renderMiniCalGrid(widget) {
       // tell which calendar they came from just by looking — this dot is
       // that substitute, present regardless of theme, closing that gap for
       // chalkboard today and any future theme that does the same thing.
-      return `<div class="mc-ev-pill" style="background:${eventPillColor(e)}"><span class="mc-ev-dot mc-ev-pill-dot" style="background:${eventPillColor(e)}"></span>${prefix}${e.title}</div>`;
+      return `<div class="mc-ev-pill" style="background:${eventPillColor(e, widget)}"><span class="mc-ev-dot mc-ev-pill-dot" style="background:${eventPillColor(e, widget)}"></span>${prefix}${e.title}</div>`;
     }).join('');
     const moreHtml = moreCount > 0 ? `<div class="mc-ev-more" data-base-more="${moreCount}">+${moreCount} more</div>` : `<div class="mc-ev-more" data-base-more="0" style="display:none"></div>`;
 
@@ -4612,7 +4747,7 @@ function renderMiniCalGrid(widget) {
     // fairly rare in practice: two DIFFERENT multi-day trips/visits actually
     // overlapping on the same days).
     const stripeStyle = (multiDayStyle === 'stripe' && spanTouches.length)
-      ? `border-left:3px solid ${eventPillColor(spanTouches[0].event)};padding-left:6px`
+      ? `border-left:3px solid ${eventPillColor(spanTouches[0].event, widget)};padding-left:6px`
       : '';
     // Previously the stripe was the ONLY identifying mark of a multi-day
     // event — a colored border with no title anywhere, on any day,
@@ -4624,7 +4759,7 @@ function renderMiniCalGrid(widget) {
     // only showing the first event's color when multiple overlap.
     const stripeStartTouch = multiDayStyle === 'stripe' ? spanTouches.find(t => t.isStart) : null;
     const stripeLabelHtml = stripeStartTouch
-      ? `<div class="mc-stripe-label" style="color:${eventPillColor(stripeStartTouch.event)}">${stripeStartTouch.event.title}</div>`
+      ? `<div class="mc-stripe-label" style="color:${eventPillColor(stripeStartTouch.event, widget)}">${stripeStartTouch.event.title}</div>`
       : '';
     // 'line': a thin colored underline for every day the event touches, with
     // the name printed only on its actual start day — keeps the "this is one
@@ -4632,7 +4767,7 @@ function renderMiniCalGrid(widget) {
     // the bar style does. Multiple overlapping events stack additional lines
     // upward from the bottom edge.
     const lineHtml = multiDayStyle === 'line' ? spanTouches.map((t, idx) => `
-      <div class="mc-multi-line" style="bottom:calc(2px + ${idx} * 5px);background:${eventPillColor(t.event)};
+      <div class="mc-multi-line" style="bottom:calc(2px + ${idx} * 5px);background:${eventPillColor(t.event, widget)};
         ${t.isStart ? 'border-radius:2px 0 0 2px' : ''}${t.isEnd ? (t.isStart ? '' : 'border-radius:0 2px 2px 0') : ''}"></div>
       ${t.isStart ? `<div class="mc-multi-line-label" style="bottom:calc(5px + ${idx} * 5px)">${t.event.title}</div>` : ''}
     `).join('') : '';
@@ -4755,7 +4890,7 @@ function renderMiniCalAgenda(widget) {
         ? `<span class="ag-title" style="white-space:normal">${e.title}</span>`
         : `<span class="ag-title">${e.title}</span>`;
       return `<div class="ag-ev">
-        ${colorCodingOn ? `<div class="ag-dot" style="background:${eventPillColor(e)}"></div>` : ''}
+        ${colorCodingOn ? `<div class="ag-dot" style="background:${eventPillColor(e, widget)}"></div>` : ''}
         <div class="ag-time">${timeLabel}</div>
         ${titleHtml}
       </div>`;
@@ -4806,7 +4941,7 @@ function renderMiniCalStrip(widget) {
     const ds = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
     const isToday = ds === today;
     const evs = (eventsByDate[ds] || []).slice(0, 3);
-    const dotsHtml = colorCodingOn ? evs.map(e => `<span class="st-dot" style="background:${eventPillColor(e)}"></span>`).join('') : '';
+    const dotsHtml = colorCodingOn ? evs.map(e => `<span class="st-dot" style="background:${eventPillColor(e, widget)}"></span>`).join('') : '';
     return `<div class="st-cell${isToday?' today':''}">
       <div class="st-dayname">${isToday?'Today':DAYS_S[d.getDay()]}</div>
       <div class="st-daynum">${d.getDate()}</div>
@@ -4830,7 +4965,7 @@ function renderMiniCalStrip(widget) {
 // is selected. Keeping this shared means List/Cards/Compact behave identically
 // for both widgets — same field visibility rules, same data, just different markup.
 function buildEventRow(e, opts) {
-  const { layoutMode, showTime, showSource, showNotes, todayStr: today, dateBadge, dateFormat, ampmCaseOverride } = opts;
+  const { layoutMode, showTime, showSource, showNotes, todayStr: today, dateBadge, dateFormat, ampmCaseOverride, widget } = opts;
   const feedLabel = (showSource && e.feed_name)
     ? `<span class="ev-source">${e.feed_name}</span>` : '';
   const isMultiDay = e.end_date && e.end_date > e.date;
@@ -4846,7 +4981,7 @@ function buildEventRow(e, opts) {
   })() : '';
 
   if (layoutMode === 'cards') {
-    return `<div class="ev-card" style="border-left-color:${e.color}">
+    return `<div class="ev-card" style="border-left-color:${eventPillColor(e, widget)}">
       ${dateBadgeHtml}
       <div class="ev-card-body">
         <div class="ev-title">${e.title}</div>
@@ -4858,7 +4993,7 @@ function buildEventRow(e, opts) {
 
   if (layoutMode === 'compact') {
     return `<div class="ev-compact">
-      <div class="ev-compact-dot" style="background:${e.color}"></div>
+      <div class="ev-compact-dot" style="background:${eventPillColor(e, widget)}"></div>
       ${timeLabel ? `<div class="ev-compact-time">${timeLabel}</div>` : ''}
       <div class="ev-compact-title">${e.title}</div>
       ${feedLabel}
@@ -4868,7 +5003,7 @@ function buildEventRow(e, opts) {
   // 'list' — original style
   return `<div class="ev">
     ${dateBadgeHtml}
-    <div class="ev-bar" style="background:${e.color}"></div>
+    <div class="ev-bar" style="background:${eventPillColor(e, widget)}"></div>
     <div class="ev-body">
       <div class="ev-title">${e.title}</div>
       ${(feedLabel || timeLabel) ? `<div class="ev-time">${feedLabel}${timeLabel}</div>` : ''}
@@ -4887,7 +5022,7 @@ function buildEventRow(e, opts) {
 // context into its own line instead. Opt-in per widget (agShowOngoing/
 // tdShowOngoing) — off by default so this doesn't change how an existing
 // widget looks without the person choosing it.
-function buildOngoingStripHtml(events, today, lookaheadDays) {
+function buildOngoingStripHtml(events, today, lookaheadDays, widget) {
   const multiDay = events.filter(e => e.end_date && e.end_date > e.date);
   const relevant = multiDay.filter(e => {
     const isActive = e.date <= today && e.end_date >= today;
@@ -4912,7 +5047,7 @@ function buildOngoingStripHtml(events, today, lookaheadDays) {
       statusText = daysUntil === 1 ? `starts tomorrow, ${totalDays} ${dayWord}` : `starts in ${daysUntil} days, ${totalDays} ${dayWord}`;
     }
     return `<div class="ag-ongoing-row">
-      <span class="ag-ongoing-dot" style="background:${eventPillColor(e)}"></span>
+      <span class="ag-ongoing-dot" style="background:${eventPillColor(e, widget)}"></span>
       <span class="ag-ongoing-title">${e.title}</span>
       <span class="ag-ongoing-status">${statusText}</span>
     </div>`;
@@ -4992,7 +5127,7 @@ function renderAgenda(widget) {
       </div>`).join('');
     const rows = groups[d].map(e => buildEventRow(e, {
       layoutMode, showTime, showSource, showNotes, todayStr: today, dateBadge: false, dateFormat,
-      ampmCaseOverride: widget && widget.agAmpmCase,
+      ampmCaseOverride: widget && widget.agAmpmCase, widget,
     })).join('');
     return `<div class="ag2-group">
       <div class="ag2-day-label${d===today?' today':''}">${label}</div>
@@ -5001,7 +5136,7 @@ function renderAgenda(widget) {
     </div>`;
   }).join('');
 
-  const ongoingHtml = (widget && widget.agShowOngoing) ? buildOngoingStripHtml(inWindow, today, 3) : '';
+  const ongoingHtml = (widget && widget.agShowOngoing) ? buildOngoingStripHtml(inWindow, today, 3, widget) : '';
   return `<div class="w-agenda w-agenda-${layoutMode}" style="--ag-font:calc(${fontPx}px * var(--ui-scale,1))">${ongoingHtml}${html}</div>`;
 }
 
@@ -5039,7 +5174,7 @@ function renderUpcoming(widget) {
   if(!future.length) return `<div class="w-upcoming"><div class="no-data">No upcoming events</div></div>`;
   const items = future.map(e => buildEventRow(e, {
     layoutMode, showTime, showSource, showNotes, todayStr: today, dateBadge: true, dateFormat,
-    ampmCaseOverride: widget && widget.upAmpmCase,
+    ampmCaseOverride: widget && widget.upAmpmCase, widget,
   })).join('');
   return `<div class="w-upcoming w-upcoming-${layoutMode}" style="--up-font:calc(${fontPx}px * var(--ui-scale,1))">${items}</div>`;
 }
@@ -5059,9 +5194,9 @@ function renderToday(widget) {
   if(!evs.length) return `<div class="w-today"><div class="td-label">Today</div><div class="no-data">Nothing scheduled</div></div>`;
   const items = evs.map(e => buildEventRow(e, {
     layoutMode, showTime, showSource, showNotes, todayStr: today, dateBadge: false, dateFormat,
-    ampmCaseOverride: widget && widget.tdAmpmCase,
+    ampmCaseOverride: widget && widget.tdAmpmCase, widget,
   })).join('');
-  const ongoingHtml = (widget && widget.tdShowOngoing) ? buildOngoingStripHtml(filtered, today, 2) : '';
+  const ongoingHtml = (widget && widget.tdShowOngoing) ? buildOngoingStripHtml(filtered, today, 2, widget) : '';
   return `<div class="w-today w-today-${layoutMode}" style="--td-font:calc(${fontPx}px * var(--ui-scale,1))"><div class="td-label">Today</div>${ongoingHtml}${items}</div>`;
 }
 
@@ -7410,9 +7545,11 @@ function renderCalendarAdvancedSettings(w) {
         <span class="was-range-val" id="cal-font-val">${fontPx}px</span>
       </div>
     </div>
+    ${renderFeedOpacityOverrideSection(w)}
   `;
 }
 function wireCalendarAdvancedSettings(w) {
+  wireFeedOpacityOverrideSection(w);
   const onLiveField = (id, evt, apply) => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -9882,9 +10019,11 @@ function renderUpcomingAdvancedSettings(w) {
     </div>
     ${dateFormatOverrideRowHtml('up-date-format-select', w.upDateFormat)}
     ${ampmCaseOverrideRowHtml('up-ampm-case-select', w.upAmpmCase)}
+    ${renderFeedOpacityOverrideSection(w)}
   `;
 }
 function wireUpcomingAdvancedSettings(w) {
+  wireFeedOpacityOverrideSection(w);
   const layoutSel = document.getElementById('up-layout-select');
   if (layoutSel) layoutSel.addEventListener('change', (e) => { w.upLayout = e.target.value; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
   const fontRange = document.getElementById('up-font-range');
@@ -9939,9 +10078,11 @@ function renderTodayAdvancedSettings(w) {
     </div>
     ${dateFormatOverrideRowHtml('td2-date-format-select', w.tdDateFormat)}
     ${ampmCaseOverrideRowHtml('td2-ampm-case-select', w.tdAmpmCase)}
+    ${renderFeedOpacityOverrideSection(w)}
   `;
 }
 function wireTodayAdvancedSettings(w) {
+  wireFeedOpacityOverrideSection(w);
   // Prefixed td2- (not td-) so these element ids can never collide with the
   // To-Do List widget's own td- prefixed fields — both this Today panel and
   // that one only ever exist one-at-a-time in the shared #widget-advanced-panel
@@ -10016,9 +10157,11 @@ function renderAgendaWidgetAdvancedSettings(w) {
     </div>
     ${dateFormatOverrideRowHtml('ag2-date-format-select', w.agDateFormat)}
     ${ampmCaseOverrideRowHtml('ag2-ampm-case-select', w.agAmpmCase)}
+    ${renderFeedOpacityOverrideSection(w)}
   `;
 }
 function wireAgendaWidgetAdvancedSettings(w) {
+  wireFeedOpacityOverrideSection(w);
   // Prefixed ag2- (not ag-) for the same reason td2- avoids todo's td- prefix
   // — this Agenda WIDGET's settings live in the same shared panel as the
   // Calendar widget's own agenda LAYOUT MODE settings (a `calLayout: 'agenda'`

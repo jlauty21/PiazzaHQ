@@ -3957,8 +3957,20 @@ function renderEventsList() {
 // ── Calendars ─────────────────────────────────────────────────────────────────
 async function renderCalendarsSubTab() {
   const feeds = await apiFetch('/api/feeds');
+  const settings = await apiFetch('/api/settings');
+  const masterOpacity = parseInt(settings.feed_default_opacity, 10) || 100;
 
   let html = `
+    <div class="settings-card" style="margin-bottom:16px">
+      <div class="settings-row" style="margin-bottom:0">
+        <label>Master Opacity</label>
+        <p style="font-size:11px;color:var(--muted);margin:-2px 0 8px">Applies to every calendar below, unless a specific one has its own "Use global default" turned off.</p>
+        <div class="range-row">
+          <input type="range" id="feed-master-opacity" min="10" max="100" step="5" value="${masterOpacity}">
+          <span class="range-val" id="feed-master-opacity-val">${masterOpacity}%</span>
+        </div>
+      </div>
+    </div>
     <div class="section-header" style="margin-top:4px">Subscribed Calendars</div>
   `;
 
@@ -4008,6 +4020,20 @@ async function renderCalendarsSubTab() {
               <span style="font-size:12px;color:var(--muted)">Or pick any color</span>
             </div>
           </div>
+          <div class="settings-row">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <label style="margin-bottom:0">Opacity</label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);cursor:pointer">
+                Use global default
+                <input type="checkbox" class="feed-edit-use-global" data-id="${f.id}" ${(f.use_global_opacity===undefined||f.use_global_opacity)?'checked':''} style="width:16px;height:16px;accent-color:var(--accent)">
+              </label>
+            </div>
+            <div class="range-row feed-edit-opacity-row" data-id="${f.id}" style="${(f.use_global_opacity===undefined||f.use_global_opacity)?'display:none':''}">
+              <input type="range" class="feed-edit-opacity" data-id="${f.id}" min="10" max="100" step="5" value="${f.color_opacity ?? 100}">
+              <span class="range-val feed-edit-opacity-val" data-id="${f.id}">${f.color_opacity ?? 100}%</span>
+            </div>
+            <p style="font-size:11px;color:var(--muted);margin-top:4px">Fades this calendar's color wherever it shows up — dots, pills, background tints — without affecting event text. On: follows the master slider at the top of this page. Off: set your own value for just this calendar.</p>
+          </div>
           <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
             <label style="margin-bottom:0">Color-code timed events</label>
             <input type="checkbox" class="feed-edit-timed" data-id="${f.id}" ${timedOn?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
@@ -4045,6 +4071,20 @@ async function renderCalendarsSubTab() {
   `;
 
   $('calendar-subtab-content').innerHTML = html;
+
+  if ($('feed-master-opacity')) {
+    $('feed-master-opacity').addEventListener('input', (e) => {
+      $('feed-master-opacity-val').textContent = e.target.value + '%';
+    });
+    // Saves on 'change' (once, when the drag settles), not on every 'input'
+    // tick — this is a global setting saved via a direct PUT /api/settings,
+    // not the per-widget layout autosave, so there's no batched "Save"
+    // button elsewhere in this section to rely on instead.
+    $('feed-master-opacity').addEventListener('change', async (e) => {
+      await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify({ feed_default_opacity: e.target.value }) });
+      showToast('Master opacity updated ✓');
+    });
+  }
 
   // Color picker for feed
   let feedColor = COLORS[4]; // purple default
@@ -4141,6 +4181,18 @@ async function renderCalendarsSubTab() {
       }
     });
   });
+  document.querySelectorAll('.feed-edit-opacity').forEach(input => {
+    input.addEventListener('input', (e) => {
+      const val = document.querySelector(`.feed-edit-opacity-val[data-id="${e.target.dataset.id}"]`);
+      if (val) val.textContent = e.target.value + '%';
+    });
+  });
+  document.querySelectorAll('.feed-edit-use-global').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      const row = document.querySelector(`.feed-edit-opacity-row[data-id="${e.target.dataset.id}"]`);
+      if (row) row.style.display = e.target.checked ? 'none' : '';
+    });
+  });
 
   // Save all edits for a calendar at once
   document.querySelectorAll('.feed-edit-save').forEach(btn => {
@@ -4150,13 +4202,17 @@ async function renderCalendarsSubTab() {
       let url = document.querySelector(`.feed-edit-url[data-id="${id}"]`).value.trim();
       const picker = document.querySelector(`.feed-edit-colors[data-id="${id}"]`);
       const color = picker ? picker.dataset.color : undefined;
+      const opacitySlider = document.querySelector(`.feed-edit-opacity[data-id="${id}"]`);
+      const color_opacity = opacitySlider ? parseInt(opacitySlider.value, 10) : undefined;
+      const useGlobalCb = document.querySelector(`.feed-edit-use-global[data-id="${id}"]`);
+      const use_global_opacity = useGlobalCb ? useGlobalCb.checked : undefined;
       const color_timed = document.querySelector(`.feed-edit-timed[data-id="${id}"]`).checked;
       if (!name || !url) { showToast('Name and URL are required'); return; }
       url = url.replace(/^webcal:\/\//i, 'https://');
       btn.textContent = 'Saving…';
       btn.disabled = true;
       const r = await apiFetch(`/api/feeds/${id}`, {
-        method: 'PUT', body: JSON.stringify({ name, url, color, color_timed }),
+        method: 'PUT', body: JSON.stringify({ name, url, color, color_opacity, use_global_opacity, color_timed }),
       });
       cachedFeeds = null; // invalidate so widgets pick up changes
       if (r.error) {
@@ -8840,6 +8896,13 @@ async function drawWidgetSettingsPanel() {
         <label style="margin-bottom:0">Show Multi-day Events</label>
         <input type="checkbox" id="show-multiday-toggle" ${w.showMultiDay !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
+      <div class="settings-row">
+        <label>Per-Feed Opacity (this display only)</label>
+        <p style="font-size:11px;color:var(--muted);margin:-2px 0 8px">Override a calendar's opacity for just this widget, without changing its global default in Calendar Feeds.</p>
+        <div id="feed-opacity-override-list" style="display:flex;flex-direction:column;gap:10px">
+          <div style="font-size:12px;color:var(--muted)">Loading calendars…</div>
+        </div>
+      </div>
     `;
   }
 
@@ -10100,6 +10163,7 @@ async function drawWidgetSettingsPanel() {
 
   if (isCalendarWidget) {
     populateSourceFilterList(w);
+    populateFeedOpacityOverrideList(w);
     $('show-multiday-toggle').addEventListener('change', (e) => {
       w.showMultiDay = e.target.checked;
     });
@@ -10265,6 +10329,80 @@ async function populateSourceFilterList(w) {
       // If everything is checked, store null so future-added calendars are included
       // automatically rather than silently excluded.
       w.sourceFilter = checked.length === sources.length ? null : checked;
+    });
+  });
+}
+
+// Per-widget feed opacity override — mirrors display.html's own
+// renderFeedOpacityOverrideSection()/wireFeedOpacityOverrideSection() pair
+// (same data shape: w.feedOpacityOverride = {feedId: percentage}, same
+// fallback to the feed's own global color_opacity when this widget has no
+// override for a given feed — see eventPillColor() in display.html for the
+// two-tier resolution both files ultimately feed into). Async, same reason
+// populateSourceFilterList() right above it is: cachedFeeds may need an
+// actual fetch the first time a settings panel opens.
+async function populateFeedOpacityOverrideList(w) {
+  if (!cachedFeeds) {
+    const result = await apiFetch('/api/feeds');
+    cachedFeeds = Array.isArray(result) ? result : [];
+  }
+  const container = $('feed-opacity-override-list');
+  if (!container) return; // panel may have been redrawn already
+
+  if (!cachedFeeds.length) {
+    container.innerHTML = `<div style="font-size:12px;color:var(--muted)">No calendars subscribed yet.</div>`;
+    return;
+  }
+
+  const overrides = w.feedOpacityOverride || {};
+  container.innerHTML = cachedFeeds.map(f => {
+    const hasOverride = overrides[f.id] !== undefined && overrides[f.id] !== null;
+    const val = hasOverride ? overrides[f.id] : (f.effective_opacity ?? 100);
+    return `
+      <div class="fop-row" data-feed-id="${f.id}">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <label style="margin-bottom:0;display:flex;align-items:center;gap:8px;font-size:13px">
+            <span style="width:10px;height:10px;border-radius:50%;background:${f.color};display:inline-block;flex-shrink:0"></span>
+            ${f.name}
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);cursor:pointer">
+            Override
+            <input type="checkbox" class="fop-toggle" data-feed-id="${f.id}" ${hasOverride?'checked':''} style="width:16px;height:16px;accent-color:var(--accent)">
+          </label>
+        </div>
+        <div class="range-row fop-slider-row" style="${hasOverride?'':'display:none'}">
+          <input type="range" class="fop-slider" data-feed-id="${f.id}" min="10" max="100" step="5" value="${val}">
+          <span class="range-val fop-slider-val" data-feed-id="${f.id}">${val}%</span>
+        </div>
+      </div>`;
+  }).join('');
+
+  container.querySelectorAll('.fop-toggle').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      const feedId = e.target.dataset.feedId;
+      const row = container.querySelector(`.fop-row[data-feed-id="${feedId}"]`);
+      const sliderRow = row ? row.querySelector('.fop-slider-row') : null;
+      w.feedOpacityOverride = w.feedOpacityOverride || {};
+      if (e.target.checked) {
+        if (sliderRow) sliderRow.style.display = '';
+        const slider = row.querySelector('.fop-slider');
+        w.feedOpacityOverride[feedId] = parseInt(slider.value, 10);
+      } else {
+        if (sliderRow) sliderRow.style.display = 'none';
+        delete w.feedOpacityOverride[feedId];
+      }
+      autoSaveLayout();
+    });
+  });
+  container.querySelectorAll('.fop-slider').forEach(slider => {
+    slider.addEventListener('input', (e) => {
+      const feedId = e.target.dataset.feedId;
+      const val = parseInt(e.target.value, 10);
+      w.feedOpacityOverride = w.feedOpacityOverride || {};
+      w.feedOpacityOverride[feedId] = val;
+      const label = container.querySelector(`.fop-slider-val[data-feed-id="${feedId}"]`);
+      if (label) label.textContent = val + '%';
+      autoSaveLayout();
     });
   });
 }

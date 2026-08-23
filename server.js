@@ -597,6 +597,33 @@ if (!columnExists('ical_feeds', 'color_timed')) {
   db.exec(`ALTER TABLE ical_feeds ADD COLUMN color_timed INTEGER DEFAULT 1`);
   console.log('Migrated: added color_timed column to ical_feeds');
 }
+if (!columnExists('ical_feeds', 'color_opacity')) {
+  // 0-100 (a percentage, matching how the slider itself is authored/read —
+  // stored this way rather than 0.0-1.0 so there's never a unit mismatch
+  // to remember between the DB, the API, and the UI's own range input).
+  // Applies to just this feed's COLOR wherever it renders (calendar-grid
+  // dots/pills, Agenda/Upcoming/Today background tints) — never to event
+  // TEXT, which always stays fully opaque/readable regardless of this
+  // setting. See feedColorWithOpacity() in display.html for the one place
+  // that actually applies it.
+  db.exec(`ALTER TABLE ical_feeds ADD COLUMN color_opacity INTEGER DEFAULT 100`);
+  console.log('Migrated: added color_opacity column to ical_feeds');
+}
+if (!columnExists('ical_feeds', 'use_global_opacity')) {
+  // Three-tier opacity resolution, most-specific wins:
+  //   1. A specific WIDGET's own override for this feed (widget.feedOpacityOverride)
+  //   2. This feed's own color_opacity — but ONLY if use_global_opacity=0 (this feed
+  //      opted OUT of the master default via its own "Use global default" checkbox)
+  //   3. feed_default_opacity — the master slider at the top of Calendar Feeds,
+  //      applied to every feed that hasn't opted out (the common case, hence
+  //      defaulting to 1/on: a brand new feed follows the master slider until
+  //      someone deliberately gives it its own value)
+  // Resolved server-side (see the events queries below) into a single already-
+  // correct color_opacity on each event, so the client only ever has to reason
+  // about tier 1 — it never needs to know tiers 2/3 exist at all.
+  db.exec(`ALTER TABLE ical_feeds ADD COLUMN use_global_opacity INTEGER DEFAULT 1`);
+  console.log('Migrated: added use_global_opacity column to ical_feeds');
+}
 if (!columnExists('displays', 'force_orientation')) {
   db.exec(`ALTER TABLE displays ADD COLUMN force_orientation TEXT DEFAULT 'auto'`);
   console.log('Migrated: added force_orientation column to displays');
@@ -1016,6 +1043,10 @@ const defaultSettings = {
   update_schedule_time: '03:00',  // 'HH:MM' 24-hour, LOCAL time — only used when update_schedule_mode
                                    // is 'scheduled'; the daily time a pending update actually installs
   week_start_day:     '0',        // '0' = Sunday, '1' = Monday — affects grid-based calendar views
+  feed_default_opacity: '100',    // master opacity (0-100) applied to any feed that hasn't opted out
+                                   // via its own use_global_opacity=0 — see ical_feeds' own column
+                                   // comment below for the full three-tier resolution (this ->
+                                   // per-feed -> per-widget override, most-specific wins).
   time_format:        '12',       // '12' or '24' — affects the clock widget and any time-of-day text
   ampm_case:          'lower',    // 'lower' or 'upper' — casing for am/pm in 12-hour time (clock + any
                                    // widget showing a time-of-day); the standalone widgets can override
@@ -2971,6 +3002,29 @@ app.delete('/api/reminders/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// Resolves each iCal-sourced event's color_opacity to its EFFECTIVE value —
+// the master default (feed_default_opacity) for any feed that hasn't opted
+// out via its own use_global_opacity=0, or that feed's own color_opacity
+// otherwise. Called once on every events response so the client
+// (eventPillColor() in display.html) only ever has to reason about ONE
+// already-correct opacity per event — it never needs to know this master-
+// default/per-feed tier exists at all, same idea as eventPillColor() itself
+// hiding the per-widget-override tier from every OTHER part of the app.
+// Mutates events in place (this app's established convention — see
+// mergeEvents() and friends) and strips use_global_opacity before
+// returning, since it's an internal resolution detail the client has no
+// use for once this has already run.
+function resolveEventOpacity(events) {
+  const masterRow = db.prepare(`SELECT value FROM settings WHERE key = 'feed_default_opacity'`).get();
+  let master = masterRow ? parseInt(masterRow.value, 10) : 100;
+  if (Number.isNaN(master)) master = 100;
+  events.forEach(e => {
+    if (e.source === 'ical' && e.use_global_opacity) e.color_opacity = master;
+    delete e.use_global_opacity;
+  });
+  return events;
+}
+
 app.get('/api/events', (req, res) => {
   const { from, to } = req.query;
 
@@ -2991,7 +3045,7 @@ app.get('/api/events', (req, res) => {
   // iCal events (join with feed for color + enabled flag)
   let icalQuery = `
     SELECT ie.uid as id, ie.title, ie.date, ie.end_date, ie.start_time, ie.end_time, ie.notes,
-           f.id as feed_id, f.color, f.color_timed, f.name as feed_name, 'ical' as source
+           f.id as feed_id, f.color, f.color_opacity, f.use_global_opacity, f.color_timed, f.name as feed_name, 'ical' as source
     FROM ical_events ie
     JOIN ical_feeds f ON f.id = ie.feed_id
     WHERE f.enabled = 1
@@ -3008,7 +3062,7 @@ app.get('/api/events', (req, res) => {
   const icalEvents = db.prepare(icalQuery).all(...icalParams);
 
   // Merge and sort
-  const all = [...localEvents, ...icalEvents].sort((a, b) => {
+  const all = resolveEventOpacity([...localEvents, ...icalEvents]).sort((a, b) => {
     if (a.date !== b.date) return a.date < b.date ? -1 : 1;
     if (!a.start_time) return -1;
     if (!b.start_time) return 1;
@@ -3203,7 +3257,7 @@ app.get('/api/events-manage', (req, res) => {
   ).all(to, from);
   const icalEvents = db.prepare(`
     SELECT ie.uid as id, ie.title, ie.date, ie.end_date, ie.start_time, ie.end_time, ie.notes,
-           f.id as feed_id, f.color, f.name as feed_name, 'ical' as source
+           f.id as feed_id, f.color, f.color_opacity, f.use_global_opacity, f.name as feed_name, 'ical' as source
     FROM ical_events ie JOIN ical_feeds f ON f.id = ie.feed_id
     WHERE f.enabled = 1 AND ie.date <= ? AND COALESCE(ie.end_date, ie.date) >= ?
     ORDER BY ie.date ASC, ie.start_time ASC
@@ -3221,7 +3275,7 @@ app.get('/api/events-manage', (req, res) => {
              // ical events can recur; local events are single (no series concept unless multi-day)
              recurring: e.source === 'ical' };
   };
-  const all = [...localEvents, ...icalEvents].map(annotate).sort((a, b) => {
+  const all = resolveEventOpacity([...localEvents, ...icalEvents]).map(annotate).sort((a, b) => {
     if (a.date !== b.date) return a.date < b.date ? -1 : 1;
     if (!a.start_time) return -1;
     if (!b.start_time) return 1;
@@ -5099,7 +5153,19 @@ app.get('/api/metar-taf', async (req, res) => {
 
 // GET /api/feeds
 app.get('/api/feeds', (req, res) => {
-  res.json(db.prepare(`SELECT * FROM ical_feeds ORDER BY id ASC`).all());
+  const feeds = db.prepare(`SELECT * FROM ical_feeds ORDER BY id ASC`).all();
+  const masterRow = db.prepare(`SELECT value FROM settings WHERE key = 'feed_default_opacity'`).get();
+  let master = masterRow ? parseInt(masterRow.value, 10) : 100;
+  if (Number.isNaN(master)) master = 100;
+  // effective_opacity: what's ACTUALLY applied right now (the master default
+  // if this feed hasn't opted out, its own color_opacity otherwise) — kept
+  // alongside the raw color_opacity/use_global_opacity fields rather than
+  // replacing them, since the Calendar Feeds edit UI needs the RAW state
+  // (is the checkbox on, what's this feed's own stored slider value) while
+  // the per-widget-override list (see populateFeedOpacityOverrideList() in
+  // app.html) needs the resolved one, as the accurate starting point for
+  // "here's what this feed currently looks like before you override it."
+  res.json(feeds.map(f => ({ ...f, effective_opacity: f.use_global_opacity ? master : f.color_opacity })));
 });
 
 // POST /api/feeds
@@ -5132,20 +5198,32 @@ app.post('/api/feeds', async (req, res) => {
 
 // PUT /api/feeds/:id
 app.put('/api/feeds/:id', async (req, res) => {
-  const { name, url, color, color_timed, enabled } = req.body;
+  const { name, url, color, color_timed, color_opacity, use_global_opacity, enabled } = req.body;
   const feed = db.prepare(`SELECT * FROM ical_feeds WHERE id = ?`).get(req.params.id);
   if (!feed) return res.status(404).json({ error: 'Feed not found' });
 
   const newUrl = (url !== undefined && url !== null && url.trim() !== '') ? url.trim() : feed.url;
   const urlChanged = newUrl !== feed.url;
 
+  // Clamp defensively — this is a percentage a slider writes, but nothing
+  // stops a malformed/out-of-range value arriving some other way, and an
+  // opacity outside 0-100 would produce a nonsensical (or invalid) CSS
+  // color wherever feedColorWithOpacity() applies it downstream.
+  let newOpacity = feed.color_opacity;
+  if (color_opacity !== undefined && color_opacity !== null) {
+    const n = parseInt(color_opacity, 10);
+    if (!Number.isNaN(n)) newOpacity = Math.max(0, Math.min(100, n));
+  }
+
   try {
-    db.prepare(`UPDATE ical_feeds SET name=?, url=?, color=?, color_timed=?, enabled=? WHERE id=?`)
+    db.prepare(`UPDATE ical_feeds SET name=?, url=?, color=?, color_timed=?, color_opacity=?, use_global_opacity=?, enabled=? WHERE id=?`)
       .run(
         name ?? feed.name,
         newUrl,
         color ?? feed.color,
         color_timed !== undefined ? (color_timed ? 1 : 0) : feed.color_timed,
+        newOpacity,
+        use_global_opacity !== undefined ? (use_global_opacity ? 1 : 0) : feed.use_global_opacity,
         enabled !== undefined ? enabled : feed.enabled,
         req.params.id
       );
