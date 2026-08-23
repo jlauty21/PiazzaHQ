@@ -699,6 +699,24 @@
     }
     body[data-theme="chalkboard"] { --accent:#f4f1de; }
     body[data-theme="chalkboard"] { --text:#f4f1de; }
+    /* Same "explicit override wins, unset falls back to theme default" shape
+       as --accent/--text above — was previously declared directly on
+       .mc-cell.today .mc-daynum below, which silently defeated a per-widget
+       Today Indicator custom color (widget.calTodayColor, set inline on
+       .w-minical — an ancestor of .mc-daynum, but further away than a
+       declaration on .mc-daynum itself). A custom property re-declared on
+       a descendant always wins over one inherited from an ancestor,
+       regardless of !important or specificity — moving it up here makes it
+       a genuine inherited DEFAULT instead, correctly losing to the widget's
+       own inline value when one is set. corkboard has the identical bug
+       below, fixed the same way. */
+    body[data-theme="chalkboard"] { --today-color:#e07a5f; }
+    /* Must live at the theme root, NOT on .mc-ev-pill itself — a declaration
+       directly on the same element that consumes a custom property always
+       wins over one inherited from an ancestor (the per-widget --pill-text
+       set on the widget's own outer element), the identical mistake
+       --today-color above was already fixed for. Caught before shipping. */
+    body[data-theme="chalkboard"] { --pill-text:#f4f1de; }
     /* Chalk handwriting is this theme's own DEFAULT font, not an unconditional
        override — folded into the same --global-font-family / --per-widget-font
        fallback chain every other font rule already uses (see html/body and
@@ -722,15 +740,32 @@
     }
     body[data-theme="chalkboard"] .mc-names, body[data-theme="chalkboard"] .mc-month,
     body[data-theme="chalkboard"] .mc-year { color:var(--accent); }
-    body[data-theme="chalkboard"] .mc-ev-text, body[data-theme="chalkboard"] .mc-ev-pill {
-      color:rgba(244,241,222,0.85) !important; background:transparent !important;
+    /* Same bug class as the font-family fix above, caught on a second
+       property: .mc-ev-text already cascades its color correctly through
+       var(--text) (see its base rule below), and chalkboard already sets a
+       normal, non-!important --text default — so a forced !important color
+       here was pure redundant harm, silently defeating any per-widget or
+       global Text Color override on calendar event text specifically, the
+       same way the old font rule silently defeated font overrides. Simply
+       not re-declaring color here lets the existing cascade do its job.
+       .mc-ev-pill's title text was a DIFFERENT case — hardcoded #fff at its
+       base rule (deliberately, for contrast against a colored background,
+       not overridable by var(--text) at all under ANY theme) — given its
+       own --pill-text variable below instead, with the same "explicit
+       choice wins, unset defaults to chalk" fallback shape. Background
+       stays forced transparent here as the theme's own baseline look;
+       eventPillBackgroundStyle() (display.html JS) still beats it with a
+       higher-specificity inline !important when an opacity tier actually
+       needs to paint something there. */
+    body[data-theme="chalkboard"] .mc-ev-pill {
+      background:transparent !important;
     }
     /* Today: a hand-drawn red chalk circle (matches the reference) — sets the
        theme's own default color; the actual shape (circle/outline/etc.) is
        now a widget-level Today Indicator Style choice, see .mc-cell.today
        rules above. */
     body[data-theme="chalkboard"] .mc-cell.today .mc-daynum {
-      --today-color:#e07a5f; color:#2e3331;
+      color:#2e3331;
     }
     /* Bump the chalk font up a touch — Caveat reads small at the same px. */
     body[data-theme="chalkboard"] .w-minical { --cal-font:13px; }
@@ -750,6 +785,11 @@
     }
     body[data-theme="corkboard"] { --accent:#5a4a38; }
     body[data-theme="corkboard"] { --text:#3a2f25; }
+    /* Same fix as chalkboard's own --today-color above, and for the exact
+       same reason: this was declared directly on .mc-cell.today .mc-daynum
+       below, which silently defeated a per-widget Today Indicator custom
+       color the same way. */
+    body[data-theme="corkboard"] { --today-color:#d9534f; }
     /* Each widget becomes a piece of off-white pinned paper with a soft shadow and a
        slight tilt, like it's tacked to the board. */
     body[data-theme="corkboard"] .widget {
@@ -777,7 +817,7 @@
     body[data-theme="corkboard"] .mc-cell { background:transparent; border-color:rgba(58,47,37,0.18); }
     body[data-theme="corkboard"] .mc-names, body[data-theme="corkboard"] .mc-month,
     body[data-theme="corkboard"] .mc-year { color:var(--accent); }
-    body[data-theme="corkboard"] .mc-cell.today .mc-daynum { --today-color:#d9534f; color:#fff; }
+    body[data-theme="corkboard"] .mc-cell.today .mc-daynum { color:#fff; }
     body[data-theme="corkboard"] .w-text .tx-body { color:#3a2f25; }
 
     /* Particle base + animations */
@@ -1316,7 +1356,7 @@
     .mc-ev-pill {
       font-size:var(--cal-font); line-height:1.35; padding:1px 4px; border-radius:3px;
       white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-      color:#fff; font-weight:500;
+      color:var(--pill-text, #fff); font-weight:500;
     }
     .mc-ev-text { font-size:var(--cal-font); line-height:1.3; color:color-mix(in srgb, var(--text) 75%, transparent);
       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -3178,6 +3218,14 @@ function renderLayout() {
     // created from scratch on every single render, so there was never a
     // stale prior value to leak from.
     if (w.textColor) el.style.setProperty('--text', w.textColor); else el.style.removeProperty('--text');
+    // --pill-text: the SAME override, extended to Mini Calendar's full-day
+    // pill title text (.mc-ev-pill), which reads its own variable instead of
+    // --text — that element's base color is deliberately NOT var(--text)
+    // under any theme (a colored pill needs contrast against ITS OWN
+    // background, not the page's general text color), so it needed its own
+    // variable to be overridable at all, following the exact same "explicit
+    // choice wins, unset falls back to the sensible default" shape.
+    if (w.textColor) el.style.setProperty('--pill-text', w.textColor); else el.style.removeProperty('--pill-text');
     // Secondary text (labels, AM/PM, subtitles, etc.) — falls back to --muted
     // (see .widget base rule) when the widget hasn't set its own, same pattern
     // as the primary color above.
