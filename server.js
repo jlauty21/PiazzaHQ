@@ -8736,7 +8736,13 @@ function installFromZip(zipPath, res) {
     fs.rmSync(UPDATE_BACKUP, { recursive: true, force: true });
     fs.mkdirSync(UPDATE_BACKUP, { recursive: true });
     const codeItems = ['server.js', 'templates.js', 'tv-control.js', 'public', 'package.json', 'scripts',
-                       'install.sh', 'setup-remote-access.sh', 'hide-cursor.sh', 'README.md', 'BETA_CHECKLIST.md'];
+                       'install.sh', 'setup-remote-access.sh', 'hide-cursor.sh', 'README.md', 'BETA_CHECKLIST.md',
+                       'LICENSE']; // legal terms — unlike CHANGELOG.md/HANDOFF.md (dev-facing docs, no
+                                   // stakes either way), an installed device should actually receive
+                                   // updated license terms, not keep whatever it shipped with forever.
+                                   // Confirmed real bug: this was missing, so an existing install could
+                                   // apply update after update and never see a licensing change at all —
+                                   // only a brand new install (not an update) ever got the current file.
     for (const name of codeItems) {
       const from = path.join(__dirname, name);
       if (fs.existsSync(from)) {
@@ -9444,7 +9450,8 @@ function buildSelfUpdateZip() {
   fs.mkdirSync(stageDir, { recursive: true });
   // Same file list installFromZip() expects/backs up — keep these in sync.
   const codeItems = ['server.js', 'templates.js', 'tv-control.js', 'public', 'package.json', 'scripts',
-                     'install.sh', 'setup-remote-access.sh', 'hide-cursor.sh', 'README.md', 'BETA_CHECKLIST.md'];
+                     'install.sh', 'setup-remote-access.sh', 'hide-cursor.sh', 'README.md', 'BETA_CHECKLIST.md',
+                     'LICENSE'];
   for (const name of codeItems) {
     const from = path.join(__dirname, name);
     if (fs.existsSync(from)) fs.cpSync(from, path.join(stageDir, name), { recursive: true });

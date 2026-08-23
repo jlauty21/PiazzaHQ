@@ -4,6 +4,27 @@ All notable changes to Piazza HQ (formerly Pi Calendar). The central server
 reads the top matching section here to pre-fill release notes when you
 publish a build.
 
+## 1.81.8-beta.2
+- **New: an updated, corrected `LICENSE`** — free license key for personal
+  use (no subscription, no cost, ever), commercial/company/organizational
+  use routed to negotiate separate terms instead of the earlier "personal
+  or organizational" wording that didn't actually match the intended model.
+- **Fixed a real gap found while making that exact change: `LICENSE` was
+  never actually included in what a self-update installs.** The update
+  installer works off an explicit file allowlist (`codeItems`) rather than
+  blindly copying everything in the zip — deliberate, so it never touches
+  user data like `calendar.db` — but `LICENSE` had simply been left off
+  that list since it was first introduced. An existing installation could
+  apply update after update and never receive a licensing change at all;
+  only a brand-new install (not an update) ever got the current file.
+  Fixed in both places that list is declared: the main self-update
+  installer, and the separate host→slave mirror-push builder (its own
+  comment already said "keep these in sync" with the installer's copy —
+  now it actually is). `CHANGELOG.md`/`HANDOFF.md` deliberately stay off
+  both lists — internal dev docs, no stakes either way — but `LICENSE` is
+  the actual legal terms a real device is running under, and needed to
+  travel with every update like the rest of the app does.
+
 ## 1.81.8-beta.1
 - No code changes — version bump only, published to the beta channel to
   test the mothership's new "push beta releases to GitHub too" toggle.
