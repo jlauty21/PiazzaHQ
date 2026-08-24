@@ -4321,49 +4321,27 @@ function eventPillColor(e, widget) {
   return hexWithOpacity(hex, opacity);
 }
 
-// Chalkboard's own CSS (body[data-theme="chalkboard"] .mc-ev-pill) forces the
-// full-day pill's background fully transparent, !important — a deliberate
-// legibility choice for that theme's hand-drawn look. But it meant NONE of
-// the three opacity tiers (widget override / per-feed / master default) ever
-// painted anything on the pill: every event looked identical under
-// chalkboard regardless of opacity setting, which read as "opacity doesn't
-// work" even though eventPillColor() above was resolving it correctly the
-// whole time — confirmed by the real report this was built to fix.
-// Recomputes the SAME already-resolved color+opacity from eventPillColor(),
-// but capped to a legibility-safe max alpha instead of zero (or, for the
-// multi-day bar below, instead of an uncapped value that could render
-// almost invisibly on a dark background at low opacity settings — a
-// separate but related report), so different opacity settings stay
-// visibly, unmistakably different. Used by the 'highlight' full-day pill
-// AND the 'bar' multi-day style (the default) — every other calendar-color
-// call site (Mini Calendar's own dots, the 'dot'/'stripe'/'line' multi-day
-// styles, Agenda/Upcoming/Today, the ongoing strip) was never touched by
-// any chalkboard-specific CSS and already worked correctly under any theme
-// without needing this.
-// On non-chalkboard themes this is a harmless passthrough — returns the
-// exact same value eventPillColor() itself would have produced.
-// inline !important is required to beat the .mc-ev-pill stylesheet rule's
-// own !important — among tied !important declarations, inline wins on
-// specificity. .mc-span-bar has no such competing stylesheet rule (nothing
-// forces its background under any theme), so the inline !important there is
-// harmless — same output either way — kept only so this one function stays
-// a single, shared implementation instead of two near-identical ones.
-// inline !important is required to beat the stylesheet rule's own
-// !important — among tied !important declarations, inline wins on
-// specificity, so this is the one legitimate use of !important in an
-// inline style anywhere in this file.
-// Raised from an earlier 0.35 cap — that was mathematically correct (proven
-// via eventPillColor()'s own output) but visually too subtle to read as
-// "the override is doing anything": the full opacity range only ever
-// spanned about 0.07 to 0.35 alpha, a gap easy to miss at a glance on a
-// dark background. 0.65 keeps real headroom below the full-strength 1.0
-// every other theme gets (so Chalkboard's softer, less-saturated look is
-// still intact), while making different opacity settings unmistakably
-// different rather than merely provable-with-a-calculator different.
-const CHALKBOARD_PILL_MAX_ALPHA = 0.65;
-function eventPillBackgroundStyle(e, widget) {
+// Chalkboard's cells render with a transparent background (see
+// body[data-theme="chalkboard"] .mc-cell), showing the page's own dark
+// slate straight through. A low-alpha color that reads clearly against a
+// light/white cell background — every other theme — can be genuinely hard
+// to perceive against that dark one, with nothing about eventPillColor()'s
+// own math being wrong (proven correct with real output, more than once in
+// this file's history). This recomputes the SAME already-resolved
+// color+opacity from eventPillColor(), capped to a legibility-safe max
+// alpha under Chalkboard specifically, so different opacity settings stay
+// visibly, unmistakably different there. On every other theme this is a
+// harmless passthrough — returns the exact rgba/hex eventPillColor() itself
+// produced, untouched.
+// Raised once already from an initial 0.35 cap, which was mathematically
+// correct but still too subtle to read as "doing anything" at a glance —
+// full opacity range only spanned ~0.07 to 0.35 alpha. 0.65 gives real
+// separation while staying short of the full-strength 1.0 every other
+// theme gets, keeping Chalkboard's own softer look.
+const CHALKBOARD_MAX_ALPHA = 0.65;
+function chalkboardAwareColor(e, widget) {
   const color = eventPillColor(e, widget);
-  if (document.body.dataset.theme !== 'chalkboard') return `background:${color}`;
+  if (document.body.dataset.theme !== 'chalkboard') return color;
   let r = 74, g = 144, b = 217, a = 1; // fallback: the same default blue eventPillColor() itself falls back to
   const rgbaMatch = /rgba?\(([^)]+)\)/.exec(color);
   if (rgbaMatch) {
@@ -4377,8 +4355,30 @@ function eventPillBackgroundStyle(e, widget) {
       r = parseInt(h.slice(0, 2), 16); g = parseInt(h.slice(2, 4), 16); b = parseInt(h.slice(4, 6), 16);
     }
   }
-  const cappedAlpha = Math.max(0, Math.min(1, a)) * CHALKBOARD_PILL_MAX_ALPHA;
-  return `background:rgba(${r}, ${g}, ${b}, ${cappedAlpha.toFixed(3)}) !important`;
+  const cappedAlpha = Math.max(0, Math.min(1, a)) * CHALKBOARD_MAX_ALPHA;
+  return `rgba(${r}, ${g}, ${b}, ${cappedAlpha.toFixed(3)})`;
+}
+// Used by the 'highlight' full-day pill and the 'bar' multi-day style,
+// where the CSS declaration is a `background`. .mc-ev-pill has a
+// competing stylesheet rule (background:transparent !important) that this
+// needs to beat — inline !important wins that tie on specificity.
+// .mc-span-bar has no such competing rule, so the !important there is
+// harmless (nothing to beat; same output either way) — kept anyway so this
+// stays one shared implementation instead of two near-identical ones.
+function eventPillBackgroundStyle(e, widget) {
+  const color = chalkboardAwareColor(e, widget);
+  const impt = document.body.dataset.theme === 'chalkboard' ? ' !important' : '';
+  return `background:${color}${impt}`;
+}
+// Used wherever the color is needed as a bare value rather than a full
+// `background:` declaration — the 'stripe' style's border-left and title
+// label, and the 'line' style's underline background. None of these have
+// a competing stylesheet rule to beat, so no !important is needed or added
+// here; chalkboardAwareColor()'s alpha cap is what actually matters for
+// these, for the exact same low-alpha-on-dark-background reason as the
+// pill and bar.
+function eventPillBorderColor(e, widget) {
+  return chalkboardAwareColor(e, widget);
 }
 
 // Returns a source identifier for an event: 'local' for manually-added events,
@@ -4856,7 +4856,7 @@ function renderMiniCalGrid(widget) {
     // fairly rare in practice: two DIFFERENT multi-day trips/visits actually
     // overlapping on the same days).
     const stripeStyle = (multiDayStyle === 'stripe' && spanTouches.length)
-      ? `border-left:3px solid ${eventPillColor(spanTouches[0].event, widget)};padding-left:6px`
+      ? `border-left:3px solid ${eventPillBorderColor(spanTouches[0].event, widget)};padding-left:6px`
       : '';
     // Previously the stripe was the ONLY identifying mark of a multi-day
     // event — a colored border with no title anywhere, on any day,
@@ -4868,7 +4868,7 @@ function renderMiniCalGrid(widget) {
     // only showing the first event's color when multiple overlap.
     const stripeStartTouch = multiDayStyle === 'stripe' ? spanTouches.find(t => t.isStart) : null;
     const stripeLabelHtml = stripeStartTouch
-      ? `<div class="mc-stripe-label" style="color:${eventPillColor(stripeStartTouch.event, widget)}">${stripeStartTouch.event.title}</div>`
+      ? `<div class="mc-stripe-label" style="color:${eventPillBorderColor(stripeStartTouch.event, widget)}">${stripeStartTouch.event.title}</div>`
       : '';
     // 'line': a thin colored underline for every day the event touches, with
     // the name printed only on its actual start day — keeps the "this is one
@@ -4876,7 +4876,7 @@ function renderMiniCalGrid(widget) {
     // the bar style does. Multiple overlapping events stack additional lines
     // upward from the bottom edge.
     const lineHtml = multiDayStyle === 'line' ? spanTouches.map((t, idx) => `
-      <div class="mc-multi-line" style="bottom:calc(2px + ${idx} * 5px);background:${eventPillColor(t.event, widget)};
+      <div class="mc-multi-line" style="bottom:calc(2px + ${idx} * 5px);background:${eventPillBorderColor(t.event, widget)};
         ${t.isStart ? 'border-radius:2px 0 0 2px' : ''}${t.isEnd ? (t.isStart ? '' : 'border-radius:0 2px 2px 0') : ''}"></div>
       ${t.isStart ? `<div class="mc-multi-line-label" style="bottom:calc(5px + ${idx} * 5px)">${t.event.title}</div>` : ''}
     `).join('') : '';
