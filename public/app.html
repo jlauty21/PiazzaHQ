@@ -10420,6 +10420,18 @@ async function populateFeedOpacityOverrideList(w) {
   container.querySelectorAll('.fop-slider').forEach(slider => {
     slider.addEventListener('input', (e) => {
       const feedId = e.target.dataset.feedId;
+      // The row this slider sits in is only ever shown (via
+      // sliderRow.style.display) when this feed's own .fop-toggle checkbox
+      // is checked — but that's a visual hiding, not a hard block on the
+      // element itself, and this handler previously trusted it as one: it
+      // wrote to w.feedOpacityOverride[feedId] unconditionally on 'input',
+      // with nothing here checking whether the override was actually
+      // supposed to be active. A real report confirmed this could write a
+      // value even with the checkbox unchecked. Read the checkbox directly
+      // and bail if it isn't checked, so this can't happen regardless of
+      // how the slider ended up receiving the event.
+      const toggle = container.querySelector(`.fop-toggle[data-feed-id="${feedId}"]`);
+      if (!toggle || !toggle.checked) return;
       const val = parseInt(e.target.value, 10);
       w.feedOpacityOverride = w.feedOpacityOverride || {};
       w.feedOpacityOverride[feedId] = val;

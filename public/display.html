@@ -4464,6 +4464,12 @@ function wireFeedOpacityOverrideSection(w) {
   document.querySelectorAll('.fop-slider').forEach(slider => {
     slider.addEventListener('input', (e) => {
       const feedId = e.target.dataset.feedId;
+      // Same guard as app.html's copy of this function — the slider's row
+      // is only visually hidden (display:none) when this feed's override
+      // checkbox is off, which isn't a hard guarantee against this handler
+      // still firing. Read the checkbox directly and bail if unchecked.
+      const toggle = document.querySelector(`.fop-toggle[data-feed-id="${feedId}"]`);
+      if (!toggle || !toggle.checked) return;
       const val = parseInt(e.target.value, 10);
       w.feedOpacityOverride = w.feedOpacityOverride || {};
       w.feedOpacityOverride[feedId] = val;
