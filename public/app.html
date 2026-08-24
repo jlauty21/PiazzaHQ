@@ -7628,10 +7628,11 @@ async function drawWidgetSettingsPanel() {
           </select>
         </div>
         <div class="settings-row" id="cal-fullday-style-row" style="${w.calColorCoding===false?'display:none':''}">
-          <label>Full-Day Event Style ${infoBtn("How an all-day (or \"Dot\"-style multi-day) event shows its color. \"Highlight\" is the original colored pill; \"Dot\" is lighter-weight, matching how a timed event's colored marker looks. Hidden while Color Coding above is off.")}</label>
+          <label>Full-Day Event Style ${infoBtn("How an all-day/multi-day event shows its color, independent of Color Coding above for timed events. \"Background\" is a colored pill. \"Dot\" is a lighter-weight marker matching a timed event's, no background. \"None\" shows plain text with no color indicator at all, for full-day events only. Hidden while Color Coding above is off.")}</label>
           <select class="form-input" id="cal-fullday-style-select">
-            <option value="highlight" ${(w.calFullDayColorStyle||'highlight')==='highlight'?'selected':''}>Highlight — colored background</option>
+            <option value="highlight" ${(w.calFullDayColorStyle||'highlight')==='highlight'?'selected':''}>Background — colored pill</option>
             <option value="dot"       ${w.calFullDayColorStyle==='dot'?'selected':''}>Dot — colored marker, no background</option>
+            <option value="none"      ${w.calFullDayColorStyle==='none'?'selected':''}>None — plain text, no color</option>
           </select>
         </div>
         <div class="settings-row">
@@ -9350,7 +9351,7 @@ async function drawWidgetSettingsPanel() {
     });
     if ($('cal-fullday-style-select')) {
       $('cal-fullday-style-select').addEventListener('change', (e) => {
-        w.calFullDayColorStyle = e.target.value; // 'highlight' | 'dot'
+        w.calFullDayColorStyle = e.target.value; // 'highlight' | 'dot' | 'none'
       });
     }
     if ($('cal-today-style-select')) {

@@ -1362,12 +1362,6 @@
       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .mc-ev-dot { display:inline-block; width:calc(var(--cal-font) * 0.55); height:calc(var(--cal-font) * 0.55);
       border-radius:50%; margin-right:3px; vertical-align:baseline; flex-shrink:0; }
-    /* The dot inside a full-day event's colored pill needs a bit of separation from
-       that pill's own matching-color background, or it just visually disappears —
-       a plain dot alone only earns its keep in themes that strip the pill's
-       background (chalkboard); everywhere else this ring is what keeps it doing
-       anything at all. */
-    .mc-ev-pill-dot { box-shadow:0 0 0 1.5px rgba(255,255,255,0.65); }
     .mc-ev-more { font-size:var(--cal-font); color:var(--text2); padding:0 4px; }
 
     /* Multi-day event spanning bars — absolutely positioned overlay matching the day grid */
@@ -4347,7 +4341,15 @@ function eventPillColor(e, widget) {
 // !important — among tied !important declarations, inline wins on
 // specificity, so this is the one legitimate use of !important in an
 // inline style anywhere in this file.
-const CHALKBOARD_PILL_MAX_ALPHA = 0.35;
+// Raised from an earlier 0.35 cap — that was mathematically correct (proven
+// via eventPillColor()'s own output) but visually too subtle to read as
+// "the override is doing anything": the full opacity range only ever
+// spanned about 0.07 to 0.35 alpha, a gap easy to miss at a glance on a
+// dark background. 0.65 keeps real headroom below the full-strength 1.0
+// every other theme gets (so Chalkboard's softer, less-saturated look is
+// still intact), while making different opacity settings unmistakably
+// different rather than merely provable-with-a-calculator different.
+const CHALKBOARD_PILL_MAX_ALPHA = 0.65;
 function eventPillBackgroundStyle(e, widget) {
   const color = eventPillColor(e, widget);
   if (document.body.dataset.theme !== 'chalkboard') return `background:${color}`;
@@ -4780,11 +4782,19 @@ function renderMiniCalGrid(widget) {
     // switch overrides everything when off, regardless of what any
     // individual feed is configured to do.
     const colorCodingOn = !widget || widget.calColorCoding !== false;
-    // Full-Day Event Style (widget setting, default 'highlight'): how an
-    // all-day/multi-day event shows its color. 'highlight' is the original
-    // colored-background pill; 'dot' renders it exactly like a timed event's
-    // dot-plus-text row instead, for anyone who finds a full pill too heavy.
-    const fullDayDotStyle = (widget && widget.calFullDayColorStyle) === 'dot';
+    // Full-Day Event Style (widget setting, default 'highlight'/background):
+    // how an all-day/multi-day event shows its color. Three mutually
+    // exclusive choices — 'highlight' (colored pill background), 'dot' (a
+    // marker matching a timed event's, no background), 'none' (plain text,
+    // no color indicator at all, scoped to full-day events only — timed
+    // events keep following colorCodingOn independently). The pill no
+    // longer forces an inner dot regardless of this setting the way it used
+    // to: that was a workaround for Chalkboard's pill background being
+    // unconditionally transparent before beta.11/12 fixed it to actually
+    // show color there too, so it's no longer needed to keep that theme
+    // legible — and forcing it made "background vs dot" not actually a
+    // real choice (background style always included a dot anyway).
+    const fullDayColorStyle = (widget && widget.calFullDayColorStyle) || 'highlight';
     const evHtml = dayEvents.map(e => {
       if (e.start_time) {
         // Timed events: when the calendar has color-coding for timed events enabled
@@ -4808,25 +4818,22 @@ function renderMiniCalGrid(widget) {
       // colored-dot-plus-text row single-day events use, so it's visually
       // indistinguishable from them apart from spanning multiple days.
       const prefix = decorIcon ? `<span class="mc-ev-decor-icon">${decorIcon}</span>` : '';
-      if (!colorCodingOn) {
-        // Master switch off: plain text, no dot, no pill background at all.
+      if (!colorCodingOn || fullDayColorStyle === 'none') {
+        // Master switch off, OR this widget's Full-Day Event Style is
+        // explicitly 'none': plain text, no dot, no pill background.
         return `<div class="mc-ev-text">${prefix}${e.title}</div>`;
       }
-      if (fullDayDotStyle) {
+      if (fullDayColorStyle === 'dot') {
         // 'dot' style: same row shape a timed event uses, no highlight.
         return `<div class="mc-ev-text"><span class="mc-ev-dot" style="background:${eventPillColor(e, widget)}"></span>${prefix}${e.title}</div>`;
       }
-      // 'highlight' (default): colored pill background — PLUS an inner dot
-      // unconditionally, not just when a theme happens to render it well.
-      // The dot is a substitute color indicator for chalkboard (see
-      // eventPillBackgroundStyle()'s own comment) — that theme's stylesheet
-      // forces the pill's OWN background transparent for legibility, so
-      // without the dot, full-day events would have no way at all to show
-      // which calendar they came from. eventPillBackgroundStyle() now also
-      // lets the pill itself show a legibility-capped tint of the same
-      // opacity-resolved color under chalkboard, so the dot isn't the only
-      // place the three opacity tiers are visible there anymore.
-      return `<div class="mc-ev-pill" style="${eventPillBackgroundStyle(e, widget)}"><span class="mc-ev-dot mc-ev-pill-dot" style="background:${eventPillColor(e, widget)}"></span>${prefix}${e.title}</div>`;
+      // 'highlight' (default): colored pill background only — no inner dot
+      // anymore, see this function's own opening comment for why. Chalkboard
+      // still shows a legible, capped-alpha tint here via
+      // eventPillBackgroundStyle() (beta.11), and its title text now
+      // correctly follows --pill-text (beta.12) instead of a hardcoded
+      // color, so the pill alone carries enough contrast on its own.
+      return `<div class="mc-ev-pill" style="${eventPillBackgroundStyle(e, widget)}">${prefix}${e.title}</div>`;
     }).join('');
     const moreHtml = moreCount > 0 ? `<div class="mc-ev-more" data-base-more="${moreCount}">+${moreCount} more</div>` : `<div class="mc-ev-more" data-base-more="0" style="display:none"></div>`;
 
@@ -7518,10 +7525,11 @@ function renderCalendarAdvancedSettings(w) {
         </select>
       </div>
       <div class="was-row" id="cal-fullday-style-row" style="${w.calColorCoding===false?'display:none':''}">
-        <label>Full-Day Event Style ${infoBtn("How an all-day (or \"Dot\"-style multi-day) event shows its color. \"Highlight\" is the original colored pill; \"Dot\" is lighter-weight, matching how a timed event's colored marker looks. Hidden while Color Coding above is off.")}</label>
+        <label>Full-Day Event Style ${infoBtn("How an all-day/multi-day event shows its color, independent of Color Coding above for timed events. \"Background\" is a colored pill. \"Dot\" is a lighter-weight marker matching a timed event's, no background. \"None\" shows plain text with no color indicator at all, for full-day events only. Hidden while Color Coding above is off.")}</label>
         <select id="cal-fullday-style-select">
-          <option value="highlight" ${(w.calFullDayColorStyle||'highlight')==='highlight'?'selected':''}>Highlight — colored background</option>
+          <option value="highlight" ${(w.calFullDayColorStyle||'highlight')==='highlight'?'selected':''}>Background — colored pill</option>
           <option value="dot"       ${w.calFullDayColorStyle==='dot'?'selected':''}>Dot — colored marker, no background</option>
+          <option value="none"      ${w.calFullDayColorStyle==='none'?'selected':''}>None — plain text, no color</option>
         </select>
       </div>
       <div class="was-row">
