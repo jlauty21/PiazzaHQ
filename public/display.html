@@ -1376,7 +1376,7 @@
       line-height:calc(var(--cal-font) * 1.5);
       padding:0 5px;
       border-radius:4px;
-      color:#fff; font-weight:500;
+      color:var(--pill-text, #fff); font-weight:500;
       white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
       box-shadow:0 1px 2px rgba(0,0,0,0.3);
     }
@@ -4330,13 +4330,24 @@ function eventPillColor(e, widget) {
 // work" even though eventPillColor() above was resolving it correctly the
 // whole time — confirmed by the real report this was built to fix.
 // Recomputes the SAME already-resolved color+opacity from eventPillColor(),
-// but capped to a low max alpha instead of zero, so different opacity
-// settings stay visibly different without getting bright enough to hurt the
-// legibility that rule exists to protect. Only called for the 'highlight'
-// pill style specifically — the 'dot' full-day style and every other
-// calendar-color call site (Mini Calendar's own dots, Agenda/Upcoming/Today,
-// the ongoing strip, multi-day bars/stripe/line) were never touched by that
-// CSS rule and already worked correctly under any theme.
+// but capped to a legibility-safe max alpha instead of zero (or, for the
+// multi-day bar below, instead of an uncapped value that could render
+// almost invisibly on a dark background at low opacity settings — a
+// separate but related report), so different opacity settings stay
+// visibly, unmistakably different. Used by the 'highlight' full-day pill
+// AND the 'bar' multi-day style (the default) — every other calendar-color
+// call site (Mini Calendar's own dots, the 'dot'/'stripe'/'line' multi-day
+// styles, Agenda/Upcoming/Today, the ongoing strip) was never touched by
+// any chalkboard-specific CSS and already worked correctly under any theme
+// without needing this.
+// On non-chalkboard themes this is a harmless passthrough — returns the
+// exact same value eventPillColor() itself would have produced.
+// inline !important is required to beat the .mc-ev-pill stylesheet rule's
+// own !important — among tied !important declarations, inline wins on
+// specificity. .mc-span-bar has no such competing stylesheet rule (nothing
+// forces its background under any theme), so the inline !important there is
+// harmless — same output either way — kept only so this one function stays
+// a single, shared implementation instead of two near-identical ones.
 // inline !important is required to beat the stylesheet rule's own
 // !important — among tied !important declarations, inline wins on
 // specificity, so this is the one legitimate use of !important in an
@@ -4673,7 +4684,7 @@ function renderMiniCalGrid(widget) {
           grid-row: ${week + 1};
           grid-column: ${bar.startCol + 1} / span ${bar.span};
           margin-top: calc(var(--cal-font) * 2 + 5px + ${bar.lane} * (var(--cal-font) * 1.5 + 2px));
-          background:${eventPillColor(bar.event, widget)};
+          ${eventPillBackgroundStyle(bar.event, widget)};
         ">${bar.event.title}</div>
       `)
   ).join('');
