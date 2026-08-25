@@ -4181,16 +4181,47 @@ async function renderCalendarsSubTab() {
       }
     });
   });
+  // Opacity and "Use global default" now auto-save on their own, separately
+  // from the rest of this panel (name/URL/color/color-code toggle, still
+  // gated behind the explicit Save Changes button below — a URL change in
+  // particular triggers a feed re-fetch, which isn't something to fire on
+  // every keystroke). This was the actual root of a long back-and-forth: an
+  // opacity change looked like it should be live (the label/row visibility
+  // update instantly) but silently did nothing until Save Changes was
+  // tapped, unlike the per-widget override list and master slider
+  // elsewhere, which already auto-save. Debounced 500ms for the slider,
+  // matching autoSaveLayout()'s own debounce elsewhere in this file — the
+  // checkbox saves immediately since a toggle is a single discrete action,
+  // not a continuous drag.
+  let _feedOpacityAutoSaveTimer = null;
+  function autoSaveFeedOpacity(id, body) {
+    clearTimeout(_feedOpacityAutoSaveTimer);
+    _feedOpacityAutoSaveTimer = setTimeout(async () => {
+      const r = await apiFetch(`/api/feeds/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+      cachedFeeds = null; // invalidate so widgets pick up the change
+      if (r && r.error) showToast('Error: ' + r.error, 6000);
+    }, 500);
+  }
   document.querySelectorAll('.feed-edit-opacity').forEach(input => {
     input.addEventListener('input', (e) => {
       const val = document.querySelector(`.feed-edit-opacity-val[data-id="${e.target.dataset.id}"]`);
       if (val) val.textContent = e.target.value + '%';
+      autoSaveFeedOpacity(e.target.dataset.id, { color_opacity: parseInt(e.target.value, 10) });
     });
   });
   document.querySelectorAll('.feed-edit-use-global').forEach(cb => {
     cb.addEventListener('change', (e) => {
       const row = document.querySelector(`.feed-edit-opacity-row[data-id="${e.target.dataset.id}"]`);
       if (row) row.style.display = e.target.checked ? 'none' : '';
+      const body = { use_global_opacity: e.target.checked };
+      // Unchecking reveals the slider at whatever value it already shows —
+      // save that in the SAME request rather than leaving it stale until
+      // the slider itself is touched.
+      if (!e.target.checked) {
+        const slider = document.querySelector(`.feed-edit-opacity[data-id="${e.target.dataset.id}"]`);
+        if (slider) body.color_opacity = parseInt(slider.value, 10);
+      }
+      autoSaveFeedOpacity(e.target.dataset.id, body);
     });
   });
 
