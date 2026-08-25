@@ -2321,6 +2321,11 @@ function fmtTime(t, ampmOverride){ if(!t) return 'All day'; const [h,m]=t.split(
 
 // ── State ────────────────────────────────────────────────────────────────────
 let state = { events:[], reminders:[], weather:null, settings:{}, photoSettings:{}, photos:[], layout:[], tasksByProject:{}, tasksErrorByProject:{}, news:[], newsError:null, stocks:[], stocksError:null, choreChart:null, stickers:[] };
+// Set during startup identity resolution (see the /api/screen-config call
+// below) and left as the single source of truth for "is this device
+// currently a slave" everywhere else in the file — enterEditMode() in
+// particular gates on this, see its own comment for why.
+let isSlaveDevice = false;
 let slideIndex = 0, slideTimer = null;
 // Per-widget independent slideshow state, for any photo widget with its own
 // custom cycle time (w.photoInterval) instead of following the shared global
@@ -5884,6 +5889,22 @@ function showEditIconBriefly() {
   _editIconHideTimer = setTimeout(() => btn.classList.remove('shown'), 4000);
 }
 function enterEditMode() {
+  // This device mirrors a host: its layouts table is wholesale replaced
+  // from the host on every sync (applySyncSnapshot()/replaceTable), with
+  // no per-field carve-out for anything — including per-widget settings
+  // labeled "this display only" (e.g. Per-Feed Opacity overrides), which
+  // are stored inside the same widget JSON in that same shared table.
+  // Any edit made here would look like it took (the checkbox/slider
+  // updates locally, immediately), then silently revert on the next sync
+  // pull from the host — as little as ~1.5s later while actively editing,
+  // per markHostEditing()'s fast window. That's confusing rather than
+  // useful, so block it outright with an explanation instead. Editing from
+  // the host itself, or the app pointed at the host, is unaffected by any
+  // of this and is the correct way to make changes that reach every slave.
+  if (isSlaveDevice) {
+    showDisplayToast('✋ This is a mirror display — edit from the host device or the app instead.');
+    return;
+  }
   editModeActive = true;
   document.body.classList.add('edit-mode-active');
   document.getElementById('edit-mode-trigger').classList.remove('shown');
@@ -12833,6 +12854,7 @@ async function resolveAssignedProfile() {
         if (c.role === 'slave') { isSlaveRole = true; selfSlug = c.assigned_display_slug || ''; }
       }
     } catch {}
+    isSlaveDevice = isSlaveRole;
     if (canonicalId) adoptCanonicalScreenId(canonicalId);
 
     // On a slave, trust the server's self-resolved slug and apply it directly.
