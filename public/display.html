@@ -1187,6 +1187,14 @@
     .w-reminders-empty { display:flex; align-items:center; justify-content:center; height:100%; }
     .rem-empty-text { color:var(--text2); font-size:calc(var(--rem-font) * 0.6); text-align:center; }
     .rem-icon { font-size:calc(var(--rem-font) * 0.9); line-height:1; flex-shrink:0; }
+    /* Image/text icon-type variants (see reminderIconHtml()) — deliberately
+       sized in em, not px, so an uploaded image or a text label scales
+       consistently with whichever context-specific font-size the
+       surrounding wrapper (.rem-icon, .rem-chip-icon, .mc-reminder-badge,
+       etc.) already computes, the same way the emoji default already does,
+       rather than needing a separate size rule per call site. */
+    .rem-icon-img { width:1em; height:1em; object-fit:contain; vertical-align:middle; border-radius:0.15em; }
+    .rem-icon-text { font-weight:800; letter-spacing:0.02em; }
 
     /* Banner — one line, whichever reminder is soonest. */
     .w-reminders-banner { display:flex; align-items:center; gap:calc(var(--rem-font) * 0.5); }
@@ -3771,6 +3779,37 @@ function renderDateTime(widget) {
 //   'hero'    — soonest reminder gets a big treatment, the rest as small chips
 //   'week'    — a 7-day strip (Sun–Sat, respecting week_start_day) with icons
 //               on the days each reminder falls, today outlined
+// Renders a reminder's icon consistently across every context it appears in
+// (calendar-day badges, Agenda rows, the management list, and every
+// Reminders widget style) — a reminder's icon can be an emoji (default), a
+// short text label, or a small uploaded image (icon_type on the reminders
+// table, added alongside the existing icon column rather than replacing
+// it — icon still holds the emoji OR the text string, icon_image is the
+// only genuinely new field). Each call site keeps its OWN existing wrapper
+// element/class for sizing (.rem-icon, .rem-chip-icon, .mc-reminder-badge,
+// etc. — all originally just held an emoji character, sized via font-size)
+// — this only decides what goes INSIDE that wrapper, via em-based sizing,
+// so an image or text label scales consistently with whatever context-
+// specific size that wrapper already computes rather than needing a fixed
+// pixel size special-cased per call site.
+function reminderIconHtml(r) {
+  if (!r) return '';
+  const type = r.icon_type || 'emoji';
+  if (type === 'image' && r.icon_image) {
+    return `<img class="rem-icon-img" src="/uploads/${encodeURIComponent(r.icon_image)}" alt="">`;
+  }
+  if (type === 'text' && r.icon) {
+    const len = r.icon.length;
+    // Longer labels shrink to still fit a badge originally sized for one
+    // emoji character — tuned by eye against the shortest/tightest context
+    // (Mini Calendar's day badges), not a measured fit-to-container pass
+    // (nothing else in this file measures text width for sizing either).
+    const scale = len <= 3 ? 1 : len <= 6 ? 0.62 : len <= 9 ? 0.46 : 0.36;
+    return `<span class="rem-icon-text" style="font-size:${scale}em">${escapeHtmlD(r.icon)}</span>`;
+  }
+  return escapeHtmlD(r.icon || '📌');
+}
+
 function renderReminders(widget) {
   const w = widget || {};
   const style = w.remStyle || 'banner';
@@ -3799,7 +3838,7 @@ function renderReminders(widget) {
     const rows = withNext.map(({ r, next }) => `
       <div class="rem-row">
         <div class="rem-dot ${next.daysUntil===0?'rem-dot-today':next.daysUntil===1?'rem-dot-tomorrow':''}"></div>
-        <div class="rem-icon">${r.icon}</div>
+        <div class="rem-icon">${reminderIconHtml(r)}</div>
         <div class="rem-name">${escapeHtmlD(r.name)}</div>
         <div class="rem-when ${next.daysUntil===0?'rem-when-today':next.daysUntil===1?'rem-when-tomorrow':''}">${dueLabel(next.daysUntil)}</div>
       </div>`).join('');
@@ -3810,13 +3849,13 @@ function renderReminders(widget) {
     const [{ r: heroR, next: heroNext }, ...rest] = withNext;
     const chips = rest.slice(0, 3).map(({ r, next }) => `
       <div class="rem-chip">
-        <div class="rem-chip-icon">${r.icon}</div>
+        <div class="rem-chip-icon">${reminderIconHtml(r)}</div>
         <div class="rem-chip-name">${escapeHtmlD(r.name)}</div>
         <div class="rem-chip-when">${next.daysUntil} day${next.daysUntil===1?'':'s'}</div>
       </div>`).join('');
     return `<div class="w-reminders w-reminders-hero"${fontStyle}>
       <div class="rem-hero-main">
-        <div class="rem-hero-icon">${heroR.icon}</div>
+        <div class="rem-hero-icon">${reminderIconHtml(heroR)}</div>
         <div>
           <div class="rem-hero-title">${escapeHtmlD(heroR.name)}</div>
           <div class="rem-hero-when">${dueLabel(heroNext.daysUntil)}</div>
@@ -3840,13 +3879,13 @@ function renderReminders(widget) {
       const dateStr = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
       const isToday = dateStr === todayStr;
       const dayReminders = reminders.filter(r => reminderOccursOnDate(r, dateStr));
-      const icon = dayReminders.length ? dayReminders[0].icon : '';
+      const icon = dayReminders.length ? reminderIconHtml(dayReminders[0]) : '';
       dayCells.push(`<div class="rem-week-day${dayReminders.length?' rem-week-day-active':''}${isToday?' rem-week-day-today':''}">
         <div class="rem-week-dow">${DAYS_S[d.getDay()]}</div>
         <div class="rem-week-icon">${icon}</div>
       </div>`);
     }
-    const leadIcon = withNext[0].r.icon;
+    const leadIcon = reminderIconHtml(withNext[0].r);
     return `<div class="w-reminders w-reminders-week"${fontStyle}>
       <div class="rem-week-title"><span class="rem-week-title-icon">${leadIcon}</span><span class="rem-week-title-text">This Week</span></div>
       <div class="rem-week-strip">${dayCells.join('')}</div>
@@ -3857,7 +3896,7 @@ function renderReminders(widget) {
   const { r, next } = withNext[0];
   const badge = next.daysUntil === 0 ? 'Due today' : next.daysUntil === 1 ? 'Out tonight' : dueLabel(next.daysUntil);
   return `<div class="w-reminders w-reminders-banner"${fontStyle}>
-    <div class="rem-icon rem-banner-icon">${r.icon}</div>
+    <div class="rem-icon rem-banner-icon">${reminderIconHtml(r)}</div>
     <div class="rem-banner-text">
       <div class="rem-banner-title">${escapeHtmlD(r.name)}</div>
       <div class="rem-banner-when">${dueLabel(next.daysUntil)}</div>
@@ -4753,7 +4792,7 @@ function renderMiniCalGrid(widget) {
     if (!activeReminders.length) return '';
     const matches = activeReminders.filter(r => reminderOccursOnDate(r, ds));
     if (!matches.length) return '';
-    const badges = matches.map(r => `<span class="mc-reminder-badge" style="font-size:${reminderBadgeSizeExpr}" title="${escapeHtmlD(r.name)}">${r.icon}</span>`).join('');
+    const badges = matches.map(r => `<span class="mc-reminder-badge" style="font-size:${reminderBadgeSizeExpr}" title="${escapeHtmlD(r.name)}">${reminderIconHtml(r)}</span>`).join('');
     return `<div class="mc-reminder-badges pos-${reminderBadgePos}">${badges}</div>`;
   };
 
@@ -5242,7 +5281,7 @@ function renderAgenda(widget) {
     const label = agendaDayLabel(d, today, dateFormat);
     const reminderRows = (groups[d]._reminders || []).map(r => `
       <div class="ag2-reminder-row">
-        <span class="ag2-reminder-icon">${r.icon}</span>
+        <span class="ag2-reminder-icon">${reminderIconHtml(r)}</span>
         <span class="ag2-reminder-name">${escapeHtmlD(r.name)}</span>
       </div>`).join('');
     const rows = groups[d].map(e => buildEventRow(e, {
@@ -9405,6 +9444,9 @@ function wireRemindersAdvancedSettings(w) {
 // sub-views in one panel: the list (default) and an add/edit form, swapped
 // via manage-reminders-body's innerHTML rather than two separate panels.
 let _manageRemindersEditingId = null; // null = "add new"; a reminder's id = editing that one
+// See app.html's identical variable for the full explanation — tracks an
+// uploaded-but-not-yet-saved icon image filename for the currently open form.
+let _mrPendingIconImage = null;
 function openManageRemindersPanel() {
   _manageRemindersEditingId = null;
   renderManageRemindersList();
@@ -9431,7 +9473,7 @@ function renderManageRemindersList() {
     <button id="mr-add-btn" type="button" style="width:100%;padding:12px;border-radius:10px;border:none;background:var(--accent,#4A90D9);color:#fff;font-size:14px;font-weight:700;margin-bottom:16px">+ Add Reminder</button>
     ${reminders.length ? reminders.map(r => `
       <div class="mr-item">
-        <div class="mr-item-icon">${r.icon}</div>
+        <div class="mr-item-icon">${reminderIconHtml(r)}</div>
         <div class="mr-item-info">
           <div class="mr-item-name">${escapeHtmlD(r.name)}</div>
           <div class="mr-item-schedule">${escapeHtmlD(scheduleLabel(r))}</div>
@@ -9460,6 +9502,7 @@ async function deleteReminder(id) {
 function openManageRemindersForm(id) {
   _manageRemindersEditingId = id;
   const existing = id ? (state.reminders || []).find(x => String(x.id) === String(id)) : null;
+  _mrPendingIconImage = existing && existing.icon_type === 'image' ? (existing.icon_image || null) : null;
   document.getElementById('manage-reminders-title').textContent = existing ? 'Edit Reminder' : 'Add Reminder';
   const body = document.getElementById('manage-reminders-body');
   const cfg = (existing && existing.schedule_config) || {};
@@ -9471,8 +9514,30 @@ function openManageRemindersForm(id) {
       <input type="text" id="mr-f-name" value="${existing ? escapeHtmlD(existing.name) : ''}" placeholder="e.g. Trash, Recycling, Water plants" maxlength="40">
     </div>
     <div class="mr-form-row">
-      <label>Icon (any emoji)</label>
-      <input type="text" id="mr-f-icon" value="${existing ? existing.icon : '📌'}" maxlength="4" style="width:70px;text-align:center;font-size:20px">
+      <label>Icon</label>
+      <div style="display:flex;gap:6px;margin-bottom:10px">
+        ${[['emoji','Emoji'],['text','Text'],['image','Image']].map(([val, label]) => `
+          <button type="button" class="mr-icontype-btn${(existing ? (existing.icon_type || 'emoji') : 'emoji') === val ? ' active' : ''}" data-icontype="${val}"
+            style="flex:1;padding:8px 0;border-radius:8px;border:1px solid rgba(255,255,255,0.15);
+              background:${(existing ? (existing.icon_type || 'emoji') : 'emoji') === val ? 'rgba(74,144,217,0.3)' : 'transparent'};
+              color:${(existing ? (existing.icon_type || 'emoji') : 'emoji') === val ? '#fff' : '#a8b2c4'};font-size:12px;font-weight:700">${label}</button>
+        `).join('')}
+      </div>
+      <div id="mr-f-icon-emoji-row" style="${(existing ? (existing.icon_type||'emoji') : 'emoji') !== 'emoji' ? 'display:none' : ''}">
+        <input type="text" id="mr-f-icon" value="${existing && existing.icon ? existing.icon : '📌'}" maxlength="4" style="width:70px;text-align:center;font-size:20px">
+      </div>
+      <div id="mr-f-icon-text-row" style="${(existing ? existing.icon_type : '') !== 'text' ? 'display:none' : ''}">
+        <input type="text" id="mr-f-icon-text" value="${existing && existing.icon_type === 'text' ? escapeHtmlD(existing.icon || '') : ''}" maxlength="12" placeholder="e.g. TRASH" style="text-transform:uppercase">
+        <div style="font-size:11px;color:#a8b2c4;margin-top:4px">Short label — long text shrinks to fit, but stays most readable around 4-6 characters.</div>
+      </div>
+      <div id="mr-f-icon-image-row" style="${(existing ? existing.icon_type : '') !== 'image' ? 'display:none' : ''}">
+        <input type="file" id="mr-f-icon-file" accept="image/jpeg,image/png,image/webp,image/gif" style="display:none">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div id="mr-f-icon-preview" style="width:44px;height:44px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.05) center/contain no-repeat;background-image:${existing && existing.icon_type === 'image' && existing.icon_image ? `url('/uploads/${escapeHtmlD(existing.icon_image)}')` : 'none'}"></div>
+          <button type="button" id="mr-f-icon-upload-btn" style="padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#e8edf5;font-size:13px">${existing && existing.icon_type === 'image' && existing.icon_image ? 'Replace image' : 'Choose image'}</button>
+        </div>
+        <div style="font-size:11px;color:#a8b2c4;margin-top:4px">Shown small everywhere a reminder icon appears — a simple, high-contrast image works best.</div>
+      </div>
     </div>
     <div class="mr-form-row">
       <label>Repeats</label>
@@ -9504,12 +9569,51 @@ function openManageRemindersForm(id) {
     document.getElementById('mr-f-interval-row').style.display = e.target.value === 'interval' ? '' : 'none';
   });
   body.querySelectorAll('.mr-dow-btn').forEach(btn => btn.addEventListener('click', () => btn.classList.toggle('active')));
+  body.querySelectorAll('.mr-icontype-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      body.querySelectorAll('.mr-icontype-btn').forEach(b => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.style.background = active ? 'rgba(74,144,217,0.3)' : 'transparent';
+        b.style.color = active ? '#fff' : '#a8b2c4';
+      });
+      document.getElementById('mr-f-icon-emoji-row').style.display = btn.dataset.icontype === 'emoji' ? '' : 'none';
+      document.getElementById('mr-f-icon-text-row').style.display = btn.dataset.icontype === 'text' ? '' : 'none';
+      document.getElementById('mr-f-icon-image-row').style.display = btn.dataset.icontype === 'image' ? '' : 'none';
+    });
+  });
+  document.getElementById('mr-f-icon-upload-btn').addEventListener('click', () => document.getElementById('mr-f-icon-file').click());
+  document.getElementById('mr-f-icon-file').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('image', file);
+    try {
+      const res = await fetch('/api/reminders/icon-image', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.error) { alert('Upload failed: ' + data.error); return; }
+      _mrPendingIconImage = data.filename;
+      document.getElementById('mr-f-icon-preview').style.backgroundImage = `url('/uploads/${data.filename}')`;
+      document.getElementById('mr-f-icon-upload-btn').textContent = 'Replace image';
+    } catch { alert('Upload failed — check the connection and try again.'); }
+  });
   document.getElementById('mr-f-cancel').addEventListener('click', renderManageRemindersList);
   document.getElementById('mr-f-save').addEventListener('click', saveReminderForm);
 }
 async function saveReminderForm() {
   const name = document.getElementById('mr-f-name').value.trim();
-  const icon = document.getElementById('mr-f-icon').value.trim() || '📌';
+  const activeTypeBtn = document.querySelector('.mr-icontype-btn.active');
+  const iconType = activeTypeBtn ? activeTypeBtn.dataset.icontype : 'emoji';
+  let icon;
+  if (iconType === 'text') {
+    icon = document.getElementById('mr-f-icon-text').value.trim();
+    if (!icon) { alert('Enter a short text label, or switch to Emoji/Image.'); return; }
+  } else if (iconType === 'image') {
+    if (!_mrPendingIconImage) { alert('Choose an image first, or switch to Emoji/Text.'); return; }
+    icon = null;
+  } else {
+    icon = document.getElementById('mr-f-icon').value.trim() || '📌';
+  }
   const scheduleType = document.getElementById('mr-f-type').value;
   if (!name) { alert('Give this reminder a name first.'); return; }
   let scheduleConfig;
@@ -9523,7 +9627,11 @@ async function saveReminderForm() {
     if (!intervalDays || intervalDays < 2 || !startDate) { alert('Fill in both the interval and start date.'); return; }
     scheduleConfig = { intervalDays, startDate };
   }
-  const payload = { name, icon, schedule_type: scheduleType, schedule_config: scheduleConfig };
+  const payload = {
+    name, icon, icon_type: iconType,
+    icon_image: iconType === 'image' ? _mrPendingIconImage : undefined,
+    schedule_type: scheduleType, schedule_config: scheduleConfig,
+  };
   const saveBtn = document.getElementById('mr-f-save');
   saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
   try {

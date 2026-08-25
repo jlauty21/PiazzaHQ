@@ -6838,6 +6838,13 @@ function openCopyWidgetsModal() {
 // the OPEN trigger lives inside the widget's own settings HTML, since that
 // button genuinely is recreated fresh each time.
 let _manageRemindersEditingId = null; // null = "add new"; a reminder's id = editing that one
+// Tracks the uploaded (but not-yet-saved) icon image filename for the form
+// currently open — set on upload, read at Save time, reset whenever the
+// form is (re)opened. Needs its own variable rather than just reading the
+// DOM at save time because there's no input element holding this value:
+// the actual <img> preview shows it, but the filename itself only exists
+// server-side once uploaded.
+let _mrPendingIconImage = null;
 let _mrCachedReminders = []; // populated by renderManageRemindersListView(); the edit form looks the record back up here rather than a second fetch
 // Which container the list/form views render into — 'mr-body' (the modal,
 // opened from a Reminders widget's own settings) by default, or
@@ -6854,6 +6861,26 @@ function openManageRemindersModal() {
   _mrBodyId = 'mr-body';
   renderManageRemindersListView();
   $('manage-reminders-overlay').classList.add('open');
+}
+// Same rendering logic as reminderIconHtml() in display.html — this app-side
+// copy exists because the reminders management list (below) is the one
+// place in app.html that displays a saved reminder's icon outside the edit
+// form itself (which reads/writes the raw fields directly, not through
+// this). Kept in sync deliberately, not shared as a single file, matching
+// how this codebase already keeps app.html and display.html as two
+// separate copies rather than a shared module.
+function reminderIconHtml(r) {
+  if (!r) return '';
+  const type = r.icon_type || 'emoji';
+  if (type === 'image' && r.icon_image) {
+    return `<img style="width:1em;height:1em;object-fit:contain;vertical-align:middle;border-radius:0.15em" src="/uploads/${encodeURIComponent(r.icon_image)}" alt="">`;
+  }
+  if (type === 'text' && r.icon) {
+    const len = r.icon.length;
+    const scale = len <= 3 ? 1 : len <= 6 ? 0.62 : len <= 9 ? 0.46 : 0.36;
+    return `<span style="font-weight:800;letter-spacing:0.02em;font-size:${scale}em">${escapeHtml(r.icon)}</span>`;
+  }
+  return escapeHtml(r.icon || '📌');
 }
 async function renderManageRemindersListView() {
   if ($('mr-modal-title')) $('mr-modal-title').textContent = 'Manage Reminders';
@@ -6875,7 +6902,7 @@ async function renderManageRemindersListView() {
     <button class="btn btn-primary" id="mr-add-btn" type="button" style="width:100%;margin-bottom:14px">+ Add Reminder</button>
     ${reminders.length ? reminders.map(r => `
       <div style="display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--border)">
-        <div style="font-size:22px;flex-shrink:0">${r.icon}</div>
+        <div style="font-size:22px;flex-shrink:0">${reminderIconHtml(r)}</div>
         <div style="flex:1;min-width:0">
           <div style="font-size:15px;font-weight:600;color:var(--text)">${escapeHtml(r.name)}</div>
           <div style="font-size:12px;color:var(--muted);margin-top:2px">${escapeHtml(scheduleLabel(r))}</div>
@@ -6903,6 +6930,7 @@ async function deleteReminderFromModal(id, reminders) {
 function renderManageRemindersFormView(id) {
   _manageRemindersEditingId = id;
   const existing = id ? _mrCachedReminders.find(x => String(x.id) === String(id)) : null;
+  _mrPendingIconImage = existing && existing.icon_type === 'image' ? (existing.icon_image || null) : null;
   if ($('mr-modal-title')) $('mr-modal-title').textContent = existing ? 'Edit Reminder' : 'Add Reminder';
   const cfg = (existing && existing.schedule_config) || {};
   const scheduleType = (existing && existing.schedule_type) || 'weekly';
@@ -6916,8 +6944,30 @@ function renderManageRemindersFormView(id) {
       <input class="form-input" type="text" id="mr-f-name" value="${existing ? escapeHtml(existing.name) : ''}" placeholder="e.g. Trash, Recycling, Water plants" maxlength="40">
     </div>
     <div class="form-group">
-      <label class="form-label">Icon (any emoji)</label>
-      <input class="form-input" type="text" id="mr-f-icon" value="${existing ? existing.icon : '📌'}" maxlength="4" style="width:70px;text-align:center;font-size:20px">
+      <label class="form-label">Icon</label>
+      <div style="display:flex;gap:6px;margin-bottom:10px">
+        ${[['emoji','Emoji'],['text','Text'],['image','Image']].map(([val, label]) => `
+          <button type="button" class="mr-icontype-btn${(existing ? (existing.icon_type || 'emoji') : 'emoji') === val ? ' active' : ''}" data-icontype="${val}"
+            style="flex:1;padding:8px 0;border-radius:8px;border:1px solid var(--border);
+              background:${(existing ? (existing.icon_type || 'emoji') : 'emoji') === val ? 'rgba(74,144,217,0.3)' : 'var(--card)'};
+              color:${(existing ? (existing.icon_type || 'emoji') : 'emoji') === val ? '#fff' : 'var(--muted)'};font-size:12px;font-weight:700">${label}</button>
+        `).join('')}
+      </div>
+      <div id="mr-f-icon-emoji-row" style="${(existing ? (existing.icon_type||'emoji') : 'emoji') !== 'emoji' ? 'display:none' : ''}">
+        <input class="form-input" type="text" id="mr-f-icon" value="${existing && existing.icon ? existing.icon : '📌'}" maxlength="4" style="width:70px;text-align:center;font-size:20px">
+      </div>
+      <div id="mr-f-icon-text-row" style="${(existing ? existing.icon_type : '') !== 'text' ? 'display:none' : ''}">
+        <input class="form-input" type="text" id="mr-f-icon-text" value="${existing && existing.icon_type === 'text' ? escapeHtml(existing.icon || '') : ''}" maxlength="12" placeholder="e.g. TRASH" style="text-transform:uppercase">
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Short label — long text will shrink to fit wherever it's shown, but stays most readable around 4-6 characters.</div>
+      </div>
+      <div id="mr-f-icon-image-row" style="${(existing ? existing.icon_type : '') !== 'image' ? 'display:none' : ''}">
+        <input type="file" id="mr-f-icon-file" accept="image/jpeg,image/png,image/webp,image/gif" style="display:none">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div id="mr-f-icon-preview" style="width:44px;height:44px;border-radius:8px;border:1px solid var(--border);background:var(--card) center/contain no-repeat;background-image:${existing && existing.icon_type === 'image' && existing.icon_image ? `url('/uploads/${escapeHtml(existing.icon_image)}')` : 'none'}"></div>
+          <button type="button" class="btn" id="mr-f-icon-upload-btn" style="background:var(--card);border:1px solid var(--border)">${existing && existing.icon_type === 'image' && existing.icon_image ? 'Replace image' : 'Choose image'}</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Shown small everywhere a reminder icon appears — a simple, high-contrast image works best.</div>
+      </div>
     </div>
     <div class="form-group">
       <label class="form-label">Repeats</label>
@@ -6953,6 +7003,36 @@ function renderManageRemindersFormView(id) {
     btn.style.background = nowActive ? 'rgba(74,144,217,0.3)' : 'var(--card)';
     btn.style.color = nowActive ? '#fff' : 'var(--muted)';
   }));
+  document.querySelectorAll('.mr-icontype-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.mr-icontype-btn').forEach(b => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.style.background = active ? 'rgba(74,144,217,0.3)' : 'var(--card)';
+        b.style.color = active ? '#fff' : 'var(--muted)';
+      });
+      $('mr-f-icon-emoji-row').style.display = btn.dataset.icontype === 'emoji' ? '' : 'none';
+      $('mr-f-icon-text-row').style.display = btn.dataset.icontype === 'text' ? '' : 'none';
+      $('mr-f-icon-image-row').style.display = btn.dataset.icontype === 'image' ? '' : 'none';
+    });
+  });
+  $('mr-f-icon-upload-btn').addEventListener('click', () => $('mr-f-icon-file').click());
+  $('mr-f-icon-file').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('image', file);
+    showToast('Uploading…');
+    try {
+      const res = await fetch('/api/reminders/icon-image', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.error) { showToast('Upload failed: ' + data.error); return; }
+      _mrPendingIconImage = data.filename;
+      $('mr-f-icon-preview').style.backgroundImage = `url('/uploads/${data.filename}')`;
+      $('mr-f-icon-upload-btn').textContent = 'Replace image';
+      showToast('Image uploaded ✓');
+    } catch { showToast('❌ Upload failed — try again'); }
+  });
   $('mr-f-cancel').addEventListener('click', renderManageRemindersListView);
   $('mr-f-save').addEventListener('click', saveReminderFromModal);
 }
@@ -6981,7 +7061,18 @@ async function renderRemindersFamilyTab() {
 
 async function saveReminderFromModal() {
   const name = $('mr-f-name').value.trim();
-  const icon = $('mr-f-icon').value.trim() || '📌';
+  const activeTypeBtn = document.querySelector('.mr-icontype-btn.active');
+  const iconType = activeTypeBtn ? activeTypeBtn.dataset.icontype : 'emoji';
+  let icon;
+  if (iconType === 'text') {
+    icon = $('mr-f-icon-text').value.trim();
+    if (!icon) { showToast('Enter a short text label, or switch to Emoji/Image'); return; }
+  } else if (iconType === 'image') {
+    if (!_mrPendingIconImage) { showToast('Choose an image first, or switch to Emoji/Text'); return; }
+    icon = null;
+  } else {
+    icon = $('mr-f-icon').value.trim() || '📌';
+  }
   const scheduleType = $('mr-f-type').value;
   if (!name) { showToast('Give this reminder a name first'); return; }
   let scheduleConfig;
@@ -6995,7 +7086,11 @@ async function saveReminderFromModal() {
     if (!intervalDays || intervalDays < 2 || !startDate) { showToast('Fill in both the interval and start date'); return; }
     scheduleConfig = { intervalDays, startDate };
   }
-  const payload = { name, icon, schedule_type: scheduleType, schedule_config: scheduleConfig };
+  const payload = {
+    name, icon, icon_type: iconType,
+    icon_image: iconType === 'image' ? _mrPendingIconImage : undefined,
+    schedule_type: scheduleType, schedule_config: scheduleConfig,
+  };
   const saveBtn = $('mr-f-save');
   saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
   try {

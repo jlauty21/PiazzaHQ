@@ -628,6 +628,25 @@ if (!columnExists('displays', 'force_orientation')) {
   db.exec(`ALTER TABLE displays ADD COLUMN force_orientation TEXT DEFAULT 'auto'`);
   console.log('Migrated: added force_orientation column to displays');
 }
+if (!columnExists('reminders', 'icon_type')) {
+  // 'emoji' (default, unchanged behavior) | 'text' | 'image'. The existing
+  // `icon` column keeps double duty as the emoji OR the text-label string —
+  // both are just "a short string to show," no need for a separate column.
+  // `icon_image` (below) is the only genuinely new piece of data: an
+  // uploaded image is a filename, not something that fits in `icon`.
+  db.exec(`ALTER TABLE reminders ADD COLUMN icon_type TEXT DEFAULT 'emoji'`);
+  console.log('Migrated: added icon_type column to reminders');
+}
+if (!columnExists('reminders', 'icon_image')) {
+  // Filename only (relative to UPLOAD_DIR, same as photos — reminder icon
+  // uploads reuse that exact directory and multer instance rather than a
+  // separate mechanism, see POST /api/reminders/icon-image). A bare
+  // filename, not a full path, keeps it portable across a restore/migrate
+  // to a different install path — matches how every other upload here
+  // is stored.
+  db.exec(`ALTER TABLE reminders ADD COLUMN icon_image TEXT`);
+  console.log('Migrated: added icon_image column to reminders');
+}
 if (!columnExists('displays', 'rotation')) {
   db.exec(`ALTER TABLE displays ADD COLUMN rotation INTEGER DEFAULT 0`);
   console.log('Migrated: added rotation column to displays');
@@ -2957,18 +2976,35 @@ app.get('/api/reminders', (req, res) => {
   res.json(rows.map(r => ({ ...r, schedule_config: JSON.parse(r.schedule_config) })));
 });
 
+// POST /api/reminders/icon-image — uploads a reminder icon image standalone,
+// not tied to a specific reminder id, so it works identically whether the
+// person is creating a brand new reminder or editing an existing one (the
+// modal uploads on file-select, then includes the returned filename in the
+// reminder's own create/save payload below). Reuses the same UPLOAD_DIR and
+// `upload` multer instance as photos — no server-side resizing here, matching
+// every other upload in this file (no image-processing library exists or is
+// used anywhere; photos and custom-theme decorations are both stored at
+// whatever size was uploaded and sized down at render time via CSS instead).
+// A reminder icon renders at badge/chip scale everywhere it appears — see
+// reminderIconHtml() in display.html for the CSS-based sizing.
+app.post('/api/reminders/icon-image', upload.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No image uploaded (must be JPEG, PNG, WebP, or GIF).' });
+  res.json({ ok: true, filename: req.file.filename });
+});
+
 app.post('/api/reminders', (req, res) => {
-  const { name, icon, schedule_type, schedule_config } = req.body;
+  const { name, icon, icon_type, icon_image, schedule_type, schedule_config } = req.body;
   if (!name || !schedule_type || !schedule_config) {
     return res.status(400).json({ error: 'name, schedule_type, and schedule_config are required' });
   }
   if (schedule_type !== 'weekly' && schedule_type !== 'interval') {
     return res.status(400).json({ error: "schedule_type must be 'weekly' or 'interval'" });
   }
+  const validIconType = ['emoji', 'text', 'image'].includes(icon_type) ? icon_type : 'emoji';
   const result = db.prepare(`
-    INSERT INTO reminders (name, icon, schedule_type, schedule_config)
-    VALUES (?, ?, ?, ?)
-  `).run(name, icon || '📌', schedule_type, JSON.stringify(schedule_config));
+    INSERT INTO reminders (name, icon, icon_type, icon_image, schedule_type, schedule_config)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(name, icon || '📌', validIconType, validIconType === 'image' ? (icon_image || null) : null, schedule_type, JSON.stringify(schedule_config));
   const row = db.prepare(`SELECT * FROM reminders WHERE id = ?`).get(result.lastInsertRowid);
   broadcastUpdate('reminders');
   res.status(201).json({ ...row, schedule_config: JSON.parse(row.schedule_config) });
@@ -2977,13 +3013,27 @@ app.post('/api/reminders', (req, res) => {
 app.put('/api/reminders/:id', (req, res) => {
   const existing = db.prepare(`SELECT * FROM reminders WHERE id = ?`).get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Reminder not found' });
-  const { name, icon, schedule_type, schedule_config, active } = req.body;
+  const { name, icon, icon_type, icon_image, schedule_type, schedule_config, active } = req.body;
+  const newIconType = icon_type !== undefined
+    ? (['emoji', 'text', 'image'].includes(icon_type) ? icon_type : 'emoji')
+    : existing.icon_type;
+  const newIconImage = newIconType === 'image' ? (icon_image ?? existing.icon_image) : null;
+  // Clean up the old file whenever it's being replaced by a different one, or
+  // dropped entirely because the type changed away from 'image' — same
+  // pattern removeCustomThemeFile() already uses for decorations, just
+  // inline here since this is the only place a reminder's own icon image
+  // ever changes.
+  if (existing.icon_image && existing.icon_image !== newIconImage) {
+    try { fs.unlinkSync(path.join(UPLOAD_DIR, existing.icon_image)); } catch {}
+  }
   db.prepare(`
-    UPDATE reminders SET name=?, icon=?, schedule_type=?, schedule_config=?, active=?
+    UPDATE reminders SET name=?, icon=?, icon_type=?, icon_image=?, schedule_type=?, schedule_config=?, active=?
     WHERE id=?
   `).run(
     name ?? existing.name,
     icon ?? existing.icon,
+    newIconType,
+    newIconImage,
     schedule_type ?? existing.schedule_type,
     schedule_config !== undefined ? JSON.stringify(schedule_config) : existing.schedule_config,
     active !== undefined ? (active ? 1 : 0) : existing.active,
@@ -2997,6 +3047,9 @@ app.put('/api/reminders/:id', (req, res) => {
 app.delete('/api/reminders/:id', (req, res) => {
   const existing = db.prepare(`SELECT * FROM reminders WHERE id = ?`).get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Reminder not found' });
+  if (existing.icon_image) {
+    try { fs.unlinkSync(path.join(UPLOAD_DIR, existing.icon_image)); } catch {}
+  }
   db.prepare(`DELETE FROM reminders WHERE id = ?`).run(req.params.id);
   broadcastUpdate('reminders');
   res.json({ ok: true });
@@ -3708,6 +3761,14 @@ app.get('/api/sync/photos', (req, res) => {
   for (const c of choreIcons) {
     const fn = c.icon.slice(4);
     if (fn) files.push(fn);
+  }
+  // Reminder icons (uploaded images, icon_type='image') — same reasoning as
+  // chore icons just above: without this, a mirror would have the DB row
+  // (icon_image references a filename) but never the actual file, showing a
+  // broken image instead of the picture.
+  const reminderIcons = db.prepare(`SELECT icon_image FROM reminders WHERE icon_type = 'image' AND icon_image IS NOT NULL`).all();
+  for (const r of reminderIcons) {
+    if (r.icon_image) files.push(r.icon_image);
   }
   res.json({ files });
 });
@@ -8199,12 +8260,26 @@ function renderBriefingHTML(content, displayName, recipientName) {
   // template below) — unlike Events/Tasks, absence is the COMMON case here
   // (trash day is maybe once or twice a week), so an empty-state row every
   // single day would just be daily clutter rather than useful information.
-  const remindersHtml = content.dueReminders.map(r => `
+  // Icon needs its own handling here rather than reusing reminderIconHtml()
+  // (display.html-only, browser-side) — an email has no relative-URL base to
+  // resolve "/uploads/..." against, and this same function also backs the
+  // browser-rendered preview endpoint, so build an absolute URL once and use
+  // it for both rather than special-casing email vs. preview.
+  const briefingBaseUrl = (() => {
+    const addrs = getReachableAddresses();
+    return `http://${addrs.tailscale || addrs.lan || 'localhost'}:${PORT}`;
+  })();
+  const remindersHtml = content.dueReminders.map(r => {
+    const iconHtml = r.icon_type === 'image' && r.icon_image
+      ? `<img src="${briefingBaseUrl}/uploads/${encodeURIComponent(r.icon_image)}" alt="" style="width:16px;height:16px;object-fit:contain;vertical-align:middle;border-radius:2px">`
+      : (r.icon || '📌');
+    return `
     <tr>
       <td style="padding:6px 0;border-bottom:1px solid #2a3142;font-size:14px;color:#e8edf5">
-        ${r.icon} ${r.name}
+        ${iconHtml} ${r.name}
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   const fmtTaskDue = (t) => {
     if (!t.due || !t.due.date) return '';
