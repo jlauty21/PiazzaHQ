@@ -5,11 +5,29 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Piazza HQ">
   <meta name="theme-color" content="#0a0e1a">
-  <title>Calendar</title>
+  <!-- Same favicon assets as the marketing site (public/assets/ in that
+       package) — copied over rather than referenced across packages, since
+       this app is deployed independently of the site. SVG first (crisp at
+       any size, what modern browsers/Google search actually use), PNG as
+       the fallback for anything that doesn't support SVG favicons, and the
+       apple-touch-icon for iOS "Add to Home Screen" — without it, iOS
+       falls back to an auto-generated screenshot thumbnail instead of the
+       actual logo. -->
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/assets/favicon-32.png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+  <link rel="manifest" href="/app-manifest.json">
+  <title>Piazza HQ</title>
   <!-- Async font loading — see the same fix (and full explanation) in display.html. -->
   <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" onload="this.onload=null;this.rel='stylesheet'">
   <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"></noscript>
+  <!-- Space Grotesk: the marketing site's own display font, used only for the
+       "Piazza HQ" header wordmark below — matching what the site's nav brand
+       already uses, pulled in the same async-load style as Inter above. -->
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600&display=swap"></noscript>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -88,7 +106,30 @@
       align-items: center;
       flex-shrink: 0;
     }
-    .nav-title { font-size: 18px; font-weight: 600; }
+    .nav-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 18px;
+      font-weight: 600;
+    }
+    /* Pulled directly from the marketing site's own header (.brand/.brand-mark)
+       — same gradient, same SVG, same sizing. Only the wordmark's color is
+       different from the site: the site's is dark ink on a light/cream nav
+       bar, this app's header is dark, so brand-text just inherits the
+       app's own --text color instead of being hardcoded to the site's ink
+       color, which would be unreadable here. */
+    .brand-mark {
+      width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+      background: linear-gradient(155deg, #D4A25E, #B8823D);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 2px 6px rgba(184,130,61,0.35);
+    }
+    .brand-mark svg { width: 16px; height: 16px; }
+    .brand-text {
+      font-family: 'Space Grotesk', 'Inter', sans-serif;
+      letter-spacing: -0.01em;
+    }
     .nav-btn {
       background: var(--accent);
       border: none;
@@ -1029,7 +1070,12 @@
   <div id="app-header">
    <div id="app-header-inner">
     <nav class="nav">
-      <div class="nav-title">📅 Calendar</div>
+      <div class="nav-title">
+        <span class="brand-mark">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M4 9h16M8 5v4M16 5v4M6 9v10a1 1 0 001 1h10a1 1 0 001-1V9" stroke="#221704" stroke-width="2" stroke-linecap="round"/></svg>
+        </span>
+        <span class="brand-text">Piazza HQ</span>
+      </div>
       <!-- Manual local event creation hidden — calendars (Google/iCloud sync) are the
            supported way to add events now. Code/modal kept intact, just not surfaced. -->
       <button class="nav-btn" id="add-btn" title="Add event" style="display:none">+</button>
@@ -6869,6 +6915,38 @@ function openManageRemindersModal() {
 // this). Kept in sync deliberately, not shared as a single file, matching
 // how this codebase already keeps app.html and display.html as two
 // separate copies rather than a shared module.
+// Human-readable description of a reminder's recurrence, for the management
+// list. Covers all four frequency types plus the universal end condition —
+// used instead of the inline version this replaced, which only ever
+// understood the original weekly/interval pair.
+function reminderScheduleSummary(r) {
+  const cfg = r.schedule_config || {};
+  const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const nthLabel = (n) => n === -1 ? 'last' : n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`;
+  let base = '';
+  if (r.schedule_type === 'weekly') {
+    const days = (cfg.daysOfWeek || []).map(d => dayNames[d]).join(', ');
+    const every = (cfg.weekInterval || 1) > 1 ? `Every ${cfg.weekInterval} weeks` : 'Weekly';
+    base = days ? `${every} — ${days}` : `${every} — no days set`;
+  } else if (r.schedule_type === 'interval') {
+    base = `Every ${cfg.intervalDays || '?'} days`;
+  } else if (r.schedule_type === 'monthly') {
+    const every = (cfg.monthInterval || 1) > 1 ? `Every ${cfg.monthInterval} months` : 'Monthly';
+    base = cfg.monthlyMode === 'nthWeekday'
+      ? `${every} on the ${nthLabel(cfg.nthWeek)} ${dayNames[cfg.nthWeekday]}`
+      : `${every} on day ${cfg.dayOfMonth || '?'}`;
+  } else if (r.schedule_type === 'yearly') {
+    const every = (cfg.yearInterval || 1) > 1 ? `Every ${cfg.yearInterval} years` : 'Yearly';
+    const month = monthNames[(cfg.yearlyMonth || 1) - 1];
+    base = cfg.yearlyMode === 'nthWeekday'
+      ? `${every} on the ${nthLabel(cfg.yearlyNthWeek)} ${dayNames[cfg.yearlyNthWeekday]} of ${month}`
+      : `${every} on ${month} ${cfg.yearlyDay || '?'}`;
+  }
+  if (cfg.endType === 'onDate' && cfg.endDate) base += `, until ${cfg.endDate}`;
+  else if (cfg.endType === 'afterCount' && cfg.endCount) base += `, ${cfg.endCount}×`;
+  return base;
+}
 function reminderIconHtml(r) {
   if (!r) return '';
   const type = r.icon_type || 'emoji';
@@ -6889,15 +6967,7 @@ async function renderManageRemindersListView() {
   let reminders = [];
   try { reminders = await apiFetch('/api/reminders') || []; } catch { reminders = []; }
   _mrCachedReminders = reminders; // cached so the edit form (opened by id) can look the record back up without a second fetch
-  const scheduleLabel = (r) => {
-    if (r.schedule_type === 'weekly') {
-      const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-      const days = (r.schedule_config.daysOfWeek || []).map(d => dayNames[d]).join(', ');
-      return days ? `Weekly — ${days}` : 'Weekly — no days set';
-    }
-    if (r.schedule_type === 'interval') return `Every ${r.schedule_config.intervalDays || '?'} days`;
-    return '';
-  };
+  const scheduleLabel = (r) => reminderScheduleSummary(r);
   body.innerHTML = `
     <button class="btn btn-primary" id="mr-add-btn" type="button" style="width:100%;margin-bottom:14px">+ Add Reminder</button>
     ${reminders.length ? reminders.map(r => `
@@ -6926,6 +6996,22 @@ async function deleteReminderFromModal(id, reminders) {
     showToast('Reminder deleted');
     renderManageRemindersListView();
   } catch { showToast('❌ Could not delete — try again'); }
+}
+// Small <option> list builders shared by the Monthly/Yearly recurrence UI
+// below — kept as plain functions rather than inlined repeatedly since
+// nth-week and weekday options are needed in two places each (Monthly's
+// nthWeekday mode, Yearly's nthWeekday mode).
+function nthWeekOptions(selected) {
+  const opts = [[1,'First'],[2,'Second'],[3,'Third'],[4,'Fourth'],[-1,'Last']];
+  return opts.map(([v,l]) => `<option value="${v}" ${String(selected)===String(v)?'selected':''}>${l}</option>`).join('');
+}
+function weekdayOptions(dayNames, selected) {
+  const full = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  return full.map((l, i) => `<option value="${i}" ${String(selected)===String(i)?'selected':''}>${l}</option>`).join('');
+}
+function monthOptions(selected) {
+  const names = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  return names.map((l, i) => `<option value="${i+1}" ${String(selected)===String(i+1)?'selected':''}>${l}</option>`).join('');
 }
 function renderManageRemindersFormView(id) {
   _manageRemindersEditingId = id;
@@ -6957,7 +7043,7 @@ function renderManageRemindersFormView(id) {
         <input class="form-input" type="text" id="mr-f-icon" value="${existing && existing.icon ? existing.icon : '📌'}" maxlength="4" style="width:70px;text-align:center;font-size:20px">
       </div>
       <div id="mr-f-icon-text-row" style="${(existing ? existing.icon_type : '') !== 'text' ? 'display:none' : ''}">
-        <input class="form-input" type="text" id="mr-f-icon-text" value="${existing && existing.icon_type === 'text' ? escapeHtml(existing.icon || '') : ''}" maxlength="12" placeholder="e.g. TRASH" style="text-transform:uppercase">
+        <input class="form-input" type="text" id="mr-f-icon-text" value="${existing && existing.icon_type === 'text' ? escapeHtml(existing.icon || '') : ''}" maxlength="12" placeholder="e.g. Trash">
         <div style="font-size:11px;color:var(--muted);margin-top:4px">Short label — long text will shrink to fit wherever it's shown, but stays most readable around 4-6 characters.</div>
       </div>
       <div id="mr-f-icon-image-row" style="${(existing ? existing.icon_type : '') !== 'image' ? 'display:none' : ''}">
@@ -6972,21 +7058,82 @@ function renderManageRemindersFormView(id) {
     <div class="form-group">
       <label class="form-label">Repeats</label>
       <select class="form-input" id="mr-f-type">
-        <option value="weekly" ${scheduleType==='weekly'?'selected':''}>On specific day(s) of the week</option>
-        <option value="interval" ${scheduleType==='interval'?'selected':''}>Every N days</option>
+        <option value="weekly" ${scheduleType==='weekly'?'selected':''}>Weekly</option>
+        <option value="interval" ${scheduleType==='interval'?'selected':''}>Daily</option>
+        <option value="monthly" ${scheduleType==='monthly'?'selected':''}>Monthly</option>
+        <option value="yearly" ${scheduleType==='yearly'?'selected':''}>Yearly</option>
       </select>
     </div>
     <div class="form-group" id="mr-f-weekly-row" style="${scheduleType!=='weekly'?'display:none':''}">
-      <label class="form-label">Which days</label>
-      <div style="display:flex;gap:5px">
+      <label class="form-label">Every</label>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input class="form-input" type="number" id="mr-f-week-interval" min="1" max="52" value="${cfg.weekInterval || 1}" style="width:70px">
+        <span style="color:var(--muted);font-size:13px">week(s), on:</span>
+      </div>
+      <div style="display:flex;gap:5px;margin-top:10px">
         ${dayNames.map((d, i) => `<button type="button" class="mr-dow-btn${selectedDays.has(i)?' active':''}" data-dow="${i}" style="flex:1;padding:9px 0;border-radius:8px;border:1px solid var(--border);background:${selectedDays.has(i)?'rgba(74,144,217,0.3)':'var(--card)'};color:${selectedDays.has(i)?'#fff':'var(--muted)'};font-size:12px;font-weight:700">${d}</button>`).join('')}
       </div>
     </div>
     <div class="form-group" id="mr-f-interval-row" style="${scheduleType!=='interval'?'display:none':''}">
       <label class="form-label">Repeat every (days)</label>
-      <input class="form-input" type="number" id="mr-f-interval-days" min="2" max="365" value="${cfg.intervalDays || 14}">
-      <label class="form-label" style="margin-top:12px">Starting from</label>
+      <input class="form-input" type="number" id="mr-f-interval-days" min="1" max="365" value="${cfg.intervalDays || 14}">
+    </div>
+    <div class="form-group" id="mr-f-monthly-row" style="${scheduleType!=='monthly'?'display:none':''}">
+      <label class="form-label">Every</label>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input class="form-input" type="number" id="mr-f-month-interval" min="1" max="24" value="${cfg.monthInterval || 1}" style="width:70px">
+        <span style="color:var(--muted);font-size:13px">month(s)</span>
+      </div>
+      <select class="form-input" id="mr-f-monthly-mode" style="margin-top:10px">
+        <option value="dayOfMonth" ${(cfg.monthlyMode||'dayOfMonth')==='dayOfMonth'?'selected':''}>On a specific day of the month</option>
+        <option value="nthWeekday" ${cfg.monthlyMode==='nthWeekday'?'selected':''}>On the nth weekday</option>
+      </select>
+      <div id="mr-f-monthly-dayofmonth-row" style="margin-top:10px;${cfg.monthlyMode==='nthWeekday'?'display:none':''}">
+        <label class="form-label">Day of month</label>
+        <input class="form-input" type="number" id="mr-f-day-of-month" min="1" max="31" value="${cfg.dayOfMonth || 1}">
+      </div>
+      <div id="mr-f-monthly-nthweekday-row" style="margin-top:10px;display:flex;gap:8px;${cfg.monthlyMode!=='nthWeekday'?'display:none':''}">
+        <select class="form-input" id="mr-f-nth-week" style="flex:1">${nthWeekOptions(cfg.nthWeek)}</select>
+        <select class="form-input" id="mr-f-nth-weekday" style="flex:1">${weekdayOptions(dayNames, cfg.nthWeekday)}</select>
+      </div>
+    </div>
+    <div class="form-group" id="mr-f-yearly-row" style="${scheduleType!=='yearly'?'display:none':''}">
+      <label class="form-label">Every</label>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input class="form-input" type="number" id="mr-f-year-interval" min="1" max="20" value="${cfg.yearInterval || 1}" style="width:70px">
+        <span style="color:var(--muted);font-size:13px">year(s), in:</span>
+      </div>
+      <select class="form-input" id="mr-f-yearly-month" style="margin-top:10px">${monthOptions(cfg.yearlyMonth)}</select>
+      <select class="form-input" id="mr-f-yearly-mode" style="margin-top:10px">
+        <option value="date" ${(cfg.yearlyMode||'date')==='date'?'selected':''}>On a specific date</option>
+        <option value="nthWeekday" ${cfg.yearlyMode==='nthWeekday'?'selected':''}>On the nth weekday</option>
+      </select>
+      <div id="mr-f-yearly-date-row" style="margin-top:10px;${cfg.yearlyMode==='nthWeekday'?'display:none':''}">
+        <label class="form-label">Day</label>
+        <input class="form-input" type="number" id="mr-f-yearly-day" min="1" max="31" value="${cfg.yearlyDay || 1}">
+      </div>
+      <div id="mr-f-yearly-nthweekday-row" style="margin-top:10px;display:flex;gap:8px;${cfg.yearlyMode!=='nthWeekday'?'display:none':''}">
+        <select class="form-input" id="mr-f-yearly-nth-week" style="flex:1">${nthWeekOptions(cfg.yearlyNthWeek)}</select>
+        <select class="form-input" id="mr-f-yearly-nth-weekday" style="flex:1">${weekdayOptions(dayNames, cfg.yearlyNthWeekday)}</select>
+      </div>
+    </div>
+    <div class="form-group" id="mr-f-startdate-row">
+      <label class="form-label">Starts</label>
       <input class="form-input" type="date" id="mr-f-start-date" value="${cfg.startDate || todayIso}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Ends</label>
+      <select class="form-input" id="mr-f-end-type">
+        <option value="never" ${(cfg.endType||'never')==='never'?'selected':''}>Never</option>
+        <option value="onDate" ${cfg.endType==='onDate'?'selected':''}>On a date</option>
+        <option value="afterCount" ${cfg.endType==='afterCount'?'selected':''}>After a number of times</option>
+      </select>
+      <div id="mr-f-end-date-row" style="margin-top:10px;${cfg.endType!=='onDate'?'display:none':''}">
+        <input class="form-input" type="date" id="mr-f-end-date" value="${cfg.endDate || ''}">
+      </div>
+      <div id="mr-f-end-count-row" style="margin-top:10px;${cfg.endType!=='afterCount'?'display:none':''}">
+        <input class="form-input" type="number" id="mr-f-end-count" min="1" max="999" value="${cfg.endCount || 10}">
+      </div>
     </div>
     <div style="display:flex;gap:10px;margin-top:20px">
       <button class="btn" id="mr-f-cancel" type="button" style="flex:1;background:var(--card);border:1px solid var(--border)">Cancel</button>
@@ -6996,6 +7143,24 @@ function renderManageRemindersFormView(id) {
   $('mr-f-type').addEventListener('change', (e) => {
     $('mr-f-weekly-row').style.display = e.target.value === 'weekly' ? '' : 'none';
     $('mr-f-interval-row').style.display = e.target.value === 'interval' ? '' : 'none';
+    $('mr-f-monthly-row').style.display = e.target.value === 'monthly' ? '' : 'none';
+    $('mr-f-yearly-row').style.display = e.target.value === 'yearly' ? '' : 'none';
+  });
+  if ($('mr-f-monthly-mode')) {
+    $('mr-f-monthly-mode').addEventListener('change', (e) => {
+      $('mr-f-monthly-dayofmonth-row').style.display = e.target.value === 'dayOfMonth' ? '' : 'none';
+      $('mr-f-monthly-nthweekday-row').style.display = e.target.value === 'nthWeekday' ? '' : 'none';
+    });
+  }
+  if ($('mr-f-yearly-mode')) {
+    $('mr-f-yearly-mode').addEventListener('change', (e) => {
+      $('mr-f-yearly-date-row').style.display = e.target.value === 'date' ? '' : 'none';
+      $('mr-f-yearly-nthweekday-row').style.display = e.target.value === 'nthWeekday' ? '' : 'none';
+    });
+  }
+  $('mr-f-end-type').addEventListener('change', (e) => {
+    $('mr-f-end-date-row').style.display = e.target.value === 'onDate' ? '' : 'none';
+    $('mr-f-end-count-row').style.display = e.target.value === 'afterCount' ? '' : 'none';
   });
   document.querySelectorAll('.mr-dow-btn').forEach(btn => btn.addEventListener('click', () => {
     const nowActive = !btn.classList.contains('active');
@@ -7075,16 +7240,56 @@ async function saveReminderFromModal() {
   }
   const scheduleType = $('mr-f-type').value;
   if (!name) { showToast('Give this reminder a name first'); return; }
+  const startDate = $('mr-f-start-date').value;
   let scheduleConfig;
   if (scheduleType === 'weekly') {
     const days = [...document.querySelectorAll('.mr-dow-btn.active')].map(b => parseInt(b.dataset.dow, 10));
     if (!days.length) { showToast('Pick at least one day of the week'); return; }
-    scheduleConfig = { daysOfWeek: days };
-  } else {
+    const weekInterval = parseInt($('mr-f-week-interval').value, 10) || 1;
+    scheduleConfig = { daysOfWeek: days, weekInterval, startDate };
+  } else if (scheduleType === 'interval') {
     const intervalDays = parseInt($('mr-f-interval-days').value, 10);
-    const startDate = $('mr-f-start-date').value;
-    if (!intervalDays || intervalDays < 2 || !startDate) { showToast('Fill in both the interval and start date'); return; }
+    if (!intervalDays || intervalDays < 1 || !startDate) { showToast('Fill in both the interval and start date'); return; }
     scheduleConfig = { intervalDays, startDate };
+  } else if (scheduleType === 'monthly') {
+    const monthInterval = parseInt($('mr-f-month-interval').value, 10) || 1;
+    const monthlyMode = $('mr-f-monthly-mode').value;
+    if (!startDate) { showToast('Pick a start date'); return; }
+    scheduleConfig = { monthlyMode, monthInterval, startDate };
+    if (monthlyMode === 'dayOfMonth') {
+      const dayOfMonth = parseInt($('mr-f-day-of-month').value, 10);
+      if (!dayOfMonth || dayOfMonth < 1 || dayOfMonth > 31) { showToast('Pick a valid day of the month'); return; }
+      scheduleConfig.dayOfMonth = dayOfMonth;
+    } else {
+      scheduleConfig.nthWeek = parseInt($('mr-f-nth-week').value, 10);
+      scheduleConfig.nthWeekday = parseInt($('mr-f-nth-weekday').value, 10);
+    }
+  } else { // yearly
+    const yearInterval = parseInt($('mr-f-year-interval').value, 10) || 1;
+    const yearlyMonth = parseInt($('mr-f-yearly-month').value, 10);
+    const yearlyMode = $('mr-f-yearly-mode').value;
+    if (!startDate) { showToast('Pick a start date'); return; }
+    scheduleConfig = { yearlyMode, yearlyMonth, yearInterval, startDate };
+    if (yearlyMode === 'date') {
+      const yearlyDay = parseInt($('mr-f-yearly-day').value, 10);
+      if (!yearlyDay || yearlyDay < 1 || yearlyDay > 31) { showToast('Pick a valid day'); return; }
+      scheduleConfig.yearlyDay = yearlyDay;
+    } else {
+      scheduleConfig.yearlyNthWeek = parseInt($('mr-f-yearly-nth-week').value, 10);
+      scheduleConfig.yearlyNthWeekday = parseInt($('mr-f-yearly-nth-weekday').value, 10);
+    }
+  }
+  // Universal end condition, layered onto whichever pattern was built above.
+  const endType = $('mr-f-end-type').value;
+  scheduleConfig.endType = endType;
+  if (endType === 'onDate') {
+    const endDate = $('mr-f-end-date').value;
+    if (!endDate) { showToast('Pick an end date'); return; }
+    scheduleConfig.endDate = endDate;
+  } else if (endType === 'afterCount') {
+    const endCount = parseInt($('mr-f-end-count').value, 10);
+    if (!endCount || endCount < 1) { showToast('Enter how many times it should repeat'); return; }
+    scheduleConfig.endCount = endCount;
   }
   const payload = {
     name, icon, icon_type: iconType,
@@ -7871,6 +8076,13 @@ async function drawWidgetSettingsPanel() {
           <div class="range-row">
             <input type="range" id="cal-reminder-size-range" min="8" max="48" step="1" value="${w.calReminderSizePx || Math.round(fontPx * 1.4)}">
             <span class="range-val" id="cal-reminder-size-val">${w.calReminderSizePx || Math.round(fontPx * 1.4)}px</span>
+          </div>
+        </div>
+        <div class="settings-row" id="cal-reminder-text-size-row" style="${w.calShowReminders?'':'display:none'}">
+          <label>Text Reminder Size ${infoBtn('Only affects reminders using a text label as their icon (e.g. "TRASH") — emoji and image icons use Badge Size above instead. A percentage on top of the automatic shrink-to-fit that already applies to longer labels.')}</label>
+          <div class="range-row">
+            <input type="range" id="cal-reminder-textsize-range" min="50" max="200" step="10" value="${w.calReminderTextSizePct || 100}">
+            <span class="range-val" id="cal-reminder-textsize-val">${w.calReminderTextSizePct || 100}%</span>
           </div>
         </div>
       </div>
@@ -9573,6 +9785,12 @@ async function drawWidgetSettingsPanel() {
       $('cal-reminder-size-range').addEventListener('input', (e) => {
         w.calReminderSizePx = parseInt(e.target.value, 10);
         $('cal-reminder-size-val').textContent = w.calReminderSizePx + 'px';
+      });
+    }
+    if ($('cal-reminder-textsize-range')) {
+      $('cal-reminder-textsize-range').addEventListener('input', (e) => {
+        w.calReminderTextSizePct = parseInt(e.target.value, 10);
+        $('cal-reminder-textsize-val').textContent = w.calReminderTextSizePct + '%';
       });
     }
     if ($('cal-past-events-select')) {

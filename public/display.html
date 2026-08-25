@@ -3,6 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Same favicon setup as app.html — see its own comment for the full
+       explanation of why SVG+PNG+apple-touch-icon, and why the assets are
+       copied here rather than referenced across packages. -->
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/assets/favicon-32.png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
   <title>Piazza HQ Display</title>
   <!-- Fonts load asynchronously (preload, then swap to stylesheet once fetched) so
        first paint never blocks on reaching fonts.googleapis.com. A CSS @import here
@@ -3792,7 +3798,57 @@ function renderDateTime(widget) {
 // so an image or text label scales consistently with whatever context-
 // specific size that wrapper already computes rather than needing a fixed
 // pixel size special-cased per call site.
-function reminderIconHtml(r) {
+// Renders a reminder's icon consistently across every context it appears in
+// (calendar-day badges, Agenda rows, the management list, and every
+// Reminders widget style) — a reminder's icon can be an emoji (default), a
+// short text label, or a small uploaded image (icon_type on the reminders
+// table, added alongside the existing icon column rather than replacing
+// it — icon still holds the emoji OR the text string, icon_image is the
+// only genuinely new field). Each call site keeps its OWN existing wrapper
+// element/class for sizing (.rem-icon, .rem-chip-icon, .mc-reminder-badge,
+// etc. — all originally just held an emoji character, sized via font-size)
+// — this only decides what goes INSIDE that wrapper, via em-based sizing,
+// so an image or text label scales consistently with whatever context-
+// specific size that wrapper already computes rather than needing a fixed
+// pixel size special-cased per call site.
+// textScale: an extra multiplier applied only to text-type icons, on top of
+// the automatic length-based shrink below — only Mini Calendar's badges
+// currently expose this as a per-widget setting (calReminderTextSizePct),
+// so every other call site just omits it and gets the default of 1 (no
+// change), leaving their text-reminder sizing exactly as it was.
+// Same logic as reminderScheduleSummary() in app.html — see that copy for
+// the full explanation. Suffixed D to match this file's own convention for
+// duplicated copies (escapeHtmlD, nthWeekOptionsD, etc.), and uses DAYS_S
+// (this file's existing day-abbreviation constant) instead of a locally
+// redefined array.
+function reminderScheduleSummaryD(r) {
+  const cfg = r.schedule_config || {};
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const nthLabel = (n) => n === -1 ? 'last' : n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`;
+  let base = '';
+  if (r.schedule_type === 'weekly') {
+    const days = (cfg.daysOfWeek || []).map(d => DAYS_S[d]).join(', ');
+    const every = (cfg.weekInterval || 1) > 1 ? `Every ${cfg.weekInterval} weeks` : 'Weekly';
+    base = days ? `${every} — ${days}` : `${every} — no days set`;
+  } else if (r.schedule_type === 'interval') {
+    base = `Every ${cfg.intervalDays || '?'} days`;
+  } else if (r.schedule_type === 'monthly') {
+    const every = (cfg.monthInterval || 1) > 1 ? `Every ${cfg.monthInterval} months` : 'Monthly';
+    base = cfg.monthlyMode === 'nthWeekday'
+      ? `${every} on the ${nthLabel(cfg.nthWeek)} ${DAYS_S[cfg.nthWeekday]}`
+      : `${every} on day ${cfg.dayOfMonth || '?'}`;
+  } else if (r.schedule_type === 'yearly') {
+    const every = (cfg.yearInterval || 1) > 1 ? `Every ${cfg.yearInterval} years` : 'Yearly';
+    const month = monthNames[(cfg.yearlyMonth || 1) - 1];
+    base = cfg.yearlyMode === 'nthWeekday'
+      ? `${every} on the ${nthLabel(cfg.yearlyNthWeek)} ${DAYS_S[cfg.yearlyNthWeekday]} of ${month}`
+      : `${every} on ${month} ${cfg.yearlyDay || '?'}`;
+  }
+  if (cfg.endType === 'onDate' && cfg.endDate) base += `, until ${cfg.endDate}`;
+  else if (cfg.endType === 'afterCount' && cfg.endCount) base += `, ${cfg.endCount}×`;
+  return base;
+}
+function reminderIconHtml(r, textScale) {
   if (!r) return '';
   const type = r.icon_type || 'emoji';
   if (type === 'image' && r.icon_image) {
@@ -3804,7 +3860,8 @@ function reminderIconHtml(r) {
     // emoji character — tuned by eye against the shortest/tightest context
     // (Mini Calendar's day badges), not a measured fit-to-container pass
     // (nothing else in this file measures text width for sizing either).
-    const scale = len <= 3 ? 1 : len <= 6 ? 0.62 : len <= 9 ? 0.46 : 0.36;
+    const baseScale = len <= 3 ? 1 : len <= 6 ? 0.62 : len <= 9 ? 0.46 : 0.36;
+    const scale = baseScale * (textScale || 1);
     return `<span class="rem-icon-text" style="font-size:${scale}em">${escapeHtmlD(r.icon)}</span>`;
   }
   return escapeHtmlD(r.icon || '📌');
@@ -4787,12 +4844,13 @@ function renderMiniCalGrid(widget) {
   const reminderBadgePos = (widget && widget.calReminderPosition) || 'top-left';
   const reminderBadgeSizePx = (widget && widget.calReminderSizePx) || Math.round(fontPx * 1.4);
   const reminderBadgeSizeExpr = `calc(${reminderBadgeSizePx}px * var(--ui-scale,1))`;
+  const reminderTextScale = ((widget && widget.calReminderTextSizePct) || 100) / 100;
   const activeReminders = showReminderBadges ? (state.reminders || []).filter(r => r.active !== 0) : [];
   const reminderBadgesHtml = (ds) => {
     if (!activeReminders.length) return '';
     const matches = activeReminders.filter(r => reminderOccursOnDate(r, ds));
     if (!matches.length) return '';
-    const badges = matches.map(r => `<span class="mc-reminder-badge" style="font-size:${reminderBadgeSizeExpr}" title="${escapeHtmlD(r.name)}">${reminderIconHtml(r)}</span>`).join('');
+    const badges = matches.map(r => `<span class="mc-reminder-badge" style="font-size:${reminderBadgeSizeExpr}" title="${escapeHtmlD(r.name)}">${reminderIconHtml(r, reminderTextScale)}</span>`).join('');
     return `<div class="mc-reminder-badges pos-${reminderBadgePos}">${badges}</div>`;
   };
 
@@ -7712,6 +7770,13 @@ function renderCalendarAdvancedSettings(w) {
           <span class="was-range-val" id="cal-reminder-size-val">${w.calReminderSizePx || Math.round(fontPx * 1.4)}px</span>
         </div>
       </div>
+      <div class="was-row" id="cal-reminder-text-size-row" style="${w.calShowReminders?'':'display:none'}">
+        <label>Text Reminder Size ${infoBtn('Only affects reminders using a text label as their icon (e.g. "TRASH") — emoji and image icons use Badge Size above instead. A percentage on top of the automatic shrink-to-fit that already applies to longer labels.')}</label>
+        <div class="was-range-row">
+          <input type="range" id="cal-reminder-textsize-range" min="50" max="200" step="10" value="${w.calReminderTextSizePct || 100}">
+          <span class="was-range-val" id="cal-reminder-textsize-val">${w.calReminderTextSizePct || 100}%</span>
+        </div>
+      </div>
     </div>
     <div id="cal-agenda-only-settings" style="${calLayout==='agenda'?'':'display:none'}">
       <div class="was-row">
@@ -7821,6 +7886,10 @@ function wireCalendarAdvancedSettings(w) {
   onLiveField('cal-reminder-size-range', 'input', (el) => {
     w.calReminderSizePx = parseInt(el.value, 10);
     document.getElementById('cal-reminder-size-val').textContent = w.calReminderSizePx + 'px';
+  });
+  onLiveField('cal-reminder-textsize-range', 'input', (el) => {
+    w.calReminderTextSizePct = parseInt(el.value, 10);
+    document.getElementById('cal-reminder-textsize-val').textContent = w.calReminderTextSizePct + '%';
   });
   onLiveField('cal-past-events-select', 'change', (el) => { w.pastEvents = el.value; });
   onLiveField('cal-max-events-range', 'input', (el) => {
@@ -9459,16 +9528,7 @@ function renderManageRemindersList() {
   document.getElementById('manage-reminders-title').textContent = 'Manage Reminders';
   const body = document.getElementById('manage-reminders-body');
   const reminders = state.reminders || [];
-  const scheduleLabel = (r) => {
-    if (r.schedule_type === 'weekly') {
-      const days = (r.schedule_config.daysOfWeek || []).map(d => DAYS_S[d]).join(', ');
-      return days ? `Weekly — ${days}` : 'Weekly — no days set';
-    }
-    if (r.schedule_type === 'interval') {
-      return `Every ${r.schedule_config.intervalDays || '?'} days`;
-    }
-    return '';
-  };
+  const scheduleLabel = (r) => reminderScheduleSummaryD(r);
   body.innerHTML = `
     <button id="mr-add-btn" type="button" style="width:100%;padding:12px;border-radius:10px;border:none;background:var(--accent,#4A90D9);color:#fff;font-size:14px;font-weight:700;margin-bottom:16px">+ Add Reminder</button>
     ${reminders.length ? reminders.map(r => `
@@ -9499,6 +9559,21 @@ async function deleteReminder(id) {
     renderLayout();
   } catch { alert('Could not delete — check the connection and try again.'); }
 }
+// Same helpers as app.html's nthWeekOptions/weekdayOptions/monthOptions,
+// suffixed D to match this file's own naming convention for its duplicated
+// copies (escapeHtmlD, etc.).
+function nthWeekOptionsD(selected) {
+  const opts = [[1,'First'],[2,'Second'],[3,'Third'],[4,'Fourth'],[-1,'Last']];
+  return opts.map(([v,l]) => `<option value="${v}" ${String(selected)===String(v)?'selected':''}>${l}</option>`).join('');
+}
+function weekdayOptionsD(selected) {
+  const full = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  return full.map((l, i) => `<option value="${i}" ${String(selected)===String(i)?'selected':''}>${l}</option>`).join('');
+}
+function monthOptionsD(selected) {
+  const names = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  return names.map((l, i) => `<option value="${i+1}" ${String(selected)===String(i+1)?'selected':''}>${l}</option>`).join('');
+}
 function openManageRemindersForm(id) {
   _manageRemindersEditingId = id;
   const existing = id ? (state.reminders || []).find(x => String(x.id) === String(id)) : null;
@@ -9527,7 +9602,7 @@ function openManageRemindersForm(id) {
         <input type="text" id="mr-f-icon" value="${existing && existing.icon ? existing.icon : '📌'}" maxlength="4" style="width:70px;text-align:center;font-size:20px">
       </div>
       <div id="mr-f-icon-text-row" style="${(existing ? existing.icon_type : '') !== 'text' ? 'display:none' : ''}">
-        <input type="text" id="mr-f-icon-text" value="${existing && existing.icon_type === 'text' ? escapeHtmlD(existing.icon || '') : ''}" maxlength="12" placeholder="e.g. TRASH" style="text-transform:uppercase">
+        <input type="text" id="mr-f-icon-text" value="${existing && existing.icon_type === 'text' ? escapeHtmlD(existing.icon || '') : ''}" maxlength="12" placeholder="e.g. Trash">
         <div style="font-size:11px;color:#a8b2c4;margin-top:4px">Short label — long text shrinks to fit, but stays most readable around 4-6 characters.</div>
       </div>
       <div id="mr-f-icon-image-row" style="${(existing ? existing.icon_type : '') !== 'image' ? 'display:none' : ''}">
@@ -9542,21 +9617,82 @@ function openManageRemindersForm(id) {
     <div class="mr-form-row">
       <label>Repeats</label>
       <select id="mr-f-type">
-        <option value="weekly" ${scheduleType==='weekly'?'selected':''}>On specific day(s) of the week</option>
-        <option value="interval" ${scheduleType==='interval'?'selected':''}>Every N days</option>
+        <option value="weekly" ${scheduleType==='weekly'?'selected':''}>Weekly</option>
+        <option value="interval" ${scheduleType==='interval'?'selected':''}>Daily</option>
+        <option value="monthly" ${scheduleType==='monthly'?'selected':''}>Monthly</option>
+        <option value="yearly" ${scheduleType==='yearly'?'selected':''}>Yearly</option>
       </select>
     </div>
     <div class="mr-form-row" id="mr-f-weekly-row" style="${scheduleType!=='weekly'?'display:none':''}">
-      <label>Which days</label>
-      <div class="mr-dow-row">
+      <label>Every</label>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input type="number" id="mr-f-week-interval" min="1" max="52" value="${cfg.weekInterval || 1}" style="width:70px">
+        <span style="color:#a8b2c4;font-size:13px">week(s), on:</span>
+      </div>
+      <div class="mr-dow-row" style="margin-top:10px">
         ${DAYS_S.map((d, i) => `<button type="button" class="mr-dow-btn${selectedDays.has(i)?' active':''}" data-dow="${i}">${d}</button>`).join('')}
       </div>
     </div>
     <div class="mr-form-row" id="mr-f-interval-row" style="${scheduleType!=='interval'?'display:none':''}">
       <label>Repeat every</label>
-      <input type="number" id="mr-f-interval-days" min="2" max="365" value="${cfg.intervalDays || 14}"> days
-      <label style="margin-top:12px">Starting from</label>
+      <input type="number" id="mr-f-interval-days" min="1" max="365" value="${cfg.intervalDays || 14}"> days
+    </div>
+    <div class="mr-form-row" id="mr-f-monthly-row" style="${scheduleType!=='monthly'?'display:none':''}">
+      <label>Every</label>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input type="number" id="mr-f-month-interval" min="1" max="24" value="${cfg.monthInterval || 1}" style="width:70px">
+        <span style="color:#a8b2c4;font-size:13px">month(s)</span>
+      </div>
+      <select id="mr-f-monthly-mode" style="margin-top:10px">
+        <option value="dayOfMonth" ${(cfg.monthlyMode||'dayOfMonth')==='dayOfMonth'?'selected':''}>On a specific day of the month</option>
+        <option value="nthWeekday" ${cfg.monthlyMode==='nthWeekday'?'selected':''}>On the nth weekday</option>
+      </select>
+      <div id="mr-f-monthly-dayofmonth-row" style="margin-top:10px;${cfg.monthlyMode==='nthWeekday'?'display:none':''}">
+        <label>Day of month</label>
+        <input type="number" id="mr-f-day-of-month" min="1" max="31" value="${cfg.dayOfMonth || 1}">
+      </div>
+      <div id="mr-f-monthly-nthweekday-row" style="margin-top:10px;display:flex;gap:8px;${cfg.monthlyMode!=='nthWeekday'?'display:none':''}">
+        <select id="mr-f-nth-week" style="flex:1">${nthWeekOptionsD(cfg.nthWeek)}</select>
+        <select id="mr-f-nth-weekday" style="flex:1">${weekdayOptionsD(cfg.nthWeekday)}</select>
+      </div>
+    </div>
+    <div class="mr-form-row" id="mr-f-yearly-row" style="${scheduleType!=='yearly'?'display:none':''}">
+      <label>Every</label>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input type="number" id="mr-f-year-interval" min="1" max="20" value="${cfg.yearInterval || 1}" style="width:70px">
+        <span style="color:#a8b2c4;font-size:13px">year(s), in:</span>
+      </div>
+      <select id="mr-f-yearly-month" style="margin-top:10px">${monthOptionsD(cfg.yearlyMonth)}</select>
+      <select id="mr-f-yearly-mode" style="margin-top:10px">
+        <option value="date" ${(cfg.yearlyMode||'date')==='date'?'selected':''}>On a specific date</option>
+        <option value="nthWeekday" ${cfg.yearlyMode==='nthWeekday'?'selected':''}>On the nth weekday</option>
+      </select>
+      <div id="mr-f-yearly-date-row" style="margin-top:10px;${cfg.yearlyMode==='nthWeekday'?'display:none':''}">
+        <label>Day</label>
+        <input type="number" id="mr-f-yearly-day" min="1" max="31" value="${cfg.yearlyDay || 1}">
+      </div>
+      <div id="mr-f-yearly-nthweekday-row" style="margin-top:10px;display:flex;gap:8px;${cfg.yearlyMode!=='nthWeekday'?'display:none':''}">
+        <select id="mr-f-yearly-nth-week" style="flex:1">${nthWeekOptionsD(cfg.yearlyNthWeek)}</select>
+        <select id="mr-f-yearly-nth-weekday" style="flex:1">${weekdayOptionsD(cfg.yearlyNthWeekday)}</select>
+      </div>
+    </div>
+    <div class="mr-form-row" id="mr-f-startdate-row">
+      <label>Starts</label>
       <input type="date" id="mr-f-start-date" value="${cfg.startDate || todayStr()}">
+    </div>
+    <div class="mr-form-row">
+      <label>Ends</label>
+      <select id="mr-f-end-type">
+        <option value="never" ${(cfg.endType||'never')==='never'?'selected':''}>Never</option>
+        <option value="onDate" ${cfg.endType==='onDate'?'selected':''}>On a date</option>
+        <option value="afterCount" ${cfg.endType==='afterCount'?'selected':''}>After a number of times</option>
+      </select>
+      <div id="mr-f-end-date-row" style="margin-top:10px;${cfg.endType!=='onDate'?'display:none':''}">
+        <input type="date" id="mr-f-end-date" value="${cfg.endDate || ''}">
+      </div>
+      <div id="mr-f-end-count-row" style="margin-top:10px;${cfg.endType!=='afterCount'?'display:none':''}">
+        <input type="number" id="mr-f-end-count" min="1" max="999" value="${cfg.endCount || 10}">
+      </div>
     </div>
     <div style="display:flex;gap:10px;margin-top:22px">
       <button id="mr-f-cancel" type="button" style="flex:1;padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#e8edf5;font-size:14px">Cancel</button>
@@ -9567,6 +9703,24 @@ function openManageRemindersForm(id) {
   typeSel.addEventListener('change', (e) => {
     document.getElementById('mr-f-weekly-row').style.display = e.target.value === 'weekly' ? '' : 'none';
     document.getElementById('mr-f-interval-row').style.display = e.target.value === 'interval' ? '' : 'none';
+    document.getElementById('mr-f-monthly-row').style.display = e.target.value === 'monthly' ? '' : 'none';
+    document.getElementById('mr-f-yearly-row').style.display = e.target.value === 'yearly' ? '' : 'none';
+  });
+  if (document.getElementById('mr-f-monthly-mode')) {
+    document.getElementById('mr-f-monthly-mode').addEventListener('change', (e) => {
+      document.getElementById('mr-f-monthly-dayofmonth-row').style.display = e.target.value === 'dayOfMonth' ? '' : 'none';
+      document.getElementById('mr-f-monthly-nthweekday-row').style.display = e.target.value === 'nthWeekday' ? '' : 'none';
+    });
+  }
+  if (document.getElementById('mr-f-yearly-mode')) {
+    document.getElementById('mr-f-yearly-mode').addEventListener('change', (e) => {
+      document.getElementById('mr-f-yearly-date-row').style.display = e.target.value === 'date' ? '' : 'none';
+      document.getElementById('mr-f-yearly-nthweekday-row').style.display = e.target.value === 'nthWeekday' ? '' : 'none';
+    });
+  }
+  document.getElementById('mr-f-end-type').addEventListener('change', (e) => {
+    document.getElementById('mr-f-end-date-row').style.display = e.target.value === 'onDate' ? '' : 'none';
+    document.getElementById('mr-f-end-count-row').style.display = e.target.value === 'afterCount' ? '' : 'none';
   });
   body.querySelectorAll('.mr-dow-btn').forEach(btn => btn.addEventListener('click', () => btn.classList.toggle('active')));
   body.querySelectorAll('.mr-icontype-btn').forEach(btn => {
@@ -9616,16 +9770,55 @@ async function saveReminderForm() {
   }
   const scheduleType = document.getElementById('mr-f-type').value;
   if (!name) { alert('Give this reminder a name first.'); return; }
+  const startDate = document.getElementById('mr-f-start-date').value;
   let scheduleConfig;
   if (scheduleType === 'weekly') {
     const days = [...document.querySelectorAll('.mr-dow-btn.active')].map(b => parseInt(b.dataset.dow, 10));
     if (!days.length) { alert('Pick at least one day of the week.'); return; }
-    scheduleConfig = { daysOfWeek: days };
-  } else {
+    const weekInterval = parseInt(document.getElementById('mr-f-week-interval').value, 10) || 1;
+    scheduleConfig = { daysOfWeek: days, weekInterval, startDate };
+  } else if (scheduleType === 'interval') {
     const intervalDays = parseInt(document.getElementById('mr-f-interval-days').value, 10);
-    const startDate = document.getElementById('mr-f-start-date').value;
-    if (!intervalDays || intervalDays < 2 || !startDate) { alert('Fill in both the interval and start date.'); return; }
+    if (!intervalDays || intervalDays < 1 || !startDate) { alert('Fill in both the interval and start date.'); return; }
     scheduleConfig = { intervalDays, startDate };
+  } else if (scheduleType === 'monthly') {
+    const monthInterval = parseInt(document.getElementById('mr-f-month-interval').value, 10) || 1;
+    const monthlyMode = document.getElementById('mr-f-monthly-mode').value;
+    if (!startDate) { alert('Pick a start date.'); return; }
+    scheduleConfig = { monthlyMode, monthInterval, startDate };
+    if (monthlyMode === 'dayOfMonth') {
+      const dayOfMonth = parseInt(document.getElementById('mr-f-day-of-month').value, 10);
+      if (!dayOfMonth || dayOfMonth < 1 || dayOfMonth > 31) { alert('Pick a valid day of the month.'); return; }
+      scheduleConfig.dayOfMonth = dayOfMonth;
+    } else {
+      scheduleConfig.nthWeek = parseInt(document.getElementById('mr-f-nth-week').value, 10);
+      scheduleConfig.nthWeekday = parseInt(document.getElementById('mr-f-nth-weekday').value, 10);
+    }
+  } else { // yearly
+    const yearInterval = parseInt(document.getElementById('mr-f-year-interval').value, 10) || 1;
+    const yearlyMonth = parseInt(document.getElementById('mr-f-yearly-month').value, 10);
+    const yearlyMode = document.getElementById('mr-f-yearly-mode').value;
+    if (!startDate) { alert('Pick a start date.'); return; }
+    scheduleConfig = { yearlyMode, yearlyMonth, yearInterval, startDate };
+    if (yearlyMode === 'date') {
+      const yearlyDay = parseInt(document.getElementById('mr-f-yearly-day').value, 10);
+      if (!yearlyDay || yearlyDay < 1 || yearlyDay > 31) { alert('Pick a valid day.'); return; }
+      scheduleConfig.yearlyDay = yearlyDay;
+    } else {
+      scheduleConfig.yearlyNthWeek = parseInt(document.getElementById('mr-f-yearly-nth-week').value, 10);
+      scheduleConfig.yearlyNthWeekday = parseInt(document.getElementById('mr-f-yearly-nth-weekday').value, 10);
+    }
+  }
+  const endType = document.getElementById('mr-f-end-type').value;
+  scheduleConfig.endType = endType;
+  if (endType === 'onDate') {
+    const endDate = document.getElementById('mr-f-end-date').value;
+    if (!endDate) { alert('Pick an end date.'); return; }
+    scheduleConfig.endDate = endDate;
+  } else if (endType === 'afterCount') {
+    const endCount = parseInt(document.getElementById('mr-f-end-count').value, 10);
+    if (!endCount || endCount < 1) { alert('Enter how many times it should repeat.'); return; }
+    scheduleConfig.endCount = endCount;
   }
   const payload = {
     name, icon, icon_type: iconType,
@@ -12703,19 +12896,109 @@ async function fetchReminders() {
 // Does this reminder occur on the given date (a 'YYYY-MM-DD' string)? The
 // one shared helper both the Reminders widget and the calendar-grid/Agenda
 // integrations call, so "is this due" can never disagree between them.
+// ── Reminder recurrence engine ──────────────────────────────────────────────
+// Identical logic to reminderOccursOnDateServer() and its helpers in
+// server.js — see that copy's own comment for the full field reference and
+// design rationale (iOS Calendar's custom-recurrence picker as the model,
+// every new field additive/optional so pre-existing reminders keep working
+// unchanged, 'afterCount' end conditions counted via a bounded day-by-day
+// scan rather than four separate closed-form formulas). Kept as its own
+// implementation here rather than shared, matching how this file and
+// server.js have never shared code — different runtime environments
+// (browser vs. Node), and every other piece of duplicated logic in this
+// codebase (opacity resolution, theme fixes, etc.) already follows the
+// same pattern of two carefully-matched copies.
+const REMINDER_COUNT_SCAN_CAP_DAYS = 3650;
+function reminderDaysBetween(a, b) { return Math.round((b - a) / 86400000); }
+function reminderStartOfWeek(d) { const x = new Date(d); x.setDate(x.getDate() - x.getDay()); return x; }
+function reminderNthWeekdayOfMonth(year, month0, weekday, nth) {
+  if (nth === -1) {
+    const last = new Date(year, month0 + 1, 0);
+    const offset = (last.getDay() - weekday + 7) % 7;
+    return new Date(year, month0, last.getDate() - offset);
+  }
+  const first = new Date(year, month0, 1);
+  const offset = (weekday - first.getDay() + 7) % 7;
+  const day = 1 + offset + (nth - 1) * 7;
+  const d = new Date(year, month0, day);
+  return d.getMonth() === month0 ? d : null;
+}
+function reminderMatchesPattern(reminder, d) {
+  const cfg = reminder.schedule_config || {};
+  const type = reminder.schedule_type;
+  if (type === 'weekly') {
+    if (!Array.isArray(cfg.daysOfWeek) || !cfg.daysOfWeek.includes(d.getDay())) return false;
+    if (cfg.startDate) {
+      const start = new Date(cfg.startDate + 'T00:00:00');
+      if (d < start) return false;
+      const interval = cfg.weekInterval || 1;
+      if (interval > 1) {
+        const weeks = reminderDaysBetween(reminderStartOfWeek(start), reminderStartOfWeek(d)) / 7;
+        if (weeks % interval !== 0) return false;
+      }
+    }
+    return true;
+  }
+  if (type === 'interval') {
+    if (!cfg.startDate || !cfg.intervalDays) return false;
+    const start = new Date(cfg.startDate + 'T00:00:00');
+    const diff = reminderDaysBetween(start, d);
+    return diff >= 0 && diff % cfg.intervalDays === 0;
+  }
+  if (type === 'monthly') {
+    if (!cfg.startDate) return false;
+    const start = new Date(cfg.startDate + 'T00:00:00');
+    if (d < start) return false;
+    const interval = cfg.monthInterval || 1;
+    if (interval > 1) {
+      const monthsDiff = (d.getFullYear() - start.getFullYear()) * 12 + (d.getMonth() - start.getMonth());
+      if (monthsDiff % interval !== 0) return false;
+    }
+    if (cfg.monthlyMode === 'nthWeekday') {
+      const target = reminderNthWeekdayOfMonth(d.getFullYear(), d.getMonth(), cfg.nthWeekday, cfg.nthWeek);
+      return !!target && target.getDate() === d.getDate();
+    }
+    return d.getDate() === cfg.dayOfMonth;
+  }
+  if (type === 'yearly') {
+    if (!cfg.startDate) return false;
+    const start = new Date(cfg.startDate + 'T00:00:00');
+    if (d < start) return false;
+    if (d.getMonth() + 1 !== cfg.yearlyMonth) return false;
+    const interval = cfg.yearInterval || 1;
+    if (interval > 1) {
+      const yearsDiff = d.getFullYear() - start.getFullYear();
+      if (yearsDiff % interval !== 0) return false;
+    }
+    if (cfg.yearlyMode === 'nthWeekday') {
+      const target = reminderNthWeekdayOfMonth(d.getFullYear(), d.getMonth(), cfg.yearlyNthWeekday, cfg.yearlyNthWeek);
+      return !!target && target.getDate() === d.getDate();
+    }
+    return d.getDate() === cfg.yearlyDay;
+  }
+  return false;
+}
 function reminderOccursOnDate(reminder, dateStr) {
   const cfg = reminder.schedule_config || {};
   const d = new Date(dateStr + 'T00:00:00');
-  if (reminder.schedule_type === 'weekly') {
-    return Array.isArray(cfg.daysOfWeek) && cfg.daysOfWeek.includes(d.getDay());
+  if (!reminderMatchesPattern(reminder, d)) return false;
+  const endType = cfg.endType || 'never';
+  if (endType === 'onDate') {
+    return !cfg.endDate || dateStr <= cfg.endDate;
   }
-  if (reminder.schedule_type === 'interval') {
-    if (!cfg.startDate || !cfg.intervalDays) return false;
+  if (endType === 'afterCount') {
+    if (!cfg.endCount || !cfg.startDate) return true;
     const start = new Date(cfg.startDate + 'T00:00:00');
-    const diffDays = Math.round((d - start) / 86400000);
-    return diffDays >= 0 && diffDays % cfg.intervalDays === 0;
+    let count = 0;
+    for (let i = 0; i <= REMINDER_COUNT_SCAN_CAP_DAYS; i++) {
+      const cur = new Date(start);
+      cur.setDate(cur.getDate() + i);
+      if (cur > d) break;
+      if (reminderMatchesPattern(reminder, cur)) count++;
+    }
+    return count <= cfg.endCount;
   }
-  return false;
+  return true;
 }
 
 // Next occurrence of a reminder on or after fromDateStr, searched day by day
