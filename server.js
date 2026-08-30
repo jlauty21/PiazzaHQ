@@ -60,14 +60,18 @@ function getReachableAddresses() {
 // After a self-update we leave a `.update-pending` marker. A healthy boot clears
 // it a few seconds after listening. If the NEW code crashes on startup, systemd
 // keeps restarting us and the marker survives — each restart bumps its attempt
-// count. Once we've failed enough times, restore the pre-update backup so the Pi
-// self-heals to the last working version. This block uses only fs/path and never
-// throws, so it can't itself break boot.
+// count. Once we've failed enough times, restore the newest rolling backup so
+// the Pi self-heals to the last working version. This block uses only fs/path
+// and never throws, so it can't itself break boot.
 (function autoRollbackGuard() {
   try {
     const dir = __dirname;
     const pendingFlag = path.join(dir, '.update-pending');
-    const backupDir   = path.join(dir, '.update-backup');
+    // Literal path, not the UPDATE_BACKUPS_ROLLING_DIR const declared further
+    // down this file — this IIFE runs at module-load time, before that
+    // later const exists yet, same reason the single-backup version this
+    // replaced also used a literal path here instead of a shared constant.
+    const rollingDir = path.join(dir, '.update-backups-rolling');
     if (!fs.existsSync(pendingFlag)) return;
     let attempts = 0;
     try { attempts = parseInt(fs.readFileSync(pendingFlag, 'utf8'), 10) || 0; } catch {}
@@ -77,23 +81,34 @@ function getReachableAddresses() {
       try { fs.writeFileSync(pendingFlag, String(attempts)); } catch {}
       return;
     }
-    // Too many failed boots — roll back if we have a backup.
-    if (fs.existsSync(backupDir)) {
-      const restore = (name) => {
-        const from = path.join(backupDir, name), to = path.join(dir, name);
-        if (!fs.existsSync(from)) return;
-        try {
-          if (fs.existsSync(to)) fs.rmSync(to, { recursive: true, force: true });
-          fs.cpSync(from, to, { recursive: true });
-        } catch (e) { console.error('Rollback restore error for', name, e.message); }
-      };
-      // Restore the code files we may have swapped (never user data).
-      for (const name of ['server.js', 'templates.js', 'public', 'package.json', 'scripts']) restore(name);
-      console.error('Update failed to boot — rolled back to the previous version.');
+    // Too many failed boots — roll back to the MOST RECENT rolling backup.
+    // Folder names are timestamp-prefixed and sort correctly as plain
+    // strings, so the last one alphabetically is the newest.
+    if (fs.existsSync(rollingDir)) {
+      const entries = fs.readdirSync(rollingDir).sort();
+      const latest = entries[entries.length - 1];
+      if (latest) {
+        const backupDir = path.join(rollingDir, latest);
+        const restore = (name) => {
+          const from = path.join(backupDir, name), to = path.join(dir, name);
+          if (!fs.existsSync(from)) return;
+          try {
+            if (fs.existsSync(to)) fs.rmSync(to, { recursive: true, force: true });
+            fs.cpSync(from, to, { recursive: true });
+          } catch (e) { console.error('Rollback restore error for', name, e.message); }
+        };
+        // Restore the code files we may have swapped (never user data).
+        for (const name of ['server.js', 'templates.js', 'public', 'package.json', 'scripts']) restore(name);
+        console.error(`Update failed to boot — rolled back to the previous version (${latest}).`);
+      }
     }
-    // Clear markers either way so we don't loop.
+    // Clear the pending marker either way so we don't loop. Unlike the
+    // single-backup version this replaced, the rolling backup used here is
+    // NOT deleted afterward — rolling backups are now a retained history
+    // (up to ROLLING_BACKUP_LIMIT), not a single-use rollback artifact.
+    // Pruning happens on the next successful update instead, same as any
+    // other rolling backup.
     try { fs.unlinkSync(pendingFlag); } catch {}
-    try { if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true, force: true }); } catch {}
   } catch (e) {
     // Never let the guard itself stop the app from starting.
     try { console.error('Rollback guard error:', e.message); } catch {}
@@ -107,6 +122,31 @@ const PORT = process.env.PORT || 3000;
 
 // ── Database setup ──────────────────────────────────────────────────────────
 const db = new Database(path.join(__dirname, 'calendar.db'));
+// Actually enables WAL mode — a real, pre-existing gap found while
+// investigating reported slowness across Live Edit: journal_mode was never
+// set anywhere in this file, despite comments and the wal_checkpoint calls
+// further down (buildBackupZip and its own duplicate) assuming WAL was
+// already active. It never was — this has been running SQLite's DEFAULT
+// rollback journal mode this whole time, which takes an EXCLUSIVE lock on
+// the entire database file for the duration of any write, blocking every
+// concurrent read until that write finishes. WAL mode lets readers and a
+// writer proceed concurrently instead, which matters a great deal here:
+// Live Edit alone can trigger several near-simultaneous reads (displays,
+// saved layouts, widget data) while a save is also in flight, and this
+// session's schedule-rule testing in particular generated a lot of rapid,
+// successive writes. Set once, immediately after opening the connection —
+// this is a per-database-file setting SQLite persists on disk, so it only
+// needs to be requested here, not repeated before every query.
+db.pragma('journal_mode = WAL');
+// Periodic PASSIVE checkpoint — SQLite auto-checkpoints WAL mode on its own
+// once the WAL file crosses roughly 1000 pages (~4MB), but that's a
+// best-effort threshold, not a guarantee under sustained write load. PASSIVE
+// specifically never blocks a concurrent reader or writer to force its way
+// through — it just checkpoints whatever it safely can right now — so this
+// is safe to run on a fixed timer regardless of how busy the database is at
+// that moment, unlike the TRUNCATE checkpoints used before a backup copy
+// elsewhere in this file, which need exclusivity and are intentionally rare.
+setInterval(() => { try { db.pragma('wal_checkpoint(PASSIVE)'); } catch {} }, 5 * 60 * 1000); // every 5 minutes
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS reminders (
@@ -311,6 +351,60 @@ db.exec(`
     -- The app version this screen last reported at check-in. Lets the host spot a
     -- stale remote slave at a glance (e.g. after a fix ships, before that screen updates).
     screen_version        TEXT DEFAULT '',
+    -- Floating Layout Switcher (screen-level, independent of any per-layout
+    -- Layout Switcher widget) — an always-present button overlaid on top of
+    -- whatever layout is currently active, so switching to a saved layout
+    -- that itself has no switcher widget on it never becomes a dead end.
+    -- Configured once per screen rather than needing to be placed and kept
+    -- in sync across every layout by hand. floating_switcher_presets is a
+    -- JSON array of saved_layout ids, same shape as a switcher widget's own
+    -- switcherPresetIds — offers are independent per screen, so two screens
+    -- sharing the same underlying layout can each offer different targets.
+    floating_switcher_enabled  INTEGER DEFAULT 0,
+    floating_switcher_presets  TEXT DEFAULT '[]',
+    -- Optional scheduled auto-switching for the floating switcher — JSON
+    -- array of {time: "HH:MM", daysOfWeek: [0-6], target: {type, id}}.
+    -- Same target shape as floating_switcher_presets' own entries; a
+    -- schedule rule doesn't need its target to also be in the manual
+    -- presets list (they're independent — a rule can auto-switch to
+    -- something with no corresponding tap-to-switch button, though
+    -- usually you'd want both). Checked client-side, not server-side —
+    -- see prefetchSwitcherPresets()/the schedule-check interval in
+    -- display.html for why (needs live access to editModeActive and the
+    -- pre-fetch cache, neither of which exist server-side).
+    floating_switcher_schedule TEXT DEFAULT '[]',
+    -- Appearance/position — a compact bar centered along one of the four
+    -- screen edges rather than a free-floating icon anywhere on screen,
+    -- specifically so it can never land on top of an existing widget: a
+    -- widget's own position comes from the person's own layout design, but
+    -- a screen only has four edges, and placing the bar flush against one
+    -- (rather than spanning it) keeps it clear of most widget content even
+    -- for a widget positioned near that edge.
+    floating_switcher_edge     TEXT DEFAULT 'bottom',   -- 'top'|'bottom'|'left'|'right'
+    floating_switcher_icon     TEXT DEFAULT '🔀',
+    floating_switcher_color    TEXT DEFAULT '#0a0e1a',
+    -- 'circles' (default): the original always-visible cluster of round
+    -- icon buttons, centered along the chosen edge. 'bar': a thin strip
+    -- spanning the FULL edge instead — different geometry entirely, not
+    -- just a restyle, hence its own column rather than folding into edge.
+    floating_switcher_style    TEXT DEFAULT 'circles',  -- 'circles'|'bar'
+    -- Only meaningful when style='bar'. 'icons' matches circles' own
+    -- icon-or-initial-letter buttons, just square instead of round.
+    -- 'names' shows the actual target name instead — full text on
+    -- top/bottom (bar just widens with the text), but on left/right the
+    -- text ROTATES (writing-mode: vertical-rl + 180deg) rather than the
+    -- bar widening, so it stays exactly as thin as icon mode on every
+    -- edge — the reason 'bar' is worth having as a distinct style at all
+    -- is to hug the edge tightly, and a mode that defeats that on two of
+    -- its four edges would undercut the whole point of choosing it.
+    floating_switcher_bar_mode TEXT DEFAULT 'icons',    -- 'icons'|'names'
+    -- 'always' (default, original behavior, unchanged): visible the whole
+    -- time, exactly as it's always worked. 'tap': hidden until the screen
+    -- is tapped, same tap-to-reveal fade already used for the Live Editing
+    -- pencil icon and the "Back to App" link (showEditIconBriefly()) —
+    -- reuses that exact mechanism rather than a new one, same tap, same
+    -- 4-second window, one thing to keep consistent instead of two.
+    floating_switcher_reveal   TEXT DEFAULT 'always',   -- 'always'|'tap'
     last_seen             INTEGER DEFAULT 0,   -- epoch ms of last registration/heartbeat
     created_at            TEXT DEFAULT (datetime('now'))
   );
@@ -734,6 +828,44 @@ if (!db.prepare(`SELECT value FROM settings WHERE key = 'tv_schedule_slots_migra
 if (!columnExists('screens', 'screen_version')) {
   db.exec(`ALTER TABLE screens ADD COLUMN screen_version TEXT DEFAULT ''`);
   console.log('Migrated: added screen_version column to screens');
+}
+// Floating Layout Switcher — screen-level, see the fresh-install schema's own
+// comment above for the full explanation.
+if (!columnExists('screens', 'floating_switcher_enabled')) {
+  db.exec(`ALTER TABLE screens ADD COLUMN floating_switcher_enabled INTEGER DEFAULT 0`);
+  console.log('Migrated: added floating_switcher_enabled column to screens');
+}
+if (!columnExists('screens', 'floating_switcher_presets')) {
+  db.exec(`ALTER TABLE screens ADD COLUMN floating_switcher_presets TEXT DEFAULT '[]'`);
+  console.log('Migrated: added floating_switcher_presets column to screens');
+}
+if (!columnExists('screens', 'floating_switcher_schedule')) {
+  db.exec(`ALTER TABLE screens ADD COLUMN floating_switcher_schedule TEXT DEFAULT '[]'`);
+  console.log('Migrated: added floating_switcher_schedule column to screens');
+}
+if (!columnExists('screens', 'floating_switcher_edge')) {
+  db.exec(`ALTER TABLE screens ADD COLUMN floating_switcher_edge TEXT DEFAULT 'bottom'`);
+  console.log('Migrated: added floating_switcher_edge column to screens');
+}
+if (!columnExists('screens', 'floating_switcher_icon')) {
+  db.exec(`ALTER TABLE screens ADD COLUMN floating_switcher_icon TEXT DEFAULT '🔀'`);
+  console.log('Migrated: added floating_switcher_icon column to screens');
+}
+if (!columnExists('screens', 'floating_switcher_color')) {
+  db.exec(`ALTER TABLE screens ADD COLUMN floating_switcher_color TEXT DEFAULT '#0a0e1a'`);
+  console.log('Migrated: added floating_switcher_color column to screens');
+}
+if (!columnExists('screens', 'floating_switcher_style')) {
+  db.exec(`ALTER TABLE screens ADD COLUMN floating_switcher_style TEXT DEFAULT 'circles'`);
+  console.log('Migrated: added floating_switcher_style column to screens');
+}
+if (!columnExists('screens', 'floating_switcher_bar_mode')) {
+  db.exec(`ALTER TABLE screens ADD COLUMN floating_switcher_bar_mode TEXT DEFAULT 'icons'`);
+  console.log('Migrated: added floating_switcher_bar_mode column to screens');
+}
+if (!columnExists('screens', 'floating_switcher_reveal')) {
+  db.exec(`ALTER TABLE screens ADD COLUMN floating_switcher_reveal TEXT DEFAULT 'always'`);
+  console.log('Migrated: added floating_switcher_reveal column to screens');
 }
 if (!columnExists('photos', 'tags')) {
   db.exec(`ALTER TABLE photos ADD COLUMN tags TEXT DEFAULT ''`);
@@ -1320,9 +1452,60 @@ function fetchSupportLinks() {
   });
 }
 const UPDATE_TMP   = path.join(__dirname, '.update-tmp');     // staging for the uploaded zip
-const UPDATE_BACKUP= path.join(__dirname, '.update-backup');  // snapshot of the previous version
+// Two backup pools, replacing the old single .update-backup folder:
+// - ROLLING: a snapshot taken before every update, newest 10 kept — lets a
+//   person roll back further than just "the one before this," not just
+//   auto-rollback on a failed boot.
+// - MONTHLY: a snapshot of the newly-installed code, taken only for the
+//   first STABLE release applied in a given calendar month (kept
+//   indefinitely) — a long beta cycle can span multiple months without
+//   ever producing one, which is intentional; betas aren't meant to be a
+//   durable historical marker the way a stable release is.
+// Folder names are `<sortable-timestamp>__v<version>` (rolling) or
+// `<YYYY-MM>__v<version>` (monthly) — the timestamp/month prefix is what
+// pruning and "which is newest" sort on; the version suffix is only for a
+// human reading the folder listing.
+const UPDATE_BACKUPS_ROLLING_DIR = path.join(__dirname, '.update-backups-rolling');
+const UPDATE_BACKUPS_MONTHLY_DIR = path.join(__dirname, '.update-backups-monthly');
+const ROLLING_BACKUP_LIMIT = 10;
 const PENDING_FLAG = path.join(__dirname, '.update-pending'); // exists between swap and successful boot
-const RESTORE_SAFETY_BACKUP = path.join(__dirname, '.pre-restore-backup'); // snapshot of data just before a Restore Backup, same "back up before swap" idea as UPDATE_BACKUP above, just for data instead of code
+const RESTORE_SAFETY_BACKUP = path.join(__dirname, '.pre-restore-backup'); // snapshot of data just before a Restore Backup, same "back up before swap" idea as the code backups above, just for data instead of code
+// Same file list every code backup/restore/swap operates on — server.js,
+// the whole public/ tree (app.html, display.html, assets), package.json,
+// etc. Centralized here (previously redeclared inline inside
+// installFromZip) so the auto-rollback guard, the manual restore endpoint,
+// and the zip-download endpoint below all agree on exactly what "the code"
+// means, rather than each maintaining their own copy that could drift.
+const UPDATE_CODE_ITEMS = ['server.js', 'templates.js', 'tv-control.js', 'public', 'package.json', 'scripts',
+                   'install.sh', 'setup-remote-access.sh', 'hide-cursor.sh', 'README.md', 'BETA_CHECKLIST.md',
+                   'LICENSE']; // legal terms — unlike CHANGELOG.md/HANDOFF.md (dev-facing docs, no
+                               // stakes either way), an installed device should actually receive
+                               // updated license terms, not keep whatever it shipped with forever.
+// Copies the CURRENT contents of every UPDATE_CODE_ITEMS entry into destDir
+// — used for both the rolling backup (current/pre-update code, for
+// rollback) and the monthly backup (newly-installed code, for history).
+// Best-effort per item, matching the original inline version this replaced
+// — one unreadable file shouldn't abort backing up everything else.
+function backupCurrentCodeInto(destDir) {
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const name of UPDATE_CODE_ITEMS) {
+    const from = path.join(__dirname, name);
+    if (fs.existsSync(from)) {
+      try { fs.cpSync(from, path.join(destDir, name), { recursive: true }); } catch {}
+    }
+  }
+}
+// Folder names sort correctly as plain strings (ISO-ish timestamp prefix),
+// so "oldest first" is just an alphabetical sort — no need to parse dates
+// back out of the folder name.
+function pruneRollingBackups() {
+  if (!fs.existsSync(UPDATE_BACKUPS_ROLLING_DIR)) return;
+  const entries = fs.readdirSync(UPDATE_BACKUPS_ROLLING_DIR).sort();
+  const excess = entries.length - ROLLING_BACKUP_LIMIT;
+  for (let i = 0; i < excess; i++) {
+    try { fs.rmSync(path.join(UPDATE_BACKUPS_ROLLING_DIR, entries[i]), { recursive: true, force: true }); } catch {}
+  }
+}
 const backupRestoreUpload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => { fs.mkdirSync(UPDATE_TMP, { recursive: true }); cb(null, UPDATE_TMP); },
@@ -1404,7 +1587,7 @@ app.get('/api/live', (req, res) => {
     if (existing) {
       db.prepare(`UPDATE screens SET last_seen = ? WHERE device_id = ?`).run(now, screenId);
     } else {
-      db.prepare(`INSERT INTO screens (device_id, last_seen) VALUES (?, ?)`).run(screenId, now);
+      db.prepare(`INSERT INTO screens (device_id, name, last_seen) VALUES (?, ?, ?)`).run(screenId, previewScreenName(screenId), now);
     }
     broadcastUpdate('screens'); // tell the app a screen came online / list changed
   }
@@ -6421,6 +6604,55 @@ function slugify(name) {
   return slug;
 }
 
+// Auto-names a preview screen identity (device_id starting with 'preview_')
+// with a descriptive name derived from the display it's previewing, rather
+// than leaving it to show as "Unnamed display" in the Devices tab —
+// confirmed as a real point of confusion, not a hypothetical: these
+// disposable, per-display identities (see SCREEN_ID's own comment in
+// display.html for why they exist at all — a dedicated, never-colliding
+// identity specifically for "Open to Edit in New Tab") were showing up
+// indistinguishable from an unconfigured real device needing attention.
+// Returns null for anything that isn't a preview-prefixed id, so callers
+// can fall back to their own existing naming logic untouched.
+function previewScreenName(screenId) {
+  if (!screenId || !screenId.startsWith('preview_')) return null;
+  const slug = screenId.slice('preview_'.length);
+  // Exact match only — resolveDisplay() deliberately falls back to the
+  // first display in the system when nothing matches, which would be
+  // actively wrong here: misnaming this preview after a display it has
+  // nothing to do with, rather than a generic fallback using the slug
+  // itself.
+  const display = db.prepare(`SELECT name FROM displays WHERE slug = ?`).get(slug);
+  return `${display ? display.name : slug} (Live Edit)`;
+}
+
+// Periodically deletes preview screen identities that haven't checked in for
+// longer than the configured threshold. Safe to delete outright, not just
+// hide: these are inherently disposable, single-purpose identities (see
+// previewScreenName()'s own comment for why they exist at all), and their
+// own settings — schedule rules, switcher targets — are entirely isolated
+// to that one specific preview session, stored per-device_id exactly like
+// a real screen's own settings are, never touching any real, deployed
+// screen's configuration. Confirmed directly, not assumed: both
+// floating_switcher_presets and floating_switcher_schedule are saved via
+// `UPDATE screens ... WHERE device_id = ?`, so deleting a stale preview_*
+// row can never affect anything a real screen depends on.
+// Threshold is configurable via the preview_screen_cleanup_days setting
+// (an ordinary key on /api/settings, not a dedicated endpoint), by explicit
+// request — ranges from a few days to a year, defaulting to 7, so
+// infrequent but intentional re-use of the same preview doesn't lose it
+// prematurely.
+function cleanupStalePreviewScreens() {
+  try {
+    const days = Number(updateSetting('preview_screen_cleanup_days', '7')) || 7;
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    const result = db.prepare(`DELETE FROM screens WHERE device_id LIKE 'preview\\_%' ESCAPE '\\' AND last_seen < ?`).run(cutoff);
+    if (result.changes > 0) broadcastUpdate('screens');
+  } catch {}
+}
+setInterval(cleanupStalePreviewScreens, 6 * 60 * 60 * 1000); // every 6 hours — no need to check more often for a days-to-a-year-scale threshold
+cleanupStalePreviewScreens(); // also run once at boot, so a long-stale entry doesn't have to wait for the first interval tick
+
 app.get('/api/displays', (req, res) => {
   res.json(db.prepare(`SELECT * FROM displays ORDER BY sort_order ASC, id ASC`).all());
 });
@@ -6617,6 +6849,21 @@ app.get('/api/saved-layouts', (req, res) => {
   res.json(rows);
 });
 
+// Full detail for ONE saved layout, including its widget data — the list
+// endpoint above deliberately omits this to stay lightweight for a picker
+// UI. Used by the Layout Switcher (widget and floating, display.html) to
+// pre-fetch what a target preset actually contains, ahead of when someone
+// taps to switch to it.
+app.get('/api/saved-layouts/:id', (req, res) => {
+  const row = db.prepare(`SELECT * FROM saved_layouts WHERE id = ?`).get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Saved layout not found' });
+  res.json({
+    id: row.id, name: row.name, theme: row.theme || '', created_at: row.created_at,
+    widgets_landscape: JSON.parse(row.widgets_landscape || '[]'),
+    widgets_portrait: JSON.parse(row.widgets_portrait || '[]'),
+  });
+});
+
 // Save the CURRENT layout of a display (both orientations + its theme) as a preset.
 app.post('/api/saved-layouts', (req, res) => {
   const { name, display } = req.body;
@@ -6651,8 +6898,18 @@ app.post('/api/saved-layouts/:id/apply', (req, res) => {
   }
 
   // mode === 'current' (default): overwrite the target display
+  // Same hardening as PUT /api/layouts/:orientation, and for the identical
+  // reason — resolveDisplay() falls back to "the first display in the
+  // database" for ANY unresolved slug (empty, missing, or simply not
+  // matching), which is fine for a read but means a write with a bad slug
+  // silently overwrites some OTHER, unrelated display instead of failing.
+  // This is the DESTINATION of an apply — getting it wrong here is exactly
+  // the "layouts got swapped" failure mode this was built to rule out.
+  if (!display) return res.status(400).json({ error: 'A target display slug is required.' });
   const disp = resolveDisplay(display);
-  if (!disp) return res.status(404).json({ error: 'Target display not found' });
+  if (!disp || (disp.slug !== display && String(disp.id) !== String(display))) {
+    return res.status(404).json({ error: 'Target display not found' });
+  }
   const tx = db.transaction(() => {
     db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'landscape', ?)`).run(disp.id, preset.widgets_landscape);
     db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'portrait', ?)`).run(disp.id, preset.widgets_portrait);
@@ -6662,6 +6919,60 @@ app.post('/api/saved-layouts/:id/apply', (req, res) => {
   broadcastUpdate('displays');
   broadcastUpdate('layout', disp.id);
   res.json({ ok: true, display_id: disp.id });
+});
+
+// Full detail for ONE live display — both orientations' widgets + theme, in
+// the same shape GET /api/saved-layouts/:id already returns for templates.
+// Needed for the Layout Switcher to point at a live display directly, not
+// just a saved template — the pre-fetch cache reads whichever endpoint
+// matches the target's type but treats the result the same way either way.
+app.get('/api/displays/:slug/full', (req, res) => {
+  const disp = resolveDisplay(req.params.slug);
+  if (!disp) return res.status(404).json({ error: 'Display not found' });
+  const land = db.prepare(`SELECT widgets FROM layouts WHERE display_id = ? AND orientation = 'landscape'`).get(disp.id);
+  const port = db.prepare(`SELECT widgets FROM layouts WHERE display_id = ? AND orientation = 'portrait'`).get(disp.id);
+  res.json({
+    slug: disp.slug, name: disp.name, theme: disp.theme || '',
+    widgets_landscape: JSON.parse(land?.widgets || '[]'),
+    widgets_portrait: JSON.parse(port?.widgets || '[]'),
+  });
+});
+
+// Copies THIS display's current layout (both orientations + theme) onto
+// another display — the live-display equivalent of
+// POST /api/saved-layouts/:id/apply's mode:'current'. Used both by Layout
+// Switcher (switching TO a live display copies that display's current
+// arrangement onto the screen doing the switching) and available generally
+// for the same "clone one display onto another" use a saved-layout preset
+// already offers.
+app.post('/api/displays/:slug/apply-to', (req, res) => {
+  const source = resolveDisplay(req.params.slug);
+  if (!source) return res.status(404).json({ error: 'Source display not found' });
+  // Same hardening as the two endpoints above, same reason — this is the
+  // DESTINATION of an apply (the display about to be overwritten), so an
+  // unresolved slug falling back to "whichever display sorts first" here
+  // is exactly the failure mode this whole pattern exists to rule out. The
+  // SOURCE (req.params.slug, from the URL path) doesn't need this same
+  // guard — an Express route param can't arrive empty the way a body field
+  // can, and it was already checked as resolved above.
+  const targetSlug = req.body && req.body.display;
+  if (!targetSlug) return res.status(400).json({ error: 'A target display slug is required.' });
+  const target = resolveDisplay(targetSlug);
+  if (!target || (target.slug !== targetSlug && String(target.id) !== String(targetSlug))) {
+    return res.status(404).json({ error: 'Target display not found' });
+  }
+  if (source.id === target.id) return res.status(400).json({ error: 'Source and target are the same display' });
+  const land = db.prepare(`SELECT widgets FROM layouts WHERE display_id = ? AND orientation = 'landscape'`).get(source.id);
+  const port = db.prepare(`SELECT widgets FROM layouts WHERE display_id = ? AND orientation = 'portrait'`).get(source.id);
+  const tx = db.transaction(() => {
+    db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'landscape', ?)`).run(target.id, land?.widgets || '[]');
+    db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'portrait', ?)`).run(target.id, port?.widgets || '[]');
+    db.prepare(`UPDATE displays SET theme = ? WHERE id = ?`).run(source.theme || '', target.id);
+  });
+  tx();
+  broadcastUpdate('displays');
+  broadcastUpdate('layout', target.id);
+  res.json({ ok: true, display_id: target.id });
 });
 
 app.delete('/api/saved-layouts/:id', (req, res) => {
@@ -6707,6 +7018,15 @@ app.get('/api/screens', (req, res) => {
       tv_schedule_slots: db.prepare(`SELECT id, time, action FROM tv_schedule_slots WHERE device_id = ? ORDER BY time`).all(s.device_id),
       ambient_mode: s.ambient_mode || '',
       screen_version: s.screen_version || '',
+      floating_switcher_enabled: !!s.floating_switcher_enabled,
+      floating_switcher_presets: (() => { try { return JSON.parse(s.floating_switcher_presets || '[]'); } catch { return []; } })(),
+      floating_switcher_schedule: (() => { try { return JSON.parse(s.floating_switcher_schedule || '[]'); } catch { return []; } })(),
+      floating_switcher_edge: s.floating_switcher_edge || 'bottom',
+      floating_switcher_icon: s.floating_switcher_icon || '🔀',
+      floating_switcher_color: s.floating_switcher_color || '#0a0e1a',
+      floating_switcher_style: s.floating_switcher_style || 'circles',
+      floating_switcher_bar_mode: s.floating_switcher_bar_mode || 'icons',
+      floating_switcher_reveal: s.floating_switcher_reveal || 'always',
       online: (now - (s.last_seen || 0)) < SCREEN_ONLINE_MS,
       last_seen: s.last_seen || 0,
       is_remote: !!s.is_remote,
@@ -6717,7 +7037,7 @@ app.get('/api/screens', (req, res) => {
 
 // Rename a screen (also used to set its name the first time).
 app.put('/api/screens/:deviceId', (req, res) => {
-  const { name, info_corner, screen_orientation, screen_rotation, screensaver_tag, screensaver_photo_id, ambient_mode, ambient_clock_corner, ambient_photo_fit, ambient_fade_transition, ambient_fade_duration, ambient_photo_interval, ambient_blur_bg, fx_scale, fx_density, tv_control_type, tv_ip } = req.body;
+  const { name, info_corner, screen_orientation, screen_rotation, screensaver_tag, screensaver_photo_id, ambient_mode, ambient_clock_corner, ambient_photo_fit, ambient_fade_transition, ambient_fade_duration, ambient_photo_interval, ambient_blur_bg, fx_scale, fx_density, tv_control_type, tv_ip, floating_switcher_enabled, floating_switcher_presets, floating_switcher_schedule, floating_switcher_edge, floating_switcher_icon, floating_switcher_color, floating_switcher_style, floating_switcher_bar_mode, floating_switcher_reveal } = req.body;
   const existing = db.prepare(`SELECT device_id FROM screens WHERE device_id = ?`).get(req.params.deviceId);
   if (!existing) return res.status(404).json({ error: 'Screen not found' });
   if (name !== undefined) {
@@ -6840,6 +7160,139 @@ app.put('/api/screens/:deviceId', (req, res) => {
   if (orientationChanged) sendScreenCommand(req.params.deviceId, 'reload', {});
   // The screensaver filter is read live from cached state, so a lighter refresh works.
   if (screensaverChanged) sendScreenCommand(req.params.deviceId, 'refresh-photos', {});
+  if (floating_switcher_enabled !== undefined) {
+    db.prepare(`UPDATE screens SET floating_switcher_enabled = ? WHERE device_id = ?`)
+      .run(floating_switcher_enabled ? 1 : 0, req.params.deviceId);
+  }
+  if (floating_switcher_presets !== undefined) {
+    // Accepts either shape: a bare number/numeric-string (legacy — always
+    // meant a saved_layout id, kept working for anything already saved
+    // during the beta before this expansion) or the newer
+    // {type:'saved'|'display', id, icon} object (id is a saved_layout id
+    // for 'saved', a display slug for 'display'; icon is an optional
+    // per-target emoji/character the person picked, capped defensively the
+    // same way the old single floating_switcher_icon field was). Never
+    // trust the client's own 'type' framing without re-validating the
+    // shape of 'id' matches it.
+    const sanitizeIcon = (icon) => (typeof icon === 'string' && icon.trim()) ? icon.trim().slice(0, 8) : '';
+    const targets = Array.isArray(floating_switcher_presets) ? floating_switcher_presets.map(t => {
+      if (typeof t === 'number' || (typeof t === 'string' && /^\d+$/.test(t))) return { type: 'saved', id: Number(t) };
+      if (t && t.type === 'saved' && Number.isInteger(Number(t.id))) return { type: 'saved', id: Number(t.id), icon: sanitizeIcon(t.icon) };
+      if (t && t.type === 'display' && typeof t.id === 'string' && t.id) return { type: 'display', id: t.id, icon: sanitizeIcon(t.icon) };
+      return null;
+    }).filter(Boolean) : [];
+    db.prepare(`UPDATE screens SET floating_switcher_presets = ? WHERE device_id = ?`)
+      .run(JSON.stringify(targets), req.params.deviceId);
+  }
+  if (floating_switcher_schedule !== undefined) {
+    // Each rule's ACTIVE mode is ONE OF: 'time' (needs time), 'interval'
+    // (needs intervalValue/intervalUnit + target), or 'rotation' (needs
+    // intervalValue/intervalUnit + targets, 2+). mode defaults to 'time'
+    // for anything saved before 'interval'/'rotation' existed — those rows
+    // have no mode field at all, and should keep meaning exactly what
+    // they always meant.
+    //
+    // Every other field a rule might ALSO be carrying (from a mode it was
+    // in before, but currently isn't) is preserved here if it's present
+    // and independently valid, not discarded just because it isn't the
+    // active mode's own field. Found from a real, reproducible incident,
+    // not a hypothetical: the previous version of this validation only
+    // ever returned the active mode's own fields — so switching a
+    // rotation rule to "At a time" and saving permanently discarded its
+    // targets array server-side; the client's own in-memory state still
+    // remembered it until the next re-fetch, at which point switching
+    // back to Rotate only recovered a single carried-forward target, not
+    // the original list, looking exactly like "my settings didn't save."
+    // Reuses the exact same target validation as floating_switcher_presets
+    // above — a schedule rule's target follows the identical shape rules.
+    const validTarget = (t) => {
+      if (t && t.type === 'saved' && Number.isInteger(Number(t.id))) return { type: 'saved', id: Number(t.id) };
+      if (t && t.type === 'display' && typeof t.id === 'string' && t.id) return { type: 'display', id: t.id };
+      return null;
+    };
+    // Shared by both interval and rotation modes — same clamp-up-to-floor
+    // reasoning either way (see interval's own inline comment below for
+    // the full rationale): the check loop can't fire more precisely than
+    // every 5s regardless of what shorter value was configured, so losing
+    // an entire rule over too-fast a number would be a confusing surprise
+    // rather than a helpful validation.
+    const clampInterval = (value, unit) => {
+      const msPerUnit = unit === 'seconds' ? 1000 : unit === 'hours' ? 3600000 : 60000;
+      const ms = Math.max(value * msPerUnit, 5000);
+      return ms / msPerUnit;
+    };
+    const rules = Array.isArray(floating_switcher_schedule) ? floating_switcher_schedule.map(r => {
+      if (!r) return null;
+      const days = Array.isArray(r.daysOfWeek) ? [...new Set(r.daysOfWeek.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 6))] : [];
+      if (!days.length) return null;
+      const mode = ['interval', 'rotation'].includes(r.mode) ? r.mode : 'time';
+      // Every field validated independently of which mode is currently
+      // active — carried through whenever it's present and valid, so a
+      // mode this rule isn't in right now doesn't lose its own data.
+      const target = validTarget(r.target); // null if absent/invalid — fine for dormant preservation, required only if this IS the active single-target mode
+      const targets = Array.isArray(r.targets) ? r.targets.map(validTarget).filter(Boolean) : [];
+      const time = (typeof r.time === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(r.time)) ? r.time : null;
+      const intervalValueRaw = Number(r.intervalValue);
+      const hasValidInterval = Number.isFinite(intervalValueRaw) && intervalValueRaw > 0;
+      const intervalUnit = ['seconds', 'minutes', 'hours'].includes(r.intervalUnit) ? r.intervalUnit : 'minutes';
+      const intervalValue = hasValidInterval ? clampInterval(intervalValueRaw, intervalUnit) : null;
+      // The active mode's own requirement is what can reject the WHOLE
+      // rule — everything else above is preserved if valid, regardless.
+      if (mode === 'rotation' && targets.length < 2) return null; // need at least 2 distinct, valid targets to rotate between at all
+      if (mode === 'rotation' && !hasValidInterval) return null;
+      if (mode === 'interval' && (!target || !hasValidInterval)) return null;
+      if (mode === 'time' && (!target || !time)) return null;
+      const out = { mode, daysOfWeek: days };
+      if (target) out.target = target;
+      if (targets.length) out.targets = targets;
+      if (time) out.time = time;
+      if (intervalValue !== null) { out.intervalValue = intervalValue; out.intervalUnit = intervalUnit; }
+      // Explicit !== false, not a truthiness coercion — a rule with no
+      // enabled field at all (anything saved before this feature existed)
+      // should be treated as enabled, same as checkSchedules()'s own
+      // client-side check does. Only writes the field at all when it's
+      // actually false, keeping the common (enabled) case's stored shape
+      // unchanged from before this feature existed.
+      if (r.enabled === false) out.enabled = false;
+      return out;
+    }).filter(Boolean) : [];
+    db.prepare(`UPDATE screens SET floating_switcher_schedule = ? WHERE device_id = ?`)
+      .run(JSON.stringify(rules), req.params.deviceId);
+  }
+  if (floating_switcher_edge !== undefined) {
+    const edge = ['top', 'bottom', 'left', 'right'].includes(floating_switcher_edge) ? floating_switcher_edge : 'bottom';
+    db.prepare(`UPDATE screens SET floating_switcher_edge = ? WHERE device_id = ?`).run(edge, req.params.deviceId);
+  }
+  if (floating_switcher_icon !== undefined) {
+    // A single emoji/character is the intent, but this doesn't strictly
+    // enforce single-grapheme — just caps length defensively (an emoji
+    // with modifiers/ZWJ sequences can be several UTF-16 code units) so an
+    // unexpectedly long string can't get stored here.
+    const icon = (typeof floating_switcher_icon === 'string' && floating_switcher_icon.trim()) ? floating_switcher_icon.trim().slice(0, 8) : '🔀';
+    db.prepare(`UPDATE screens SET floating_switcher_icon = ? WHERE device_id = ?`).run(icon, req.params.deviceId);
+  }
+  if (floating_switcher_color !== undefined) {
+    const color = (typeof floating_switcher_color === 'string' && /^#[0-9a-fA-F]{6}$/.test(floating_switcher_color)) ? floating_switcher_color : '#0a0e1a';
+    db.prepare(`UPDATE screens SET floating_switcher_color = ? WHERE device_id = ?`).run(color, req.params.deviceId);
+  }
+  if (floating_switcher_style !== undefined) {
+    const style = ['circles', 'bar'].includes(floating_switcher_style) ? floating_switcher_style : 'circles';
+    db.prepare(`UPDATE screens SET floating_switcher_style = ? WHERE device_id = ?`).run(style, req.params.deviceId);
+  }
+  if (floating_switcher_bar_mode !== undefined) {
+    const barMode = ['icons', 'names'].includes(floating_switcher_bar_mode) ? floating_switcher_bar_mode : 'icons';
+    db.prepare(`UPDATE screens SET floating_switcher_bar_mode = ? WHERE device_id = ?`).run(barMode, req.params.deviceId);
+  }
+  if (floating_switcher_reveal !== undefined) {
+    const reveal = ['always', 'tap'].includes(floating_switcher_reveal) ? floating_switcher_reveal : 'always';
+    db.prepare(`UPDATE screens SET floating_switcher_reveal = ? WHERE device_id = ?`).run(reveal, req.params.deviceId);
+  }
+  if (floating_switcher_enabled !== undefined || floating_switcher_presets !== undefined || floating_switcher_schedule !== undefined || floating_switcher_edge !== undefined || floating_switcher_icon !== undefined || floating_switcher_color !== undefined || floating_switcher_style !== undefined || floating_switcher_bar_mode !== undefined || floating_switcher_reveal !== undefined) {
+    // Instant show/hide/reconfigure, no reload — same lightweight live-command
+    // pattern as info_corner/ambient_mode above, since this is meant to be
+    // toggled casually from the app while looking at the screen.
+    sendScreenCommand(req.params.deviceId, 'refresh-floating-switcher', {});
+  }
   broadcastUpdate('screens');
   res.json({ ok: true });
 });
@@ -6922,7 +7375,7 @@ app.post('/api/screen-checkin', (req, res) => {
     }
   } else {
     db.prepare(`INSERT INTO screens (device_id, name, last_seen, is_remote, remote_addr, screen_version) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(screenId, defaultName, now, isRemote, remoteAddr, reportedVersion);
+      .run(screenId, previewScreenName(screenId) || defaultName, now, isRemote, remoteAddr, reportedVersion);
     broadcastUpdate('screens');
   }
   // Physical resolution: only the device's OWN server should store its resolution
@@ -6991,18 +7444,33 @@ app.get('/api/screen-config', (req, res) => {
   // schemes (e.g. a localStorage id wiped by an update) — they're really this same
   // Pi showing up under a different id. We only ever delete unnamed rows, so any
   // screen the user deliberately named is always preserved.
+  //
+  // Explicitly excludes 'preview_*' rows — the dedicated, deterministic identity
+  // the "Open to Edit in New Tab" context uses (see SCREEN_ID's own declaration in
+  // display.html for the full reasoning: never sharing identity with a real screen
+  // is the whole point of that mechanism). Without this exclusion, this sweep — which
+  // runs every time the host's own real screen checks in, roughly every 20s for an
+  // always-on kiosk — matches every preview_* row on all three of its own conditions
+  // (unnamed, not remote, no remote address) and deletes it. The preview session's
+  // own next poll then silently recreates it from scratch with schema defaults,
+  // discarding whatever was just configured through it. Confirmed as a real,
+  // reproducible incident: a screen-level setting (the floating switcher) enabled
+  // through this context would get silently reset within roughly 20 seconds, on a
+  // loop, with the person having no visible indication anything was being undone.
   if (screenId === canonicalId) {
     try {
       // Only sweep rows that are unmistakably LOCAL leftovers of THIS Pi: unnamed,
-      // not flagged remote, AND with no remote address. A remote slave is excluded
-      // by all three conditions, so it can never be swept. (Belt and suspenders —
-      // any one of these would protect it; we require all to be safe.)
+      // not flagged remote, with no remote address, AND not a deliberately-separate
+      // preview identity. A remote slave is excluded by the first three conditions;
+      // a preview session is excluded by the fourth. (Belt and suspenders — any one
+      // condition would protect a given row; we require all four to be safe.)
       const orphans = db.prepare(
         `SELECT device_id FROM screens
            WHERE device_id != ?
              AND (name IS NULL OR name = '')
              AND COALESCE(is_remote,0) = 0
-             AND COALESCE(remote_addr,'') = ''`
+             AND COALESCE(remote_addr,'') = ''
+             AND device_id NOT LIKE 'preview\_%' ESCAPE '\'`
       ).all(canonicalId);
       if (orphans.length) {
         db.prepare(
@@ -7010,7 +7478,8 @@ app.get('/api/screen-config', (req, res) => {
              WHERE device_id != ?
                AND (name IS NULL OR name = '')
                AND COALESCE(is_remote,0) = 0
-               AND COALESCE(remote_addr,'') = ''`
+               AND COALESCE(remote_addr,'') = ''
+               AND device_id NOT LIKE 'preview\_%' ESCAPE '\'`
         ).run(canonicalId);
         broadcastUpdate('screens');
       }
@@ -7028,13 +7497,24 @@ app.get('/api/screen-config', (req, res) => {
     // display will resolve it once the next data sync lands the profile).
     let slug = (remoteSlug !== null ? remoteSlug : (existing.assigned_display_slug || ''));
     if (slug && remoteSlug === null && !resolveDisplay(slug)) slug = '';
-    res.json({ assigned_display_slug: slug, named: !!existing.name, info_corner: existing.info_corner || '', addresses: addrs, port, canonicalId, displayRes });
+    let switcherPresets = [];
+    try { switcherPresets = JSON.parse(existing.floating_switcher_presets || '[]'); } catch {}
+    let switcherSchedule = [];
+    try { switcherSchedule = JSON.parse(existing.floating_switcher_schedule || '[]'); } catch {}
+    res.json({ assigned_display_slug: slug, named: !!existing.name, info_corner: existing.info_corner || '', addresses: addrs, port, canonicalId, displayRes,
+      floating_switcher_enabled: !!existing.floating_switcher_enabled, floating_switcher_presets: switcherPresets, floating_switcher_schedule: switcherSchedule,
+      floating_switcher_edge: existing.floating_switcher_edge || 'bottom', floating_switcher_icon: existing.floating_switcher_icon || '🔀', floating_switcher_color: existing.floating_switcher_color || '#0a0e1a',
+      floating_switcher_style: existing.floating_switcher_style || 'circles', floating_switcher_bar_mode: existing.floating_switcher_bar_mode || 'icons',
+      floating_switcher_reveal: existing.floating_switcher_reveal || 'always' });
   } else {
-    db.prepare(`INSERT INTO screens (device_id, last_seen) VALUES (?, ?)`).run(screenId, now);
+    db.prepare(`INSERT INTO screens (device_id, name, last_seen) VALUES (?, ?, ?)`).run(screenId, previewScreenName(screenId), now);
     broadcastUpdate('screens');
     let slug = (remoteSlug !== null ? remoteSlug : '');
     if (slug && remoteSlug === null && !resolveDisplay(slug)) slug = '';
-    res.json({ assigned_display_slug: slug, named: false, info_corner: '', addresses: addrs, port, canonicalId, displayRes });
+    res.json({ assigned_display_slug: slug, named: false, info_corner: '', addresses: addrs, port, canonicalId, displayRes,
+      floating_switcher_enabled: false, floating_switcher_presets: [], floating_switcher_schedule: [],
+      floating_switcher_edge: 'bottom', floating_switcher_icon: '🔀', floating_switcher_color: '#0a0e1a',
+      floating_switcher_style: 'circles', floating_switcher_bar_mode: 'icons', floating_switcher_reveal: 'always' });
   }
 });
 
@@ -7065,8 +7545,26 @@ app.get('/api/layouts/:orientation', (req, res) => {
 
 // PUT /api/layouts/:orientation?display=kitchen
 app.put('/api/layouts/:orientation', (req, res) => {
-  const display = resolveDisplay(req.query.display);
-  if (!display) return res.status(404).json({ error: 'No displays exist yet' });
+  // A WRITE must never fall back to resolveDisplay()'s own "first display in
+  // the database" default the way a read reasonably can — that default
+  // exists so a read shows something sensible rather than erroring out, but
+  // applied to a save it means any request that omits, mis-sends, or sends a
+  // stale/typo'd 'display' silently overwrites some OTHER, unrelated, and
+  // often arbitrary display's real content instead of failing loudly.
+  // Confirmed as a real, reported incident: a display's own layout got
+  // silently replaced with a completely different one's widgets, with no
+  // error and no indication anything had gone wrong, while this fallback
+  // landing on whichever display happens to sort first was never ruled out
+  // as the mechanism. Checking resolveDisplay()'s return isn't enough on its
+  // own — it returns a display in BOTH the "slug matched" and "nothing
+  // matched, here's the fallback" cases, so the only way to tell them apart
+  // is to verify the slug/id actually sent was actually what came back.
+  const requested = req.query.display;
+  if (!requested) return res.status(400).json({ error: 'A display slug is required to save a layout.' });
+  const display = resolveDisplay(requested);
+  if (!display || (display.slug !== requested && String(display.id) !== String(requested))) {
+    return res.status(404).json({ error: 'That display could not be found.' });
+  }
   const { widgets } = req.body;
   if (!Array.isArray(widgets)) return res.status(400).json({ error: 'widgets must be an array' });
 
@@ -9085,23 +9583,15 @@ function installFromZip(zipPath, res) {
     let newVersion = 'unknown';
     try { newVersion = require(path.join(src, 'package.json')).version || 'unknown'; } catch {}
 
-    // 4. Back up current code (NOT user data) for auto-rollback.
-    fs.rmSync(UPDATE_BACKUP, { recursive: true, force: true });
-    fs.mkdirSync(UPDATE_BACKUP, { recursive: true });
-    const codeItems = ['server.js', 'templates.js', 'tv-control.js', 'public', 'package.json', 'scripts',
-                       'install.sh', 'setup-remote-access.sh', 'hide-cursor.sh', 'README.md', 'BETA_CHECKLIST.md',
-                       'LICENSE']; // legal terms — unlike CHANGELOG.md/HANDOFF.md (dev-facing docs, no
-                                   // stakes either way), an installed device should actually receive
-                                   // updated license terms, not keep whatever it shipped with forever.
-                                   // Confirmed real bug: this was missing, so an existing install could
-                                   // apply update after update and never see a licensing change at all —
-                                   // only a brand new install (not an update) ever got the current file.
-    for (const name of codeItems) {
-      const from = path.join(__dirname, name);
-      if (fs.existsSync(from)) {
-        try { fs.cpSync(from, path.join(UPDATE_BACKUP, name), { recursive: true }); } catch {}
-      }
-    }
+    // 4. Back up current code (NOT user data) into the rolling pool, for
+    //    both auto-rollback (autoRollbackGuard reads the newest entry) and
+    //    manual restore/download of any of the last ROLLING_BACKUP_LIMIT.
+    //    Timestamp-prefixed folder name so plain alphabetical sort = time
+    //    order, matching pruneRollingBackups()' own assumption.
+    const rollingTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const rollingDest = path.join(UPDATE_BACKUPS_ROLLING_DIR, `${rollingTimestamp}__v${APP_VERSION}`);
+    backupCurrentCodeInto(rollingDest);
+    pruneRollingBackups();
 
     // 5. Swap in new code, preserving user data (calendar.db, public/uploads,
     //    .session-secret are never in the zip and public/uploads is kept).
@@ -9123,7 +9613,7 @@ function installFromZip(zipPath, res) {
         fs.cpSync(from, to, { recursive: true });
       }
     };
-    for (const name of codeItems) copyItem(name);
+    for (const name of UPDATE_CODE_ITEMS) copyItem(name);
 
     // 5b. Best-effort npm install, in case this update added a new dependency
     // (package.json just got swapped in above, but node_modules wasn't touched).
@@ -9139,6 +9629,27 @@ function installFromZip(zipPath, res) {
       console.error('Update: npm install failed (continuing anyway) — ' + (e.stderr ? e.stderr.toString().slice(-300) : e.message));
     }
 
+    // 5c. Monthly historical snapshot — of the NEWLY-installed code (__dirname
+    // now holds it, post-swap), unlike the rolling backup above which captures
+    // the OLD pre-update state. Stable releases only (no "-beta." in the
+    // version string) — a long beta cycle can span multiple months without
+    // ever producing one, which is intentional. Only the first stable release
+    // in a given calendar month creates one; later ones that month don't.
+    try {
+      const isStableRelease = !/-beta\./i.test(newVersion);
+      if (isStableRelease) {
+        fs.mkdirSync(UPDATE_BACKUPS_MONTHLY_DIR, { recursive: true });
+        const yyyyMM = new Date().toISOString().slice(0, 7); // 'YYYY-MM'
+        const alreadyHasThisMonth = fs.readdirSync(UPDATE_BACKUPS_MONTHLY_DIR).some(f => f.startsWith(yyyyMM + '__'));
+        if (!alreadyHasThisMonth) {
+          backupCurrentCodeInto(path.join(UPDATE_BACKUPS_MONTHLY_DIR, `${yyyyMM}__v${newVersion}`));
+        }
+      }
+    } catch (e) {
+      // Never let a monthly-snapshot failure block the update itself.
+      console.error('Monthly backup snapshot failed (continuing anyway) — ' + e.message);
+    }
+
     // 6. Mark pending (enables auto-rollback) and restart.
     fs.writeFileSync(PENDING_FLAG, '0');
     cleanup();
@@ -9152,6 +9663,143 @@ function installFromZip(zipPath, res) {
     return fail('Update failed: ' + e.message);
   }
 }
+
+// ── Update backup management (list / download / manual restore) ───────────────
+// Everything below operates on the two retained backup pools installFromZip()
+// populates above — ROLLING (last 10 updates) and MONTHLY (one per calendar
+// month, stable releases only). The automatic "3 failed boots" rollback in
+// autoRollbackGuard() always uses the newest rolling one and needs none of
+// this; these endpoints exist so a person can see what's retained, pull any
+// of them back down as a zip, or manually restore to one on purpose (not
+// just as an automatic crash-recovery reaction).
+function backupDirFor(type) {
+  return type === 'monthly' ? UPDATE_BACKUPS_MONTHLY_DIR : UPDATE_BACKUPS_ROLLING_DIR;
+}
+// Folder names are '<timestamp-or-YYYY-MM>__v<version>' — split back apart
+// for display rather than showing the raw folder name in the UI.
+function parseBackupFolderName(name) {
+  const idx = name.indexOf('__v');
+  if (idx === -1) return { label: name, version: 'unknown' };
+  return { label: name.slice(0, idx), version: name.slice(idx + 3) };
+}
+// Folder names are server-generated (timestamp/version), never expected to
+// contain path separators or '..' — reject anything that does rather than
+// trusting a client-supplied :name to be well-formed before it's joined
+// into a filesystem path.
+function isSafeBackupName(name) {
+  return typeof name === 'string' && name.length > 0 && !name.includes('..') && !name.includes('/') && !name.includes('\\');
+}
+
+// GET /api/update-backups — lists every retained code backup (rolling +
+// monthly), newest first within each group, for the Advanced Settings UI.
+app.get('/api/update-backups', (req, res) => {
+  const listDir = (dir, type) => {
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir).sort().reverse().map(name => {
+      const { label, version } = parseBackupFolderName(name);
+      let createdAt = null;
+      try { createdAt = fs.statSync(path.join(dir, name)).birthtime.toISOString(); } catch {}
+      return { type, name, label, version, createdAt };
+    });
+  };
+  res.json({
+    rolling: listDir(UPDATE_BACKUPS_ROLLING_DIR, 'rolling'),
+    monthly: listDir(UPDATE_BACKUPS_MONTHLY_DIR, 'monthly'),
+    currentVersion: APP_VERSION,
+  });
+});
+
+// GET /api/update-backups/:type/:name/download — zips a specific backup in
+// the exact same format installFromZip() expects to receive back (wrapped
+// in a top-level "piazzahq/" folder) — the same zip shape as any other
+// delivered build, so a downloaded backup can be re-uploaded through the
+// normal Update flow if ever needed, not just kept as a passive archive.
+app.get('/api/update-backups/:type/:name/download', (req, res) => {
+  const { type, name } = req.params;
+  if (type !== 'rolling' && type !== 'monthly') return res.status(400).json({ error: "type must be 'rolling' or 'monthly'" });
+  if (!isSafeBackupName(name)) return res.status(400).json({ error: 'Invalid backup name.' });
+  const srcDir = path.join(backupDirFor(type), name);
+  if (!fs.existsSync(srcDir)) return res.status(404).json({ error: 'Backup not found.' });
+  try { execFileSync('which', ['zip'], { timeout: 5000 }); }
+  catch { return res.status(500).json({ error: `The "zip" command isn't installed on this Pi yet. Run "sudo apt-get install -y zip" once, then try again.` }); }
+  try {
+    const stageRoot = path.join(UPDATE_TMP, 'backup-zip-stage');
+    const stageDir = path.join(stageRoot, 'piazzahq');
+    fs.rmSync(stageRoot, { recursive: true, force: true });
+    fs.mkdirSync(stageDir, { recursive: true });
+    for (const item of fs.readdirSync(srcDir)) {
+      fs.cpSync(path.join(srcDir, item), path.join(stageDir, item), { recursive: true });
+    }
+    const { label, version } = parseBackupFolderName(name);
+    const zipName = `piazzahq-v${version}-${type}-${label}.zip`;
+    const zipPath = path.join(stageRoot, zipName);
+    try { fs.unlinkSync(zipPath); } catch {}
+    execFileSync('zip', ['-r', '-q', zipName, 'piazzahq'], { cwd: stageRoot, timeout: 120000 });
+    res.download(zipPath, zipName, (err) => {
+      if (err) console.error('Backup zip download error:', err.message);
+      fs.rmSync(stageRoot, { recursive: true, force: true });
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// POST /api/update-backups/:type/:name/restore — manually restores a
+// specific backup on purpose, not just the automatic "3 failed boots"
+// rollback (which always uses the newest rolling one and never any older
+// or monthly backup). Same restart-and-recover mechanism as a normal
+// update: validate, back up what's currently running first (restoring an
+// old backup is itself a code change and deserves the same rollback
+// safety net a normal update gets, not an exception to it), swap, mark
+// pending, restart.
+app.post('/api/update-backups/:type/:name/restore', (req, res) => {
+  const { type, name } = req.params;
+  if (type !== 'rolling' && type !== 'monthly') return res.status(400).json({ error: "type must be 'rolling' or 'monthly'" });
+  if (!isSafeBackupName(name)) return res.status(400).json({ error: 'Invalid backup name.' });
+  const srcDir = path.join(backupDirFor(type), name);
+  if (!fs.existsSync(srcDir)) return res.status(404).json({ error: 'Backup not found.' });
+  const srcServerJs = path.join(srcDir, 'server.js');
+  if (fs.existsSync(srcServerJs)) {
+    try {
+      execFileSync(process.execPath, ['--check', srcServerJs], { timeout: 30000 });
+    } catch (e) {
+      return res.status(400).json({ error: 'That backup\'s server.js failed a syntax check — restore rejected to protect your install.' });
+    }
+  }
+  try {
+    const rollingTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    backupCurrentCodeInto(path.join(UPDATE_BACKUPS_ROLLING_DIR, `${rollingTimestamp}__v${APP_VERSION}`));
+    pruneRollingBackups();
+    for (const item of UPDATE_CODE_ITEMS) {
+      const from = path.join(srcDir, item), to = path.join(__dirname, item);
+      if (!fs.existsSync(from)) continue;
+      if (item === 'public') {
+        const uploadsBackup = path.join(UPDATE_TMP, 'uploads-keep-restore');
+        const liveUploads = path.join(__dirname, 'public', 'uploads');
+        if (fs.existsSync(liveUploads)) fs.cpSync(liveUploads, uploadsBackup, { recursive: true });
+        fs.rmSync(to, { recursive: true, force: true });
+        fs.cpSync(from, to, { recursive: true });
+        if (fs.existsSync(uploadsBackup)) {
+          fs.rmSync(path.join(to, 'uploads'), { recursive: true, force: true });
+          fs.cpSync(uploadsBackup, path.join(to, 'uploads'), { recursive: true });
+        }
+      } else {
+        if (fs.existsSync(to)) fs.rmSync(to, { recursive: true, force: true });
+        fs.cpSync(from, to, { recursive: true });
+      }
+    }
+    const { version } = parseBackupFolderName(name);
+    fs.writeFileSync(PENDING_FLAG, '0');
+    res.json({ ok: true, from: APP_VERSION, to: version,
+      message: 'Restoring — restarting now, the app will reconnect in a few seconds.' });
+    setTimeout(() => {
+      console.log(`Manually restoring backup ${name} (v${version}); restarting.`);
+      process.exit(0);
+    }, 700);
+  } catch (e) {
+    res.status(500).json({ error: 'Restore failed: ' + e.message });
+  }
+});
 
 // Helper: read an update setting with a sane default.
 function updateSetting(key, dflt) {
@@ -9617,14 +10265,16 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`  Control : http://localhost:${PORT}/app`);
   console.log(`  Version : ${APP_VERSION}`);
   // We booted successfully. If an update was pending, it's now confirmed good —
-  // clear the marker and discard the rollback backup after a short grace period
-  // (long enough to be sure we stay up, short enough not to linger).
+  // clear the marker after a short grace period (long enough to be sure we
+  // stay up). The rolling backup taken before this update is deliberately
+  // NOT deleted here anymore — it's retained history now (pruned down to
+  // ROLLING_BACKUP_LIMIT on the next update, not discarded the moment this
+  // one is confirmed healthy).
   if (fs.existsSync(PENDING_FLAG)) {
     setTimeout(() => {
       try {
         fs.unlinkSync(PENDING_FLAG);
-        if (fs.existsSync(UPDATE_BACKUP)) fs.rmSync(UPDATE_BACKUP, { recursive: true, force: true });
-        console.log('Update confirmed healthy; rollback backup cleared.');
+        console.log('Update confirmed healthy.');
       } catch (e) { console.error('Post-update cleanup error:', e.message); }
       // Host-first auto-push: now that WE are confirmed healthy on the new version,
       // push the same code to each online slave so the whole fleet ends up matching.
@@ -9749,7 +10399,7 @@ app.post('/api/backup/restore', backupRestoreUpload.single('backup'), async (req
     }
 
     // 4. Safety copy of what's currently live, BEFORE touching anything —
-    //    same reasoning as UPDATE_BACKUP for code updates. Kept (not
+    //    same reasoning as the rolling code-backup pool for updates. Kept (not
     //    cleaned up) so a bad restore can be undone by hand over SSH if
     //    something is genuinely wrong with the uploaded backup.
     fs.rmSync(RESTORE_SAFETY_BACKUP, { recursive: true, force: true });
@@ -9801,11 +10451,11 @@ function buildSelfUpdateZip() {
   const stageDir = path.join(stageRoot, 'piazzahq');
   fs.rmSync(stageRoot, { recursive: true, force: true });
   fs.mkdirSync(stageDir, { recursive: true });
-  // Same file list installFromZip() expects/backs up — keep these in sync.
-  const codeItems = ['server.js', 'templates.js', 'tv-control.js', 'public', 'package.json', 'scripts',
-                     'install.sh', 'setup-remote-access.sh', 'hide-cursor.sh', 'README.md', 'BETA_CHECKLIST.md',
-                     'LICENSE'];
-  for (const name of codeItems) {
+  // Same file list installFromZip() expects/backs up — now sharing the
+  // actual constant (UPDATE_CODE_ITEMS) instead of a separately maintained
+  // copy, so "keep these in sync" is structurally guaranteed rather than
+  // just a comment someone has to remember.
+  for (const name of UPDATE_CODE_ITEMS) {
     const from = path.join(__dirname, name);
     if (fs.existsSync(from)) fs.cpSync(from, path.join(stageDir, name), { recursive: true });
   }

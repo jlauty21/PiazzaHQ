@@ -118,6 +118,105 @@
     #info-overlay .io-url-row { display:flex; align-items:center; gap:8px; margin-top:6px; }
     #info-overlay .io-url-row:first-of-type { margin-top:2px; }
     #info-overlay .io-url-row .io-url, #info-overlay .io-url-row .io-url-2 { margin-top:0; flex:1; }
+
+    /* Screen Switcher — sits above widgets (z-index:2) but well
+       below Live Edit's own UI (40+), so it never competes with active
+       editing. Same pointer-events pattern as #info-overlay: the outer
+       container doesn't block touches to whatever's underneath it, only
+       the buttons themselves opt back in. */
+    #floating-switcher {
+      /* Position, flex-direction, and align-items are all fully dynamic
+         now — see applyFloatingSwitcherPosition(), called on every render
+         — since which edge (top/bottom/left/right) is configurable. This
+         rule intentionally only sets what's NEVER edge-dependent. Leaving
+         a static bottom/left here (as an earlier version of this rule
+         did) would be a real bug once positioning is dynamic: clearing an
+         inline style back to '' falls through to whatever the stylesheet
+         says, not to "no position at all" — so a top-edge render would
+         end up with both an inline top AND this rule's own bottom active
+         simultaneously, stretching the element across the gap between
+         them instead of positioning it at the edge. */
+      position:fixed; z-index:8; pointer-events:none; display:flex; gap:10px;
+    }
+    #floating-switcher .fls-btn {
+      pointer-events:auto; display:flex; align-items:center; justify-content:center;
+      width:52px; height:52px; border-radius:50%; flex-shrink:0; font-size:24px;
+      font-family:inherit; border:1px solid rgba(255,255,255,0.25); cursor:pointer;
+      box-shadow:0 2px 12px rgba(0,0,0,0.4); transition:transform 0.1s ease;
+    }
+    #floating-switcher .fls-btn:active { transform:scale(0.92); }
+
+    /* Bar style — a thin strip spanning the FULL edge, not a centered
+       cluster. Unlike circles (each button carries its own background,
+       the container stays fully invisible/pass-through), the container
+       itself is the visible bar here — background, blur, and a single
+       border on whichever side faces inward — so pointer-events flips to
+       auto on the container too, otherwise touches on the bar's own
+       background (the gaps between buttons) would fall through to
+       whatever widget sits behind it, which would look broken for
+       something with a solid, visible surface. */
+    #floating-switcher.fls-style-bar {
+      pointer-events:auto; background:rgba(10,14,26,0.88); backdrop-filter:blur(6px);
+      border:1px solid rgba(255,255,255,0.1); padding:0 18px;
+    }
+    #floating-switcher.fls-style-bar.fls-edge-bottom { border-width:1px 0 0 0; }
+    #floating-switcher.fls-style-bar.fls-edge-top { border-width:0 0 1px 0; }
+    #floating-switcher.fls-style-bar.fls-edge-left { border-width:0 1px 0 0; padding:18px 0; }
+    #floating-switcher.fls-style-bar.fls-edge-right { border-width:0 0 0 1px; padding:18px 0; }
+
+    #floating-switcher .fls-bar-btn {
+      pointer-events:auto; display:flex; align-items:center; justify-content:center;
+      width:42px; height:42px; border-radius:10px; flex-shrink:0;
+      font-size:18px; font-weight:600; font-family:inherit; color:#e8edf5;
+      border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.06);
+      cursor:pointer; transition:background 0.15s ease, transform 0.1s ease, width 0.2s ease;
+    }
+    #floating-switcher .fls-bar-btn:active { transform:scale(0.94); }
+    #floating-switcher .fls-bar-btn .icon-face { display:block; }
+    #floating-switcher .fls-bar-btn .name-face { display:none; white-space:nowrap; }
+
+    /* Names mode: the icon-square becomes an auto-width text pill —
+       smaller, regular-weight type instead of one bold glyph. */
+    #floating-switcher.fls-mode-names .fls-bar-btn {
+      width:auto; height:38px; padding:0 16px;
+      font-size:14px; font-weight:500; border-radius:8px;
+    }
+    #floating-switcher.fls-mode-names .fls-bar-btn .icon-face { display:none; }
+    #floating-switcher.fls-mode-names .fls-bar-btn .name-face { display:block; }
+
+    /* Left/right + names: rotated text instead of a widened bar, so it
+       stays exactly as thin on every edge as icon mode — the reason bar
+       style is worth choosing at all is to hug the edge tightly, and
+       widening on two of its four edges would undercut that. Reads
+       bottom-to-top (writing-mode: vertical-rl flows top-to-bottom by
+       default; the 180deg flip reverses it) — kept the same direction on
+       both left and right rather than mirroring them, one rotation to
+       reason about instead of two. Approved directly against a live
+       mockup before building this. */
+    #floating-switcher.fls-edge-left.fls-mode-names .fls-bar-btn,
+    #floating-switcher.fls-edge-right.fls-mode-names .fls-bar-btn {
+      width:42px; height:auto; min-height:42px; padding:10px 0;
+    }
+    #floating-switcher.fls-edge-left.fls-mode-names .name-face,
+    #floating-switcher.fls-edge-right.fls-mode-names .name-face {
+      writing-mode:vertical-rl; transform:rotate(180deg);
+    }
+    /* Tap to reveal — optional, off by default (see floating_switcher_reveal
+       schema comment). Reuses the EXACT fade pattern already used by
+       #edit-mode-trigger and #back-to-app-link (opacity/transition/
+       pointer-events, a .shown class toggled by toggleQuickAccessReveal() on
+       the same tap, same 4-second window) rather than a new mechanism —
+       one thing to keep consistent instead of three. The :not(.shown)
+       overrides give just enough specificity to beat the default
+       pointer-events:auto already set on buttons and the bar container
+       without needing !important; once .shown is present, :not(.shown)
+       simply stops matching and those original rules apply again on
+       their own — no separate "shown" pointer-events rule needed. */
+    #floating-switcher.fls-reveal-tap { opacity:0; transition:opacity 0.25s; }
+    #floating-switcher.fls-reveal-tap.shown { opacity:1; }
+    #floating-switcher.fls-reveal-tap:not(.shown) { pointer-events:none; }
+    #floating-switcher.fls-reveal-tap:not(.shown) .fls-btn,
+    #floating-switcher.fls-reveal-tap:not(.shown) .fls-bar-btn { pointer-events:none; }
     #info-overlay .io-qr { flex:0 0 auto; line-height:0; background:#fff; border-radius:4px; padding:3px; }
     #info-overlay .io-qr canvas, #info-overlay .io-qr img { display:block; width:100%; height:100%; }
     #info-overlay.corner-tl { top:18px; left:18px; }
@@ -138,6 +237,14 @@
        read as "available if you go looking for it," not as a permanent
        fixture cluttering the display the other 99% of the time it's just
        being looked at, not touched. */
+    #back-to-app-link {
+      position:fixed; top:14px; left:14px; z-index:65;
+      background:rgba(10,14,26,0.85); color:#e8edf5; text-decoration:none;
+      font-size:13px; font-weight:600; padding:8px 14px; border-radius:10px;
+      border:1px solid rgba(255,255,255,0.2); backdrop-filter:blur(3px);
+      opacity:0; transition:opacity 0.25s; pointer-events:none;
+    }
+    #back-to-app-link.shown { opacity:1; pointer-events:auto; }
     #edit-mode-trigger {
       position:absolute; bottom:18px; right:18px; z-index:60;
       width:52px; height:52px; border-radius:50%; border:none;
@@ -178,6 +285,14 @@
       width:36px; height:36px; padding:0 !important; border-radius:50% !important;
       font-size:17px; flex-shrink:0; margin-right:10px;
     }
+    /* Same plain icon-button treatment as the ➕ button above, for the same
+       reason — a screen-level settings action, not the bar's one "primary"
+       action (Done). */
+    #edit-mode-screen-settings-btn {
+      background:rgba(255,255,255,0.12) !important; color:#e8edf5 !important;
+      width:36px; height:36px; padding:0 !important; border-radius:50% !important;
+      font-size:16px; flex-shrink:0; margin-right:10px;
+    }
 
     /* Add-widget picker overlay — a simple, large-tap-target category/type
        grid, opened from the ➕ button. Data-driven from WIDGET_DEFS/
@@ -198,6 +313,30 @@
       width:36px; height:36px; border-radius:50%; font-size:16px;
     }
     #widget-picker-body { flex:1; overflow-y:auto; padding:12px 16px 24px; }
+    /* Screen Settings panel (the ⚙️ button in Live Edit) — same visual
+       shape as #widget-picker-overlay above (this is the actual bug: the
+       markup was written to mirror that panel's structure, but this CSS
+       rule was never added, so the overlay had no position/size/background
+       at all — display:flex on an unstyled div just made it an invisible
+       block sitting in normal document flow, not a full-screen overlay).
+       z-index 75, not 70 (matching the widget picker's own), so the two
+       panels have an unambiguous stacking order if either could ever be
+       open at the same time as the other, even though normal use never
+       has both open together. */
+    #screen-settings-overlay {
+      position:fixed; inset:0; z-index:75; background:rgba(6,9,18,0.97);
+      display:flex; flex-direction:column; color:#e8edf5;
+    }
+    #screen-settings-header {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:16px 20px; font-size:18px; font-weight:700;
+      border-bottom:1px solid rgba(255,255,255,0.12); flex-shrink:0;
+    }
+    #screen-settings-close {
+      background:rgba(255,255,255,0.12); color:#e8edf5; border:none;
+      width:36px; height:36px; border-radius:50%; font-size:16px;
+    }
+    #screen-settings-body { flex:1; overflow-y:auto; padding:12px 16px 24px; }
     .wp-category {
       margin-bottom:8px; border-radius:10px; overflow:hidden;
       background:rgba(255,255,255,0.04);
@@ -339,6 +478,25 @@
     .was-row label {
       display:block; font-size:13px; color:rgba(255,255,255,0.75); margin-bottom:8px;
     }
+    /* Same reusable accordion as app.html (accordionSection()/wireAccordion()
+       there) — colors adapted to THIS panel's own fixed dark palette (literal
+       hex/rgba, since --border/--card/--text/--muted are app.html-only
+       variables that don't exist here) rather than app.html's CSS custom
+       properties. --accent IS available here too (defined at :root, already
+       used by .was-section-label just above), so that one's shared as-is. */
+    .acc-section { border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; overflow: hidden; background: rgba(255,255,255,0.04); }
+    .acc-section.open { border-color: rgba(74,144,217,0.5); }
+    .acc-head {
+      width: 100%; display: flex; align-items: center; gap: 13px; cursor: pointer;
+      background: none; border: none; color: #e8edf5; padding: 16px 16px;
+      font-family: inherit; text-align: left;
+    }
+    .acc-head .acc-ic { font-size: 21px; flex: none; }
+    .acc-head .acc-text { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+    .acc-head .acc-label { font-size: 16px; font-weight: 600; }
+    .acc-head .acc-sub { font-size: 12px; color: rgba(255,255,255,0.6); }
+    .acc-head .acc-caret { color: var(--accent, #4A90D9); font-size: 14px; flex: none; }
+    .acc-body { padding: 0 16px 16px; }
 
     /* Manage Reminders — a SECOND full-screen sheet, same visual language
        as #widget-advanced-panel just above (reused rather than a third
@@ -899,6 +1057,7 @@
     body.blanked #photo-overlay { display:none; }
     body.blanked #photo-fade-overlays { display:none; }
     body.blanked #info-overlay { display:none !important; }
+    body.blanked #floating-switcher { display:none !important; }
     /* The Live Preview iframe in the app's Layout editor loads this exact
        page with ?preview=1 (already parsed above into the "preview" body
        class) to show the real display at true proportions — but the overlay
@@ -907,6 +1066,21 @@
        exist there at all: nobody looking at the Layout editor's own preview
        needs to be told the address to reach the app they're already using. */
     body.preview #info-overlay { display:none !important; }
+    /* Only the small, non-interactive embedded thumbnail preview (Layout
+       tab's own live preview panel) — NOT the "Open to Edit in New Tab"
+       link, which is full-size and fully interactive (allowEdit=1, see
+       ALLOW_EDIT_IN_PREVIEW/the 'preview-editable' body class it sets) and
+       meant to behave just like the real display in every way, including
+       this. Blanket-hiding it for BOTH preview contexts — the mistake this
+       replaced — made the floating switcher completely untestable through
+       the one workflow (edit in a new tab) most likely to actually be used
+       for testing it. */
+    body.preview:not(.preview-editable) #floating-switcher { display:none !important; }
+    /* Never compete with active dragging/resizing — a tap meant for a widget
+       underneath it, or a drag that happens to start on top of it, shouldn't
+       accidentally trigger a full layout switch mid-edit. */
+    body.edit-mode-active #floating-switcher { display:none !important; }
+    body.edit-mode-active #back-to-app-link { display:none !important; }
 
     /* ── Widget base ── */
     .widget {
@@ -1934,6 +2108,17 @@
     .w-timer.timer-done .timer-status { color:#fb7185; font-weight:700; }
     @keyframes timerPulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
 
+    /* ── Layout Switcher widget ── */
+    .w-layoutswitcher { align-items:center; justify-content:center; --ls-font: 15px; }
+    .w-layoutswitcher .ls-buttons { display:flex; flex-wrap:wrap; gap:calc(var(--ls-font) * 0.5); justify-content:center; align-items:center; width:100%; }
+    .w-layoutswitcher .ls-btn {
+      font-size:var(--ls-font); font-weight:600; font-family:inherit; color:var(--text);
+      background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15);
+      border-radius:calc(var(--ls-font) * 0.6); padding:calc(var(--ls-font) * 0.5) calc(var(--ls-font) * 0.9);
+      cursor:pointer; transition:background 0.15s ease, transform 0.1s ease;
+    }
+    .w-layoutswitcher .ls-btn:active { background:rgba(255,255,255,0.2); transform:scale(0.96); }
+
     /* ── On This Day widget ── */
     .w-onthisday { align-items:stretch; justify-content:flex-start; overflow:hidden; --otd-font: 15px; }
     .w-onthisday .otd-head { font-size:calc(var(--otd-font) * 0.65); font-weight:600; letter-spacing:2px;
@@ -2089,6 +2274,16 @@
 <div id="theme-fx"></div>
 <div id="canvas"></div>
 <div id="info-overlay" style="display:none"></div>
+<div id="floating-switcher" data-interactive="1" style="display:none"></div>
+<!-- Shown ONLY when this page was opened via the app's "Open to Edit in New
+     Tab" link (?preview=1&allowEdit=1) — see ALLOW_EDIT_IN_PREVIEW below.
+     Real touchscreens and the small embedded thumbnail preview never show
+     this; it exists specifically because that one link had no way back to
+     the app at all otherwise, on a device with no visible browser chrome
+     to fall back on (a PWA opens links like this in the SAME window, not
+     an actual new tab, since a standalone PWA has no tab bar to open one
+     into — target="_blank" alone doesn't help there). -->
+<a id="back-to-app-link" data-interactive="1" href="/app" style="display:none">← Back to App</a>
 <!-- Live Editing UI: tap anywhere on the screen to reveal a small pencil
      icon; tap that to turn on Live Editing, where widgets on the actual
      rendered display become directly selectable/draggable/resizable/
@@ -2096,6 +2291,7 @@
 <button id="edit-mode-trigger" aria-label="Live Editing">✏️</button>
 <div id="edit-mode-bar" style="display:none">
   <span id="edit-mode-label">Live Editing — tap a widget to select it</span>
+  <button id="edit-mode-screen-settings-btn" title="Screen settings">⚙️</button>
   <button id="edit-mode-add-btn" title="Add a widget">➕</button>
   <button id="edit-mode-done">Done</button>
 </div>
@@ -2111,6 +2307,19 @@
     <button id="widget-picker-close" aria-label="Cancel">✕</button>
   </div>
   <div id="widget-picker-body"></div>
+</div>
+<!-- Screen Settings panel — currently just the Screen Switcher
+     (see renderFloatingSwitcher() and its own toggle/picker below), the
+     only screen-level (not per-layout-widget) setting that previously
+     required going to the app's Screens management to touch at all.
+     Reuses #widget-picker-overlay's exact visual structure (same overlay
+     style, header, close button) rather than a new one-off panel design. -->
+<div id="screen-settings-overlay" style="display:none">
+  <div id="screen-settings-header">
+    <span>Screen Settings</span>
+    <button id="screen-settings-close" aria-label="Done">✕</button>
+  </div>
+  <div id="screen-settings-body"></div>
 </div>
 <!-- Placement banner: shown after picking a type, replaces the normal Live
      Editing bar until the person taps the canvas (or cancels) — tapping
@@ -3327,6 +3536,7 @@ function renderLayout() {
   requestAnimationFrame(wireTasksWidgetTaps);
   requestAnimationFrame(wireMiniCalNav);
   requestAnimationFrame(wireEntityStatusTaps);
+  requestAnimationFrame(wireLayoutSwitcherTaps);
   if (editModeActive) requestAnimationFrame(wireWidgetDragging);
   // Phase 4: a full re-render (SSE 'layout' push, the periodic 5-min
   // refresh, etc.) recreates every widget element from scratch, including
@@ -3505,6 +3715,7 @@ function renderWidget(w) {
     case 'sports': return renderSports(w);
     case 'metar': return renderMetarTaf(w);
     case 'decoration': return renderDecoration(w);
+    case 'layoutswitcher': return renderLayoutSwitcher(w);
     default: return '';
   }
 }
@@ -4517,9 +4728,8 @@ function renderFeedOpacityOverrideSection(w) {
   const feeds = distinctFeedsFromEvents();
   if (!feeds.length) return '';
   const overrides = w.feedOpacityOverride || {};
-  return `
-    <div class="was-section-label">🎨 Per-Feed Opacity (this display only)</div>
-    <p style="font-size:11px;color:rgba(255,255,255,0.5);margin:-4px 0 10px">Override a calendar's opacity for just this widget, without changing its global default in Calendar Feeds.</p>
+  const inner = `
+    <p style="font-size:11px;color:rgba(255,255,255,0.5);margin:0 0 10px">Override a calendar's opacity for just this widget, without changing its global default in Calendar Feeds.</p>
     ${feeds.map(f => {
       const hasOverride = overrides[f.id] !== undefined && overrides[f.id] !== null;
       const val = hasOverride ? overrides[f.id] : f.color_opacity;
@@ -4542,8 +4752,10 @@ function renderFeedOpacityOverrideSection(w) {
       </div>`;
     }).join('')}
   `;
+  return `<div id="fop-accordion-wrap">${accordionSection({ id: 'fop', icon: '🎨', label: 'Per-Feed Opacity', sub: 'this display only', inner })}</div>`;
 }
 function wireFeedOpacityOverrideSection(w) {
+  wireAccordion('fop-accordion-wrap');
   document.querySelectorAll('.fop-toggle').forEach(cb => {
     cb.addEventListener('change', (e) => {
       const feedId = e.target.dataset.feedId;
@@ -5955,35 +6167,106 @@ function wireMiniCalNav() {
   });
 }
 let editModeActive = false;
+let _editModeExitedAt = 0; // see exitEditMode()'s own comment and checkSchedules()'s grace-period check
 let _editIconHideTimer = null;
+let _backLinkHideTimer = null;
+let _flsHideTimer = null; // see toggleQuickAccessReveal()'s own comment for the floating switcher's optional tap-to-reveal
 let _editModeHaPollTimer = null;
 let _editModeEventsPollTimer = null;
 function wireDirectEditMode() {
-  if (IS_PREVIEW && !ALLOW_EDIT_IN_PREVIEW) return;
+  // Was `IS_PREVIEW && !ALLOW_EDIT_IN_PREVIEW` — the intent was always "skip
+  // this specifically in the embedded thumbnail," but ALLOW_EDIT_IN_PREVIEW
+  // being incorrectly true there too (see EMBEDDED_THUMBNAIL's own comment)
+  // meant this condition could never actually be true for that context.
+  // EMBEDDED_THUMBNAIL is the precise, dedicated signal for it now.
+  if (EMBEDDED_THUMBNAIL) return;
   if (document.body._editModeWired) return; // wire the tap-to-reveal listener exactly once, ever
   document.body._editModeWired = true;
   document.body.addEventListener('pointerdown', (e) => {
     if (editModeActive) {
       // Phase 4: tapping empty canvas (not a widget, its resize handles, or
       // the settings panel) deselects whatever's currently selected.
-      if (!e.target.closest('.widget, #widget-edit-panel, #edit-selection-overlay, #widget-picker-overlay, #widget-place-banner, #widget-advanced-panel')) deselectWidgetForEdit();
+      if (!e.target.closest('.widget, #widget-edit-panel, #edit-selection-overlay, #widget-picker-overlay, #widget-place-banner, #widget-advanced-panel, #screen-settings-overlay')) deselectWidgetForEdit();
       return; // dragging takes over once active, see wireWidgetDragging()
     }
     if (e.target.closest('[data-interactive], #edit-mode-trigger, #edit-mode-bar')) return;
-    showEditIconBriefly();
+    toggleQuickAccessReveal();
   });
   document.getElementById('edit-mode-trigger').addEventListener('click', enterEditMode);
   document.getElementById('edit-mode-done').addEventListener('click', exitEditMode);
   document.getElementById('edit-mode-add-btn').addEventListener('click', openWidgetPicker);
+  document.getElementById('edit-mode-screen-settings-btn').addEventListener('click', () => {
+    // Diagnostic + genuinely useful either way: confirms the tap itself
+    // registered, separate from whatever openScreenSettingsPanel() does
+    // afterward. If this toast never appears on a real tap, the problem is
+    // upstream of this code entirely (the click isn't reaching the handler
+    // at all — a DOM/overlap/hit-testing issue) rather than anything in
+    // openScreenSettingsPanel() itself, which sets its overlay visible
+    // synchronously before any await, so a later failure there wouldn't
+    // explain the panel never appearing either.
+    showDisplayToast('Opening screen settings…');
+    openScreenSettingsPanel();
+  });
+  document.getElementById('screen-settings-close').addEventListener('click', () => {
+    document.getElementById('screen-settings-overlay').style.display = 'none';
+  });
   document.getElementById('widget-place-cancel').addEventListener('click', cancelPlacementMode);
   wireCanvasPlacementTap();
 }
-function showEditIconBriefly() {
+// Tap-to-reveal for the Live Editing pencil icon, the "Back to App" link
+// (only relevant in the "Open to Edit in New Tab" context), and the
+// floating switcher's OPTIONAL tap-to-reveal mode (floating_switcher_reveal
+// === 'tap') — all three share one tap gesture and one timer, toggled
+// together rather than independently. A tap while they're ALREADY visible
+// dismisses them immediately instead of extending the timer further — a
+// deliberate choice: someone who taps again clearly wants them gone now,
+// not a longer wait for the same 4 seconds to pass. Checks the pencil
+// icon's own current state to decide which way to toggle, since it's the
+// one element of the three always present regardless of context.
+function toggleQuickAccessReveal() {
   const btn = document.getElementById('edit-mode-trigger');
-  if (!btn) return;
-  btn.classList.add('shown');
-  clearTimeout(_editIconHideTimer);
-  _editIconHideTimer = setTimeout(() => btn.classList.remove('shown'), 4000);
+  if (btn && btn.classList.contains('shown')) {
+    hideQuickAccessReveal();
+    return;
+  }
+  if (btn) {
+    btn.classList.add('shown');
+    clearTimeout(_editIconHideTimer);
+    _editIconHideTimer = setTimeout(() => btn.classList.remove('shown'), 4000);
+  }
+  // Same tap-to-reveal treatment as the pencil icon above, not a
+  // persistent fixture — this link only ever exists at all (display:block)
+  // in the "Open to Edit in New Tab" context to begin with (see its own
+  // enabling code near ALLOW_EDIT_IN_PREVIEW), so this is a harmless no-op
+  // everywhere else without needing its own separate context check here.
+  const backLink = document.getElementById('back-to-app-link');
+  if (backLink) {
+    backLink.classList.add('shown');
+    clearTimeout(_backLinkHideTimer);
+    _backLinkHideTimer = setTimeout(() => backLink.classList.remove('shown'), 4000);
+  }
+  // Optional tap-to-reveal for the floating switcher itself (see the
+  // floating_switcher_reveal schema comment) — only meaningful when the
+  // fls-reveal-tap class is present (renderFloatingSwitcher() adds it only
+  // when this mode's actually selected), so this is a harmless no-op the
+  // rest of the time rather than needing its own separate check here.
+  const fls = document.getElementById('floating-switcher');
+  if (fls && fls.classList.contains('fls-reveal-tap')) {
+    fls.classList.add('shown');
+    clearTimeout(_flsHideTimer);
+    _flsHideTimer = setTimeout(() => fls.classList.remove('shown'), 4000);
+  }
+}
+// Dismisses all three immediately — called by a deliberate second tap (see
+// toggleQuickAccessReveal() above), split out on its own in case anything
+// else ever needs to dismiss these without going through the toggle check.
+function hideQuickAccessReveal() {
+  const btn = document.getElementById('edit-mode-trigger');
+  if (btn) { btn.classList.remove('shown'); clearTimeout(_editIconHideTimer); }
+  const backLink = document.getElementById('back-to-app-link');
+  if (backLink) { backLink.classList.remove('shown'); clearTimeout(_backLinkHideTimer); }
+  const fls = document.getElementById('floating-switcher');
+  if (fls) { fls.classList.remove('shown'); clearTimeout(_flsHideTimer); }
 }
 function enterEditMode() {
   // This device mirrors a host: its layouts table is wholesale replaced
@@ -6039,10 +6322,34 @@ function enterEditMode() {
 }
 function exitEditMode() {
   editModeActive = false;
+  // Originally added because a schedule rule that became due WHILE
+  // actively editing used to "catch up" and fire on the very next check
+  // after editing ended — which meant a rule due during an editing session
+  // fired the INSTANT editing ended, with editModeActive already false —
+  // silently, since that's exactly the condition switchToLayoutTarget()'s
+  // own confirmation dialog requires to show at all. Confirmed as a real,
+  // reproducible incident at the time, not a hypothetical: a diagnostic
+  // toast directly captured switchToLayoutTarget() firing with
+  // editMode=false moments after exiting Live Edit.
+  //
+  // checkSchedules() no longer catches up at all, by later explicit
+  // request (see its own comment) — a rule now only fires on an exact
+  // match against the current moment, never late. This grace period still
+  // matters for exactly the same reason, just phrased the other way now:
+  // without it, a rule whose moment happens to fall in the instant right
+  // after editing ends would still fire silently, with no confirmation
+  // shown, since editModeActive is already false by then. _editModeExitedAt
+  // gives checkSchedules() a brief window where it skips checking entirely
+  // right after editing ends — and since nothing catches up anymore, a
+  // rule whose moment falls inside that window simply doesn't fire this
+  // time, rather than firing late once the window passes.
+  _editModeExitedAt = Date.now();
   document.body.classList.remove('edit-mode-active');
   document.getElementById('edit-mode-bar').style.display = 'none';
   deselectWidgetForEdit();
   closeWidgetPicker();
+  const ssOverlay = document.getElementById('screen-settings-overlay');
+  if (ssOverlay) ssOverlay.style.display = 'none';
   cancelPlacementMode();
   if (_editModeHaPollTimer) { clearInterval(_editModeHaPollTimer); _editModeHaPollTimer = null; }
   if (_editModeEventsPollTimer) { clearInterval(_editModeEventsPollTimer); _editModeEventsPollTimer = null; }
@@ -6433,11 +6740,31 @@ async function onResizeEnd(e) {
 // person's own just-made setting choice.
 let _lastLocalLayoutSaveAt = 0;
 const LAYOUT_ECHO_SUPPRESS_MS = 3000;
+// True whenever this screen is currently showing a schedule-driven switch
+// rather than its own true, pre-defined layout — see switchToLayoutTarget()
+// for where this gets set/cleared, and checkSchedules() for the revert
+// logic that reads it. By explicit request: since schedule-driven switches
+// never persist (see switchToLayoutTarget()'s own comment on that), a
+// screen would otherwise be stuck showing whatever the last switch left it
+// on indefinitely once the schedule that put it there gets disabled, with
+// no way back short of a manual reload.
+let _scheduleOverrideActive = false;
 
 async function saveLayoutNow() {
+  // Never send a layout save without an explicit display slug — the server
+  // now rejects this too (see the PUT endpoint's own comment for the real
+  // incident this guards against: an empty/missing slug silently landing on
+  // some OTHER, unrelated display's real content), but catching it here
+  // first avoids a doomed request and gives an honest, specific error
+  // instead of a generic "could not save" that wouldn't explain why.
+  if (!DISPLAY_SLUG) {
+    console.error('saveLayoutNow(): DISPLAY_SLUG is empty — refusing to save to avoid landing on the wrong display.');
+    showDisplayToast('❌ Could not save — no display selected.');
+    return;
+  }
   _lastLocalLayoutSaveAt = Date.now();
   try {
-    await fetch(`/api/layouts/${encodeURIComponent(currentOrientation)}?display=${encodeURIComponent(DISPLAY_SLUG || '')}`, {
+    await fetch(`/api/layouts/${encodeURIComponent(currentOrientation)}?display=${encodeURIComponent(DISPLAY_SLUG)}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ widgets: state.layout }),
     });
@@ -6474,7 +6801,7 @@ function rerenderSingleWidget(id) {
   // replaced DOM. All idempotent (each checks its own _tapWired flag before
   // attaching), so calling them broadly here is safe and simpler than
   // scoping each one to just this element.
-  wireChoreChartTaps(); wireTodoWidgetTaps(); wireShoppingWidgetTaps(); wireTasksWidgetTaps(); wireMiniCalNav(); wireEntityStatusTaps();
+  wireChoreChartTaps(); wireTodoWidgetTaps(); wireShoppingWidgetTaps(); wireTasksWidgetTaps(); wireMiniCalNav(); wireEntityStatusTaps(); wireLayoutSwitcherTaps();
   // QR codes are generated into their container by a separate pass after
   // any render (renderQRCodes(), normally run after a full renderLayout())
   // — innerHTML alone only creates an empty .qr-container div, so without
@@ -6769,12 +7096,91 @@ function haAreaRowsHtmlD(isSelected) {
 // popup system) doesn't exist on this page; the same explanatory text is
 // inlined as plain hint paragraphs instead of porting that whole subsystem
 // just for three tooltips.
+// ── Reusable collapsible accordion ────────────────────────────────────────────
+// Same API/behavior as accordionSection()/wireAccordion() in app.html — see
+// that copy's own comment for the full explanation. New here rather than
+// ported from an existing display.html pattern: this file never had a real
+// accordion before (Per-Feed Opacity was a flat, always-visible section
+// with a plain label, not collapsible), so this is this file's first use
+// of the pattern, not a port of prior behavior.
+function accordionSection(s, openByDefault = false) {
+  return `
+    <div class="acc-section${openByDefault ? ' open' : ''}" data-acc="${s.id}" style="${s.hidden ? 'display:none' : ''}">
+      <button class="acc-head" data-acc-toggle="${s.id}" type="button">
+        <span class="acc-ic">${s.icon || ''}</span>
+        <span class="acc-text"><span class="acc-label">${s.label}</span>${s.sub ? `<span class="acc-sub">${s.sub}</span>` : ''}</span>
+        <span class="acc-caret">${openByDefault ? '▾' : '▸'}</span>
+      </button>
+      <div class="acc-body" data-acc-body="${s.id}" style="${openByDefault ? '' : 'display:none'}">
+        ${s.inner}
+      </div>
+    </div>`;
+}
+function wireAccordion(containerId) {
+  const root = document.getElementById(containerId);
+  if (!root) return;
+  const ownSections = () => root.querySelectorAll(':scope > .acc-section');
+  ownSections().forEach(sec => {
+    const btn = sec.querySelector(':scope > .acc-head');
+    if (!btn) return;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = sec.classList.contains('open');
+      ownSections().forEach(s => {
+        const body = s.querySelector(':scope > .acc-body');
+        const caret = s.querySelector(':scope > .acc-head .acc-caret');
+        s.classList.remove('open');
+        if (body) body.style.display = 'none';
+        if (caret) caret.textContent = '▸';
+      });
+      if (!isOpen) {
+        sec.classList.add('open');
+        const body = sec.querySelector(':scope > .acc-body');
+        const caret = sec.querySelector(':scope > .acc-head .acc-caret');
+        if (body) body.style.display = '';
+        if (caret) caret.textContent = '▾';
+      }
+    });
+  });
+}
+// "Show Screen Switcher" and "Schedule" inside the Screen Settings panel —
+// deliberately NOT wired via wireAccordion() above, since that function
+// enforces mutual exclusion (only one section open at a time). These two
+// need to expand/collapse independently — by explicit request, and because
+// the schedule can be actively firing regardless of whether the switcher
+// button itself is enabled (checkSchedules() never checks
+// floating_switcher_enabled at all), so tying one's visibility to the
+// other's state would misrepresent that. No persisted open/closed state
+// needed (unlike app.html's equivalent, openScreenSubAccordions) — this
+// panel only ever renders once per open, it's never re-rendered in place
+// the way Screens management's screen list periodically is.
+function wireFlsSubAccordionsPreview() {
+  ['ss-fls-toggle-section', 'ss-fls-schedule-section'].forEach(id => {
+    const sec = document.querySelector(`#screen-settings-body [data-acc="${id}"]`);
+    if (!sec) return;
+    const btn = sec.querySelector(':scope > .acc-head');
+    if (!btn) return;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = sec.classList.contains('open');
+      const bodyEl = sec.querySelector(':scope > .acc-body');
+      const caret = sec.querySelector(':scope > .acc-head .acc-caret');
+      sec.classList.toggle('open', !isOpen);
+      if (bodyEl) bodyEl.style.display = isOpen ? 'none' : '';
+      if (caret) caret.textContent = isOpen ? '▸' : '▾';
+    });
+  });
+}
 async function openWidgetAdvancedPanel(id) {
   const w = state.layout.find(x => String(x.id) === String(id));
   const panel = document.getElementById('widget-advanced-panel');
   const body = document.getElementById('widget-advanced-body');
   const title = document.getElementById('widget-advanced-title');
   if (!w || !panel || !body) return;
+  if (_calSettingsOpenSectionForWidgetId !== id) {
+    _calSettingsOpenSection = null;
+    _calSettingsOpenSectionForWidgetId = id;
+  }
   // Real, reported annoyance fixed here: every in-panel action (picking an
   // entity, toggling an area, removing something) calls this same function
   // again to redraw the whole panel with current state — and this used to
@@ -7604,8 +8010,7 @@ function renderCalendarAdvancedSettings(w) {
   // and would otherwise show this toggle as enabled for a Grid calendar
   // that's explicitly set to wrap Off.
   const wrapActiveForCurrentLayout = calLayout === 'agenda' ? !!w.calWrap : (wrapMode !== 'off');
-  return `
-    <div class="was-section-label">📐 Layout</div>
+  const layoutInner = `
     <div class="was-row">
       <label>Layout Style</label>
       <select id="cal-layout-select">
@@ -7614,10 +8019,6 @@ function renderCalendarAdvancedSettings(w) {
         <option value="strip"  ${calLayout==='strip'?'selected':''}>Strip (single row)</option>
       </select>
     </div>
-    <div class="was-toggle-row">
-      <label>Color Coding ${infoBtn("Off removes every colored dot and highlight from this calendar — plain text only. On by default.")}</label>
-      <input type="checkbox" id="cal-color-coding-toggle" ${w.calColorCoding !== false ? 'checked' : ''}>
-    </div>
     ${dateFormatOverrideRowHtml('cal-date-format-select', w.calDateFormat)}
     ${ampmCaseOverrideRowHtml('cal-ampm-case-select', w.calAmpmCase)}
     <div class="was-toggle-row" id="cal-show-end-time-row" style="${calLayout==='strip'?'display:none':''}">
@@ -7625,176 +8026,62 @@ function renderCalendarAdvancedSettings(w) {
       <input type="checkbox" id="cal-show-end-time-toggle" ${showEndTime?'checked':''}>
     </div>
     <div class="was-toggle-row" id="cal-adaptive-font-row" style="${calLayout==='strip'?'display:none':''}">
-      <label>Adaptive Font Sizing</label>
+      <label>Adaptive Font Sizing ${infoBtn(`For an event that just barely wraps to a second line (e.g. "🎂Name🎂" tipping over because of the trailing emoji), shrinks that one event's text by up to ${ADAPTIVE_FONT_MAX_SHRINK_PX}px — only if that's enough to bring it back to one line. A title that's genuinely too long to fit is left wrapped exactly as before, at full size. ${wrapActiveForCurrentLayout ? '' : 'Requires Wrap Event Text to be on — grayed out until then, since text truncates with "…" instead of wrapping while it\'s off.'}`)}</label>
       <input type="checkbox" id="cal-adaptive-font-toggle" ${w.calAdaptiveFontSizing?'checked':''} ${wrapActiveForCurrentLayout?'':'disabled'}>
     </div>
-    <p class="was-hint" id="cal-adaptive-font-hint" style="${calLayout==='strip'?'display:none':''};margin-top:-10px">
-      For an event that just barely wraps to a second line (e.g. "🎂Name🎂" tipping over because of the trailing emoji), shrinks that one event's text by up to ${ADAPTIVE_FONT_MAX_SHRINK_PX}px — only if that's enough to bring it back to one line. A title that's genuinely too long to fit is left wrapped exactly as before, at full size. ${wrapActiveForCurrentLayout ? '' : 'Requires Wrap Event Text to be on — grayed out until then, since text truncates with "…" instead of wrapping while it\'s off.'}
-    </p>
-    <div id="cal-grid-only-settings" style="${calLayout==='grid'?'':'display:none'}">
-      <div class="was-row">
-        <label>Calendar View</label>
-        <select id="cal-view-select">
-          <option value="1week" ${view==='1week'?'selected':''}>1 Week</option>
-          <option value="2week" ${view==='2week'?'selected':''}>2 Weeks</option>
-          <option value="3week" ${view==='3week'?'selected':''}>3 Weeks</option>
-          <option value="4week" ${view==='4week'?'selected':''}>4 Weeks</option>
-          <option value="month" ${view==='month'?'selected':''}>Month</option>
-        </select>
-      </div>
-      <div class="was-row">
-        <label>Week Starts On</label>
-        <select id="cal-week-start-select">
-          <option value="default" ${(w.calWeekStart||'default')==='default'?'selected':''}>Use display setting</option>
-          <option value="0" ${w.calWeekStart==='0'?'selected':''}>Sunday</option>
-          <option value="1" ${w.calWeekStart==='1'?'selected':''}>Monday</option>
-        </select>
-      </div>
-      <div class="was-row">
-        <label>Multi-Day Event Style ${infoBtn("How a multi-day event (a trip, a visit) shows across the days it covers. \"Bar\" is the original style; the others are lighter-weight for a calendar with lots of single-day entries already competing for space.")}</label>
-        <select id="cal-multiday-style-select">
-          <option value="bar"    ${(w.calMultiDayStyle||'bar')==='bar'?'selected':''}>Bar — spans across the days</option>
-          <option value="dot"    ${w.calMultiDayStyle==='dot'?'selected':''}>Dot — listed like a regular event, each day</option>
-          <option value="line"   ${w.calMultiDayStyle==='line'?'selected':''}>Line — thin underline, name once</option>
-          <option value="stripe" ${w.calMultiDayStyle==='stripe'?'selected':''}>Stripe — colored edge on the cell</option>
-        </select>
-      </div>
-      <div class="was-row" id="cal-fullday-style-row" style="${w.calColorCoding===false?'display:none':''}">
-        <label>Full-Day Event Style ${infoBtn("How an all-day/multi-day event shows its color, independent of Color Coding above for timed events. \"Background\" is a colored pill. \"Dot\" is a lighter-weight marker matching a timed event's, no background. \"None\" shows plain text with no color indicator at all, for full-day events only. Hidden while Color Coding above is off.")}</label>
-        <select id="cal-fullday-style-select">
-          <option value="highlight" ${(w.calFullDayColorStyle||'highlight')==='highlight'?'selected':''}>Background — colored pill</option>
-          <option value="dot"       ${w.calFullDayColorStyle==='dot'?'selected':''}>Dot — colored marker, no background</option>
-          <option value="none"      ${w.calFullDayColorStyle==='none'?'selected':''}>None — plain text, no color</option>
-        </select>
-      </div>
-      <div class="was-row">
-        <label>Today Indicator Style ${infoBtn("How today's date is marked in the grid. Grid layout only — Agenda and Strip mark today a different way already (a \"Today\" label / a highlighted column) and aren't affected by this. Color can be customized in the app's widget settings.")}</label>
-        <select id="cal-today-style-select">
-          <option value="circle"    ${(w.calTodayStyle||'circle')==='circle'?'selected':''}>Circle — filled, original style</option>
-          <option value="outline"   ${w.calTodayStyle==='outline'?'selected':''}>Outline — ring only, no fill</option>
-          <option value="fill"      ${w.calTodayStyle==='fill'?'selected':''}>Cell Highlight — tints the whole day box</option>
-          <option value="underline" ${w.calTodayStyle==='underline'?'selected':''}>Underline — thin line beneath the number</option>
-          <option value="text"      ${w.calTodayStyle==='text'?'selected':''}>Text Color — just colors the number itself</option>
-          <option value="none"      ${w.calTodayStyle==='none'?'selected':''}>None — no special treatment</option>
-        </select>
-      </div>
-
-      <div class="was-section-label">🎨 Event Display</div>
-      <div class="was-row">
-        <label>Max Events Per Day ${infoBtn("Auto (0) fits as many events as each day box can hold and collapses the rest into \"+X more\" — text never spills into another day. Set a number to force a hard cap instead.")}</label>
-        <div class="was-range-row">
-          <input type="range" id="cal-max-events-range" min="0" max="10" step="1" value="${maxEventsPerDay}">
-          <span class="was-range-val" id="cal-max-events-val">${maxEventsPerDay === 0 ? 'Auto' : maxEventsPerDay}</span>
-        </div>
-      </div>
-      <div class="was-row">
-        <label>Max Lines Per Day ${infoBtn("Caps each day by number of text lines (counting wrapped titles), not events. Use this if events still overflow despite Auto — it's the most reliable limit. Auto (0) uses height-based fitting.")}</label>
-        <div class="was-range-row">
-          <input type="range" id="cal-max-lines-range" min="0" max="12" step="1" value="${(w.calMaxLines||0)}">
-          <span class="was-range-val" id="cal-max-lines-val">${(w.calMaxLines||0) === 0 ? 'Auto' : (w.calMaxLines)}</span>
-        </div>
-      </div>
-      <div class="was-row">
-        <label>Wrap Event Text ${infoBtn("\"Max 2 lines\" wraps long titles but caps them at two lines so a busy day doesn't get clogged.")}</label>
-        <select id="cal-wrap-mode">
-          <option value="off" ${wrapMode==='off'?'selected':''}>Off — single line, cut with "…"</option>
-          <option value="on" ${wrapMode==='on'?'selected':''}>On — wrap to as many lines as needed</option>
-          <option value="clamp2" ${wrapMode==='clamp2'?'selected':''}>Wrap, max 2 lines</option>
-        </select>
-      </div>
-      <div class="was-toggle-row">
-        <label>Dim Past Days</label>
-        <input type="checkbox" id="cal-dim-past-toggle" ${dimPast?'checked':''}>
-      </div>
-      <div class="was-row">
-        <label>Past Events ${infoBtn("Controls events that have already happened. \"Show dimmed\" greys them out; \"Hide\" removes them entirely.")}</label>
-        <select id="cal-past-events-select">
-          <option value="show" ${(!w.pastEvents||w.pastEvents==='show')?'selected':''}>Show normally</option>
-          <option value="dim"  ${w.pastEvents==='dim'?'selected':''}>Show dimmed</option>
-          <option value="hide" ${w.pastEvents==='hide'?'selected':''}>Hide</option>
-        </select>
-      </div>
-      <div class="was-row">
-        <label>Decoration Style ${infoBtn("\"Post-it notes\" draws each day with events as a sticky note. The icon styles mark event days with a festive symbol instead of dots.")}</label>
-        <select id="cal-decor-select">
-          <option value="none"          ${(!w.calDecor||w.calDecor==='none')?'selected':''}>None (normal)</option>
-          <option value="postit"        ${w.calDecor==='postit'?'selected':''}>Post-it notes</option>
-          <option value="icon:star"     ${w.calDecor==='icon:star'?'selected':''}>Stars ⭐</option>
-          <option value="icon:sparkle"  ${w.calDecor==='icon:sparkle'?'selected':''}>Sparkles ✨</option>
-          <option value="icon:ornament" ${w.calDecor==='icon:ornament'?'selected':''}>Ornaments 🎄</option>
-          <option value="icon:egg"      ${w.calDecor==='icon:egg'?'selected':''}>Easter eggs 🥚</option>
-          <option value="icon:pumpkin"  ${w.calDecor==='icon:pumpkin'?'selected':''}>Pumpkins 🎃</option>
-          <option value="icon:leaf"     ${w.calDecor==='icon:leaf'?'selected':''}>Leaves 🍁</option>
-          <option value="icon:balloon"  ${w.calDecor==='icon:balloon'?'selected':''}>Balloons 🎈</option>
-        </select>
-      </div>
-      <div class="was-section-label">⭐ Stickers</div>
-      <div class="was-toggle-row">
-        <label>Show Sticker Badges ${infoBtn("Marks each day a kid earned a sticker with a small badge — their chosen star/avatar/emoji style (set per kid in the Chores tab). One badge per kid per day, however many stickers they earned.")}</label>
-        <input type="checkbox" id="cal-show-stickers-toggle" ${w.calShowStickers?'checked':''}>
-      </div>
-      <div class="was-row" id="cal-sticker-position-row" style="${w.calShowStickers?'':'display:none'}">
-        <label>Badge Position</label>
-        <select id="cal-sticker-position-select">
-          <option value="top-right"    ${(w.calStickerPosition||'top-right')==='top-right'?'selected':''}>Top right</option>
-          <option value="top-left"     ${w.calStickerPosition==='top-left'?'selected':''}>Top left</option>
-          <option value="bottom-right" ${w.calStickerPosition==='bottom-right'?'selected':''}>Bottom right</option>
-          <option value="bottom-left"  ${w.calStickerPosition==='bottom-left'?'selected':''}>Bottom left</option>
-        </select>
-      </div>
-      <div class="was-row" id="cal-sticker-size-row" style="${w.calShowStickers?'':'display:none'}">
-        <label>Badge Size (px) ${infoBtn("Defaults to matching the day number's own size. Drag to make badges bigger or smaller.")}</label>
-        <div class="was-range-row">
-          <input type="range" id="cal-sticker-size-range" min="8" max="60" step="1" value="${w.calStickerSizePx || Math.round(fontPx * 2)}">
-          <span class="was-range-val" id="cal-sticker-size-val">${w.calStickerSizePx || Math.round(fontPx * 2)}px</span>
-        </div>
-      </div>
-      <div class="was-section-label">🗑️ Reminders</div>
-      <div class="was-toggle-row">
-        <label>Show Reminder Badges ${infoBtn("Marks each day one of your Reminders (trash day, recycling, anything set up in a Reminders widget) is due with a small emoji badge — the same schedule the Reminders widget itself reads from, so they can never disagree.")}</label>
-        <input type="checkbox" id="cal-show-reminders-toggle" ${w.calShowReminders?'checked':''}>
-      </div>
-      <div class="was-row" id="cal-reminder-position-row" style="${w.calShowReminders?'':'display:none'}">
-        <label>Badge Position</label>
-        <select id="cal-reminder-position-select">
-          <option value="top-left"     ${(w.calReminderPosition||'top-left')==='top-left'?'selected':''}>Top left</option>
-          <option value="top-right"    ${w.calReminderPosition==='top-right'?'selected':''}>Top right</option>
-          <option value="bottom-right" ${w.calReminderPosition==='bottom-right'?'selected':''}>Bottom right</option>
-          <option value="bottom-left"  ${w.calReminderPosition==='bottom-left'?'selected':''}>Bottom left</option>
-        </select>
-      </div>
-      <div class="was-row" id="cal-reminder-size-row" style="${w.calShowReminders?'':'display:none'}">
-        <label>Badge Size (px)</label>
-        <div class="was-range-row">
-          <input type="range" id="cal-reminder-size-range" min="8" max="48" step="1" value="${w.calReminderSizePx || Math.round(fontPx * 1.4)}">
-          <span class="was-range-val" id="cal-reminder-size-val">${w.calReminderSizePx || Math.round(fontPx * 1.4)}px</span>
-        </div>
-      </div>
-      <div class="was-row" id="cal-reminder-text-size-row" style="${w.calShowReminders?'':'display:none'}">
-        <label>Text Reminder Size ${infoBtn('Only affects reminders using a text label as their icon (e.g. "TRASH") — emoji and image icons use Badge Size above instead. A percentage on top of the automatic shrink-to-fit that already applies to longer labels.')}</label>
-        <div class="was-range-row">
-          <input type="range" id="cal-reminder-textsize-range" min="50" max="200" step="10" value="${w.calReminderTextSizePct || 100}">
-          <span class="was-range-val" id="cal-reminder-textsize-val">${w.calReminderTextSizePct || 100}%</span>
-        </div>
+    <div class="was-row" style="${calLayout==='grid'?'':'display:none'}">
+      <label>Calendar View</label>
+      <select id="cal-view-select">
+        <option value="1week" ${view==='1week'?'selected':''}>1 Week</option>
+        <option value="2week" ${view==='2week'?'selected':''}>2 Weeks</option>
+        <option value="3week" ${view==='3week'?'selected':''}>3 Weeks</option>
+        <option value="4week" ${view==='4week'?'selected':''}>4 Weeks</option>
+        <option value="month" ${view==='month'?'selected':''}>Month</option>
+      </select>
+    </div>
+    <div class="was-row" style="${calLayout==='grid'?'':'display:none'}">
+      <label>Week Starts On</label>
+      <select id="cal-week-start-select">
+        <option value="default" ${(w.calWeekStart||'default')==='default'?'selected':''}>Use display setting</option>
+        <option value="0" ${w.calWeekStart==='0'?'selected':''}>Sunday</option>
+        <option value="1" ${w.calWeekStart==='1'?'selected':''}>Monday</option>
+      </select>
+    </div>
+    <div class="was-row" style="${calLayout==='agenda'?'':'display:none'}">
+      <label>Days to Show Ahead</label>
+      <div class="was-range-row">
+        <input type="range" id="cal-agenda-days-range" min="3" max="30" step="1" value="${agendaDays}">
+        <span class="was-range-val" id="cal-agenda-days-val">${agendaDays}</span>
       </div>
     </div>
-    <div id="cal-agenda-only-settings" style="${calLayout==='agenda'?'':'display:none'}">
-      <div class="was-row">
-        <label>Days to Show Ahead</label>
-        <div class="was-range-row">
-          <input type="range" id="cal-agenda-days-range" min="3" max="30" step="1" value="${agendaDays}">
-          <span class="was-range-val" id="cal-agenda-days-val">${agendaDays}</span>
-        </div>
+    <div class="was-row" style="${calLayout==='strip'?'':'display:none'}">
+      <label>Days to Show</label>
+      <div class="was-range-row">
+        <input type="range" id="cal-strip-days-range" min="3" max="10" step="1" value="${stripDays}">
+        <span class="was-range-val" id="cal-strip-days-val">${stripDays}</span>
       </div>
     </div>
-    <div id="cal-strip-only-settings" style="${calLayout==='strip'?'':'display:none'}">
-      <div class="was-row">
-        <label>Days to Show</label>
-        <div class="was-range-row">
-          <input type="range" id="cal-strip-days-range" min="3" max="10" step="1" value="${stripDays}">
-          <span class="was-range-val" id="cal-strip-days-val">${stripDays}</span>
-        </div>
+    <div class="was-row" style="${calLayout==='grid'?'':'display:none'}">
+      <label>Max Events Per Day ${infoBtn("Auto (0) fits as many events as each day box can hold and collapses the rest into \"+X more\" — text never spills into another day. Set a number to force a hard cap instead.")}</label>
+      <div class="was-range-row">
+        <input type="range" id="cal-max-events-range" min="0" max="10" step="1" value="${maxEventsPerDay}">
+        <span class="was-range-val" id="cal-max-events-val">${maxEventsPerDay === 0 ? 'Auto' : maxEventsPerDay}</span>
       </div>
+    </div>
+    <div class="was-row" style="${calLayout==='grid'?'':'display:none'}">
+      <label>Max Lines Per Day ${infoBtn("Caps each day by number of text lines (counting wrapped titles), not events. Use this if events still overflow despite Auto — it's the most reliable limit. Auto (0) uses height-based fitting.")}</label>
+      <div class="was-range-row">
+        <input type="range" id="cal-max-lines-range" min="0" max="12" step="1" value="${(w.calMaxLines||0)}">
+        <span class="was-range-val" id="cal-max-lines-val">${(w.calMaxLines||0) === 0 ? 'Auto' : (w.calMaxLines)}</span>
+      </div>
+    </div>
+    <div class="was-row" style="${calLayout==='grid'?'':'display:none'}">
+      <label>Wrap Event Text ${infoBtn("\"Max 2 lines\" wraps long titles but caps them at two lines so a busy day doesn't get clogged.")}</label>
+      <select id="cal-wrap-mode">
+        <option value="off" ${wrapMode==='off'?'selected':''}>Off — single line, cut with "…"</option>
+        <option value="on" ${wrapMode==='on'?'selected':''}>On — wrap to as many lines as needed</option>
+        <option value="clamp2" ${wrapMode==='clamp2'?'selected':''}>Wrap, max 2 lines</option>
+      </select>
     </div>
     <div class="was-row">
       <label>Font Size (px)</label>
@@ -7803,10 +8090,130 @@ function renderCalendarAdvancedSettings(w) {
         <span class="was-range-val" id="cal-font-val">${fontPx}px</span>
       </div>
     </div>
+  `;
+  const colorsInner = `
+    <div class="was-toggle-row">
+      <label>Color Coding ${infoBtn("Off removes every colored dot and highlight from this calendar — plain text only. On by default.")}</label>
+      <input type="checkbox" id="cal-color-coding-toggle" ${w.calColorCoding !== false ? 'checked' : ''}>
+    </div>
+    <div class="was-row" style="${calLayout==='grid'?'':'display:none'}">
+      <label>Multi-Day Event Style ${infoBtn("How a multi-day event (a trip, a visit) shows across the days it covers. \"Bar\" is the original style; the others are lighter-weight for a calendar with lots of single-day entries already competing for space.")}</label>
+      <select id="cal-multiday-style-select">
+        <option value="bar"    ${(w.calMultiDayStyle||'bar')==='bar'?'selected':''}>Bar — spans across the days</option>
+        <option value="dot"    ${w.calMultiDayStyle==='dot'?'selected':''}>Dot — listed like a regular event, each day</option>
+        <option value="line"   ${w.calMultiDayStyle==='line'?'selected':''}>Line — thin underline, name once</option>
+        <option value="stripe" ${w.calMultiDayStyle==='stripe'?'selected':''}>Stripe — colored edge on the cell</option>
+      </select>
+    </div>
+    <div class="was-row" id="cal-fullday-style-row" style="${calLayout==='grid' && w.calColorCoding!==false?'':'display:none'}">
+      <label>Full-Day Event Style ${infoBtn("How an all-day/multi-day event shows its color, independent of Color Coding above for timed events. \"Background\" is a colored pill. \"Dot\" is a lighter-weight marker matching a timed event's, no background. \"None\" shows plain text with no color indicator at all, for full-day events only. Hidden while Color Coding above is off.")}</label>
+      <select id="cal-fullday-style-select">
+        <option value="highlight" ${(w.calFullDayColorStyle||'highlight')==='highlight'?'selected':''}>Background — colored pill</option>
+        <option value="dot"       ${w.calFullDayColorStyle==='dot'?'selected':''}>Dot — colored marker, no background</option>
+        <option value="none"      ${w.calFullDayColorStyle==='none'?'selected':''}>None — plain text, no color</option>
+      </select>
+    </div>
+    <div class="was-row" style="${calLayout==='grid'?'':'display:none'}">
+      <label>Today Indicator Style ${infoBtn("How today's date is marked in the grid. Grid layout only — Agenda and Strip mark today a different way already (a \"Today\" label / a highlighted column) and aren't affected by this. Color can be customized in the app's widget settings.")}</label>
+      <select id="cal-today-style-select">
+        <option value="circle"    ${(w.calTodayStyle||'circle')==='circle'?'selected':''}>Circle — filled, original style</option>
+        <option value="outline"   ${w.calTodayStyle==='outline'?'selected':''}>Outline — ring only, no fill</option>
+        <option value="fill"      ${w.calTodayStyle==='fill'?'selected':''}>Cell Highlight — tints the whole day box</option>
+        <option value="underline" ${w.calTodayStyle==='underline'?'selected':''}>Underline — thin line beneath the number</option>
+        <option value="text"      ${w.calTodayStyle==='text'?'selected':''}>Text Color — just colors the number itself</option>
+        <option value="none"      ${w.calTodayStyle==='none'?'selected':''}>None — no special treatment</option>
+      </select>
+    </div>
+    <div class="was-row" style="${calLayout==='grid'?'':'display:none'}">
+      <label>Dim Past Days</label>
+      <input type="checkbox" id="cal-dim-past-toggle" ${dimPast?'checked':''}>
+    </div>
+    <div class="was-row" style="${calLayout==='grid'?'':'display:none'}">
+      <label>Past Events ${infoBtn("Controls events that have already happened. \"Show dimmed\" greys them out; \"Hide\" removes them entirely.")}</label>
+      <select id="cal-past-events-select">
+        <option value="show" ${(!w.pastEvents||w.pastEvents==='show')?'selected':''}>Show normally</option>
+        <option value="dim"  ${w.pastEvents==='dim'?'selected':''}>Show dimmed</option>
+        <option value="hide" ${w.pastEvents==='hide'?'selected':''}>Hide</option>
+      </select>
+    </div>
+    <div class="was-row" style="${calLayout==='grid'?'':'display:none'}">
+      <label>Decoration Style ${infoBtn("\"Post-it notes\" draws each day with events as a sticky note. The icon styles mark event days with a festive symbol instead of dots.")}</label>
+      <select id="cal-decor-select">
+        <option value="none"          ${(!w.calDecor||w.calDecor==='none')?'selected':''}>None (normal)</option>
+        <option value="postit"        ${w.calDecor==='postit'?'selected':''}>Post-it notes</option>
+        <option value="icon:star"     ${w.calDecor==='icon:star'?'selected':''}>Stars ⭐</option>
+        <option value="icon:sparkle"  ${w.calDecor==='icon:sparkle'?'selected':''}>Sparkles ✨</option>
+        <option value="icon:ornament" ${w.calDecor==='icon:ornament'?'selected':''}>Ornaments 🎄</option>
+        <option value="icon:egg"      ${w.calDecor==='icon:egg'?'selected':''}>Easter eggs 🥚</option>
+        <option value="icon:pumpkin"  ${w.calDecor==='icon:pumpkin'?'selected':''}>Pumpkins 🎃</option>
+        <option value="icon:leaf"     ${w.calDecor==='icon:leaf'?'selected':''}>Leaves 🍁</option>
+        <option value="icon:balloon"  ${w.calDecor==='icon:balloon'?'selected':''}>Balloons 🎈</option>
+      </select>
+    </div>
+  `;
+  const remindersInner = `
+    <div class="was-toggle-row">
+      <label>Show Reminder Badges ${infoBtn("Marks each day one of your Reminders (trash day, recycling, anything set up in a Reminders widget) is due with a small emoji badge — the same schedule the Reminders widget itself reads from, so they can never disagree.")}</label>
+      <input type="checkbox" id="cal-show-reminders-toggle" ${w.calShowReminders?'checked':''}>
+    </div>
+    <div class="was-row" id="cal-reminder-position-row" style="${w.calShowReminders?'':'display:none'}">
+      <label>Badge Position</label>
+      <select id="cal-reminder-position-select">
+        <option value="top-left"     ${(w.calReminderPosition||'top-left')==='top-left'?'selected':''}>Top left</option>
+        <option value="top-right"    ${w.calReminderPosition==='top-right'?'selected':''}>Top right</option>
+        <option value="bottom-right" ${w.calReminderPosition==='bottom-right'?'selected':''}>Bottom right</option>
+        <option value="bottom-left"  ${w.calReminderPosition==='bottom-left'?'selected':''}>Bottom left</option>
+      </select>
+    </div>
+    <div class="was-row" id="cal-reminder-size-row" style="${w.calShowReminders?'':'display:none'}">
+      <label>Badge Size (px)</label>
+      <div class="was-range-row">
+        <input type="range" id="cal-reminder-size-range" min="8" max="48" step="1" value="${w.calReminderSizePx || Math.round(fontPx * 1.4)}">
+        <span class="was-range-val" id="cal-reminder-size-val">${w.calReminderSizePx || Math.round(fontPx * 1.4)}px</span>
+      </div>
+    </div>
+    <div class="was-row" id="cal-reminder-text-size-row" style="${w.calShowReminders?'':'display:none'}">
+      <label>Text Reminder Size ${infoBtn('Only affects reminders using a text label as their icon (e.g. "TRASH") — emoji and image icons use Badge Size above instead. A percentage on top of the automatic shrink-to-fit that already applies to longer labels.')}</label>
+      <div class="was-range-row">
+        <input type="range" id="cal-reminder-textsize-range" min="50" max="200" step="10" value="${w.calReminderTextSizePct || 100}">
+        <span class="was-range-val" id="cal-reminder-textsize-val">${w.calReminderTextSizePct || 100}%</span>
+      </div>
+    </div>
+  `;
+  const stickersInner = `
+    <div class="was-toggle-row">
+      <label>Show Sticker Badges ${infoBtn("Marks each day a kid earned a sticker with a small badge — their chosen star/avatar/emoji style (set per kid in the Chores tab). One badge per kid per day, however many stickers they earned.")}</label>
+      <input type="checkbox" id="cal-show-stickers-toggle" ${w.calShowStickers?'checked':''}>
+    </div>
+    <div class="was-row" id="cal-sticker-position-row" style="${w.calShowStickers?'':'display:none'}">
+      <label>Badge Position</label>
+      <select id="cal-sticker-position-select">
+        <option value="top-right"    ${(w.calStickerPosition||'top-right')==='top-right'?'selected':''}>Top right</option>
+        <option value="top-left"     ${w.calStickerPosition==='top-left'?'selected':''}>Top left</option>
+        <option value="bottom-right" ${w.calStickerPosition==='bottom-right'?'selected':''}>Bottom right</option>
+        <option value="bottom-left"  ${w.calStickerPosition==='bottom-left'?'selected':''}>Bottom left</option>
+      </select>
+    </div>
+    <div class="was-row" id="cal-sticker-size-row" style="${w.calShowStickers?'':'display:none'}">
+      <label>Badge Size (px) ${infoBtn("Defaults to matching the day number's own size. Drag to make badges bigger or smaller.")}</label>
+      <div class="was-range-row">
+        <input type="range" id="cal-sticker-size-range" min="8" max="60" step="1" value="${w.calStickerSizePx || Math.round(fontPx * 2)}">
+        <span class="was-range-val" id="cal-sticker-size-val">${w.calStickerSizePx || Math.round(fontPx * 2)}px</span>
+      </div>
+    </div>
+  `;
+  return `
+    <div id="minical-settings-acc">
+      ${accordionSection({ id: 'layout', icon: '📐', label: 'Layout', sub: 'View, days shown, font sizing', inner: layoutInner }, _calSettingsOpenSection === 'layout')}
+      ${accordionSection({ id: 'colors', icon: '🎨', label: 'Event Colors & Style', sub: 'Color coding, today indicator, decorations', inner: colorsInner }, _calSettingsOpenSection === 'colors')}
+      ${accordionSection({ id: 'reminders', icon: '🗑️', label: 'Reminder Badges', sub: 'Show on calendar, position, size', inner: remindersInner, hidden: calLayout !== 'grid' }, _calSettingsOpenSection === 'reminders')}
+      ${accordionSection({ id: 'stickers', icon: '⭐', label: 'Sticker Badges', sub: 'Show on calendar, position, size', inner: stickersInner, hidden: calLayout !== 'grid' }, _calSettingsOpenSection === 'stickers')}
+    </div>
     ${renderFeedOpacityOverrideSection(w)}
   `;
 }
 function wireCalendarAdvancedSettings(w) {
+  wireAccordion('minical-settings-acc');
   wireFeedOpacityOverrideSection(w);
   const onLiveField = (id, evt, apply) => {
     const el = document.getElementById(id);
@@ -7821,6 +8228,7 @@ function wireCalendarAdvancedSettings(w) {
     w.calLayout = e.target.value;
     rerenderSingleWidget(w.id);
     scheduleLayoutSave();
+    _calSettingsOpenSection = 'layout'; // stay open in the section the control that triggered this redraw lives in
     openWidgetAdvancedPanel(w.id); // re-render so the right sub-settings show for the chosen layout
   });
   onLiveField('cal-view-select', 'change', (el) => { w.calView = el.value; });
@@ -7833,6 +8241,7 @@ function wireCalendarAdvancedSettings(w) {
     scheduleLayoutSave();
     // Full-Day Event Style's row visibility depends on this — needs a full
     // settings-panel re-render, same reasoning as cal-wrap-mode below.
+    _calSettingsOpenSection = 'colors';
     openWidgetAdvancedPanel(w.id);
   });
   onLiveField('cal-multiday-style-select', 'change', (el) => { w.calMultiDayStyle = el.value; });
@@ -7851,6 +8260,7 @@ function wireCalendarAdvancedSettings(w) {
     // Font Sizing's checkbox is enabled/disabled based on wrap mode, and
     // that only gets recomputed when renderCalendarAdvancedSettings runs
     // again, not from re-rendering the widget's own canvas tile.
+    _calSettingsOpenSection = 'layout'; // safe by construction (only reachable while Layout is open) but set explicitly
     openWidgetAdvancedPanel(w.id);
   });
   onLiveField('cal-adaptive-font-toggle', 'change', (el) => { w.calAdaptiveFontSizing = el.checked; });
@@ -7863,6 +8273,7 @@ function wireCalendarAdvancedSettings(w) {
     scheduleLayoutSave();
     // Badge Position's row visibility depends on this — same full-panel
     // re-render reasoning as Color Coding/Wrap Mode above.
+    _calSettingsOpenSection = 'stickers';
     openWidgetAdvancedPanel(w.id);
   });
   onLiveField('cal-sticker-position-select', 'change', (el) => { w.calStickerPosition = el.value; });
@@ -7879,6 +8290,7 @@ function wireCalendarAdvancedSettings(w) {
     rerenderSingleWidget(w.id);
     scheduleLayoutSave();
     // Badge Position/Size rows' visibility depends on this — same
+    _calSettingsOpenSection = 'reminders';
     // full-panel re-render reasoning as Stickers/Color Coding above.
     openWidgetAdvancedPanel(w.id);
   });
@@ -9512,6 +9924,16 @@ function wireRemindersAdvancedSettings(w) {
 // above — see the CSS comment on #manage-reminders-panel for why. Two
 // sub-views in one panel: the list (default) and an add/edit form, swapped
 // via manage-reminders-body's innerHTML rather than two separate panels.
+// Same reasoning as app.html's identical variable — see its own comment.
+// Five controls in Mini Calendar's settings (Layout, Color Coding, Wrap
+// Event Text, Show Reminders, Show Stickers) trigger a full
+// openWidgetAdvancedPanel() re-render because they gate other rows'
+// visibility; without this, the accordion section containing whichever
+// control was just touched would snap shut on every redraw. Defaults to
+// nothing open (null) — reset back to that whenever a different widget's
+// panel opens — see openWidgetAdvancedPanel()'s own widget-switch handling.
+let _calSettingsOpenSection = null; // null = nothing open by default
+let _calSettingsOpenSectionForWidgetId = null;
 let _manageRemindersEditingId = null; // null = "add new"; a reminder's id = editing that one
 // See app.html's identical variable for the full explanation — tracks an
 // uploaded-but-not-yet-saved icon image filename for the currently open form.
@@ -10999,6 +11421,523 @@ function openWidgetPicker() {
   overlay.style.display = 'flex';
   wireWidgetPicker();
 }
+// Screen Settings panel — currently just the Screen Switcher, the
+// one setting that previously required going to the app's Screens
+// management to touch at all (see the toggle/picker built for that same
+// setting there — this reuses the identical PUT /api/screens/:deviceId
+// endpoint and the identical two-checklist shape, Live Displays + Saved
+// Templates, just editable directly from the screen itself now). SCREEN_ID
+// (this device's own persisted identity, see its own comment near where
+// it's generated) is exactly the device_id that endpoint expects — no
+// separate lookup needed, this panel edits ITS OWN screen's row.
+async function openScreenSettingsPanel() {
+  const overlay = document.getElementById('screen-settings-overlay');
+  const body = document.getElementById('screen-settings-body');
+  if (!overlay || !body) return;
+  const toggleSectionInner = `
+    <div class="was-toggle-row">
+      <label>Show screen switcher</label>
+      <input type="checkbox" id="ss-fls-toggle" ${state.floatingSwitcherEnabled ? 'checked' : ''}>
+    </div>
+    <p class="was-hint" style="margin-top:-8px">An always-present button on top of whatever layout is showing — lets you switch layouts on this screen even when the current one has no Layout Switcher widget of its own.</p>
+    <div id="ss-fls-presets" style="${state.floatingSwitcherEnabled ? '' : 'display:none'}">
+      <label class="was-hint" style="display:block;margin-bottom:6px">Position</label>
+      <div id="ss-fls-edge-picker" style="display:flex;gap:6px;margin-bottom:12px">
+        ${['top','bottom','left','right'].map(edge => `
+          <button type="button" class="ss-fls-edge-btn${(state.floatingSwitcherEdge||'bottom')===edge?' active':''}" data-edge="${edge}"
+            style="flex:1;padding:8px 0;border-radius:8px;border:1px solid rgba(255,255,255,0.18);font-size:12px;font-weight:600;text-transform:capitalize;color:#e8edf5;
+              background:${(state.floatingSwitcherEdge||'bottom')===edge?'rgba(74,144,217,0.5)':'rgba(255,255,255,0.08)'}">${edge}</button>
+        `).join('')}
+      </div>
+      <label class="was-hint" style="display:block;margin-bottom:6px">Style</label>
+      <div id="ss-fls-style-picker" style="display:flex;gap:6px;margin-bottom:12px">
+        ${['circles','bar'].map(s => `
+          <button type="button" class="ss-fls-style-btn${(state.floatingSwitcherStyle||'circles')===s?' active':''}" data-style="${s}"
+            style="flex:1;padding:8px 0;border-radius:8px;border:1px solid rgba(255,255,255,0.18);font-size:12px;font-weight:600;text-transform:capitalize;color:#e8edf5;
+              background:${(state.floatingSwitcherStyle||'circles')===s?'rgba(74,144,217,0.5)':'rgba(255,255,255,0.08)'}">${s === 'circles' ? 'Circles' : 'Bar'}</button>
+        `).join('')}
+      </div>
+      <div id="ss-fls-barmode-row" style="${(state.floatingSwitcherStyle||'circles')==='bar'?'':'display:none'};margin-bottom:12px">
+        <label class="was-hint" style="display:block;margin-bottom:6px">Display</label>
+        <div id="ss-fls-barmode-picker" style="display:flex;gap:6px">
+          ${['icons','names'].map(m => `
+            <button type="button" class="ss-fls-barmode-btn${(state.floatingSwitcherBarMode||'icons')===m?' active':''}" data-barmode="${m}"
+              style="flex:1;padding:8px 0;border-radius:8px;border:1px solid rgba(255,255,255,0.18);font-size:12px;font-weight:600;text-transform:capitalize;color:#e8edf5;
+                background:${(state.floatingSwitcherBarMode||'icons')===m?'rgba(74,144,217,0.5)':'rgba(255,255,255,0.08)'}">${m === 'icons' ? 'Icons' : 'Names'}</button>
+          `).join('')}
+        </div>
+      </div>
+      <label class="was-hint" style="display:block;margin-bottom:6px">Visibility</label>
+      <div id="ss-fls-reveal-picker" style="display:flex;gap:6px;margin-bottom:14px">
+        ${['always','tap'].map(r => `
+          <button type="button" class="ss-fls-reveal-btn${(state.floatingSwitcherReveal||'always')===r?' active':''}" data-reveal="${r}"
+            style="flex:1;padding:8px 0;border-radius:8px;border:1px solid rgba(255,255,255,0.18);font-size:12px;font-weight:600;color:#e8edf5;
+              background:${(state.floatingSwitcherReveal||'always')===r?'rgba(74,144,217,0.5)':'rgba(255,255,255,0.08)'}">${r === 'always' ? 'Always visible' : 'Tap to reveal'}</button>
+        `).join('')}
+      </div>
+      <label class="was-hint" style="display:block;margin-bottom:6px">Bar Color</label>
+      <div style="margin-bottom:14px">
+        <input type="color" id="ss-fls-color" value="${state.floatingSwitcherColor||'#0a0e1a'}" style="width:60px;height:44px;padding:2px;border-radius:8px;border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.08)">
+      </div>
+      <label class="was-hint" style="display:block;margin-bottom:6px">Live Displays</label>
+      <div id="ss-fls-display-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
+        <div class="was-hint">Loading…</div>
+      </div>
+      <label class="was-hint" style="display:block;margin-bottom:6px">Saved Templates</label>
+      <div id="ss-fls-preset-list" style="display:flex;flex-direction:column;gap:8px">
+        <div class="was-hint">Loading…</div>
+      </div>
+    </div>
+  `;
+  const scheduleSectionInner = `
+    <p class="was-hint" style="margin:0 0 8px">Automatically switch at set times, whether or not the screen switcher button above is turned on.</p>
+    <div id="ss-fls-schedule-list" style="display:flex;flex-direction:column;gap:10px"></div>
+    <button type="button" class="btn" id="ss-fls-schedule-add-btn" style="width:100%;margin-top:8px;background:var(--card);border:1px solid var(--border)">+ Add a scheduled switch</button>
+  `;
+  body.innerHTML = `
+    <div style="padding:16px;display:flex;flex-direction:column;gap:12px">
+      ${accordionSection({ id: 'ss-fls-toggle-section', label: 'Show Screen Switcher', inner: toggleSectionInner }, true)}
+      ${accordionSection({ id: 'ss-fls-schedule-section', label: 'Schedule', inner: scheduleSectionInner })}
+    </div>
+  `;
+  overlay.style.display = 'flex';
+  wireFlsSubAccordionsPreview();
+
+  document.getElementById('ss-fls-toggle').addEventListener('change', async (e) => {
+    document.getElementById('ss-fls-presets').style.display = e.target.checked ? '' : 'none';
+    state.floatingSwitcherEnabled = e.target.checked;
+    try {
+      const r = await fetch(`/api/screens/${encodeURIComponent(SCREEN_ID)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ floating_switcher_enabled: e.target.checked }),
+      });
+      // fetch() only rejects on a network-level failure — a non-2xx HTTP
+      // response (404, 500, etc.) resolves normally and would otherwise
+      // sail past this silently, leaving the UI showing a change that was
+      // never actually saved server-side.
+      if (!r.ok) { showDisplayToast('❌ Could not save — try again.'); return; }
+    } catch { showDisplayToast('❌ Could not save — check the connection.'); return; }
+    renderFloatingSwitcher();
+  });
+
+  const saveAppearance = async (field, value) => {
+    try {
+      const r = await fetch(`/api/screens/${encodeURIComponent(SCREEN_ID)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: value }),
+      });
+      if (!r.ok) { showDisplayToast('❌ Could not save — try again.'); return; }
+    } catch { showDisplayToast('❌ Could not save — check the connection.'); return; }
+    renderFloatingSwitcher();
+  };
+  document.querySelectorAll('.ss-fls-edge-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.ss-fls-edge-btn').forEach(b => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.style.background = active ? 'rgba(74,144,217,0.5)' : 'rgba(255,255,255,0.08)';
+      });
+      state.floatingSwitcherEdge = btn.dataset.edge;
+      saveAppearance('floating_switcher_edge', btn.dataset.edge);
+    });
+  });
+  document.querySelectorAll('.ss-fls-style-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.ss-fls-style-btn').forEach(b => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.style.background = active ? 'rgba(74,144,217,0.5)' : 'rgba(255,255,255,0.08)';
+      });
+      state.floatingSwitcherStyle = btn.dataset.style;
+      // This panel's own barmode row isn't rebuilt by saveAppearance()'s
+      // renderFloatingSwitcher() call below (that only re-renders the
+      // actual on-screen switcher, not this settings panel) — needs its
+      // own explicit show/hide right here.
+      const barmodeRow = document.getElementById('ss-fls-barmode-row');
+      if (barmodeRow) barmodeRow.style.display = btn.dataset.style === 'bar' ? '' : 'none';
+      saveAppearance('floating_switcher_style', btn.dataset.style);
+    });
+  });
+  document.querySelectorAll('.ss-fls-barmode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.ss-fls-barmode-btn').forEach(b => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.style.background = active ? 'rgba(74,144,217,0.5)' : 'rgba(255,255,255,0.08)';
+      });
+      state.floatingSwitcherBarMode = btn.dataset.barmode;
+      saveAppearance('floating_switcher_bar_mode', btn.dataset.barmode);
+    });
+  });
+  document.querySelectorAll('.ss-fls-reveal-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.ss-fls-reveal-btn').forEach(b => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.style.background = active ? 'rgba(74,144,217,0.5)' : 'rgba(255,255,255,0.08)';
+      });
+      state.floatingSwitcherReveal = btn.dataset.reveal;
+      saveAppearance('floating_switcher_reveal', btn.dataset.reveal);
+    });
+  });
+  document.getElementById('ss-fls-color').addEventListener('change', (e) => {
+    state.floatingSwitcherColor = e.target.value;
+    saveAppearance('floating_switcher_color', e.target.value);
+  });
+
+  const saveTargets = async () => {
+    const readIcon = (checkboxEl) => {
+      const iconEl = checkboxEl.closest('label').querySelector('.ss-target-icon');
+      return (iconEl && iconEl.value.trim()) || '';
+    };
+    const targets = [
+      ...[...document.querySelectorAll('#ss-fls-display-list input[type="checkbox"]:checked')].map(el => ({ type: 'display', id: el.dataset.targetId, icon: readIcon(el) })),
+      ...[...document.querySelectorAll('#ss-fls-preset-list input[type="checkbox"]:checked')].map(el => ({ type: 'saved', id: Number(el.dataset.targetId), icon: readIcon(el) })),
+    ];
+    state.floatingSwitcherPresets = targets;
+    try {
+      const r = await fetch(`/api/screens/${encodeURIComponent(SCREEN_ID)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ floating_switcher_presets: targets }),
+      });
+      if (!r.ok) { showDisplayToast('❌ Could not save — try again.'); return; }
+    } catch { showDisplayToast('❌ Could not save — check the connection.'); return; }
+    renderFloatingSwitcher();
+    // Schedule rules' own target dropdowns are now filtered to only the
+    // targets checked here — without this, toggling a checkbox wouldn't
+    // update what the schedule offers until some unrelated schedule edit
+    // happened to re-render it.
+    renderSchedule();
+  };
+
+  const assigned = new Map(normalizeSwitcherTargets(state.floatingSwitcherPresets).map(t => [switcherTargetKey(t), t]));
+
+  let ssDisplays = [], ssPresets = [];
+  const displayListEl = document.getElementById('ss-fls-display-list');
+  try {
+    const r = await fetch('/api/displays');
+    ssDisplays = r.ok ? await r.json() : [];
+    const others = ssDisplays.filter(d => d.slug !== DISPLAY_SLUG);
+    displayListEl.innerHTML = others.length
+      ? others.map(d => {
+          const existing = assigned.get(`display:${d.slug}`);
+          return `
+          <label style="display:flex;align-items:center;gap:8px;font-size:14px">
+            <input type="checkbox" data-target-id="${escapeHtmlD(d.slug)}" ${existing ? 'checked' : ''}>
+            <input type="text" class="ss-target-icon" data-target-id="${escapeHtmlD(d.slug)}" value="${escapeHtmlD(existing ? existing.icon || '' : '')}" maxlength="8" placeholder="icon" style="width:44px;text-align:center;font-size:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:6px;color:#e8edf5;padding:6px">
+            ${escapeHtmlD(d.name)}
+            <span style="font-size:10px;opacity:0.5;font-family:monospace">(${escapeHtmlD(d.slug)})</span>
+          </label>`;
+        }).join('')
+      : `<div class="was-hint">No other displays yet.</div>`;
+    displayListEl.querySelectorAll('input').forEach(el => el.addEventListener('change', saveTargets));
+  } catch {
+    displayListEl.innerHTML = `<div class="was-hint">Couldn't load displays.</div>`;
+  }
+
+  const presetListEl = document.getElementById('ss-fls-preset-list');
+  try {
+    const r = await fetch('/api/saved-layouts');
+    ssPresets = r.ok ? await r.json() : [];
+    presetListEl.innerHTML = ssPresets.length
+      ? ssPresets.map(p => {
+          const existing = assigned.get(`saved:${p.id}`);
+          return `
+          <label style="display:flex;align-items:center;gap:8px;font-size:14px">
+            <input type="checkbox" data-target-id="${p.id}" ${existing ? 'checked' : ''}>
+            <input type="text" class="ss-target-icon" data-target-id="${p.id}" value="${escapeHtmlD(existing ? existing.icon || '' : '')}" maxlength="8" placeholder="icon" style="width:44px;text-align:center;font-size:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:6px;color:#e8edf5;padding:6px">
+            ${escapeHtmlD(p.name)}
+            <span style="font-size:10px;opacity:0.5;font-family:monospace">(#${p.id})</span>
+          </label>`;
+        }).join('')
+      : `<div class="was-hint">No saved layouts yet.</div>`;
+    presetListEl.querySelectorAll('input').forEach(el => el.addEventListener('change', saveTargets));
+  } catch {
+    presetListEl.innerHTML = `<div class="was-hint">Couldn't load saved layouts.</div>`;
+  }
+
+  // Schedule — reuses ssDisplays/ssPresets already fetched above. Same
+  // shape and pattern as the widget's own schedule UI (app.html) and the
+  // Screens management version of this same section — three places
+  // building the identical rule editor because each has its own DOM and
+  // save mechanism, not because the underlying concept differs at all.
+  const dayNames = ['S','M','T','W','T','F','S'];
+  const targetOptionsHtml = (selected) => {
+    const selKey = selected ? `${selected.type}:${selected.id}` : '';
+    // Restricted to only the targets currently checked in the "Live
+    // Displays"/"Saved Templates" list above — by explicit request, the
+    // schedule should offer the same curated set the floating switcher
+    // itself already shows as buttons, not every display/template that
+    // exists in the whole system. Still always includes the CURRENTLY
+    // selected target even if it's since been unchecked from that list —
+    // otherwise a rule pointing at something no longer checked would
+    // silently lose that selection the moment this dropdown re-renders,
+    // rather than the person seeing what's actually configured and
+    // choosing to change it themselves.
+    const checkedKeys = new Set(normalizeSwitcherTargets(state.floatingSwitcherPresets).map(t => `${t.type}:${t.id}`));
+    // The current display being edited is ALSO always available here, even
+    // though it's deliberately excluded from the switcher's own checklist
+    // above (a manual button that switches to where you're already
+    // standing is pointless, so it's never even shown as checkable there)
+    // — by explicit request, since a rotation should still be able to
+    // cycle back to this display's own native content, not just other
+    // displays. The switcher's own checklist and exclusion logic are
+    // untouched; this only widens what the SCHEDULE specifically treats
+    // as available.
+    const dispOpts = ssDisplays.filter(d => checkedKeys.has(`display:${d.slug}`) || selKey === `display:${d.slug}` || d.slug === DISPLAY_SLUG)
+      .map(d => `<option value="display:${d.slug}" ${selKey === `display:${d.slug}` ? 'selected' : ''}>${escapeHtmlD(d.name)}</option>`).join('');
+    const presetOpts = ssPresets.filter(p => checkedKeys.has(`saved:${p.id}`) || selKey === `saved:${p.id}`)
+      .map(p => `<option value="saved:${p.id}" ${selKey === `saved:${p.id}` ? 'selected' : ''}>${escapeHtmlD(p.name)}</option>`).join('');
+    return `<optgroup label="Live Displays">${dispOpts}</optgroup><optgroup label="Saved Templates">${presetOpts}</optgroup>`;
+  };
+  const targetLabel = (t) => {
+    if (!t) return '(unknown)';
+    if (t.type === 'display') {
+      const d = ssDisplays.find(d => d.slug === t.id);
+      return d ? d.name : t.id;
+    }
+    const p = ssPresets.find(p => p.id === t.id);
+    return p ? p.name : `Template #${t.id}`;
+  };
+  const saveSchedule = async () => {
+    try {
+      const r = await fetch(`/api/screens/${encodeURIComponent(SCREEN_ID)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ floating_switcher_schedule: state.floatingSwitcherSchedule }),
+      });
+      if (!r.ok) { showDisplayToast('❌ Could not save — try again.'); return; }
+    } catch { showDisplayToast('❌ Could not save — check the connection.'); return; }
+  };
+  const renderSchedule = () => {
+    const listEl = document.getElementById('ss-fls-schedule-list');
+    if (!listEl) return;
+    if (!Array.isArray(state.floatingSwitcherSchedule)) state.floatingSwitcherSchedule = [];
+    const rules = state.floatingSwitcherSchedule;
+    if (!rules.length) {
+      listEl.innerHTML = `<div class="was-hint">No scheduled switches yet.</div>`;
+      return;
+    }
+    const conflicted = scheduleConflictIndices(rules);
+    listEl.innerHTML = rules.map((rule, idx) => {
+      const mode = rule.mode === 'interval' ? 'interval' : rule.mode === 'rotation' ? 'rotation' : 'time';
+      const intervalInputsHtml = `
+           <input type="number" class="ss-rule-interval-value" min="1" value="${rule.intervalValue || 30}" style="width:64px;flex-shrink:0;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:6px;color:#e8edf5;padding:9px">
+           <select class="ss-rule-interval-unit" style="width:96px;flex-shrink:0;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:6px;color:#e8edf5;padding:9px">
+             <option value="seconds"${rule.intervalUnit === 'seconds' ? ' selected' : ''}>Seconds</option>
+             <option value="minutes"${(rule.intervalUnit || 'minutes') === 'minutes' ? ' selected' : ''}>Minutes</option>
+             <option value="hours"${rule.intervalUnit === 'hours' ? ' selected' : ''}>Hours</option>
+           </select>`;
+      const timingRowHtml = mode === 'rotation'
+        ? `<div style="display:flex;gap:8px;align-items:center">
+             ${intervalInputsHtml}
+             <span style="font-size:11px;color:#e8edf5;opacity:0.6">per display</span>
+           </div>
+           <div class="ss-rotation-targets" style="margin-top:8px;display:flex;flex-direction:column;gap:6px">
+             ${(Array.isArray(rule.targets) ? rule.targets : []).map((t, tIdx) => `
+               <div class="ss-rotation-target-row" data-tidx="${tIdx}" style="display:flex;gap:6px;align-items:center;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:8px;padding:6px 8px">
+                 <span style="flex:1;font-size:12px;color:#e8edf5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtmlD(targetLabel(t))}</span>
+                 <button type="button" class="ss-rot-move-up" aria-label="Move up" ${tIdx === 0 ? 'disabled' : ''} style="background:none;border:none;color:#e8edf5;opacity:0.6;font-size:14px;padding:2px 6px;flex-shrink:0">↑</button>
+                 <button type="button" class="ss-rot-move-down" aria-label="Move down" ${tIdx === (rule.targets.length - 1) ? 'disabled' : ''} style="background:none;border:none;color:#e8edf5;opacity:0.6;font-size:14px;padding:2px 6px;flex-shrink:0">↓</button>
+                 <button type="button" class="ss-rot-remove-target" aria-label="Remove" ${rule.targets.length <= 2 ? 'disabled' : ''} style="background:none;border:none;color:#e8edf5;opacity:0.6;font-size:16px;padding:2px 6px;flex-shrink:0">✕</button>
+               </div>
+             `).join('')}
+             <select class="ss-rot-add-target" style="margin-top:2px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:6px;color:#e8edf5;padding:9px">
+               <option value="">+ Add a display or template…</option>
+               ${targetOptionsHtml(null)}
+             </select>
+           </div>`
+        : `<div style="display:flex;gap:8px;align-items:center">
+             ${mode === 'interval' ? intervalInputsHtml : `<input type="time" class="ss-rule-time" value="${rule.time || '08:00'}" style="width:110px;flex-shrink:0;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:6px;color:#e8edf5;padding:9px">`}
+             <select class="ss-rule-target" style="flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:6px;color:#e8edf5;padding:9px">${targetOptionsHtml(rule.target)}</select>
+           </div>`;
+      const enabled = rule.enabled !== false;
+      const hasConflict = conflicted.has(idx);
+      return `
+      <div class="ss-schedule-rule" data-idx="${idx}" style="border:1px solid ${hasConflict ? 'rgba(255,176,32,0.6)' : 'rgba(255,255,255,0.15)'};border-radius:10px;padding:10px;opacity:${enabled ? '1' : '0.55'}">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#e8edf5;flex:1;cursor:pointer">
+            <input type="checkbox" class="ss-rule-enabled" ${enabled ? 'checked' : ''} style="width:16px;height:16px;accent-color:#4a90d9">
+            Enabled
+          </label>
+          <button type="button" class="ss-rule-remove" aria-label="Remove" style="background:none;border:none;color:#e8edf5;opacity:0.6;font-size:18px;padding:4px 8px;flex-shrink:0">✕</button>
+        </div>
+        ${hasConflict ? `<div style="font-size:11px;color:#ffb020;background:rgba(255,176,32,0.12);border-radius:6px;padding:6px 8px;margin-bottom:10px">⚠️ Same time and day as another rule below — whichever fires last will win.</div>` : ''}
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <button type="button" class="ss-rule-mode-btn${mode === 'time' ? ' active' : ''}" data-mode="time"
+            style="flex:1;padding:7px 0;border-radius:6px;border:1px solid rgba(255,255,255,0.18);font-size:11px;font-weight:600;color:#e8edf5;
+              background:${mode === 'time' ? 'rgba(74,144,217,0.5)' : 'rgba(255,255,255,0.08)'}">At a time</button>
+          <button type="button" class="ss-rule-mode-btn${mode === 'rotation' ? ' active' : ''}" data-mode="rotation"
+            style="flex:1;padding:7px 0;border-radius:6px;border:1px solid rgba(255,255,255,0.18);font-size:11px;font-weight:600;color:#e8edf5;
+              background:${mode === 'rotation' ? 'rgba(74,144,217,0.5)' : 'rgba(255,255,255,0.08)'}">Rotate</button>
+        </div>
+        ${timingRowHtml}
+        <div style="display:flex;gap:4px;margin-top:8px">
+          ${dayNames.map((d, i) => `<button type="button" class="ss-rule-dow-btn${(rule.daysOfWeek || []).includes(i) ? ' active' : ''}" data-dow="${i}"
+            style="flex:1;padding:7px 0;border-radius:6px;border:1px solid rgba(255,255,255,0.18);font-size:11px;font-weight:700;
+              background:${(rule.daysOfWeek || []).includes(i) ? 'rgba(74,144,217,0.5)' : 'rgba(255,255,255,0.08)'};color:#e8edf5">${d}</button>`).join('')}
+        </div>
+      </div>
+    `;
+    }).join('');
+    listEl.querySelectorAll('.ss-schedule-rule').forEach(rowEl => {
+      const idx = Number(rowEl.dataset.idx);
+      const enabledCheckbox = rowEl.querySelector('.ss-rule-enabled');
+      if (enabledCheckbox) enabledCheckbox.addEventListener('change', (e) => {
+        state.floatingSwitcherSchedule[idx].enabled = e.target.checked;
+        renderSchedule();
+        saveSchedule();
+      });
+      rowEl.querySelectorAll('.ss-rule-mode-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const newMode = btn.dataset.mode;
+          const current = state.floatingSwitcherSchedule[idx].mode || 'time';
+          if (current === newMode) return;
+          state.floatingSwitcherSchedule[idx].mode = newMode;
+          // Same seeding as the widget's own mode-toggle handler in app.html
+          // — see its own comment for why this matters beyond what the
+          // timing inputs' display-time fallbacks alone would cover.
+          if ((newMode === 'interval' || newMode === 'rotation') && !state.floatingSwitcherSchedule[idx].intervalValue) {
+            state.floatingSwitcherSchedule[idx].intervalValue = 30;
+            state.floatingSwitcherSchedule[idx].intervalUnit = 'minutes';
+          }
+          if (newMode === 'time' && !state.floatingSwitcherSchedule[idx].time) {
+            state.floatingSwitcherSchedule[idx].time = '08:00';
+          }
+          if (newMode === 'rotation' && !Array.isArray(state.floatingSwitcherSchedule[idx].targets)) {
+            state.floatingSwitcherSchedule[idx].targets = state.floatingSwitcherSchedule[idx].target ? [state.floatingSwitcherSchedule[idx].target] : [];
+          }
+          // The missing symmetric case, found from a real report: LEAVING
+          // rotation mode (to 'time' or 'interval') never set target
+          // (singular) — those two modes need it, but a rotation rule only
+          // ever has targets (plural). The server's own validation for
+          // non-rotation modes requires target and drops the ENTIRE rule
+          // when it's missing — the exact same silent-strip mechanism
+          // fixed earlier for switching INTO rotation with too few
+          // targets, just triggered from the opposite direction this
+          // time. Carries the rotation's first target forward, mirroring
+          // exactly how a single target gets carried forward into
+          // targets[0] when switching the other way.
+          if (newMode !== 'rotation' && !state.floatingSwitcherSchedule[idx].target && Array.isArray(state.floatingSwitcherSchedule[idx].targets) && state.floatingSwitcherSchedule[idx].targets.length) {
+            state.floatingSwitcherSchedule[idx].target = state.floatingSwitcherSchedule[idx].targets[0];
+          }
+          renderSchedule();
+          // Skip the save specifically when switching INTO rotation mode
+          // leaves fewer than 2 targets (carrying forward a single prior
+          // target, or starting from none at all) — the server requires 2+
+          // valid targets for a rotation rule and silently drops the WHOLE
+          // rule otherwise (200 OK, no error, just gone). Confirmed as the
+          // actual root cause of a real report, not a hypothetical: saving
+          // here unconditionally created a race between this doomed,
+          // 1-target save and the very next one (once a second target gets
+          // added) — if the earlier, invalid save happened to complete
+          // AFTER the valid one, it silently overwrote the correct 2-target
+          // save with nothing. The rule stays in memory and renders
+          // correctly either way; it just doesn't hit the network until
+          // there's something the server will actually accept.
+          if (newMode === 'rotation' && (!state.floatingSwitcherSchedule[idx].targets || state.floatingSwitcherSchedule[idx].targets.length < 2)) return;
+          saveSchedule();
+        });
+      });
+      const timeInput = rowEl.querySelector('.ss-rule-time');
+      if (timeInput) timeInput.addEventListener('change', (e) => {
+        state.floatingSwitcherSchedule[idx].time = e.target.value;
+        saveSchedule();
+      });
+      const intervalValueInput = rowEl.querySelector('.ss-rule-interval-value');
+      if (intervalValueInput) intervalValueInput.addEventListener('change', (e) => {
+        state.floatingSwitcherSchedule[idx].intervalValue = Number(e.target.value) || 1;
+        saveSchedule();
+      });
+      const intervalUnitSelect = rowEl.querySelector('.ss-rule-interval-unit');
+      if (intervalUnitSelect) intervalUnitSelect.addEventListener('change', (e) => {
+        state.floatingSwitcherSchedule[idx].intervalUnit = e.target.value;
+        saveSchedule();
+      });
+      const targetSelect = rowEl.querySelector('.ss-rule-target');
+      if (targetSelect) targetSelect.addEventListener('change', (e) => {
+        const [type, id] = e.target.value.split(/:(.+)/);
+        state.floatingSwitcherSchedule[idx].target = { type, id: type === 'saved' ? Number(id) : id };
+        saveSchedule();
+      });
+      const addTargetSelect = rowEl.querySelector('.ss-rot-add-target');
+      if (addTargetSelect) addTargetSelect.addEventListener('change', (e) => {
+        if (!e.target.value) return;
+        const [type, id] = e.target.value.split(/:(.+)/);
+        if (!Array.isArray(state.floatingSwitcherSchedule[idx].targets)) state.floatingSwitcherSchedule[idx].targets = [];
+        state.floatingSwitcherSchedule[idx].targets.push({ type, id: type === 'saved' ? Number(id) : id });
+        renderSchedule();
+        // Same guard as the mode-switch handler above — normally this push
+        // brings a 1-target rotation to 2 (safe to save), but if a rotation
+        // ever started genuinely empty (no prior target to carry forward),
+        // this first addition would only reach 1, which the server would
+        // equally silently strip.
+        if (state.floatingSwitcherSchedule[idx].targets.length < 2) return;
+        saveSchedule();
+      });
+      rowEl.querySelectorAll('.ss-rotation-target-row').forEach(trEl => {
+        const tIdx = Number(trEl.dataset.tidx);
+        const upBtn = trEl.querySelector('.ss-rot-move-up');
+        if (upBtn) upBtn.addEventListener('click', () => {
+          const targets = state.floatingSwitcherSchedule[idx].targets;
+          [targets[tIdx - 1], targets[tIdx]] = [targets[tIdx], targets[tIdx - 1]];
+          renderSchedule();
+          saveSchedule();
+        });
+        const downBtn = trEl.querySelector('.ss-rot-move-down');
+        if (downBtn) downBtn.addEventListener('click', () => {
+          const targets = state.floatingSwitcherSchedule[idx].targets;
+          [targets[tIdx + 1], targets[tIdx]] = [targets[tIdx], targets[tIdx + 1]];
+          renderSchedule();
+          saveSchedule();
+        });
+        trEl.querySelector('.ss-rot-remove-target').addEventListener('click', () => {
+          // Mirrors the disabled state on this same button above — rotation
+          // has a hard minimum of 2 targets (see checkSchedules()'s own
+          // rotation branch and the server's validation, both of which
+          // require 2+), so removing down to 1 is never a state worth
+          // reaching at all, not something to allow and then silently fail
+          // to save.
+          if (state.floatingSwitcherSchedule[idx].targets.length <= 2) return;
+          state.floatingSwitcherSchedule[idx].targets.splice(tIdx, 1);
+          renderSchedule();
+          saveSchedule();
+        });
+      });
+      rowEl.querySelectorAll('.ss-rule-dow-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const dow = Number(btn.dataset.dow);
+          const days = new Set(state.floatingSwitcherSchedule[idx].daysOfWeek || []);
+          if (days.has(dow)) days.delete(dow); else days.add(dow);
+          state.floatingSwitcherSchedule[idx].daysOfWeek = [...days];
+          renderSchedule();
+          saveSchedule();
+        });
+      });
+      const removeBtn = rowEl.querySelector('.ss-rule-remove');
+      if (removeBtn) removeBtn.addEventListener('click', () => {
+        state.floatingSwitcherSchedule.splice(idx, 1);
+        renderSchedule();
+        saveSchedule();
+      });
+    });
+  };
+  renderSchedule();
+  document.getElementById('ss-fls-schedule-add-btn').addEventListener('click', () => {
+    // Prefers the first CHECKED switcher target, consistent with the same
+    // restriction now on the dropdown itself — falls back to the first
+    // display/template in the whole system only if nothing's checked at
+    // all yet, since otherwise an empty checklist would make it
+    // impossible to create any rule in the first place.
+    const checkedTargets = normalizeSwitcherTargets(state.floatingSwitcherPresets);
+    const defaultTarget = checkedTargets[0] || (ssDisplays[0] ? { type: 'display', id: ssDisplays[0].slug }
+      : ssPresets[0] ? { type: 'saved', id: ssPresets[0].id } : null);
+    if (!defaultTarget) { showDisplayToast('Add a display or save a layout first.'); return; }
+    if (!Array.isArray(state.floatingSwitcherSchedule)) state.floatingSwitcherSchedule = [];
+    state.floatingSwitcherSchedule.push({ mode: 'time', time: '08:00', daysOfWeek: [1, 2, 3, 4, 5], target: defaultTarget });
+    renderSchedule();
+    saveSchedule();
+  });
+}
 function closeWidgetPicker() {
   const overlay = document.getElementById('widget-picker-overlay');
   if (overlay) overlay.style.display = 'none';
@@ -11088,6 +12027,17 @@ function wireChoreChartTaps() {
     if (el._tapWired) return; // avoid attaching a duplicate listener on every re-render
     el._tapWired = true;
     el.addEventListener('click', () => toggleChoreChartItem(el));
+  });
+}
+function wireLayoutSwitcherTaps() {
+  document.querySelectorAll('.w-layoutswitcher .ls-btn[data-target-id]').forEach(el => {
+    if (el._tapWired) return;
+    el._tapWired = true;
+    el.addEventListener('click', () => {
+      const type = el.dataset.targetType;
+      const id = type === 'display' ? el.dataset.targetId : Number(el.dataset.targetId);
+      switchToLayoutTarget({ type, id }, 'widget-button-tap');
+    });
   });
 }
 function showDisplayToast(message) {
@@ -12368,6 +13318,40 @@ function renderTimer(widget) {
   </div>`;
 }
 
+// ── Layout Switcher widget ────────────────────────────────────────────────────
+// A row of buttons, one per saved layout OR live display this instance is
+// configured to offer — tapping one calls switchToLayoutTarget() (see its
+// own comment, above fetchLayoutAndRender, for the full pre-fetch/instant-swap
+// mechanic). This widget only renders the buttons; all the actual
+// switching logic lives there, shared with the screen-level floating
+// switcher (renderFloatingSwitcher() below) rather than duplicated.
+// Shared by both switcher surfaces (widget + floating) — looks up a
+// target's display name from whichever cache matches its type, falling
+// back to a generic label if that cache hasn't loaded yet (the very first
+// render after boot, before prefetchSwitcherPresets() has fetched names —
+// see its own "namesFreshlyLoaded" re-render for how this self-corrects).
+function switcherTargetLabel(target) {
+  if (target.type === 'display') {
+    const d = (state._switcherDisplayNamesCache || []).find(x => x.slug === target.id);
+    return d ? d.name : `Display: ${target.id}`;
+  }
+  const p = (state._switcherNamesCache || []).find(x => Number(x.id) === Number(target.id));
+  return p ? p.name : `Layout #${target.id}`;
+}
+function renderLayoutSwitcher(widget) {
+  const w = widget || {};
+  const fontPx = w.switcherFontPx || 15;
+  const style = `--ls-font:calc(${fontPx}px * var(--ui-scale,1))`;
+  const targets = normalizeSwitcherTargets(w.switcherTargets || w.switcherPresetIds);
+  if (!targets.length) {
+    return `<div class="w-layoutswitcher" style="${style}"><div class="no-data">No layouts assigned yet — set this up from the app.</div></div>`;
+  }
+  const buttons = targets.map(t =>
+    `<button type="button" class="ls-btn" data-target-type="${t.type}" data-target-id="${escapeHtmlD(String(t.id))}">${escapeHtmlD(switcherTargetLabel(t))}</button>`
+  ).join('');
+  return `<div class="w-layoutswitcher" style="${style}"><div class="ls-buttons">${buttons}</div></div>`;
+}
+
 // ── On This Day widget ───────────────────────────────────────────────────────
 function renderOnThisDay(widget) {
   const w = widget || {};
@@ -13105,6 +14089,27 @@ const _noPreview = new URLSearchParams(window.location.search).get('nopreview') 
 // (resolution override, avoiding screen-identity registration — both still
 // apply normally even with editing allowed).
 const ALLOW_EDIT_IN_PREVIEW = new URLSearchParams(window.location.search).get('allowEdit') === '1';
+// Distinguishes the Layout tab's own small, read-only embedded thumbnail
+// from "Open to Edit in New Tab" — both currently carry allowEdit=1 in
+// their URL (a real, pre-existing bug in app.html's buildPreviewUrl(),
+// found from a live incident: a schedule rule firing inside that supposedly
+// glance-only thumbnail), so ALLOW_EDIT_IN_PREVIEW alone can't tell them
+// apart. This is a SEPARATE, dedicated flag rather than changing what
+// allowEdit=1 means — that flag also gates the beta.23 identity-separation
+// fix (the dedicated preview_<slug> screen identity), which is correct and
+// necessary for BOTH contexts equally, since both are previewing a real,
+// named display rather than a screen's own disposable profile. Widening or
+// narrowing THAT flag here would have been the wrong fix.
+const EMBEDDED_THUMBNAIL = new URLSearchParams(window.location.search).get('embedded') === '1';
+if (ALLOW_EDIT_IN_PREVIEW) {
+  // See #back-to-app-link's own markup comment for the full reasoning —
+  // this link exists specifically because this context (the app's "Open
+  // to Edit in New Tab") had no way back to the app at all otherwise.
+  try {
+    const link = document.getElementById('back-to-app-link');
+    if (link) link.style.display = 'block';
+  } catch {}
+}
 function detectPreview() {
   if (_previewParam === '1') return true;
   // No more auto-detection from viewport size — that heuristic
@@ -13124,6 +14129,18 @@ if (IS_PREVIEW) {
   try {
     document.body.classList.add('preview');
     document.documentElement.classList.add('preview');
+    // Distinguishes the "Open to Edit in New Tab" link (full-size, fully
+    // interactive) from the Layout tab's own small read-only embedded
+    // thumbnail preview (same 'preview' class) — a few things should behave
+    // differently between "a live, editable stand-in for the real display"
+    // and "a tiny non-interactive thumbnail," and blanket-treating both the
+    // same was a real mistake (see #floating-switcher's own CSS comment for
+    // the specific bug this caused). Checks EMBEDDED_THUMBNAIL specifically,
+    // not just ALLOW_EDIT_IN_PREVIEW — both URLs actually carry allowEdit=1
+    // (a separate, real bug in app.html's buildPreviewUrl(), found from a
+    // live incident), so ALLOW_EDIT_IN_PREVIEW alone was never sufficient to
+    // tell these two contexts apart to begin with.
+    if (ALLOW_EDIT_IN_PREVIEW && !EMBEDDED_THUMBNAIL) document.body.classList.add('preview-editable');
   } catch {}
 }
 // The viewport-size heuristic above can't tell a genuinely small device apart
@@ -13158,6 +14175,21 @@ let DISPLAY_SLUG = URL_DISPLAY_SLUG; // may be replaced at boot by the assigned 
 // seed from localStorage for the very first request, then reconcile to the
 // server's canonical id (and cache that) the moment we learn it.
 let SCREEN_ID = (() => {
+  // In the "Open to Edit in New Tab" context specifically, never touch or
+  // read the shared 'screen-device-id' localStorage key at all — that's
+  // exactly what a real kiosk display on the SAME browser/device already
+  // uses for its OWN identity, and reading it here would silently register
+  // this preview session AS that same real screen. Confirmed as a real,
+  // reproducible incident, not a hypothetical: opening this from the same
+  // browser as the host's own kiosk display silently applied a setting
+  // change to that live, deployed screen with no warning at all. Derived
+  // from the display slug being edited (not random) so reopening this same
+  // preview for the same layout is consistent across sessions, while never
+  // being able to collide with a real screen's own randomly-generated
+  // 'scr_...' id — the 'preview_' prefix alone guarantees that.
+  if (ALLOW_EDIT_IN_PREVIEW) {
+    return 'preview_' + (URL_DISPLAY_SLUG || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
+  }
   try {
     let id = localStorage.getItem('screen-device-id');
     if (!id) {
@@ -13171,14 +14203,24 @@ let SCREEN_ID = (() => {
 })();
 // Adopt the Pi's canonical id; call before opening the live SSE connection.
 function adoptCanonicalScreenId(canonicalId) {
-  // Never do this from a preview iframe (Layout tab → Live Preview): canonicalId
-  // is the REAL host device's own persistent identity, and localStorage is
-  // shared with the parent app on this same origin — writing it here would mean
-  // a throwaway preview silently adopts the actual host's identity into
-  // whichever browser is editing the layout, and then uses it in every API call
-  // the preview makes for the rest of that session. SCREEN_ID still gets updated
-  // in memory for this one page load (so preview requests are internally
-  // consistent), it just never gets persisted or checked in anywhere.
+  // Never adopt the host's own canonical identity — not even in memory —
+  // while in the "Open to Edit in New Tab" context (ALLOW_EDIT_IN_PREVIEW).
+  // This used to only guard the localStorage WRITE below, on the reasoning
+  // that SCREEN_ID still needed updating in memory "so preview requests are
+  // internally consistent" — but every API call this session makes (fetching
+  // and SAVING screen-level settings like the floating switcher) uses
+  // SCREEN_ID directly, so that in-memory-only exception was exactly what
+  // let a preview session silently adopt a real, deployed screen's identity
+  // and modify its live settings. Confirmed as a real incident, not a
+  // hypothetical. See SCREEN_ID's own declaration for the dedicated,
+  // never-colliding identity this context uses instead.
+  if (ALLOW_EDIT_IN_PREVIEW) return;
+  // Still skipped for the small embedded thumbnail preview (Layout tab's
+  // own Live Preview) for the same underlying reason, just scoped to
+  // persistence only there — that context's SCREEN_ID is the ordinary
+  // shared one (not the dedicated preview_* identity above, since it never
+  // saves anything of its own), so only the localStorage write needs
+  // guarding, not the in-memory value.
   if (canonicalId && canonicalId !== SCREEN_ID) {
     SCREEN_ID = canonicalId;
     if (!IS_PREVIEW) {
@@ -13218,6 +14260,605 @@ function withDisplayParam(url) {
 // overwrites state.layout with the real, non-ambient widgets, and forgetting to
 // re-apply ambient mode afterward silently reverts a display sitting in Photo
 // mode back to normal widgets.
+// Every widget-data fetch that isn't tied to a specific widget instance —
+// most either pull a global default (e.g. fetchWeather() always fetches
+// the configured default location regardless of what's on screen right
+// now) or no-op harmlessly if nothing on the CURRENT layout needs them.
+// Extracted into its own function so both the 'layout' SSE handler below
+// and the Layout Switcher's background pre-fetch (see prefetchSwitcherPresets())
+// call the exact same set rather than maintaining two copies that could
+// drift out of sync with each other.
+async function fetchAllWidgetDataSet() {
+  await Promise.allSettled([
+    fetchWeather(), fetchTasksForLayout(), fetchTodoForLayout(), fetchShoppingListForLayout(),
+    fetchNews(), fetchStocks(), fetchChoreChart(), fetchStickersForLayout(), fetchAirQuality(), fetchTravelTimes(),
+    fetchOnThisDay(), fetchDailyQuote(), fetchSports(), fetchMetarTaf(),
+  ]);
+}
+
+// ── Layout Switcher: pre-fetch cache + instant local switch ──────────────────
+// Core mechanic shared by both placements — the per-layout widget and the
+// screen-level floating button (see renderLayoutSwitcher() and
+// renderFloatingSwitcher() below). The point of pre-fetching is entirely
+// about perceived speed: applying a saved layout normally means a full
+// round trip (fetch the new widget list, then fetch data for any widget
+// type that's newly showing up) before anything visible happens. Since a
+// switcher's target presets are known in advance — configured, not
+// discovered at tap time — that data can be kept warm in the background
+// ahead of time, so tapping the button does an instant local swap instead
+// of waiting on a fetch.
+state._switcherPresetCache = state._switcherPresetCache || {}; // targetKey -> {widgets_landscape, widgets_portrait, theme, fetchedAt}
+state._switcherNamesCache = state._switcherNamesCache || null;   // [{id, name}], saved templates — from the light list endpoint
+state._switcherDisplayNamesCache = state._switcherDisplayNamesCache || null; // [{slug, name}], live displays
+const SWITCHER_CACHE_TTL_MS = 5 * 60 * 1000; // re-warm every 5 min, matching this app's usual "periodic refresh" cadence
+let _switcherDataWarmedAt = 0; // last time prefetchSwitcherPresets() ran fetchAllWidgetDataSet(), separate from per-preset cache timestamps
+
+// A switch target is either a saved template ({type:'saved', id: <saved_layout id, a number>})
+// or a live display ({type:'display', id: <display slug, a string>}) — added
+// after the widget-only version turned out to be a real, not just perceived,
+// gap: people reasonably expect to point a switcher at one of their actual
+// screens, not only a template saved ahead of time. Normalizes a raw list
+// (which may be OLD-format bare numbers/numeric-strings — always meant a
+// saved_layout id, from before this expansion existed) into canonical
+// target objects, so every other switcher function only ever deals with
+// one consistent shape regardless of how old the data is.
+function normalizeSwitcherTargets(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(t => {
+    if (typeof t === 'number' || (typeof t === 'string' && /^\d+$/.test(t))) return { type: 'saved', id: Number(t) };
+    if (t && t.type === 'saved' && Number.isInteger(Number(t.id))) return { type: 'saved', id: Number(t.id), icon: (typeof t.icon === 'string' && t.icon.trim()) ? t.icon.trim().slice(0, 8) : '' };
+    if (t && t.type === 'display' && typeof t.id === 'string' && t.id) return { type: 'display', id: t.id, icon: (typeof t.icon === 'string' && t.icon.trim()) ? t.icon.trim().slice(0, 8) : '' };
+    return null;
+  }).filter(Boolean);
+}
+function switcherTargetKey(target) { return `${target.type}:${target.id}`; }
+
+// Every target currently referenced by ANY switcher on this screen — every
+// Layout Switcher widget on the CURRENT layout, plus the floating
+// switcher's own configured list (which persists across whatever layout is
+// showing, unlike a widget). Used both to decide what to pre-fetch and, on
+// the picker side, which names to show.
+function getSwitcherTargetsInUse() {
+  const seen = new Map(); // keyed to dedupe — the same target could appear on multiple switchers
+  const add = (t) => seen.set(switcherTargetKey(t), t);
+  (state.layout || []).forEach(w => {
+    if (w.type !== 'layoutswitcher') return;
+    // switcherTargets is the current field; switcherPresetIds is what any
+    // widget saved before this expansion still has — read both, write only
+    // the new one going forward (see the widget's own settings panel).
+    normalizeSwitcherTargets(w.switcherTargets || w.switcherPresetIds).forEach(add);
+  });
+  normalizeSwitcherTargets(state.floatingSwitcherPresets).forEach(add);
+  return [...seen.values()];
+}
+
+// ── Scheduled auto-switching ──────────────────────────────────────────────
+// Every rule currently in play — every Layout Switcher widget on the
+// CURRENT layout's own switcherSchedule, plus the floating switcher's own
+// floating_switcher_schedule (persists across whatever layout is showing,
+// same as its manual presets do). Not deduped like getSwitcherTargetsInUse()
+// — two different rules can legitimately target the same thing at
+// different times, there's nothing to collapse.
+function getScheduleRulesInUse() {
+  const rules = [];
+  (state.layout || []).forEach(w => {
+    if (w.type !== 'layoutswitcher' || !Array.isArray(w.switcherSchedule)) return;
+    rules.push(...w.switcherSchedule);
+  });
+  if (Array.isArray(state.floatingSwitcherSchedule)) rules.push(...state.floatingSwitcherSchedule);
+  return rules;
+}
+// Stable identity for a rule, used to track "already fired"/"last fired at"
+// — two rules with identical timing/days/target are indistinguishable
+// anyway, so collapsing them onto the same key is correct, not a bug.
+// Branches on mode explicitly rather than just using rule.time directly —
+// an interval-mode rule has no time field at all, so falling back to that
+// alone would collapse every interval rule onto the same key regardless of
+// its actual interval or target.
+function scheduleRuleKey(rule) {
+  if (rule.mode === 'rotation') {
+    // Own branch, not folded into the generic path below — a rotation
+    // rule has a targets ARRAY, not a single target, so the generic
+    // rule.target.type:rule.target.id construction would crash on
+    // rule.target being undefined for this mode entirely.
+    return `rotation:${(rule.targets || []).map(t => `${t.type}:${t.id}`).join(',')}|${rule.intervalValue}${rule.intervalUnit}`;
+  }
+  const timing = rule.mode === 'interval' ? `every:${rule.intervalValue}${rule.intervalUnit}` : `at:${rule.time}`;
+  return `${timing}|${[...(rule.daysOfWeek || [])].sort().join(',')}|${rule.target.type}:${rule.target.id}`;
+}
+// Returns the set of rule indices that have at least one genuine conflict
+// with another rule — used purely for a UI warning, never by the actual
+// firing logic in checkSchedules() itself, which already handles this
+// correctly on its own (one fire per check, whichever rule happens to go
+// second silently wins). By explicit request, so this doesn't happen as a
+// surprise: two ENABLED rules sharing the exact same time AND at least one
+// overlapping day would both fire within seconds of each other, with
+// whichever fires second overwriting whatever the first one just showed.
+// Only compares 'time'-mode rules (or legacy, mode-less rules, which
+// default to 'time') against each other — Rotate (and the retired,
+// dormant 'interval' mode some existing rules may still carry) runs
+// continuously rather than at one discrete moment, so pairing either of
+// those against a 'time' rule is a deliberate "override the rotation at
+// this one moment" pattern, not a coincidental collision worth flagging.
+function scheduleConflictIndices(rules) {
+  const conflicted = new Set();
+  for (let i = 0; i < rules.length; i++) {
+    const a = rules[i];
+    if (!a || a.enabled === false) continue;
+    const aMode = (a.mode === 'interval' || a.mode === 'rotation') ? a.mode : 'time';
+    if (aMode !== 'time' || !a.time) continue;
+    for (let j = i + 1; j < rules.length; j++) {
+      const b = rules[j];
+      if (!b || b.enabled === false) continue;
+      const bMode = (b.mode === 'interval' || b.mode === 'rotation') ? b.mode : 'time';
+      if (bMode !== 'time' || !b.time) continue;
+      if (a.time !== b.time) continue;
+      const aDays = new Set(a.daysOfWeek || []);
+      if ((b.daysOfWeek || []).some(d => aDays.has(d))) { conflicted.add(i); conflicted.add(j); }
+    }
+  }
+  return conflicted;
+}
+const _scheduleFiredToday = {}; // ruleKey -> "YYYY-MM-DD" it last fired, self-cleaning by nature (see below)
+// Interval-mode's own tracking — ruleKey -> timestamp (ms) it last fired.
+// A rolling "how long since last fire" check, not a once-per-calendar-day
+// one, so this can't share _scheduleFiredToday's date-string shape; needs
+// its own object. Same self-bounding property though: each key's value is
+// overwritten in place every fire, so size stays bounded to "how many
+// distinct interval rules have ever existed," not how many times any of
+// them has fired.
+const _intervalRuleLastFired = {};
+// Rotation-mode's own tracking — ruleKey -> {index, lastAdvance}. Needs
+// both a POSITION (which target of the list is currently showing) and a
+// timestamp, so it can't share either _scheduleFiredToday's or
+// _intervalRuleLastFired's shape — this is genuinely a different kind of
+// state, not just a different key format for the same kind. Same
+// self-bounding property as the others: each key's value is overwritten
+// in place, never accumulated.
+const _rotationState = {};
+// Converts an interval rule's {intervalValue, intervalUnit} into
+// milliseconds. Returns 0 (falsy) for anything malformed, so callers can
+// treat a bad/missing config as "never due" with a single falsy check
+// rather than needing their own separate validation.
+function intervalToMs(value, unit) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  const perUnit = { seconds: 1000, minutes: 60_000, hours: 3_600_000 };
+  return n * (perUnit[unit] || perUnit.minutes);
+}
+
+// Checked on a periodic interval (see its own setup near init()). By
+// explicit request, fires a time-mode rule only on an EXACT match against
+// the current minute — not "at or after, as long as it hasn't fired yet
+// today" the way this originally worked. A page that's backgrounded,
+// mid-edit, or just slow to poll during the scheduled moment now simply
+// misses that firing for the day entirely, rather than catching up once
+// checking resumes. _scheduleFiredToday still exists to prevent re-firing
+// repeatedly within that same matching minute (this check runs every 5s,
+// so one minute is roughly a dozen checks) — never needs explicit pruning
+// either way: each rule key's value gets overwritten in place every time
+// it fires, so the object's size stays bounded to "how many distinct
+// rules have ever existed," not how many days have passed.
+function checkSchedules() {
+  // Never let a scheduled switch interrupt active editing or pop up the
+  // confirmation switchToLayoutTarget() shows during Live Edit — that
+  // confirmation exists for a person's own deliberate tap, not something an
+  // automatic timer should ever trigger. Simplest possible guard: skip the
+  // whole check while editing. By explicit request, this is no longer a
+  // "catches up on the next check" delay — see the exact-match logic below
+  // for both modes — so a rule whose moment falls during an editing
+  // session, or during the grace period right after (below), simply
+  // doesn't fire this time at all, rather than firing late once editing
+  // ends.
+  if (editModeActive) return;
+  // Grace period after Live Edit ends specifically — a rule that became due
+  // WHILE editing would otherwise fire on the very first check afterward,
+  // silently (editModeActive is already false by then, so the
+  // confirmation dialog inside switchToLayoutTarget() never shows).
+  // Confirmed as a real, reproducible incident, not a hypothetical: a
+  // diagnostic toast directly captured this exact sequence. Combined with
+  // the exact-match logic below (no catch-up, by explicit request), a rule
+  // whose moment falls inside this window now simply doesn't fire at all
+  // this time — it's not delayed and then fired late, it's skipped, same
+  // as if editing hadn't happened to be in the way at all.
+  //
+  // Was 2 minutes; reduced to 15 seconds by explicit request — a genuinely
+  // new rotation waiting a full 2 minutes to even show its first target
+  // felt like an unreasonably long, uncertain wait. 15s still gives a
+  // meaningful buffer to glance at what was just configured before an
+  // automatic switch could interrupt it, without the wait itself feeling
+  // like something might be broken.
+  const EDIT_EXIT_SCHEDULE_GRACE_MS = 15_000; // 15 seconds
+  if (Date.now() - _editModeExitedAt < EDIT_EXIT_SCHEDULE_GRACE_MS) return;
+  const rules = getScheduleRulesInUse();
+  // By explicit request: if this screen is currently showing a
+  // schedule-driven override (see _scheduleOverrideActive's own comment)
+  // but no ENABLED rule remains to justify that — the whole schedule got
+  // disabled, or every rule was removed outright — revert back to the
+  // screen's own true, pre-defined layout. Checked before the "no rules"
+  // early return below specifically so this fires whether the rules were
+  // disabled OR deleted entirely, not just one of those two cases.
+  if (_scheduleOverrideActive && !rules.some(r => r && r.enabled !== false)) {
+    _scheduleOverrideActive = false;
+    // Deliberately bypasses fetchLayout()'s own echo-suppression guard
+    // (LAYOUT_ECHO_SUPPRESS_MS) — that guard exists to ignore an unwanted
+    // echo of this screen's OWN still-in-flight save, which is exactly
+    // backwards here: this IS the intentional, deliberate re-fetch, not
+    // something to suppress.
+    _lastLocalLayoutSaveAt = 0;
+    fetchLayoutAndRender(currentOrientation);
+    // Also re-fetches and re-applies the screen's own true display-level
+    // config — found missing via direct browser testing, not assumed:
+    // applyLocally() (the schedule-driven switch itself) can override
+    // displayConfig.theme (and calls applyTheme() when it does), but
+    // fetchLayoutAndRender() alone only ever touches widgets/layout, never
+    // displayConfig. Without this, a rotation target with a different
+    // theme than the screen's own assigned display would leave the theme
+    // stuck on whatever the rotation last set, even after everything else
+    // correctly reverted.
+    fetchDisplayConfig().then(() => { try { applyTheme(); } catch {} });
+    return;
+  }
+  if (!rules.length) return;
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10); // YYYY-MM-DD, local calendar day is close enough for this purpose
+  const dow = now.getDay(); // 0=Sun..6=Sat, matches daysOfWeek's own convention
+  const nowMs = now.getTime();
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  for (const rule of rules) {
+    // Rotation rules have no rule.target at all (targets, plural, instead)
+    // — requiring it unconditionally here would silently filter out every
+    // rotation rule before ever reaching its own branch below.
+    if (!rule || !Array.isArray(rule.daysOfWeek) || (rule.mode !== 'rotation' && !rule.target)) continue;
+    // Explicit === false, not a truthiness check — a rule saved before
+    // this field existed at all has no `enabled` key, and should keep
+    // firing exactly as it always did rather than being silently turned
+    // off by a field that was never there to begin with. Only an
+    // explicit, deliberate uncheck should ever skip a rule.
+    if (rule.enabled === false) continue;
+    if (!rule.daysOfWeek.includes(dow)) continue;
+    const key = scheduleRuleKey(rule);
+    if (rule.mode === 'rotation') {
+      // Genuinely even rotation, by explicit request — the actual reason
+      // this mode exists at all. Several independent same-interval rules
+      // can never give even spacing: each one is "due" the instant the
+      // interval elapses since IT last fired, so when two are due at the
+      // same moment they cascade through a few seconds apart (one switch
+      // per check) rather than each getting a clean, equal share of time.
+      // A single rotation rule sidesteps this entirely — there's only ONE
+      // clock (lastAdvance below), so nothing competes with itself.
+      if (!Array.isArray(rule.targets) || rule.targets.length < 2) continue; // need 2+ to rotate between
+      const intervalMs = intervalToMs(rule.intervalValue, rule.intervalUnit);
+      if (!intervalMs) continue;
+      let state = _rotationState[key];
+      if (!state) {
+        // First time this rotation is seen — start at index 0 immediately
+        // rather than seeding-and-waiting the way a single-target interval
+        // rule does (see that branch's own comment). A rotation has no
+        // natural "ambient" starting point the way a single scheduled
+        // switch does; whatever happened to already be showing before the
+        // rotation began isn't necessarily even one of its targets. Show
+        // target[0] right away to establish a clear, immediate start, then
+        // advance every full interval from there.
+        state = { index: 0, lastAdvance: nowMs };
+        _rotationState[key] = state;
+        switchToLayoutTarget(rule.targets[0], 'schedule-engine');
+        break;
+      }
+      if (nowMs - state.lastAdvance < intervalMs) continue;
+      state.index = (state.index + 1) % rule.targets.length;
+      state.lastAdvance = nowMs;
+      switchToLayoutTarget(rule.targets[state.index], 'schedule-engine');
+      break; // one switch per check is enough — if two rules are somehow due
+             // at once, the next check (moments later) picks up the other
+    }
+    if (rule.mode === 'interval') {
+      // No catch-up, by explicit request: fires only once a FULL interval
+      // has genuinely elapsed since it last actually fired — never
+      // immediately just because it's "been a while," including the very
+      // first time a rule is ever seen. A brand new rule (or a fresh page
+      // load, which starts with no memory of past firings at all) used to
+      // treat "never fired" as an effective lastFired of 0 (the epoch),
+      // meaning nowMs - 0 was always enormous — so it fired instantly on
+      // sight rather than waiting out its own interval even once. Now
+      // seeds its own baseline the first time it's seen instead, and
+      // simply waits from there, same as it would for every fire after.
+      const intervalMs = intervalToMs(rule.intervalValue, rule.intervalUnit);
+      if (!intervalMs) continue; // malformed/missing config — never due
+      if (_intervalRuleLastFired[key] === undefined) { _intervalRuleLastFired[key] = nowMs; continue; }
+      if (nowMs - _intervalRuleLastFired[key] < intervalMs) continue;
+      _intervalRuleLastFired[key] = nowMs;
+      switchToLayoutTarget(rule.target, 'schedule-engine');
+      break; // one switch per check is enough — if two rules are somehow due
+             // at once, the next check (moments later) picks up the other
+    }
+    if (!rule.time) continue;
+    // No catch-up here either, by the same explicit request — an EXACT
+    // match against the current minute, not "at or after," so a rule
+    // whose moment has already passed today simply doesn't fire again
+    // until it's next scheduled (tomorrow, if this is a daily rule) rather
+    // than firing late the moment something happens to check again. Still
+    // needs the _scheduleFiredToday guard below — this check itself runs
+    // every 5s, so the same matching minute would otherwise match roughly
+    // a dozen times over before it rolls over.
+    if (rule.time !== hhmm) continue;
+    if (_scheduleFiredToday[key] === todayStr) continue; // already fired this exact minute
+    _scheduleFiredToday[key] = todayStr;
+    switchToLayoutTarget(rule.target, 'schedule-engine');
+    break; // one switch per check is enough — if two rules are somehow due
+           // at once, the next check (moments later) picks up the other
+  }
+}
+
+async function prefetchSwitcherPresets() {
+  const targets = getSwitcherTargetsInUse();
+  if (!targets.length) return; // nothing configured anywhere on this screen — skip entirely, no wasted work
+  let namesFreshlyLoaded = false;
+  try {
+    if (!state._switcherNamesCache && targets.some(t => t.type === 'saved')) {
+      const r = await fetch('/api/saved-layouts');
+      if (r.ok) { state._switcherNamesCache = await r.json(); namesFreshlyLoaded = true; }
+    }
+    if (!state._switcherDisplayNamesCache && (targets.some(t => t.type === 'display') || ALLOW_EDIT_IN_PREVIEW)) {
+      const r = await fetch('/api/displays');
+      if (r.ok) { state._switcherDisplayNamesCache = await r.json(); namesFreshlyLoaded = true; }
+    }
+  } catch {}
+  const now = Date.now();
+  await Promise.allSettled(targets.map(async (target) => {
+    const key = switcherTargetKey(target);
+    const cached = state._switcherPresetCache[key];
+    if (cached && (now - cached.fetchedAt) < SWITCHER_CACHE_TTL_MS) return;
+    try {
+      const url = target.type === 'display'
+        ? `/api/displays/${encodeURIComponent(target.id)}/full`
+        : `/api/saved-layouts/${target.id}`;
+      const r = await fetch(url);
+      if (!r.ok) return;
+      const preset = await r.json();
+      state._switcherPresetCache[key] = { ...preset, fetchedAt: now };
+    } catch {}
+  }));
+  // Names weren't available yet on the very first render after boot, so any
+  // switcher button (widget or floating) currently on screen would still be
+  // showing its generic fallback label — re-render both surfaces now that
+  // real names are in. A no-op re-render on every OTHER call (names are
+  // cached after the first successful fetch, so this branch only fires
+  // once per boot per name-source actually in use).
+  if (namesFreshlyLoaded) {
+    renderFloatingSwitcher();
+    if ((state.layout || []).some(w => w.type === 'layoutswitcher')) renderLayout();
+  }
+  // Warm the data every possible target's widgets could need. Gated
+  // behind its own TTL, same as the per-target fetches above — this whole
+  // function is called every 20s via resolveAssignedProfile()'s existing
+  // interval (see its own comment: "Fast profile-assignment poll"), so
+  // calling all 14 of fetchAllWidgetDataSet()'s fetches unconditionally on
+  // every invocation would run them 15x more often than the intended
+  // 5-minute warming cadence, not free even though most are cheap.
+  if ((now - _switcherDataWarmedAt) >= SWITCHER_CACHE_TTL_MS) {
+    _switcherDataWarmedAt = now;
+    await fetchAllWidgetDataSet();
+  }
+}
+
+// The actual switch. target is {type, id} — callers own normalization via
+// normalizeSwitcherTargets() before this is ever invoked (button data
+// attributes carry both fields separately, see wireLayoutSwitcherTaps() and
+// renderFloatingSwitcher()). callerTag identifies which of the known call
+// sites triggered this (used below to scope the preview-toast to not the
+// schedule engine specifically) — was also a diagnostic toast at one point,
+// removed once it had done its job (correctly identified schedule-engine
+// as the actual cause across several reports) and would otherwise have
+// kept firing repeatedly during interval-based rotation.
+async function switchToLayoutTarget(target, callerTag) {
+  // Switching is a REAL, immediately-persisted action, not a preview — see
+  // this function's own comment further down for why (pre-fetch cache +
+  // optimistic local swap, by design). That's exactly right for the normal
+  // kiosk case (someone walks up and taps a button, expects it to just
+  // work, no friction) but is genuinely dangerous during Live Edit: testing
+  // a switcher button while actively editing silently replaces the layout
+  // being edited — including anything just added that isn't part of the
+  // target — with no warning and no undo. Confirmed as a real incident, not
+  // a hypothetical: testing a freshly-added switcher widget's buttons in
+  // Live Edit permanently discarded it, because the target tapped during
+  // testing didn't itself contain that widget. Gated on editModeActive
+  // specifically so the real kiosk experience stays completely
+  // frictionless — this only fires while actively editing.
+  if (editModeActive) {
+    const ok = confirm('Switching now will REPLACE the current layout — including anything not yet saved elsewhere — with the target layout. This can\'t be undone. Continue?');
+    if (!ok) return;
+  }
+  const key = switcherTargetKey(target);
+  const cached = state._switcherPresetCache[key];
+  const applyLocally = (preset) => {
+    const widgetsKey = currentOrientation === 'portrait' ? 'widgets_portrait' : 'widgets_landscape';
+    state.layout = preset[widgetsKey] || [];
+    if (preset.theme !== undefined) { displayConfig.theme = preset.theme || ''; applyTheme(); }
+    // Suppresses the echo of our OWN persist call below (see
+    // _lastLocalLayoutSaveAt's own comment near saveLayoutNow()) — without
+    // this, the SSE 'layout' broadcast the apply endpoint triggers would
+    // come right back to this same screen and redundantly re-fetch+re-render
+    // data we already just applied.
+    _lastLocalLayoutSaveAt = Date.now();
+    renderLayout();
+    applyBackground();
+    // Re-fetch widget data for whatever's genuinely NEW in this layout —
+    // confirmed as a real report, not a hypothetical: stocks/news/sports
+    // specifically got stuck on "Loading..." after a rotation switch and
+    // never recovered, since several widget types (stocks, air quality,
+    // travel times, tasks, chores, stickers, sports, METAR, on-this-day,
+    // daily quote, HA entities) each check state.layout themselves and
+    // skip any real fetch entirely when their own widget type isn't
+    // currently present — correct on its own, but it meant a widget type
+    // that only appears via a SWITCH, never having been in the layout
+    // loaded at boot, was never fetched at all.
+    //
+    // Tracks every widget type EVER seen this whole session (not just the
+    // immediately preceding layout) plus a time throttle on the batch
+    // itself — found necessary from a second report of the exact same
+    // symptom recurring. An earlier version of this fix compared only
+    // against the single previous layout, but "skip when the widget type
+    // is absent" (each fetch function's own guard) is not the same thing
+    // as "skip when the widget type isn't new" — a rotation alternating
+    // between displays with genuinely different widget sets would still
+    // have a type disappear and reappear on every other switch, re-firing
+    // this whole 14-call batch every time even though nothing was
+    // actually new to the session. Now a type only counts as new the
+    // FIRST time it's ever seen at all; after that, the 30s throttle on
+    // the whole batch is the only thing that can still trigger a
+    // re-fetch, which is intentional — it's a safety net for genuinely
+    // stale data on a slow rotation, not something a fast one should ever
+    // hit. Weather/events/reminders/photos still aren't included here
+    // since those fetch unconditionally regardless of the layout either
+    // way (see fetchWeather()'s own comment) — nothing to fix there.
+    if (!state._everSeenWidgetTypes) state._everSeenWidgetTypes = new Set();
+    const currentTypes = new Set(state.layout.map(w => w.type));
+    const hasGenuinelyNewType = [...currentTypes].some(t => !state._everSeenWidgetTypes.has(t));
+    currentTypes.forEach(t => state._everSeenWidgetTypes.add(t));
+    const WIDGET_REFETCH_THROTTLE_MS = 30_000;
+    const throttleElapsed = !state._lastWidgetDataRefetchAt || (Date.now() - state._lastWidgetDataRefetchAt >= WIDGET_REFETCH_THROTTLE_MS);
+    if (hasGenuinelyNewType || throttleElapsed) {
+      state._lastWidgetDataRefetchAt = Date.now();
+      (async () => {
+        await Promise.allSettled([
+          fetchTasksForLayout(), fetchTodoForLayout(), fetchShoppingListForLayout(),
+          fetchNews(), fetchStocks(), fetchChoreChart(), fetchStickersForLayout(),
+          fetchAirQuality(), fetchTravelTimes(), fetchOnThisDay(), fetchDailyQuote(),
+          fetchSports(), fetchMetarTaf(), fetchHaEntities(),
+        ]);
+        renderLayout();
+      })();
+    }
+  };
+
+  if (cached) {
+    applyLocally(cached);
+  } else {
+    // Not pre-fetched yet (e.g. tapped right after boot, before the first
+    // background pre-fetch completed) — fall back to fetching it live. Still
+    // correct, just not instant this one time.
+    showDisplayToast('Switching layout…');
+    try {
+      const url = target.type === 'display'
+        ? `/api/displays/${encodeURIComponent(target.id)}/full`
+        : `/api/saved-layouts/${target.id}`;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error('fetch failed');
+      const preset = await r.json();
+      state._switcherPresetCache[key] = { ...preset, fetchedAt: Date.now() };
+      applyLocally(preset);
+    } catch {
+      showDisplayToast('❌ Could not switch layouts — check the connection.');
+      return;
+    }
+  }
+
+  // Persist server-side in the background — this is what makes the switch
+  // survive a refresh/reboot and shows up on other screens/the app. The
+  // visible switch above already happened; this is fire-and-forget from the
+  // person's point of view.
+  //
+  // NEVER persist in the "Open to Edit in New Tab" context — this is the
+  // actual root cause of a whole series of reports that looked like several
+  // different bugs (destination-resolution fallbacks, schedule timing) but
+  // were really one design mismatch. Persisting a switch means "copy the
+  // target's content onto DISPLAY_SLUG" — exactly right on a real kiosk,
+  // where DISPLAY_SLUG is THIS SCREEN's own disposable profile that's
+  // MEANT to become a copy of whatever it switches to. But in this preview
+  // context, DISPLAY_SLUG is a real, named, shared display (whatever was
+  // opened to edit) — applyLocally() above never changes DISPLAY_SLUG when
+  // switching, so persisting here means literally overwriting that real,
+  // named display's actual content with the target's. Confirmed directly
+  // against the code, not inferred: this is exactly what {display:
+  // DISPLAY_SLUG} sent to the apply endpoints does. The local, visual
+  // switch above still gives a genuine preview of what the target looks
+  // like; it just can never be allowed to save over the display actually
+  // being edited.
+  //
+  // Checks IS_PREVIEW, not just ALLOW_EDIT_IN_PREVIEW — the small, embedded
+  // thumbnail preview elsewhere in the app is EQUALLY a real, named display
+  // being previewed, not a screen's own disposable profile, and isn't
+  // reliably distinguishable from "Open to Edit in New Tab" by
+  // ALLOW_EDIT_IN_PREVIEW alone (both currently carry allowEdit=1 in their
+  // URL — see EMBEDDED_THUMBNAIL's own comment for the real bug behind
+  // that). IS_PREVIEW is true for both regardless, so this check was
+  // already correct without needing to know that distinction at all — it
+  // only needs "is this ANY kind of preview," which IS_PREVIEW answers
+  // directly.
+  //
+  // ALSO never persists for the schedule engine specifically, regardless
+  // of preview status — a second, separate reason to skip, found from a
+  // real, serious incident: on a REAL, assigned screen (IS_PREVIEW=false,
+  // not a preview context at all), a rotation's persist step still sends
+  // {display: DISPLAY_SLUG} to the apply endpoint, meaning every single
+  // advance permanently copies the new target's content onto whatever
+  // display this screen currently happens to be assigned to. That's
+  // completely fine if DISPLAY_SLUG really is a disposable, per-screen
+  // profile with nothing worth keeping — but if it's a real, named,
+  // deliberately-crafted display (which it very much can be, and was in
+  // the reported case), a rotation running for any length of time
+  // destroys that display's own saved content on every single advance,
+  // whether or not that display is even one of the rotation's own
+  // targets. A schedule's entire purpose is to keep CYCLING what's shown,
+  // never to permanently reassign the underlying display data — the local,
+  // visual switch above already gives the intended cycling effect on its
+  // own; persisting on top of that was never something schedule-driven
+  // switching needed to do correctly, only something it happened to
+  // inherit from the exact same persist step a manual button tap uses.
+  if (IS_PREVIEW || callerTag === 'schedule-engine') {
+    // Marks that this screen is currently showing a schedule-driven
+    // override rather than its own true, pre-defined layout — checked by
+    // checkSchedules()'s own revert logic (see its own comment) so that
+    // disabling the schedule that put it there can bring it back. Set
+    // regardless of IS_PREVIEW — "Open to Edit in New Tab" has a real,
+    // named display of its own to revert to just the same as a real
+    // screen does, so this should work identically in both contexts.
+    if (callerTag === 'schedule-engine') _scheduleOverrideActive = true;
+    // The toast itself is scoped to NOT the schedule engine — the actual
+    // protection (never persisting) below applies unconditionally
+    // regardless of caller, this only decides whether to say something
+    // about it. A manual button tap benefits from the confirmation (a
+    // person testing switcher buttons in "Open to Edit in New Tab" may
+    // genuinely wonder whether that just saved); a repeating automatic
+    // rotation firing every few seconds does not — showing the same toast
+    // on every single automatic switch is disruptive rather than
+    // informative, confirmed as a real complaint, not a hypothetical.
+    if (callerTag !== 'schedule-engine') {
+      showDisplayToast('👁️ Previewing — not saved (editing a real display here, not a screen).');
+    }
+    return;
+  }
+  // A manual, PERSISTING switch reaching this point becomes the new, real,
+  // saved layout — the "pre-defined layout" itself has just changed to
+  // this, so any pending schedule-driven override is no longer meaningful
+  // to revert to something that no longer represents the true, current
+  // assignment.
+  _scheduleOverrideActive = false;
+  // Never send this without an explicit DISPLAY_SLUG — the server now
+  // rejects it too (see both apply endpoints' own comments for the real
+  // incident this guards against), but catching it here first avoids a
+  // doomed request and an unclear error.
+  if (!DISPLAY_SLUG) {
+    showDisplayToast('⚠️ Switched, but couldn\'t save — no display selected.');
+    return;
+  }
+  try {
+    const applyUrl = target.type === 'display'
+      ? `/api/displays/${encodeURIComponent(target.id)}/apply-to`
+      : `/api/saved-layouts/${target.id}/apply`;
+    const body = target.type === 'display'
+      ? { display: DISPLAY_SLUG }
+      : { mode: 'current', display: DISPLAY_SLUG };
+    await fetch(applyUrl, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    showDisplayToast('⚠️ Switched, but couldn\'t save — it may revert on refresh.');
+  }
+}
+
 async function fetchLayoutAndRender(orientation) {
   await fetchLayout(orientation);
   if (displayConfig.ambientMode && typeof window.setAmbientMode === 'function') {
@@ -13275,6 +14916,17 @@ async function resolveAssignedProfile() {
       state.reachablePort = cfg.port || 3000;
       state.displayRes = cfg.displayRes || null; // real TV resolution, for accurate previews
       noteConfiguredInfoCorner(cfg.info_corner || '');
+      state.floatingSwitcherEnabled = !!cfg.floating_switcher_enabled;
+      state.floatingSwitcherPresets = cfg.floating_switcher_presets || [];
+      state.floatingSwitcherSchedule = cfg.floating_switcher_schedule || [];
+      state.floatingSwitcherEdge = cfg.floating_switcher_edge || 'bottom';
+      state.floatingSwitcherIcon = cfg.floating_switcher_icon || '🔀';
+      state.floatingSwitcherColor = cfg.floating_switcher_color || '#0a0e1a';
+      state.floatingSwitcherStyle = cfg.floating_switcher_style || 'circles';
+      state.floatingSwitcherBarMode = cfg.floating_switcher_bar_mode || 'icons';
+      state.floatingSwitcherReveal = cfg.floating_switcher_reveal || 'always';
+      renderFloatingSwitcher();
+      prefetchSwitcherPresets().catch(() => {});
     }
   } catch { /* keep default on failure */ }
 }
@@ -13321,6 +14973,145 @@ function applyInfoOverlay(corner) {
   el.classList.add('corner-' + corner);
   el.style.display = 'block';
   requestAnimationFrame(renderQRCodes);
+}
+
+// Screen-level floating Layout Switcher — an always-present button overlaid
+// on top of whatever layout is currently active, independent of any
+// per-layout Layout Switcher widget. Exists specifically so switching TO a
+// saved layout that has no switcher widget of its own never becomes a dead
+// end (see the widget's own comment for the full design reasoning). Calls
+// the exact same switchToLayoutTarget() the widget uses — this function
+// only handles showing/hiding/building the floating button itself.
+// Positions the switcher for the chosen edge and style. 'circles' (the
+// original default) keeps its exact prior behavior — a compact cluster
+// centered along the edge with a fixed offset, never spanning it — see the
+// comment on that branch below for why. 'bar' spans the FULL edge instead,
+// flush against it — left-aligned within the strip on top/bottom, but
+// CENTERED on left/right (see that branch's own comment for why these two
+// differ: a real, reported overlap with the top-left "Back to App" link,
+// found only after the mockup-approved left-aligned version had already
+// shipped, not part of the original design itself). Also manages an
+// fls-edge-* class on the element (not just inline styles) — the bar+names
+// rotation rules in CSS need to target a specific edge, which inline
+// styles alone can't express as a selector.
+function applyFloatingSwitcherPosition(el, edge, style) {
+  el.style.top = el.style.bottom = el.style.left = el.style.right = el.style.transform = el.style.justifyContent = '';
+  el.classList.remove('fls-edge-top', 'fls-edge-bottom', 'fls-edge-left', 'fls-edge-right');
+  el.classList.add('fls-edge-' + (edge || 'bottom'));
+  el.style.flexDirection = (edge === 'left' || edge === 'right') ? 'column' : 'row';
+  el.style.alignItems = 'center';
+  if (style === 'bar') {
+    // All four edges centered — by explicit request, for consistency with
+    // Circles style, which was already centered on every edge. Left/right
+    // being centered (not top-aligned) also avoids a real, previously
+    // reported overlap: the top-left "Back to App" link (see its own
+    // markup comment) sits exactly where a top-aligned left/right bar's
+    // first button would land, silently covering it and making it
+    // untappable.
+    el.style.justifyContent = 'center';
+    if (edge === 'top') { el.style.top = '0'; el.style.left = '0'; el.style.right = '0'; }
+    else if (edge === 'left') { el.style.left = '0'; el.style.top = '0'; el.style.bottom = '0'; }
+    else if (edge === 'right') { el.style.right = '0'; el.style.top = '0'; el.style.bottom = '0'; }
+    else { el.style.bottom = '0'; el.style.left = '0'; el.style.right = '0'; } // default: bottom
+    return;
+  }
+  // circles — every target renders as its own always-visible icon button —
+  // no collapse/expand step (a tap-to-reveal FAB was the actual complaint
+  // this replaced: the person wanted to see every option at a glance and
+  // switch in one tap, not hide them behind an icon first). Direction is
+  // simply row for a horizontal edge (top/bottom) or column for a vertical
+  // one (left/right) — no "reverse" needed the way the old FAB version
+  // required, since every button is now equal; there's no longer a single
+  // special element that has to stay nearest the edge while others unfold
+  // away from it.
+  const OFFSET = '20px';
+  if (edge === 'top') { el.style.top = OFFSET; el.style.left = '50%'; el.style.transform = 'translateX(-50%)'; }
+  else if (edge === 'left') { el.style.left = OFFSET; el.style.top = '50%'; el.style.transform = 'translateY(-50%)'; }
+  else if (edge === 'right') { el.style.right = OFFSET; el.style.top = '50%'; el.style.transform = 'translateY(-50%)'; }
+  else { el.style.bottom = OFFSET; el.style.left = '50%'; el.style.transform = 'translateX(-50%)'; } // default: bottom
+}
+// Builds one switcher button's HTML — shared by both the regular targets
+// loop and the original-display special case below, so the two can never
+// drift out of sync with each other on markup/attributes. Handles both
+// styles: circles keeps the exact prior structure (glyph as the button's
+// only content, background set per-button); bar wraps an icon face and a
+// name face in the same button (CSS shows/hides the right one for the
+// current mode), no per-button background — bar style colors the
+// container itself, not individual buttons, matching the approved mockup.
+function buildSwitcherButtonHtml(t, style, color) {
+  const label = switcherTargetLabel(t);
+  const glyph = t.icon || label.trim().charAt(0).toUpperCase() || '•';
+  const idAttr = `data-target-type="${t.type}" data-target-id="${escapeHtmlD(String(t.id))}"`;
+  const a11y = `aria-label="${escapeHtmlD(label)}" title="${escapeHtmlD(label)}"`;
+  if (style === 'bar') {
+    return `<button type="button" class="fls-bar-btn" ${idAttr} ${a11y}><span class="icon-face">${escapeHtmlD(glyph)}</span><span class="name-face">${escapeHtmlD(label)}</span></button>`;
+  }
+  return `<button type="button" class="fls-btn" ${idAttr} ${a11y} style="background:${escapeHtmlD(color)}">${escapeHtmlD(glyph)}</button>`;
+}
+function renderFloatingSwitcher() {
+  const el = document.getElementById('floating-switcher');
+  if (!el) return;
+  const targets = normalizeSwitcherTargets(state.floatingSwitcherPresets);
+  if (!state.floatingSwitcherEnabled || !targets.length) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  const color = state.floatingSwitcherColor || '#0a0e1a';
+  const style = state.floatingSwitcherStyle === 'bar' ? 'bar' : 'circles';
+  const barMode = state.floatingSwitcherBarMode === 'names' ? 'names' : 'icons';
+  const revealTap = state.floatingSwitcherReveal === 'tap';
+  // Falls back to the target's own initial (first letter of its name) if
+  // nobody's picked an icon for it yet — always shows SOMETHING recognizable
+  // rather than a blank or generic placeholder button.
+  let buttons = targets.map(t => buildSwitcherButtonHtml(t, style, color)).join('');
+  // Original display, offered as an ordinary switch option — ONLY in the
+  // "Open to Edit in New Tab" context. Real reason this exists: the target
+  // checklist deliberately excludes "the display you're currently on" from
+  // its own addable options (adding aviation as a target while ON aviation
+  // is meaningless) — but since switching here is preview-only and
+  // DISPLAY_SLUG never actually changes (see switchToLayoutTarget's own
+  // ALLOW_EDIT_IN_PREVIEW branch), that exclusion permanently locks out the
+  // ORIGINAL display too, even after previewing away from it — there was
+  // no way back at all before this. Deliberately built via the exact same
+  // buttonhtml helper as every other target — no distinct "back" icon or
+  // visual treatment, rather than standing out as a special control.
+  // Targets DISPLAY_SLUG itself as a completely ordinary {type:'display'}
+  // target — the exact same fetch/cache/apply machinery every other button
+  // already uses, no special-case logic needed, since the original display
+  // IS just a valid switch target that happens to already be the one in
+  // view. Always shown (not just after a switch) since re-applying it
+  // while already on it is a harmless no-op, and a consistent, always-there
+  // option is simpler to rely on than one that appears and disappears.
+  if (ALLOW_EDIT_IN_PREVIEW && DISPLAY_SLUG) {
+    buttons = buildSwitcherButtonHtml({ type: 'display', id: DISPLAY_SLUG }, style, color) + buttons;
+  }
+  el.innerHTML = buttons;
+  // Preserves .shown across this reassignment — el.className replaces
+  // every class at once, and without this, a re-render that happens to
+  // land while the switcher is currently visible from a recent tap (an
+  // unrelated SSE update, say) would abruptly hide it early instead of
+  // letting the existing 4-second window finish naturally.
+  const wasShown = el.classList.contains('shown');
+  el.className = 'fls-style-' + style + (style === 'bar' ? ' fls-mode-' + barMode : '') + (revealTap ? ' fls-reveal-tap' : '') + (wasShown ? ' shown' : '');
+  // Bar style colors the container (the visible strip) rather than each
+  // button — circles colors each button instead, and the container stays
+  // fully transparent, so this only ever applies for bar.
+  el.style.background = style === 'bar' ? color : '';
+  applyFloatingSwitcherPosition(el, state.floatingSwitcherEdge || 'bottom', style);
+  // 'flex', not 'block' — #floating-switcher's own stylesheet rule
+  // declares display:flex (needed for align-items/flex-direction on its
+  // children to mean anything at all); setting the inline style to
+  // 'block' silently overrode that every time this ran, since an inline
+  // style always wins over a stylesheet rule regardless of specificity.
+  el.style.display = 'flex';
+  el.querySelectorAll('.fls-btn[data-target-id], .fls-bar-btn[data-target-id]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const type = btn.dataset.targetType;
+      const id = type === 'display' ? btn.dataset.targetId : Number(btn.dataset.targetId);
+      switchToLayoutTarget({ type, id }, 'floating-switcher-button-tap');
+    });
+  });
 }
 
 // Wraps applyInfoOverlay() with a one-time "show it automatically right after
@@ -14066,6 +15857,14 @@ function connectLiveUpdates() {
         fetchDisplayConfig().then(() => {
           if (typeof window.setAmbientMode === 'function') window.setAmbientMode(displayConfig.ambientMode || '');
         }).then(fetchPhotos).catch(() => {});
+      } else if (data.command === 'refresh-floating-switcher') {
+        // Floating switcher settings live in /api/screen-config, which
+        // resolveAssignedProfile() already fetches and applies (including
+        // the floating-switcher state hookup + re-render + pre-fetch kick).
+        // Re-running it is a little more than strictly needed (it also
+        // re-checks profile assignment), but that's harmless and reusing
+        // it avoids a near-duplicate fetch function existing for just this.
+        resolveAssignedProfile().catch(() => {});
       } else if (data.command === 'set-ambient-mode') {
         // Instant — no reload, mirrors set-info-corner above. window.setAmbientMode
         // is defined during init(); guard in case this somehow arrives first.
@@ -14148,11 +15947,7 @@ function connectLiveUpdates() {
         // Editing, since none of these 13 calls (several hitting external
         // APIs with real network latency) actually needed to run at all for
         // data that hadn't changed.
-        await Promise.allSettled([
-          fetchWeather(), fetchTasksForLayout(), fetchTodoForLayout(), fetchShoppingListForLayout(),
-          fetchNews(), fetchStocks(), fetchChoreChart(), fetchStickersForLayout(), fetchAirQuality(), fetchTravelTimes(),
-          fetchOnThisDay(), fetchDailyQuote(), fetchSports(), fetchMetarTaf(),
-        ]);
+        await fetchAllWidgetDataSet();
       }
       // Same reasoning as 'settings' above — fetchLayout() just overwrote
       // state.layout with the real widgets, so re-synthesize ambient mode on
@@ -14379,6 +16174,41 @@ async function init() {
   setInterval(async () => {
     try { await resolveAssignedProfile(); } catch {}
   }, 20_000);
+
+  // Scheduled auto-switching (Layout Switcher's schedule rules, both the
+  // widget's own and the floating switcher's) — checked independently of
+  // the profile poll above since it doesn't need a network round trip, just
+  // the current time against whatever rules are already in state. 5s
+  // (down from an original 30s) — needed once interval-mode rules
+  // ("every X seconds") existed at all: a 30s check couldn't fire any more
+  // precisely than every 30 seconds no matter what shorter interval was
+  // configured, since the check itself only runs that often. The function
+  // is cheap (no network calls unless a rule actually fires), so checking
+  // 6x more often isn't meaningfully more expensive.
+  //
+  // Never runs at all in the small, embedded thumbnail preview — that
+  // context is read-only and not something anyone is actively watching for
+  // a schedule rule to visibly fire in, unlike "Open to Edit in New Tab",
+  // which still runs this (and still correctly can't persist a switch —
+  // see switchToLayoutTarget()'s own IS_PREVIEW guard). Checks
+  // EMBEDDED_THUMBNAIL specifically, not ALLOW_EDIT_IN_PREVIEW — the
+  // original version of this gate assumed the embedded thumbnail was
+  // ALLOW_EDIT_IN_PREVIEW=false, which was never actually true (both
+  // contexts share allowEdit=1 in their URL — a separate, real bug in
+  // app.html's buildPreviewUrl(), only found because THIS gate's own
+  // premise turned out to be wrong): the schedule-check toast fired inside
+  // that "read-only" thumbnail, live, on a real report. The
+  // switchToLayoutTarget() persist-guard still correctly stopped anything
+  // from actually saving even while this gate was broken, since it only
+  // ever needed IS_PREVIEW — but the visible, confusing symptom (a
+  // "read-only" preview switching on its own) was this gate's fault, not
+  // that one's.
+  if (!EMBEDDED_THUMBNAIL) {
+    setInterval(() => {
+      try { checkSchedules(); } catch {}
+    }, 5_000);
+    try { checkSchedules(); } catch {} // don't wait up to 5s for a rule already due right now
+  }
 
   // Orientation change — respond to both resize and the explicit orientationchange
   // event (mobile browsers sometimes fire the latter slightly after a rotation, and

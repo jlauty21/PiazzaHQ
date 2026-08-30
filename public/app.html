@@ -1333,6 +1333,13 @@ const RELEASE_NOTES = {
     'New: a Next Up card showing your next calendar event, and To-Do Count / Add a To-Do Item cards.',
     'Fixed font-size limits on many widgets that were capped lower than they should be — Agenda, Weather, Calendar, News, Stocks, To-Do, Shopping List, Chore Chart, and more can all be sized much larger now.',
   ],
+  '1.82.0': [
+    'New: displays can now switch on a schedule — either at a specific time, or rotating through a list of displays/templates automatically.',
+    'Each scheduled switch can be turned on or off individually without losing its settings, and you\'ll now get a warning if two are set to fire at the same time.',
+    'If a schedule that was actively overriding what a screen shows gets turned off, the screen now goes back to its own real layout automatically.',
+    'New: "Open to Edit in New Tab" sessions get their own section on the Devices tab, name themselves after whatever they\'re previewing, and clean themselves up automatically instead of piling up.',
+    'Plus various bug fixes and performance improvements.',
+  ],
 };
 
 // Beta-suffix-aware version compare — same scheme as the mothership server's
@@ -1562,9 +1569,14 @@ function showToast(msg, durationMs = 2200) {
 // ── Reusable collapsible accordion ────────────────────────────────────────────
 // Renders a tappable section header that expands its content; opening one section
 // collapses the others within the same accordion. Used in Displays and Settings.
+// s.hidden: hides the WHOLE section (header included), for content that's
+// conditionally irrelevant entirely (e.g. Reminder/Sticker badges only apply
+// to Mini Calendar's Grid layout) — applied directly on the .acc-section
+// element itself, not a wrapping div, since wireAccordion() only looks at
+// DIRECT children of its container and an extra wrapper would break that.
 function accordionSection(s, openByDefault = false) {
   return `
-    <div class="acc-section${openByDefault ? ' open' : ''}" data-acc="${s.id}">
+    <div class="acc-section${openByDefault ? ' open' : ''}" data-acc="${s.id}" style="${s.hidden ? 'display:none' : ''}">
       <button class="acc-head" data-acc-toggle="${s.id}">
         <span class="acc-ic">${s.icon || ''}</span>
         <span class="acc-text"><span class="acc-label">${s.label}</span>${s.sub ? `<span class="acc-sub">${s.sub}</span>` : ''}</span>
@@ -1745,7 +1757,7 @@ function wireScreenSubAccordions() {
   document.querySelectorAll('#screens-list .acc-section[data-acc^="screensub-"]').forEach(sec => {
     const btn = sec.querySelector(':scope > .acc-head');
     if (!btn) return;
-    const [, deviceId, subId] = sec.dataset.acc.match(/^screensub-(.+)-(display|ambient|tv)$/) || [];
+    const [, deviceId, subId] = sec.dataset.acc.match(/^screensub-(.+)-(display|ambient|tv|fls)$/) || [];
     if (!deviceId) return;
     btn.addEventListener('click', (e) => {
       e.stopPropagation(); // don't let this also trigger the outer Screen Settings toggle
@@ -1757,7 +1769,7 @@ function wireScreenSubAccordions() {
         otherSec.classList.remove('open');
         if (otherBody) otherBody.style.display = 'none';
         if (otherCaret) otherCaret.textContent = '▸';
-        const [, , otherSubId] = otherSec.dataset.acc.match(/^screensub-(.+)-(display|ambient|tv)$/) || [];
+        const [, , otherSubId] = otherSec.dataset.acc.match(/^screensub-(.+)-(display|ambient|tv|fls)$/) || [];
         if (otherSubId) openScreenSubAccordions.delete(deviceId + ':' + otherSubId);
       });
       if (!isOpen) {
@@ -1768,6 +1780,38 @@ function wireScreenSubAccordions() {
         if (caret) caret.textContent = '▾';
         openScreenSubAccordions.add(deviceId + ':' + subId);
       }
+    });
+  });
+}
+
+// "Show Screen Switcher" and "Schedule" — the two sections nested inside the
+// Screen Switcher accordion. Deliberately its OWN function, not folded into
+// wireScreenSubAccordions() above, since these two need to expand/collapse
+// INDEPENDENTLY of each other (both open at once is fine) — by explicit
+// request, and because the schedule can be actively firing regardless of
+// whether the switcher button itself is enabled (checkSchedules() never
+// checks floating_switcher_enabled at all), so hiding one behind the
+// other's state would misrepresent that. Uses "flssub-" as a distinct
+// data-acc prefix specifically so it's never matched by
+// wireScreenSubAccordions()'s own "screensub-" selector/regex above, or
+// vice versa.
+function wireFlsSubAccordions() {
+  document.querySelectorAll('#screens-list .acc-section[data-acc^="flssub-"]').forEach(sec => {
+    const btn = sec.querySelector(':scope > .acc-head');
+    if (!btn) return;
+    const [, deviceId, subId] = sec.dataset.acc.match(/^flssub-(.+)-(toggle|schedule)$/) || [];
+    if (!deviceId) return;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation(); // don't let this also trigger the outer Screen Switcher/Screen Settings toggles
+      const isOpen = sec.classList.contains('open');
+      const body = sec.querySelector(':scope > .acc-body');
+      const caret = sec.querySelector(':scope > .acc-head .acc-caret');
+      sec.classList.toggle('open', !isOpen);
+      if (body) body.style.display = isOpen ? 'none' : '';
+      if (caret) caret.textContent = isOpen ? '▸' : '▾';
+      const key = deviceId + ':fls-' + subId;
+      if (isOpen) openScreenSubAccordions.delete(key);
+      else openScreenSubAccordions.add(key);
     });
   });
 }
@@ -5140,6 +5184,7 @@ const openScreenSubAccordions = new Set();
 // re-derived from the DOM, so the periodic 15s auto-refresh doesn't silently
 // re-collapse it back to hidden right after someone expands it.
 let showOfflineScreens = false;
+let showPreviewScreens = false; // collapsed by default — these are lower-priority than real devices, by explicit request
 
 // Layout Profiles sub-tab: same "Show X" toggle convention as offline screens
 // above — default to only showing profiles actually assigned to a screen
@@ -5148,18 +5193,54 @@ let showOfflineScreens = false;
 // re-collapsing.
 let showAllProfiles = false;
 
+// Returns the set of rule indices that have at least one genuine conflict
+// with another rule — used purely for a UI warning, never by the actual
+// firing logic in display.html's checkSchedules(), which already handles
+// this correctly on its own (one fire per check, whichever rule happens to
+// go second silently wins). By explicit request, so this doesn't happen as
+// a surprise: two ENABLED rules sharing the exact same time AND at least
+// one overlapping day would both fire within seconds of each other, with
+// whichever fires second overwriting whatever the first one just showed.
+// Only compares 'time'-mode rules (or legacy, mode-less rules, which
+// default to 'time') against each other — Rotate (and the retired,
+// dormant 'interval' mode some existing rules may still carry) runs
+// continuously rather than at one discrete moment, so pairing either of
+// those against a 'time' rule is a deliberate "override the rotation at
+// this one moment" pattern, not a coincidental collision worth flagging.
+// Identical logic to display.html's own copy of this function.
+function scheduleConflictIndices(rules) {
+  const conflicted = new Set();
+  for (let i = 0; i < rules.length; i++) {
+    const a = rules[i];
+    if (!a || a.enabled === false) continue;
+    const aMode = (a.mode === 'interval' || a.mode === 'rotation') ? a.mode : 'time';
+    if (aMode !== 'time' || !a.time) continue;
+    for (let j = i + 1; j < rules.length; j++) {
+      const b = rules[j];
+      if (!b || b.enabled === false) continue;
+      const bMode = (b.mode === 'interval' || b.mode === 'rotation') ? b.mode : 'time';
+      if (bMode !== 'time' || !b.time) continue;
+      if (a.time !== b.time) continue;
+      const aDays = new Set(a.daysOfWeek || []);
+      if ((b.daysOfWeek || []).some(d => aDays.has(d))) { conflicted.add(i); conflicted.add(j); }
+    }
+  }
+  return conflicted;
+}
+
 async function loadScreens() {
   const list = $('screens-list');
   if (!list) return;
   let screens, displays;
   try {
-    let photos, hostVer;
-    [screens, displays, photos, hostVer] = await Promise.all([
+    let photos, hostVer, appSettings;
+    [screens, displays, photos, hostVer, appSettings] = await Promise.all([
       apiFetch('/api/screens'), getDisplaysList(), apiFetch('/api/photos').catch(()=>[]),
-      apiFetch('/api/version').catch(()=>null),
+      apiFetch('/api/version').catch(()=>null), apiFetch('/api/settings').catch(()=>({})),
     ]);
     window._hostVersion = (hostVer && hostVer.version) || '';
     window._photosList = photos || [];
+    window._previewCleanupDays = Number((appSettings || {}).preview_screen_cleanup_days) || 7;
     const tagSet = new Set();
     (photos || []).forEach(p => (p.tags || '').split(',').forEach(t => { const v = t.trim(); if (v) tagSet.add(v); }));
     window._photoTags = Array.from(tagSet).sort();
@@ -5177,8 +5258,16 @@ async function loadScreens() {
     `<option value="${d.slug}" ${d.slug===slug?'selected':''}>${d.name}</option>`
   ).join('');
 
-  const onlineScreens = screens.filter(s => s.online);
-  const offlineScreens = screens.filter(s => !s.online);
+  // Preview screen identities (see previewScreenName()'s own comment in
+  // server.js for why they exist at all) are pulled out into their own
+  // group first, by explicit request — mixed in with real devices, they
+  // were indistinguishable from genuine, unconfigured screens needing
+  // attention. Filtered out here BEFORE the online/offline split below, so
+  // neither of those two groups ever includes one.
+  const previewScreens = screens.filter(s => s.device_id.startsWith('preview_'));
+  const realScreens = screens.filter(s => !s.device_id.startsWith('preview_'));
+  const onlineScreens = realScreens.filter(s => s.online);
+  const offlineScreens = realScreens.filter(s => !s.online);
   if (!onlineScreens.length && offlineScreens.length && !showOfflineScreens) {
     // Every screen is offline — auto-reveal rather than showing an empty
     // list with just a "Show offline" link and nothing else on the page.
@@ -5452,14 +5541,127 @@ async function loadScreens() {
           </div>
         </div>
 
+        <div class="acc-section${openScreenSubAccordions.has(s.device_id+':fls')?' open':''}" data-acc="screensub-${s.device_id}-fls">
+          <button class="acc-head" data-acc-toggle="screensub-${s.device_id}-fls">
+            <span class="acc-ic">🔀</span>
+            <span class="acc-text"><span class="acc-label">Screen Switcher</span></span>
+            <span class="acc-caret">${openScreenSubAccordions.has(s.device_id+':fls')?'▾':'▸'}</span>
+          </button>
+          <div class="acc-body" data-acc-body="screensub-${s.device_id}-fls" style="${openScreenSubAccordions.has(s.device_id+':fls')?'':'display:none'}">
+          <div class="acc-section${openScreenSubAccordions.has(s.device_id+':fls-toggle')?' open':''}" data-acc="flssub-${s.device_id}-toggle">
+            <button class="acc-head" data-acc-toggle="flssub-${s.device_id}-toggle">
+              <span class="acc-text"><span class="acc-label">Show Screen Switcher</span></span>
+              <span class="acc-caret">${openScreenSubAccordions.has(s.device_id+':fls-toggle')?'▾':'▸'}</span>
+            </button>
+            <div class="acc-body" data-acc-body="flssub-${s.device_id}-toggle" style="${openScreenSubAccordions.has(s.device_id+':fls-toggle')?'':'display:none'}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <label style="margin-bottom:0">Show screen switcher</label>
+            <input type="checkbox" class="screen-fls-toggle" data-id="${s.device_id}" ${s.floating_switcher_enabled?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
+          </div>
+          <p style="font-size:11px;color:var(--muted);margin:0 0 10px">An always-present button on top of whatever layout is showing — lets you switch layouts on this screen even when the current one has no Layout Switcher widget of its own.</p>
+          <div class="screen-fls-presets" data-id="${s.device_id}" style="${s.floating_switcher_enabled?'':'display:none'}">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:6px">Position</label>
+            <div class="screen-fls-edge-picker" data-id="${s.device_id}" style="display:flex;gap:6px;margin-bottom:12px">
+              ${['top','bottom','left','right'].map(edge => `
+                <button type="button" class="screen-fls-edge-btn${(s.floating_switcher_edge||'bottom')===edge?' active':''}" data-id="${s.device_id}" data-edge="${edge}"
+                  style="flex:1;padding:8px 0;border-radius:8px;border:1px solid var(--border);font-size:12px;font-weight:600;text-transform:capitalize;
+                    background:${(s.floating_switcher_edge||'bottom')===edge?'rgba(74,144,217,0.3)':'var(--card)'};color:${(s.floating_switcher_edge||'bottom')===edge?'#fff':'var(--muted)'}">${edge}</button>
+              `).join('')}
+            </div>
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:6px">Style</label>
+            <div class="screen-fls-style-picker" data-id="${s.device_id}" style="display:flex;gap:6px;margin-bottom:12px">
+              ${['circles','bar'].map(st => `
+                <button type="button" class="screen-fls-style-btn${(s.floating_switcher_style||'circles')===st?' active':''}" data-id="${s.device_id}" data-style="${st}"
+                  style="flex:1;padding:8px 0;border-radius:8px;border:1px solid var(--border);font-size:12px;font-weight:600;text-transform:capitalize;
+                    background:${(s.floating_switcher_style||'circles')===st?'rgba(74,144,217,0.3)':'var(--card)'};color:${(s.floating_switcher_style||'circles')===st?'#fff':'var(--muted)'}">${st === 'circles' ? 'Circles' : 'Bar'}</button>
+              `).join('')}
+            </div>
+            <div class="screen-fls-barmode-row" data-id="${s.device_id}" style="${(s.floating_switcher_style||'circles')==='bar'?'':'display:none'};margin-bottom:12px">
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:6px">Display</label>
+              <div class="screen-fls-barmode-picker" data-id="${s.device_id}" style="display:flex;gap:6px">
+                ${['icons','names'].map(m => `
+                  <button type="button" class="screen-fls-barmode-btn${(s.floating_switcher_bar_mode||'icons')===m?' active':''}" data-id="${s.device_id}" data-barmode="${m}"
+                    style="flex:1;padding:8px 0;border-radius:8px;border:1px solid var(--border);font-size:12px;font-weight:600;text-transform:capitalize;
+                      background:${(s.floating_switcher_bar_mode||'icons')===m?'rgba(74,144,217,0.3)':'var(--card)'};color:${(s.floating_switcher_bar_mode||'icons')===m?'#fff':'var(--muted)'}">${m === 'icons' ? 'Icons' : 'Names'}</button>
+                `).join('')}
+              </div>
+            </div>
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:6px">Visibility</label>
+            <div class="screen-fls-reveal-picker" data-id="${s.device_id}" style="display:flex;gap:6px;margin-bottom:12px">
+              ${['always','tap'].map(r => `
+                <button type="button" class="screen-fls-reveal-btn${(s.floating_switcher_reveal||'always')===r?' active':''}" data-id="${s.device_id}" data-reveal="${r}"
+                  style="flex:1;padding:8px 0;border-radius:8px;border:1px solid var(--border);font-size:12px;font-weight:600;
+                    background:${(s.floating_switcher_reveal||'always')===r?'rgba(74,144,217,0.3)':'var(--card)'};color:${(s.floating_switcher_reveal||'always')===r?'#fff':'var(--muted)'}">${r === 'always' ? 'Always visible' : 'Tap to reveal'}</button>
+              `).join('')}
+            </div>
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:6px">Bar Color</label>
+            <div style="margin-bottom:14px">
+              <input type="color" class="screen-fls-color" data-id="${s.device_id}" value="${s.floating_switcher_color||'#0a0e1a'}" style="width:60px;height:44px;padding:2px;border-radius:8px;border:1px solid var(--border);background:var(--card)">
+            </div>
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:6px">Live Displays</label>
+            <div class="screen-fls-display-list" data-id="${s.device_id}" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px">
+              <div style="font-size:12px;color:var(--muted)">Loading…</div>
+            </div>
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:6px">Saved Templates</label>
+            <div class="screen-fls-preset-list" data-id="${s.device_id}" style="display:flex;flex-direction:column;gap:6px">
+              <div style="font-size:12px;color:var(--muted)">Loading…</div>
+            </div>
+          </div>
+            </div>
+          </div>
+          <div class="acc-section${openScreenSubAccordions.has(s.device_id+':fls-schedule')?' open':''}" data-acc="flssub-${s.device_id}-schedule">
+            <button class="acc-head" data-acc-toggle="flssub-${s.device_id}-schedule">
+              <span class="acc-text"><span class="acc-label">Schedule</span></span>
+              <span class="acc-caret">${openScreenSubAccordions.has(s.device_id+':fls-schedule')?'▾':'▸'}</span>
+            </button>
+            <div class="acc-body" data-acc-body="flssub-${s.device_id}-schedule" style="${openScreenSubAccordions.has(s.device_id+':fls-schedule')?'':'display:none'}">
+          <p style="font-size:11px;color:var(--muted);margin:0 0 8px">Automatically switch at set times, whether or not the screen switcher button above is turned on.</p>
+            <div class="screen-fls-schedule-list" data-id="${s.device_id}" style="display:flex;flex-direction:column;gap:10px"></div>
+            <button type="button" class="btn screen-fls-schedule-add-btn" data-id="${s.device_id}" style="width:100%;margin-top:8px;background:var(--card);border:1px solid var(--border)">+ Add a scheduled switch</button>
+            </div>
+          </div>
+          </div>
+        </div>
+
           </div>
         </div>
         </div>
       </div>`;
   };
+  const previewToggleHtml = previewScreens.length ? `
+    <div style="text-align:center;padding:10px 0;border-top:1px solid var(--border);margin-top:10px">
+      <button id="screens-toggle-preview-btn" style="background:none;border:none;color:var(--accent);font-size:12.5px;font-weight:600;cursor:pointer;padding:6px 10px">
+        ${showPreviewScreens ? 'Hide Live Edit previews' : `Show Live Edit previews (${previewScreens.length})`}
+      </button>
+    </div>` : '';
+  const previewSectionHtml = showPreviewScreens ? `
+    <p style="font-size:11px;color:var(--muted);padding:0 4px;margin:0 0 8px">
+      Temporary identities created by "Open to Edit in New Tab" — one per display previewed this way. Each has its own separate switcher/schedule settings that never affect a real screen.
+    </p>
+    <div style="display:flex;align-items:center;gap:8px;padding:0 4px;margin:0 0 12px">
+      <label for="preview-cleanup-days" style="font-size:11px;color:var(--muted)">Auto-remove after unseen for</label>
+      <select id="preview-cleanup-days" class="form-input" style="width:auto;padding:6px 10px;font-size:12px">
+        ${[3, 7, 14, 30, 90, 365].map(d => `<option value="${d}" ${window._previewCleanupDays === d ? 'selected' : ''}>${d < 30 ? `${d} days` : d < 365 ? `${Math.round(d / 30)} month${d >= 60 ? 's' : ''}` : '1 year'}</option>`).join('')}
+      </select>
+    </div>
+    ${previewScreens.map(renderScreenCard).join('')}` : '';
   list.innerHTML = onlineScreens.map(renderScreenCard).join('')
     + offlineToggleHtml
-    + (showOfflineScreens ? offlineScreens.map(renderScreenCard).join('') : '');
+    + (showOfflineScreens ? offlineScreens.map(renderScreenCard).join('') : '')
+    + previewToggleHtml
+    + previewSectionHtml;
+  if ($('preview-cleanup-days')) {
+    $('preview-cleanup-days').addEventListener('change', async (e) => {
+      await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify({ preview_screen_cleanup_days: Number(e.target.value) }) });
+      window._previewCleanupDays = Number(e.target.value);
+    });
+  }
+  if ($('screens-toggle-preview-btn')) {
+    $('screens-toggle-preview-btn').addEventListener('click', () => {
+      showPreviewScreens = !showPreviewScreens;
+      loadScreens();
+    });
+  }
   if ($('screens-toggle-offline-btn')) {
     $('screens-toggle-offline-btn').addEventListener('click', () => {
       showOfflineScreens = !showOfflineScreens;
@@ -5469,6 +5671,7 @@ async function loadScreens() {
   wireScreenSwipes();
   wireScreenSettingsAccordions();
   wireScreenSubAccordions();
+  wireFlsSubAccordions();
 
   // Prompt to name any brand-new, still-online, unnamed screen (once).
   const unnamed = screens.find(s => !s.name && s.online);
@@ -5805,6 +6008,456 @@ async function loadScreens() {
     wireTvScheduleSlotHandlers(container.dataset.id);
   });
 
+  list.querySelectorAll('.screen-fls-toggle').forEach(cb => {
+    cb.addEventListener('change', async () => {
+      const id = cb.dataset.id;
+      const presetsBox = list.querySelector(`.screen-fls-presets[data-id="${id}"]`);
+      if (presetsBox) presetsBox.style.display = cb.checked ? '' : 'none';
+      const r = await apiFetch(`/api/screens/${id}`, {
+        method:'PUT', body: JSON.stringify({ floating_switcher_enabled: cb.checked }),
+      });
+      if (r && r.error) { showToast('❌ ' + r.error); return; }
+    });
+  });
+  list.querySelectorAll('.screen-fls-edge-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      list.querySelectorAll(`.screen-fls-edge-btn[data-id="${id}"]`).forEach(b => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.style.background = active ? 'rgba(74,144,217,0.3)' : 'var(--card)';
+        b.style.color = active ? '#fff' : 'var(--muted)';
+      });
+      const r = await apiFetch(`/api/screens/${id}`, {
+        method:'PUT', body: JSON.stringify({ floating_switcher_edge: btn.dataset.edge }),
+      });
+      if (r && r.error) { showToast('❌ ' + r.error); return; }
+    });
+  });
+  list.querySelectorAll('.screen-fls-style-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      list.querySelectorAll(`.screen-fls-style-btn[data-id="${id}"]`).forEach(b => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.style.background = active ? 'rgba(74,144,217,0.3)' : 'var(--card)';
+        b.style.color = active ? '#fff' : 'var(--muted)';
+      });
+      const barmodeRow = list.querySelector(`.screen-fls-barmode-row[data-id="${id}"]`);
+      if (barmodeRow) barmodeRow.style.display = btn.dataset.style === 'bar' ? '' : 'none';
+      const r = await apiFetch(`/api/screens/${id}`, {
+        method:'PUT', body: JSON.stringify({ floating_switcher_style: btn.dataset.style }),
+      });
+      if (r && r.error) { showToast('❌ ' + r.error); return; }
+    });
+  });
+  list.querySelectorAll('.screen-fls-barmode-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      list.querySelectorAll(`.screen-fls-barmode-btn[data-id="${id}"]`).forEach(b => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.style.background = active ? 'rgba(74,144,217,0.3)' : 'var(--card)';
+        b.style.color = active ? '#fff' : 'var(--muted)';
+      });
+      const r = await apiFetch(`/api/screens/${id}`, {
+        method:'PUT', body: JSON.stringify({ floating_switcher_bar_mode: btn.dataset.barmode }),
+      });
+      if (r && r.error) { showToast('❌ ' + r.error); return; }
+    });
+  });
+  list.querySelectorAll('.screen-fls-reveal-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      list.querySelectorAll(`.screen-fls-reveal-btn[data-id="${id}"]`).forEach(b => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.style.background = active ? 'rgba(74,144,217,0.3)' : 'var(--card)';
+        b.style.color = active ? '#fff' : 'var(--muted)';
+      });
+      const r = await apiFetch(`/api/screens/${id}`, {
+        method:'PUT', body: JSON.stringify({ floating_switcher_reveal: btn.dataset.reveal }),
+      });
+      if (r && r.error) { showToast('❌ ' + r.error); return; }
+    });
+  });
+  list.querySelectorAll('.screen-fls-color').forEach(input => {
+    input.addEventListener('change', async () => {
+      const r = await apiFetch(`/api/screens/${input.dataset.id}`, {
+        method:'PUT', body: JSON.stringify({ floating_switcher_color: input.value }),
+      });
+      if (r && r.error) { showToast('❌ ' + r.error); return; }
+    });
+  });
+  // Populated once for every screen card at once — same "fetch the light
+  // list once, reuse for every checklist on the page" approach as the
+  // widget's own preset picker, just applied across N screen cards instead
+  // of one widget's settings panel. Two separate checklists (Live Displays,
+  // Saved Templates) write into the SAME floating_switcher_presets array on
+  // save, so every change reads BOTH lists' current checked state — not
+  // just the one that changed — otherwise checking a box in one list would
+  // silently wipe out whatever was already checked in the other.
+  (async () => {
+    const displayLists = list.querySelectorAll('.screen-fls-display-list');
+    const presetLists = list.querySelectorAll('.screen-fls-preset-list');
+    if (!displayLists.length && !presetLists.length) return;
+
+    const readIcon = (checkboxEl) => {
+      const iconEl = checkboxEl.closest('label').querySelector('.screen-fls-target-icon');
+      return (iconEl && iconEl.value.trim()) || '';
+    };
+    const saveFlsTargets = async (screenId) => {
+      const targets = [
+        ...[...list.querySelectorAll(`.screen-fls-display-cb[data-id="${screenId}"]:checked`)].map(el => ({ type: 'display', id: el.dataset.targetId, icon: readIcon(el) })),
+        ...[...list.querySelectorAll(`.screen-fls-preset-cb[data-id="${screenId}"]:checked`)].map(el => ({ type: 'saved', id: Number(el.dataset.targetId), icon: readIcon(el) })),
+      ];
+      const r = await apiFetch(`/api/screens/${screenId}`, {
+        method:'PUT', body: JSON.stringify({ floating_switcher_presets: targets }),
+      });
+      if (r && r.error) { showToast('❌ ' + r.error); return; }
+      // Keep local state in sync — this previously only saved to the
+      // server without updating the in-memory screen object at all, which
+      // would have left the schedule's own target dropdowns (now filtered
+      // by this list) reading stale data even after a successful save.
+      const screen = onlineScreens.find(s => s.device_id === screenId);
+      if (screen) screen.floating_switcher_presets = targets;
+      renderFlsSchedule(screenId);
+    };
+    // Same shape as display.html's own normalizeSwitcherTargets() — see the
+    // widget wiring's own copy of this comment for why it's duplicated
+    // rather than shared.
+    const normTargets = (raw) => (Array.isArray(raw) ? raw : []).map(t => {
+      if (typeof t === 'number' || (typeof t === 'string' && /^\d+$/.test(t))) return { type: 'saved', id: Number(t), icon: '' };
+      if (t && t.type === 'saved' && Number.isInteger(Number(t.id))) return { type: 'saved', id: Number(t.id), icon: (typeof t.icon === 'string' ? t.icon : '') };
+      if (t && t.type === 'display' && typeof t.id === 'string' && t.id) return { type: 'display', id: t.id, icon: (typeof t.icon === 'string' ? t.icon : '') };
+      return null;
+    }).filter(Boolean);
+
+    let displays = [];
+    if (displayLists.length) { try { displays = await getDisplaysList(true); } catch {} }
+    displayLists.forEach(listEl => {
+      const id = listEl.dataset.id;
+      const screen = onlineScreens.find(s => s.device_id === id);
+      const assigned = new Map(normTargets(screen && screen.floating_switcher_presets).filter(t => t.type === 'display').map(t => [t.id, t]));
+      // Every display is offered here, none excluded — unlike the widget's
+      // copy-target picker (which excludes the display it's currently on,
+      // since copying onto yourself is meaningless), a screen switching to
+      // whatever its OWN currently-assigned profile shows is a legitimate,
+      // real use — e.g. "switch back to normal" after switching away.
+      const others = displays || [];
+      if (!others.length) {
+        listEl.innerHTML = `<div style="font-size:12px;color:var(--muted)">No displays yet.</div>`;
+        return;
+      }
+      listEl.innerHTML = others.map(d => {
+        const existing = assigned.get(d.slug);
+        return `
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+          <input type="checkbox" class="screen-fls-display-cb" data-id="${id}" data-target-id="${d.slug}" ${existing ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--accent)">
+          <input type="text" class="form-input screen-fls-target-icon" value="${escapeHtml(existing ? existing.icon || '' : '')}" maxlength="8" placeholder="icon" style="width:44px;text-align:center;font-size:15px;padding:6px">
+          ${escapeHtml(d.name)}
+          <span style="font-size:10px;color:var(--muted);font-family:monospace">(${escapeHtml(d.slug)})</span>
+        </label>
+      `;
+      }).join('');
+      listEl.querySelectorAll('.screen-fls-display-cb, .screen-fls-target-icon').forEach(el => {
+        el.addEventListener('change', () => saveFlsTargets(id));
+      });
+    });
+
+    let presets = [];
+    if (presetLists.length) { try { presets = await apiFetch('/api/saved-layouts'); } catch {} }
+    presetLists.forEach(listEl => {
+      const id = listEl.dataset.id;
+      const screen = onlineScreens.find(s => s.device_id === id);
+      const assigned = new Map(normTargets(screen && screen.floating_switcher_presets).filter(t => t.type === 'saved').map(t => [t.id, t]));
+      if (!Array.isArray(presets) || !presets.length) {
+        listEl.innerHTML = `<div style="font-size:12px;color:var(--muted)">No saved layouts yet — save one from the Layout tab first.</div>`;
+        return;
+      }
+      listEl.innerHTML = presets.map(p => {
+        const existing = assigned.get(Number(p.id));
+        return `
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+          <input type="checkbox" class="screen-fls-preset-cb" data-id="${id}" data-target-id="${p.id}" ${existing ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--accent)">
+          <input type="text" class="form-input screen-fls-target-icon" value="${escapeHtml(existing ? existing.icon || '' : '')}" maxlength="8" placeholder="icon" style="width:44px;text-align:center;font-size:15px;padding:6px">
+          ${escapeHtml(p.name)}
+          <span style="font-size:10px;color:var(--muted);font-family:monospace">(#${p.id})</span>
+        </label>
+      `;
+      }).join('');
+      listEl.querySelectorAll('.screen-fls-preset-cb, .screen-fls-target-icon').forEach(el => {
+        el.addEventListener('change', () => saveFlsTargets(id));
+      });
+    });
+
+    // Schedule — reuses the same displays/presets already fetched above.
+    // Mirrors the widget's own renderScheduleRules() (see app.html's
+    // layoutswitcher widget wiring), adapted to run once per screen card
+    // instead of once for a single widget's own settings panel. Mutates
+    // each screen's floating_switcher_schedule directly on the onlineScreens
+    // array as the in-progress source of truth, saving to the server on
+    // every change — there's no autosave mechanism here the way there is
+    // for widgets, so every edit needs its own explicit PUT.
+    const dayNames = ['S','M','T','W','T','F','S'];
+    const targetOptionsHtml = (selected, checkedTargets, assignedDisplaySlug) => {
+      const selKey = selected ? `${selected.type}:${selected.id}` : '';
+      // Restricted to only the targets currently checked in the "Live
+      // Displays"/"Saved Templates" list above — by explicit request. See
+      // display.html's identical fix for the full reasoning, including
+      // why the currently-selected target is always included even if it's
+      // since been unchecked.
+      const checkedKeys = new Set(normTargets(checkedTargets).map(t => `${t.type}:${t.id}`));
+      // Also always includes the screen's currently ASSIGNED display — by
+      // explicit request, confirmed as a real report: unlike the other two
+      // schedule surfaces, this one's own checklist never structurally
+      // excluded the assigned display (it was always a normal, checkable
+      // option here), but it isn't checked by DEFAULT, so it wasn't
+      // showing up as a schedulable option unless someone thought to check
+      // it separately from just assigning it. Same underlying principle as
+      // beta.55's identical fix elsewhere: the display a screen is
+      // currently showing should always be available to schedule, not
+      // conditional on an unrelated checkbox.
+      const dispOpts = (displays || []).filter(d => checkedKeys.has(`display:${d.slug}`) || selKey === `display:${d.slug}` || d.slug === assignedDisplaySlug)
+        .map(d => `<option value="display:${d.slug}" ${selKey === `display:${d.slug}` ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('');
+      const presetOpts = (Array.isArray(presets) ? presets : []).filter(p => checkedKeys.has(`saved:${p.id}`) || selKey === `saved:${p.id}`)
+        .map(p => `<option value="saved:${p.id}" ${selKey === `saved:${p.id}` ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+      return `<optgroup label="Live Displays">${dispOpts}</optgroup><optgroup label="Saved Templates">${presetOpts}</optgroup>`;
+    };
+    const targetLabel = (t) => {
+      if (!t) return '(unknown)';
+      if (t.type === 'display') {
+        const d = (displays || []).find(d => d.slug === t.id);
+        return d ? d.name : t.id;
+      }
+      const p = (Array.isArray(presets) ? presets : []).find(p => p.id === t.id);
+      return p ? p.name : `Template #${t.id}`;
+    };
+    const saveFlsSchedule = async (screenId) => {
+      const screen = onlineScreens.find(s => s.device_id === screenId);
+      const rules = Array.isArray(screen && screen.floating_switcher_schedule) ? screen.floating_switcher_schedule : [];
+      const r = await apiFetch(`/api/screens/${screenId}`, {
+        method:'PUT', body: JSON.stringify({ floating_switcher_schedule: rules }),
+      });
+      if (r && r.error) { showToast('❌ ' + r.error); return; }
+    };
+    const renderFlsSchedule = (screenId) => {
+      const listEl = list.querySelector(`.screen-fls-schedule-list[data-id="${screenId}"]`);
+      if (!listEl) return;
+      const screen = onlineScreens.find(s => s.device_id === screenId);
+      if (screen && !Array.isArray(screen.floating_switcher_schedule)) screen.floating_switcher_schedule = [];
+      const rules = (screen && screen.floating_switcher_schedule) || [];
+      if (!rules.length) {
+        listEl.innerHTML = `<div style="font-size:12px;color:var(--muted)">No scheduled switches yet.</div>`;
+        return;
+      }
+      const conflicted = scheduleConflictIndices(rules);
+      listEl.innerHTML = rules.map((rule, idx) => {
+        const mode = rule.mode === 'interval' ? 'interval' : rule.mode === 'rotation' ? 'rotation' : 'time';
+        const intervalInputsHtml = `
+             <input type="number" class="form-input screen-fls-rule-interval-value" min="1" value="${rule.intervalValue || 30}" style="width:64px;flex-shrink:0">
+             <select class="form-input screen-fls-rule-interval-unit" style="width:96px;flex-shrink:0">
+               <option value="seconds"${rule.intervalUnit === 'seconds' ? ' selected' : ''}>Seconds</option>
+               <option value="minutes"${(rule.intervalUnit || 'minutes') === 'minutes' ? ' selected' : ''}>Minutes</option>
+               <option value="hours"${rule.intervalUnit === 'hours' ? ' selected' : ''}>Hours</option>
+             </select>`;
+        const timingRowHtml = mode === 'rotation'
+          ? `<div style="display:flex;gap:8px;align-items:center">
+               ${intervalInputsHtml}
+               <span style="font-size:11px;color:var(--muted)">per display</span>
+             </div>
+             <div class="screen-fls-rotation-targets" style="margin-top:8px;display:flex;flex-direction:column;gap:6px">
+               ${(Array.isArray(rule.targets) ? rule.targets : []).map((t, tIdx) => `
+                 <div class="screen-fls-rotation-target-row" data-tidx="${tIdx}" style="display:flex;gap:6px;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:6px 8px">
+                   <span style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(targetLabel(t))}</span>
+                   <button type="button" class="screen-fls-rot-move-up" aria-label="Move up" ${tIdx === 0 ? 'disabled' : ''} style="background:none;border:none;color:var(--muted);font-size:14px;padding:2px 6px;flex-shrink:0">↑</button>
+                   <button type="button" class="screen-fls-rot-move-down" aria-label="Move down" ${tIdx === (rule.targets.length - 1) ? 'disabled' : ''} style="background:none;border:none;color:var(--muted);font-size:14px;padding:2px 6px;flex-shrink:0">↓</button>
+                   <button type="button" class="screen-fls-rot-remove-target" aria-label="Remove" ${rule.targets.length <= 2 ? 'disabled' : ''} style="background:none;border:none;color:var(--muted);font-size:16px;padding:2px 6px;flex-shrink:0">✕</button>
+                 </div>
+               `).join('')}
+               <select class="form-input screen-fls-rot-add-target" style="margin-top:2px">
+                 <option value="">+ Add a display or template…</option>
+                 ${targetOptionsHtml(null, screen && screen.floating_switcher_presets, screen && screen.assigned_display_slug)}
+               </select>
+             </div>`
+          : `<div style="display:flex;gap:8px;align-items:center">
+               ${mode === 'interval' ? intervalInputsHtml : `<input type="time" class="form-input screen-fls-rule-time" value="${rule.time || '08:00'}" style="width:110px;flex-shrink:0">`}
+               <select class="form-input screen-fls-rule-target" style="flex:1">${targetOptionsHtml(rule.target, screen && screen.floating_switcher_presets, screen && screen.assigned_display_slug)}</select>
+             </div>`;
+        const enabled = rule.enabled !== false;
+        const hasConflict = conflicted.has(idx);
+        return `
+        <div class="screen-fls-schedule-rule" data-id="${screenId}" data-idx="${idx}" style="border:1px solid ${hasConflict ? '#ffb020' : 'var(--border)'};border-radius:10px;padding:10px;opacity:${enabled ? '1' : '0.55'}">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text);flex:1;cursor:pointer">
+              <input type="checkbox" class="screen-fls-rule-enabled" ${enabled ? 'checked' : ''} style="width:16px;height:16px;accent-color:var(--accent)">
+              Enabled
+            </label>
+            <button type="button" class="screen-fls-rule-remove" aria-label="Remove" style="background:none;border:none;color:var(--muted);font-size:18px;padding:4px 8px;flex-shrink:0">✕</button>
+          </div>
+          ${hasConflict ? `<div style="font-size:11px;color:#ffb020;background:rgba(255,176,32,0.12);border-radius:6px;padding:6px 8px;margin-bottom:10px">⚠️ Same time and day as another rule below — whichever fires last will win.</div>` : ''}
+          <div style="display:flex;gap:6px;margin-bottom:8px">
+            <button type="button" class="screen-fls-rule-mode-btn${mode === 'time' ? ' active' : ''}" data-mode="time"
+              style="flex:1;padding:7px 0;border-radius:6px;border:1px solid var(--border);font-size:11px;font-weight:600;
+                background:${mode === 'time' ? 'rgba(74,144,217,0.3)' : 'var(--card)'};color:${mode === 'time' ? '#fff' : 'var(--muted)'}">At a time</button>
+            <button type="button" class="screen-fls-rule-mode-btn${mode === 'rotation' ? ' active' : ''}" data-mode="rotation"
+              style="flex:1;padding:7px 0;border-radius:6px;border:1px solid var(--border);font-size:11px;font-weight:600;
+                background:${mode === 'rotation' ? 'rgba(74,144,217,0.3)' : 'var(--card)'};color:${mode === 'rotation' ? '#fff' : 'var(--muted)'}">Rotate</button>
+          </div>
+          ${timingRowHtml}
+          <div style="display:flex;gap:4px;margin-top:8px">
+            ${dayNames.map((d, i) => `<button type="button" class="screen-fls-rule-dow-btn${(rule.daysOfWeek || []).includes(i) ? ' active' : ''}" data-dow="${i}"
+              style="flex:1;padding:7px 0;border-radius:6px;border:1px solid var(--border);font-size:11px;font-weight:700;
+                background:${(rule.daysOfWeek || []).includes(i) ? 'rgba(74,144,217,0.3)' : 'var(--card)'};
+                color:${(rule.daysOfWeek || []).includes(i) ? '#fff' : 'var(--muted)'}">${d}</button>`).join('')}
+          </div>
+        </div>
+      `;
+      }).join('');
+      listEl.querySelectorAll('.screen-fls-schedule-rule').forEach(rowEl => {
+        const idx = Number(rowEl.dataset.idx);
+        const enabledCheckbox = rowEl.querySelector('.screen-fls-rule-enabled');
+        if (enabledCheckbox) enabledCheckbox.addEventListener('change', (e) => {
+          screen.floating_switcher_schedule[idx].enabled = e.target.checked;
+          renderFlsSchedule(screenId);
+          saveFlsSchedule(screenId);
+        });
+        rowEl.querySelectorAll('.screen-fls-rule-mode-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const newMode = btn.dataset.mode;
+            const current = screen.floating_switcher_schedule[idx].mode || 'time';
+            if (current === newMode) return;
+            screen.floating_switcher_schedule[idx].mode = newMode;
+            // Same seeding as the widget's own mode-toggle handler — see
+            // its own comment for why this matters beyond what the timing
+            // inputs' display-time fallbacks alone would cover.
+            if ((newMode === 'interval' || newMode === 'rotation') && !screen.floating_switcher_schedule[idx].intervalValue) {
+              screen.floating_switcher_schedule[idx].intervalValue = 30;
+              screen.floating_switcher_schedule[idx].intervalUnit = 'minutes';
+            }
+            if (newMode === 'time' && !screen.floating_switcher_schedule[idx].time) {
+              screen.floating_switcher_schedule[idx].time = '08:00';
+            }
+            if (newMode === 'rotation' && !Array.isArray(screen.floating_switcher_schedule[idx].targets)) {
+              screen.floating_switcher_schedule[idx].targets = screen.floating_switcher_schedule[idx].target ? [screen.floating_switcher_schedule[idx].target] : [];
+            }
+            // The missing symmetric case — see display.html's identical fix
+            // for the full reasoning (a real report, not a hypothetical):
+            // leaving rotation mode never set target (singular), which
+            // time/interval modes require, and the server's own validation
+            // drops the whole rule when it's missing.
+            if (newMode !== 'rotation' && !screen.floating_switcher_schedule[idx].target && Array.isArray(screen.floating_switcher_schedule[idx].targets) && screen.floating_switcher_schedule[idx].targets.length) {
+              screen.floating_switcher_schedule[idx].target = screen.floating_switcher_schedule[idx].targets[0];
+            }
+            renderFlsSchedule(screenId);
+            // Skip the save specifically when switching INTO rotation mode
+            // leaves fewer than 2 targets — see display.html's identical
+            // fix for the full reasoning (a real report, not a
+            // hypothetical): the server requires 2+ valid targets for a
+            // rotation rule and silently drops the WHOLE rule otherwise,
+            // which created a race between this doomed, 1-target save and
+            // the very next one once a second target gets added.
+            if (newMode === 'rotation' && (!screen.floating_switcher_schedule[idx].targets || screen.floating_switcher_schedule[idx].targets.length < 2)) return;
+            saveFlsSchedule(screenId);
+          });
+        });
+        const timeInput = rowEl.querySelector('.screen-fls-rule-time');
+        if (timeInput) timeInput.addEventListener('change', (e) => {
+          screen.floating_switcher_schedule[idx].time = e.target.value;
+          saveFlsSchedule(screenId);
+        });
+        const intervalValueInput = rowEl.querySelector('.screen-fls-rule-interval-value');
+        if (intervalValueInput) intervalValueInput.addEventListener('change', (e) => {
+          screen.floating_switcher_schedule[idx].intervalValue = Number(e.target.value) || 1;
+          saveFlsSchedule(screenId);
+        });
+        const intervalUnitSelect = rowEl.querySelector('.screen-fls-rule-interval-unit');
+        if (intervalUnitSelect) intervalUnitSelect.addEventListener('change', (e) => {
+          screen.floating_switcher_schedule[idx].intervalUnit = e.target.value;
+          saveFlsSchedule(screenId);
+        });
+        const targetSelect = rowEl.querySelector('.screen-fls-rule-target');
+        if (targetSelect) targetSelect.addEventListener('change', (e) => {
+          const [type, id] = e.target.value.split(/:(.+)/);
+          screen.floating_switcher_schedule[idx].target = { type, id: type === 'saved' ? Number(id) : id };
+          saveFlsSchedule(screenId);
+        });
+        const addTargetSelect = rowEl.querySelector('.screen-fls-rot-add-target');
+        if (addTargetSelect) addTargetSelect.addEventListener('change', (e) => {
+          if (!e.target.value) return;
+          const [type, id] = e.target.value.split(/:(.+)/);
+          if (!Array.isArray(screen.floating_switcher_schedule[idx].targets)) screen.floating_switcher_schedule[idx].targets = [];
+          screen.floating_switcher_schedule[idx].targets.push({ type, id: type === 'saved' ? Number(id) : id });
+          renderFlsSchedule(screenId);
+          // Same guard as display.html's identical handler — see its own
+          // comment for the edge case this covers.
+          if (screen.floating_switcher_schedule[idx].targets.length < 2) return;
+          saveFlsSchedule(screenId);
+        });
+        rowEl.querySelectorAll('.screen-fls-rotation-target-row').forEach(trEl => {
+          const tIdx = Number(trEl.dataset.tidx);
+          const upBtn = trEl.querySelector('.screen-fls-rot-move-up');
+          if (upBtn) upBtn.addEventListener('click', () => {
+            const targets = screen.floating_switcher_schedule[idx].targets;
+            [targets[tIdx - 1], targets[tIdx]] = [targets[tIdx], targets[tIdx - 1]];
+            renderFlsSchedule(screenId);
+            saveFlsSchedule(screenId);
+          });
+          const downBtn = trEl.querySelector('.screen-fls-rot-move-down');
+          if (downBtn) downBtn.addEventListener('click', () => {
+            const targets = screen.floating_switcher_schedule[idx].targets;
+            [targets[tIdx + 1], targets[tIdx]] = [targets[tIdx], targets[tIdx + 1]];
+            renderFlsSchedule(screenId);
+            saveFlsSchedule(screenId);
+          });
+          trEl.querySelector('.screen-fls-rot-remove-target').addEventListener('click', () => {
+            // Mirrors the disabled state on this same button above —
+            // rotation has a hard minimum of 2 targets, so removing down to
+            // 1 is never a state worth reaching at all.
+            if (screen.floating_switcher_schedule[idx].targets.length <= 2) return;
+            screen.floating_switcher_schedule[idx].targets.splice(tIdx, 1);
+            renderFlsSchedule(screenId);
+            saveFlsSchedule(screenId);
+          });
+        });
+        rowEl.querySelectorAll('.screen-fls-rule-dow-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const dow = Number(btn.dataset.dow);
+            const days = new Set(screen.floating_switcher_schedule[idx].daysOfWeek || []);
+            if (days.has(dow)) days.delete(dow); else days.add(dow);
+            screen.floating_switcher_schedule[idx].daysOfWeek = [...days];
+            renderFlsSchedule(screenId);
+            saveFlsSchedule(screenId);
+          });
+        });
+        const removeBtn = rowEl.querySelector('.screen-fls-rule-remove');
+        if (removeBtn) removeBtn.addEventListener('click', () => {
+          screen.floating_switcher_schedule.splice(idx, 1);
+          renderFlsSchedule(screenId);
+          saveFlsSchedule(screenId);
+        });
+      });
+    };
+    list.querySelectorAll('.screen-fls-schedule-list').forEach(listEl => renderFlsSchedule(listEl.dataset.id));
+    list.querySelectorAll('.screen-fls-schedule-add-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const screenId = btn.dataset.id;
+        const screen = onlineScreens.find(s => s.device_id === screenId);
+        if (!screen) return;
+        // Prefers the first CHECKED switcher target — see display.html's
+        // identical fix for the full reasoning.
+        const checkedTargets = normTargets(screen.floating_switcher_presets);
+        const defaultTarget = checkedTargets[0] || ((displays && displays[0]) ? { type: 'display', id: displays[0].slug }
+          : (presets && presets[0]) ? { type: 'saved', id: presets[0].id } : null);
+        if (!defaultTarget) { showToast('Add a display or save a layout first.'); return; }
+        if (!Array.isArray(screen.floating_switcher_schedule)) screen.floating_switcher_schedule = [];
+        screen.floating_switcher_schedule.push({ mode: 'time', time: '08:00', daysOfWeek: [1, 2, 3, 4, 5], target: defaultTarget });
+        renderFlsSchedule(screenId);
+        saveFlsSchedule(screenId);
+      });
+    });
+  })();
+
   list.querySelectorAll('.screen-rename-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const name = prompt('Name this display:', btn.dataset.name || '');
@@ -5890,8 +6543,20 @@ let _screensRefreshTimer = null;
 function startScreensAutoRefresh() {
   stopScreensAutoRefresh();
   _screensRefreshTimer = setInterval(() => {
-    if (currentTab === 'displays' && document.getElementById('screens-list')) loadScreens();
-    else stopScreensAutoRefresh();
+    if (currentTab !== 'displays' || !document.getElementById('screens-list')) { stopScreensAutoRefresh(); return; }
+    // Skip this tick if focus is currently inside the list — loadScreens()
+    // fully rebuilds every screen card's markup from scratch, which would
+    // silently yank out from under someone anything they're mid-interaction
+    // with (a dropdown they're browsing keeps focus the whole time it's
+    // open, an input they're typing into, etc.). Confirmed as a real
+    // report, not a hypothetical: specifically caught someone trying to
+    // add a target to a schedule rule's own dropdown — the exact kind of
+    // interaction this would interrupt. The next tick, 15s later, tries
+    // again; this only ever delays a refresh, never skips it forever,
+    // since the same check re-runs fresh every time.
+    const active = document.activeElement;
+    if (active && document.getElementById('screens-list').contains(active)) return;
+    loadScreens();
   }, 15000);
 }
 function stopScreensAutoRefresh() {
@@ -6004,6 +6669,7 @@ const WIDGET_DEFS = [
   { type:'radar',    label:'Weather Radar', icon:'🌩️' },
   { type:'travel', label:'Travel Time', icon:'🚗' },
   { type:'qrcode', label:'QR Code', icon:'▦' },
+  { type:'layoutswitcher', label:'Layout Switcher', icon:'🔀' },
   { type:'timer', label:'Timer', icon:'⏱️' },
   { type:'onthisday', label:'On This Day', icon:'📜' },
   { type:'dailyquote', label:'Daily Quote', icon:'💬' },
@@ -6025,7 +6691,7 @@ const WIDGET_CATEGORIES = [
   { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel'] },
   { id:'photos',   label:'Photos',   icon:'🖼️', types:['photo'] },
   { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders'] },
-  { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode'] },
+  { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode','layoutswitcher'] },
   { id:'decor',    label:'Decor',    icon:'🌿', types:['decoration'] },
   { id:'smarthome', label:'Smart Home', icon:'🏠', types:['entitystatus','smarthomeDashboard','groupcontrol'] },
 ];
@@ -6150,9 +6816,14 @@ function updateLivePreview() {
   // Only reload the iframe src when something that actually changes the render
   // (display/orientation/resolution) changed, not on every resize tick.
   const targetSrc = buildPreviewUrl(tw, th);
-  if (iframe.dataset.src !== targetSrc) {
-    iframe.dataset.src = targetSrc;
-    iframe.src = targetSrc;
+  // The iframe's own src gets an extra &embedded=1 that the "open in a new
+  // tab" link below deliberately does NOT get — see EMBEDDED_THUMBNAIL's
+  // own comment in display.html for why this needs to be a distinct signal
+  // from allowEdit=1, which both URLs still correctly share.
+  const iframeSrc = targetSrc + '&embedded=1';
+  if (iframe.dataset.src !== iframeSrc) {
+    iframe.dataset.src = iframeSrc;
+    iframe.src = iframeSrc;
   }
   // Keep the "open in a new tab" link pointed at the same display/orientation/resolution.
   const openBtn = $('preview-open-tab-btn');
@@ -6605,6 +7276,9 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
       if (def.type === 'timer') {
         newWidget.w = 22; newWidget.h = 18; newWidget.timerTitle = 'Timer'; newWidget.timerMinutes = 5; newWidget.timerFontPx = 32;
       }
+      if (def.type === 'layoutswitcher') {
+        newWidget.w = 30; newWidget.h = 12; newWidget.switcherTargets = []; newWidget.switcherSchedule = []; newWidget.switcherFontPx = 15;
+      }
       if (def.type === 'onthisday') {
         newWidget.w = 30; newWidget.h = 40; newWidget.otdFontPx = 15; newWidget.otdMaxItems = 4;
       }
@@ -6883,6 +7557,17 @@ function openCopyWidgetsModal() {
 // the same never-recreated DOM nodes every time that function reruns. Only
 // the OPEN trigger lives inside the widget's own settings HTML, since that
 // button genuinely is recreated fresh each time.
+// Which Mini Calendar settings accordion section is open — survives the full
+// panel redraws that several controls trigger (Layout, Color Coding, Wrap
+// Event Text, Show Reminders, Show Stickers, and the three Today Indicator
+// color controls — they gate other rows' visibility, so a full redraw is
+// genuinely needed for those), so opening a section and then touching one
+// of those controls doesn't snap the whole accordion shut on the very next
+// render. Defaults to nothing open (null) — reset back to that whenever a
+// different widget gets selected — see drawWidgetSettingsPanel()'s own
+// widget-switch handling for where that reset happens.
+let _calSettingsOpenSection = null; // null = nothing open by default
+let _calSettingsOpenSectionForWidgetId = null;
 let _manageRemindersEditingId = null; // null = "add new"; a reminder's id = editing that one
 // Tracks the uploaded (but not-yet-saved) icon image filename for the form
 // currently open — set on upload, read at Save time, reset whenever the
@@ -7632,6 +8317,10 @@ async function drawWidgetSettingsPanel() {
     panel._autoSaveBound = true;
   }
   const w = layoutWidgets.find(x => x.id === selectedId);
+  if (_calSettingsOpenSectionForWidgetId !== selectedId) {
+    _calSettingsOpenSection = null;
+    _calSettingsOpenSectionForWidgetId = selectedId;
+  }
 
   if (!w) { panel.innerHTML = ''; return; }
 
@@ -7902,8 +8591,7 @@ async function drawWidgetSettingsPanel() {
     // truthy in JS and would otherwise show this toggle enabled for a Grid
     // calendar explicitly set to wrap Off.
     const wrapActiveForCurrentLayout = calLayout === 'agenda' ? !!w.calWrap : (wrapMode !== 'off');
-    typeSpecificHtml = `
-      <div class="mini-section-label">📐 Layout</div>
+    const layoutInner = `
       <div class="settings-row">
         <label>Layout Style</label>
         <select class="form-input" id="cal-layout-select">
@@ -7912,11 +8600,6 @@ async function drawWidgetSettingsPanel() {
           <option value="strip"  ${calLayout==='strip'?'selected':''}>Strip (single row)</option>
         </select>
       </div>
-      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
-        <label style="margin-bottom:0">Color Coding</label>
-        <input type="checkbox" id="cal-color-coding-toggle" ${w.calColorCoding !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
-      </div>
-      <p style="font-size:11px;color:var(--muted);margin-top:-4px">Off removes every colored dot and highlight from this calendar — plain text only. On by default.</p>
       ${dateFormatOverrideRowHtml('cal-date-format-select', w.calDateFormat, calGlobalDateLabel)}
       ${ampmCaseOverrideRowHtml('cal-ampm-case-select', w.calAmpmCase)}
       <div class="settings-row" id="cal-show-end-time-row" style="display:flex;justify-content:space-between;align-items:center;${calLayout==='strip'?'display:none':''}">
@@ -7924,185 +8607,62 @@ async function drawWidgetSettingsPanel() {
         <input type="checkbox" id="cal-show-end-time-toggle" ${showEndTime?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
       <div class="settings-row" id="cal-adaptive-font-row" style="display:flex;justify-content:space-between;align-items:center;${calLayout==='strip'?'display:none':''}">
-        <label style="margin-bottom:0">Adaptive Font Sizing</label>
+        <label style="margin-bottom:0">Adaptive Font Sizing ${infoBtn(`For an event that just barely wraps to a second line (e.g. "🎂Name🎂" tipping over because of the trailing emoji), shrinks that one event's text by up to 2px — only if that's enough to bring it back to one line. A title that's genuinely too long to fit is left wrapped exactly as before, at full size.${wrapActiveForCurrentLayout ? '' : ' Requires Wrap Event Text to be on — grayed out until then, since text truncates with "…" instead of wrapping while it\'s off.'}`)}</label>
         <input type="checkbox" id="cal-adaptive-font-toggle" ${w.calAdaptiveFontSizing?'checked':''} ${wrapActiveForCurrentLayout?'':'disabled'} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
-      <p style="font-size:11px;color:var(--muted);margin-top:-4px;${calLayout==='strip'?'display:none':''}" id="cal-adaptive-font-hint">
-        For an event that just barely wraps to a second line (e.g. "🎂Name🎂" tipping over because of the trailing emoji), shrinks that one event's text by up to 2px — only if that's enough to bring it back to one line. A title that's genuinely too long to fit is left wrapped exactly as before, at full size.${wrapActiveForCurrentLayout ? '' : ' Requires Wrap Event Text to be on — grayed out until then, since text truncates with "…" instead of wrapping while it\'s off.'}
-      </p>
-      <div id="cal-grid-only-settings" style="${calLayout==='grid'?'':'display:none'}">
-        <div class="settings-row">
-          <label>Calendar View</label>
-          <select class="form-input" id="cal-view-select">
-            <option value="1week" ${view==='1week'?'selected':''}>1 Week</option>
-            <option value="2week" ${view==='2week'?'selected':''}>2 Weeks</option>
-            <option value="3week" ${view==='3week'?'selected':''}>3 Weeks</option>
-            <option value="4week" ${view==='4week'?'selected':''}>4 Weeks</option>
-            <option value="month" ${view==='month'?'selected':''}>Month</option>
-          </select>
-        </div>
-        <div class="settings-row">
-          <label>Week Starts On</label>
-          <select class="form-input" id="cal-week-start-select">
-            <option value="default" ${(w.calWeekStart||'default')==='default'?'selected':''}>Use display setting</option>
-            <option value="0" ${w.calWeekStart==='0'?'selected':''}>Sunday</option>
-            <option value="1" ${w.calWeekStart==='1'?'selected':''}>Monday</option>
-          </select>
-        </div>
-        <div class="settings-row">
-          <label>Multi-Day Event Style ${infoBtn("How a multi-day event (a trip, a visit) shows across the days it covers. \"Bar\" is the original style; the others are lighter-weight for a calendar with lots of single-day entries already competing for space.")}</label>
-          <select class="form-input" id="cal-multiday-style-select">
-            <option value="bar"    ${(w.calMultiDayStyle||'bar')==='bar'?'selected':''}>Bar — spans across the days</option>
-            <option value="dot"    ${w.calMultiDayStyle==='dot'?'selected':''}>Dot — listed like a regular event, each day</option>
-            <option value="line"   ${w.calMultiDayStyle==='line'?'selected':''}>Line — thin underline, name once</option>
-            <option value="stripe" ${w.calMultiDayStyle==='stripe'?'selected':''}>Stripe — colored edge on the cell</option>
-          </select>
-        </div>
-        <div class="settings-row" id="cal-fullday-style-row" style="${w.calColorCoding===false?'display:none':''}">
-          <label>Full-Day Event Style ${infoBtn("How an all-day/multi-day event shows its color, independent of Color Coding above for timed events. \"Background\" is a colored pill. \"Dot\" is a lighter-weight marker matching a timed event's, no background. \"None\" shows plain text with no color indicator at all, for full-day events only. Hidden while Color Coding above is off.")}</label>
-          <select class="form-input" id="cal-fullday-style-select">
-            <option value="highlight" ${(w.calFullDayColorStyle||'highlight')==='highlight'?'selected':''}>Background — colored pill</option>
-            <option value="dot"       ${w.calFullDayColorStyle==='dot'?'selected':''}>Dot — colored marker, no background</option>
-            <option value="none"      ${w.calFullDayColorStyle==='none'?'selected':''}>None — plain text, no color</option>
-          </select>
-        </div>
-        <div class="settings-row">
-          <label>Today Indicator Style ${infoBtn("How today's date is marked in the grid. Grid layout only — Agenda and Strip mark today a different way already and aren't affected by this.")}</label>
-          <select class="form-input" id="cal-today-style-select">
-            <option value="circle"    ${(w.calTodayStyle||'circle')==='circle'?'selected':''}>Circle — filled, original style</option>
-            <option value="outline"   ${w.calTodayStyle==='outline'?'selected':''}>Outline — ring only, no fill</option>
-            <option value="fill"      ${w.calTodayStyle==='fill'?'selected':''}>Cell Highlight — tints the whole day box</option>
-            <option value="underline" ${w.calTodayStyle==='underline'?'selected':''}>Underline — thin line beneath the number</option>
-            <option value="text"      ${w.calTodayStyle==='text'?'selected':''}>Text Color — just colors the number itself</option>
-            <option value="none"      ${w.calTodayStyle==='none'?'selected':''}>None — no special treatment</option>
-          </select>
-          <div id="cal-today-color-swatches" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"></div>
-          <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
-            <input type="color" id="cal-today-color-custom" value="${w.calTodayColor || '#d23a3a'}"
-              style="width:36px;height:36px;border-radius:8px;border:1px solid var(--border);background:none;cursor:pointer;padding:0">
-            <span style="font-size:12px;color:var(--muted)">${w.calTodayColor ? 'Custom color' : 'Currently using the theme\'s default red'}</span>
-          </div>
-          ${w.calTodayColor ? `<button id="cal-today-color-reset-btn" style="background:none;border:none;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;padding:6px 0;margin-top:2px">Use Theme Default</button>` : ''}
-        </div>
-        <div class="mini-section-label with-divider">🎨 Event Display</div>
-        <div class="settings-row">
-          <label>Max Events Per Day <span class="info-btn" onclick="showInfoPopup('cal-max-events-help')">ⓘ</span></label>
-          <div class="range-row">
-            <input type="range" id="cal-max-events-range" min="0" max="10" step="1" value="${maxEventsPerDay}">
-            <span class="range-val" id="cal-max-events-val">${maxEventsPerDay === 0 ? 'Auto' : maxEventsPerDay}</span>
-          </div>
-        </div>
-        <div class="settings-row">
-          <label>Max Lines Per Day <span class="info-btn" onclick="showInfoPopup('cal-max-lines-help')">ⓘ</span></label>
-          <div class="range-row">
-            <input type="range" id="cal-max-lines-range" min="0" max="12" step="1" value="${(w.calMaxLines||0)}">
-            <span class="range-val" id="cal-max-lines-val">${(w.calMaxLines||0) === 0 ? 'Auto' : (w.calMaxLines)}</span>
-          </div>
-        </div>
-        <div class="settings-row">
-          <label>Wrap Event Text</label>
-          <select class="form-input" id="cal-wrap-mode">
-            <option value="off" ${wrapMode==='off'?'selected':''}>Off — single line, cut with "…"</option>
-            <option value="on" ${wrapMode==='on'?'selected':''}>On — wrap to as many lines as needed</option>
-            <option value="clamp2" ${wrapMode==='clamp2'?'selected':''}>Wrap, max 2 lines</option>
-          </select>
-        </div>
-        <p style="font-size:11px;color:var(--muted);margin-top:-4px">"Max 2 lines" wraps long titles but caps them at two lines so a busy day doesn't get clogged.</p>
-        <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
-          <label style="margin-bottom:0">Dim Past Days ${infoBtn("Fades out days before today, so the calendar draws your eye toward what's upcoming. All days are shown at full brightness when this is off, regardless of which month they're in.")}</label>
-          <input type="checkbox" id="cal-dim-past-toggle" ${dimPast?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
-        </div>
-        <div class="settings-row">
-          <label>Past Events ${infoBtn("Controls events that have already happened. \"Show dimmed\" greys them out; \"Hide\" removes them entirely.")}</label>
-          <select class="form-input" id="cal-past-events-select">
-            <option value="show" ${(!w.pastEvents||w.pastEvents==='show')?'selected':''}>Show normally</option>
-            <option value="dim"  ${w.pastEvents==='dim'?'selected':''}>Show dimmed</option>
-            <option value="hide" ${w.pastEvents==='hide'?'selected':''}>Hide</option>
-          </select>
-        </div>
-        <div class="settings-row">
-          <label>Decoration Style <span class="info-btn" onclick="showInfoPopup('cal-decor-help')">ⓘ</span></label>
-          <select class="form-input" id="cal-decor-select">
-            <option value="none"          ${(!w.calDecor||w.calDecor==='none')?'selected':''}>None (normal)</option>
-            <option value="postit"        ${w.calDecor==='postit'?'selected':''}>Post-it notes</option>
-            <option value="icon:star"     ${w.calDecor==='icon:star'?'selected':''}>Stars ⭐</option>
-            <option value="icon:sparkle"  ${w.calDecor==='icon:sparkle'?'selected':''}>Sparkles ✨</option>
-            <option value="icon:ornament" ${w.calDecor==='icon:ornament'?'selected':''}>Ornaments 🎄</option>
-            <option value="icon:egg"      ${w.calDecor==='icon:egg'?'selected':''}>Easter eggs 🥚</option>
-            <option value="icon:pumpkin"  ${w.calDecor==='icon:pumpkin'?'selected':''}>Pumpkins 🎃</option>
-            <option value="icon:leaf"     ${w.calDecor==='icon:leaf'?'selected':''}>Leaves 🍁</option>
-            <option value="icon:balloon"  ${w.calDecor==='icon:balloon'?'selected':''}>Balloons 🎈</option>
-          </select>
-        </div>
-        <div class="mini-section-label">⭐ Stickers</div>
-        <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
-          <label style="margin-bottom:0">Show Sticker Badges</label>
-          <input type="checkbox" id="cal-show-stickers-toggle" ${w.calShowStickers?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
-        </div>
-        <p style="font-size:11px;color:var(--muted);margin-top:-4px">Marks each day a kid earned a sticker with a small badge — their chosen star/avatar/emoji style (set per kid in the Chores tab). One badge per kid per day, however many stickers they earned.</p>
-        <div class="settings-row" id="cal-sticker-position-row" style="${w.calShowStickers?'':'display:none'}">
-          <label>Badge Position</label>
-          <select class="form-input" id="cal-sticker-position-select">
-            <option value="top-right"    ${(w.calStickerPosition||'top-right')==='top-right'?'selected':''}>Top right</option>
-            <option value="top-left"     ${w.calStickerPosition==='top-left'?'selected':''}>Top left</option>
-            <option value="bottom-right" ${w.calStickerPosition==='bottom-right'?'selected':''}>Bottom right</option>
-            <option value="bottom-left"  ${w.calStickerPosition==='bottom-left'?'selected':''}>Bottom left</option>
-          </select>
-        </div>
-        <div class="settings-row" id="cal-sticker-size-row" style="${w.calShowStickers?'':'display:none'}">
-          <label>Badge Size (px) ${infoBtn("Defaults to matching the day number's own size. Drag to make badges bigger or smaller.")}</label>
-          <div class="range-row">
-            <input type="range" id="cal-sticker-size-range" min="8" max="60" step="1" value="${w.calStickerSizePx || Math.round(fontPx * 2)}">
-            <span class="range-val" id="cal-sticker-size-val">${w.calStickerSizePx || Math.round(fontPx * 2)}px</span>
-          </div>
-        </div>
-        <div class="mini-section-label">🗑️ Reminders</div>
-        <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
-          <label style="margin-bottom:0">Show Reminder Badges</label>
-          <input type="checkbox" id="cal-show-reminders-toggle" ${w.calShowReminders?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
-        </div>
-        <p style="font-size:11px;color:var(--muted);margin-top:-4px">Marks each day one of your Reminders (trash day, recycling, anything set up in a Reminders widget) is due with a small emoji badge — the same schedule the Reminders widget itself reads from.</p>
-        <div class="settings-row" id="cal-reminder-position-row" style="${w.calShowReminders?'':'display:none'}">
-          <label>Badge Position</label>
-          <select class="form-input" id="cal-reminder-position-select">
-            <option value="top-left"     ${(w.calReminderPosition||'top-left')==='top-left'?'selected':''}>Top left</option>
-            <option value="top-right"    ${w.calReminderPosition==='top-right'?'selected':''}>Top right</option>
-            <option value="bottom-right" ${w.calReminderPosition==='bottom-right'?'selected':''}>Bottom right</option>
-            <option value="bottom-left"  ${w.calReminderPosition==='bottom-left'?'selected':''}>Bottom left</option>
-          </select>
-        </div>
-        <div class="settings-row" id="cal-reminder-size-row" style="${w.calShowReminders?'':'display:none'}">
-          <label>Badge Size (px)</label>
-          <div class="range-row">
-            <input type="range" id="cal-reminder-size-range" min="8" max="48" step="1" value="${w.calReminderSizePx || Math.round(fontPx * 1.4)}">
-            <span class="range-val" id="cal-reminder-size-val">${w.calReminderSizePx || Math.round(fontPx * 1.4)}px</span>
-          </div>
-        </div>
-        <div class="settings-row" id="cal-reminder-text-size-row" style="${w.calShowReminders?'':'display:none'}">
-          <label>Text Reminder Size ${infoBtn('Only affects reminders using a text label as their icon (e.g. "TRASH") — emoji and image icons use Badge Size above instead. A percentage on top of the automatic shrink-to-fit that already applies to longer labels.')}</label>
-          <div class="range-row">
-            <input type="range" id="cal-reminder-textsize-range" min="50" max="200" step="10" value="${w.calReminderTextSizePct || 100}">
-            <span class="range-val" id="cal-reminder-textsize-val">${w.calReminderTextSizePct || 100}%</span>
-          </div>
+      <div class="settings-row" style="${calLayout==='grid'?'':'display:none'}">
+        <label>Calendar View</label>
+        <select class="form-input" id="cal-view-select">
+          <option value="1week" ${view==='1week'?'selected':''}>1 Week</option>
+          <option value="2week" ${view==='2week'?'selected':''}>2 Weeks</option>
+          <option value="3week" ${view==='3week'?'selected':''}>3 Weeks</option>
+          <option value="4week" ${view==='4week'?'selected':''}>4 Weeks</option>
+          <option value="month" ${view==='month'?'selected':''}>Month</option>
+        </select>
+      </div>
+      <div class="settings-row" style="${calLayout==='grid'?'':'display:none'}">
+        <label>Week Starts On</label>
+        <select class="form-input" id="cal-week-start-select">
+          <option value="default" ${(w.calWeekStart||'default')==='default'?'selected':''}>Use display setting</option>
+          <option value="0" ${w.calWeekStart==='0'?'selected':''}>Sunday</option>
+          <option value="1" ${w.calWeekStart==='1'?'selected':''}>Monday</option>
+        </select>
+      </div>
+      <div class="settings-row" style="${calLayout==='agenda'?'':'display:none'}">
+        <label>Days to Show Ahead</label>
+        <div class="range-row">
+          <input type="range" id="cal-agenda-days-range" min="3" max="30" step="1" value="${agendaDays}">
+          <span class="range-val" id="cal-agenda-days-val">${agendaDays}</span>
         </div>
       </div>
-      <div id="cal-agenda-only-settings" style="${calLayout==='agenda'?'':'display:none'}">
-        <div class="settings-row">
-          <label>Days to Show Ahead</label>
-          <div class="range-row">
-            <input type="range" id="cal-agenda-days-range" min="3" max="30" step="1" value="${agendaDays}">
-            <span class="range-val" id="cal-agenda-days-val">${agendaDays}</span>
-          </div>
+      <div class="settings-row" style="${calLayout==='strip'?'':'display:none'}">
+        <label>Days to Show</label>
+        <div class="range-row">
+          <input type="range" id="cal-strip-days-range" min="3" max="10" step="1" value="${stripDays}">
+          <span class="range-val" id="cal-strip-days-val">${stripDays}</span>
         </div>
       </div>
-      <div id="cal-strip-only-settings" style="${calLayout==='strip'?'':'display:none'}">
-        <div class="settings-row">
-          <label>Days to Show</label>
-          <div class="range-row">
-            <input type="range" id="cal-strip-days-range" min="3" max="10" step="1" value="${stripDays}">
-            <span class="range-val" id="cal-strip-days-val">${stripDays}</span>
-          </div>
+      <div class="settings-row" style="${calLayout==='grid'?'':'display:none'}">
+        <label>Max Events Per Day <span class="info-btn" onclick="showInfoPopup('cal-max-events-help')">ⓘ</span></label>
+        <div class="range-row">
+          <input type="range" id="cal-max-events-range" min="0" max="10" step="1" value="${maxEventsPerDay}">
+          <span class="range-val" id="cal-max-events-val">${maxEventsPerDay === 0 ? 'Auto' : maxEventsPerDay}</span>
         </div>
+      </div>
+      <div class="settings-row" style="${calLayout==='grid'?'':'display:none'}">
+        <label>Max Lines Per Day <span class="info-btn" onclick="showInfoPopup('cal-max-lines-help')">ⓘ</span></label>
+        <div class="range-row">
+          <input type="range" id="cal-max-lines-range" min="0" max="12" step="1" value="${(w.calMaxLines||0)}">
+          <span class="range-val" id="cal-max-lines-val">${(w.calMaxLines||0) === 0 ? 'Auto' : (w.calMaxLines)}</span>
+        </div>
+      </div>
+      <div class="settings-row" style="${calLayout==='grid'?'':'display:none'}">
+        <label>Wrap Event Text ${infoBtn('"Max 2 lines" wraps long titles but caps them at two lines so a busy day doesn\'t get clogged.')}</label>
+        <select class="form-input" id="cal-wrap-mode">
+          <option value="off" ${wrapMode==='off'?'selected':''}>Off — single line, cut with "…"</option>
+          <option value="on" ${wrapMode==='on'?'selected':''}>On — wrap to as many lines as needed</option>
+          <option value="clamp2" ${wrapMode==='clamp2'?'selected':''}>Wrap, max 2 lines</option>
+        </select>
       </div>
       <div class="settings-row">
         <label>Font Size (px)</label>
@@ -8110,6 +8670,135 @@ async function drawWidgetSettingsPanel() {
           <input type="range" id="cal-font-range" min="6" max="64" step="1" value="${fontPx}">
           <span class="range-val" id="cal-font-val">${fontPx}px</span>
         </div>
+      </div>
+    `;
+    const colorsInner = `
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Color Coding</label>
+        <input type="checkbox" id="cal-color-coding-toggle" ${w.calColorCoding !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:-4px">Off removes every colored dot and highlight from this calendar — plain text only. On by default.</p>
+      <div class="settings-row" style="${calLayout==='grid'?'':'display:none'}">
+        <label>Multi-Day Event Style ${infoBtn("How a multi-day event (a trip, a visit) shows across the days it covers. \"Bar\" is the original style; the others are lighter-weight for a calendar with lots of single-day entries already competing for space.")}</label>
+        <select class="form-input" id="cal-multiday-style-select">
+          <option value="bar"    ${(w.calMultiDayStyle||'bar')==='bar'?'selected':''}>Bar — spans across the days</option>
+          <option value="dot"    ${w.calMultiDayStyle==='dot'?'selected':''}>Dot — listed like a regular event, each day</option>
+          <option value="line"   ${w.calMultiDayStyle==='line'?'selected':''}>Line — thin underline, name once</option>
+          <option value="stripe" ${w.calMultiDayStyle==='stripe'?'selected':''}>Stripe — colored edge on the cell</option>
+        </select>
+      </div>
+      <div class="settings-row" id="cal-fullday-style-row" style="${calLayout==='grid' && w.calColorCoding!==false?'':'display:none'}">
+        <label>Full-Day Event Style ${infoBtn("How an all-day/multi-day event shows its color, independent of Color Coding above for timed events. \"Background\" is a colored pill. \"Dot\" is a lighter-weight marker matching a timed event's, no background. \"None\" shows plain text with no color indicator at all, for full-day events only. Hidden while Color Coding above is off.")}</label>
+        <select class="form-input" id="cal-fullday-style-select">
+          <option value="highlight" ${(w.calFullDayColorStyle||'highlight')==='highlight'?'selected':''}>Background — colored pill</option>
+          <option value="dot"       ${w.calFullDayColorStyle==='dot'?'selected':''}>Dot — colored marker, no background</option>
+          <option value="none"      ${w.calFullDayColorStyle==='none'?'selected':''}>None — plain text, no color</option>
+        </select>
+      </div>
+      <div class="settings-row" style="${calLayout==='grid'?'':'display:none'}">
+        <label>Today Indicator Style ${infoBtn("How today's date is marked in the grid. Grid layout only — Agenda and Strip mark today a different way already and aren't affected by this.")}</label>
+        <select class="form-input" id="cal-today-style-select">
+          <option value="circle"    ${(w.calTodayStyle||'circle')==='circle'?'selected':''}>Circle — filled, original style</option>
+          <option value="outline"   ${w.calTodayStyle==='outline'?'selected':''}>Outline — ring only, no fill</option>
+          <option value="fill"      ${w.calTodayStyle==='fill'?'selected':''}>Cell Highlight — tints the whole day box</option>
+          <option value="underline" ${w.calTodayStyle==='underline'?'selected':''}>Underline — thin line beneath the number</option>
+          <option value="text"      ${w.calTodayStyle==='text'?'selected':''}>Text Color — just colors the number itself</option>
+          <option value="none"      ${w.calTodayStyle==='none'?'selected':''}>None — no special treatment</option>
+        </select>
+        <div id="cal-today-color-swatches" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+          <input type="color" id="cal-today-color-custom" value="${w.calTodayColor || '#d23a3a'}"
+            style="width:36px;height:36px;border-radius:8px;border:1px solid var(--border);background:none;cursor:pointer;padding:0">
+          <span style="font-size:12px;color:var(--muted)">${w.calTodayColor ? 'Custom color' : 'Currently using the theme\'s default red'}</span>
+        </div>
+        ${w.calTodayColor ? `<button id="cal-today-color-reset-btn" style="background:none;border:none;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;padding:6px 0;margin-top:2px">Use Theme Default</button>` : ''}
+      </div>
+      <div class="settings-row" style="${calLayout==='grid'?'':'display:none'}">
+        <label>Dim Past Days ${infoBtn("Fades out days before today, so the calendar draws your eye toward what's upcoming. All days are shown at full brightness when this is off, regardless of which month they're in.")}</label>
+        <input type="checkbox" id="cal-dim-past-toggle" ${dimPast?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <div class="settings-row" style="${calLayout==='grid'?'':'display:none'}">
+        <label>Past Events ${infoBtn("Controls events that have already happened. \"Show dimmed\" greys them out; \"Hide\" removes them entirely.")}</label>
+        <select class="form-input" id="cal-past-events-select">
+          <option value="show" ${(!w.pastEvents||w.pastEvents==='show')?'selected':''}>Show normally</option>
+          <option value="dim"  ${w.pastEvents==='dim'?'selected':''}>Show dimmed</option>
+          <option value="hide" ${w.pastEvents==='hide'?'selected':''}>Hide</option>
+        </select>
+      </div>
+      <div class="settings-row" style="${calLayout==='grid'?'':'display:none'}">
+        <label>Decoration Style <span class="info-btn" onclick="showInfoPopup('cal-decor-help')">ⓘ</span></label>
+        <select class="form-input" id="cal-decor-select">
+          <option value="none"          ${(!w.calDecor||w.calDecor==='none')?'selected':''}>None (normal)</option>
+          <option value="postit"        ${w.calDecor==='postit'?'selected':''}>Post-it notes</option>
+          <option value="icon:star"     ${w.calDecor==='icon:star'?'selected':''}>Stars ⭐</option>
+          <option value="icon:sparkle"  ${w.calDecor==='icon:sparkle'?'selected':''}>Sparkles ✨</option>
+          <option value="icon:ornament" ${w.calDecor==='icon:ornament'?'selected':''}>Ornaments 🎄</option>
+          <option value="icon:egg"      ${w.calDecor==='icon:egg'?'selected':''}>Easter eggs 🥚</option>
+          <option value="icon:pumpkin"  ${w.calDecor==='icon:pumpkin'?'selected':''}>Pumpkins 🎃</option>
+          <option value="icon:leaf"     ${w.calDecor==='icon:leaf'?'selected':''}>Leaves 🍁</option>
+          <option value="icon:balloon"  ${w.calDecor==='icon:balloon'?'selected':''}>Balloons 🎈</option>
+        </select>
+      </div>
+    `;
+    const remindersInner = `
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show Reminder Badges</label>
+        <input type="checkbox" id="cal-show-reminders-toggle" ${w.calShowReminders?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:-4px">Marks each day one of your Reminders (trash day, recycling, anything set up in a Reminders widget) is due with a small emoji badge — the same schedule the Reminders widget itself reads from.</p>
+      <div class="settings-row" id="cal-reminder-position-row" style="${w.calShowReminders?'':'display:none'}">
+        <label>Badge Position</label>
+        <select class="form-input" id="cal-reminder-position-select">
+          <option value="top-left"     ${(w.calReminderPosition||'top-left')==='top-left'?'selected':''}>Top left</option>
+          <option value="top-right"    ${w.calReminderPosition==='top-right'?'selected':''}>Top right</option>
+          <option value="bottom-right" ${w.calReminderPosition==='bottom-right'?'selected':''}>Bottom right</option>
+          <option value="bottom-left"  ${w.calReminderPosition==='bottom-left'?'selected':''}>Bottom left</option>
+        </select>
+      </div>
+      <div class="settings-row" id="cal-reminder-size-row" style="${w.calShowReminders?'':'display:none'}">
+        <label>Badge Size (px)</label>
+        <div class="range-row">
+          <input type="range" id="cal-reminder-size-range" min="8" max="48" step="1" value="${w.calReminderSizePx || Math.round(fontPx * 1.4)}">
+          <span class="range-val" id="cal-reminder-size-val">${w.calReminderSizePx || Math.round(fontPx * 1.4)}px</span>
+        </div>
+      </div>
+      <div class="settings-row" id="cal-reminder-text-size-row" style="${w.calShowReminders?'':'display:none'}">
+        <label>Text Reminder Size ${infoBtn('Only affects reminders using a text label as their icon (e.g. "TRASH") — emoji and image icons use Badge Size above instead. A percentage on top of the automatic shrink-to-fit that already applies to longer labels.')}</label>
+        <div class="range-row">
+          <input type="range" id="cal-reminder-textsize-range" min="50" max="200" step="10" value="${w.calReminderTextSizePct || 100}">
+          <span class="range-val" id="cal-reminder-textsize-val">${w.calReminderTextSizePct || 100}%</span>
+        </div>
+      </div>
+    `;
+    const stickersInner = `
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show Sticker Badges</label>
+        <input type="checkbox" id="cal-show-stickers-toggle" ${w.calShowStickers?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:-4px">Marks each day a kid earned a sticker with a small badge — their chosen star/avatar/emoji style (set per kid in the Chores tab). One badge per kid per day, however many stickers they earned.</p>
+      <div class="settings-row" id="cal-sticker-position-row" style="${w.calShowStickers?'':'display:none'}">
+        <label>Badge Position</label>
+        <select class="form-input" id="cal-sticker-position-select">
+          <option value="top-right"    ${(w.calStickerPosition||'top-right')==='top-right'?'selected':''}>Top right</option>
+          <option value="top-left"     ${w.calStickerPosition==='top-left'?'selected':''}>Top left</option>
+          <option value="bottom-right" ${w.calStickerPosition==='bottom-right'?'selected':''}>Bottom right</option>
+          <option value="bottom-left"  ${w.calStickerPosition==='bottom-left'?'selected':''}>Bottom left</option>
+        </select>
+      </div>
+      <div class="settings-row" id="cal-sticker-size-row" style="${w.calShowStickers?'':'display:none'}">
+        <label>Badge Size (px) ${infoBtn("Defaults to matching the day number's own size. Drag to make badges bigger or smaller.")}</label>
+        <div class="range-row">
+          <input type="range" id="cal-sticker-size-range" min="8" max="60" step="1" value="${w.calStickerSizePx || Math.round(fontPx * 2)}">
+          <span class="range-val" id="cal-sticker-size-val">${w.calStickerSizePx || Math.round(fontPx * 2)}px</span>
+        </div>
+      </div>
+    `;
+    typeSpecificHtml = `
+      <div id="minical-settings-acc">
+        ${accordionSection({ id: 'layout', icon: '📐', label: 'Layout', sub: 'View, days shown, font sizing', inner: layoutInner }, _calSettingsOpenSection === 'layout')}
+        ${accordionSection({ id: 'colors', icon: '🎨', label: 'Event Colors & Style', sub: 'Color coding, today indicator, decorations', inner: colorsInner }, _calSettingsOpenSection === 'colors')}
+        ${accordionSection({ id: 'reminders', icon: '🗑️', label: 'Reminder Badges', sub: 'Show on calendar, position, size', inner: remindersInner, hidden: calLayout !== 'grid' }, _calSettingsOpenSection === 'reminders')}
+        ${accordionSection({ id: 'stickers', icon: '⭐', label: 'Sticker Badges', sub: 'Show on calendar, position, size', inner: stickersInner, hidden: calLayout !== 'grid' }, _calSettingsOpenSection === 'stickers')}
       </div>
     `;
   } else if (w.type === 'upcoming') {
@@ -8848,6 +9537,45 @@ async function drawWidgetSettingsPanel() {
         </div>
       </div>
     `;
+  } else if (w.type === 'layoutswitcher') {
+    const fontPx = w.switcherFontPx || 15;
+    typeSpecificHtml = `
+      <div class="settings-row">
+        <label>Live Displays</label>
+        <div id="ls-display-list" style="display:flex;flex-direction:column;gap:8px;margin-top:4px">
+          <div style="font-size:12px;color:var(--muted)">Loading…</div>
+        </div>
+        <p style="font-size:11px;color:var(--muted);margin-top:6px">Switches this screen to whatever that display is currently showing — its actual live arrangement, not a fixed snapshot.</p>
+      </div>
+      <div class="settings-row">
+        <label>Saved Templates</label>
+        <div id="ls-preset-list" style="display:flex;flex-direction:column;gap:8px;margin-top:4px">
+          <div style="font-size:12px;color:var(--muted)">Loading…</div>
+        </div>
+        <p style="font-size:11px;color:var(--muted);margin-top:6px">A fixed layout saved ahead of time (Layout tab → Saved) — not tied to any display, always switches to exactly what was saved.</p>
+      </div>
+      <div class="settings-row">
+        <label>Font Size (px)</label>
+        <div class="range-row">
+          <input type="range" id="ls-font-range" min="10" max="40" step="1" value="${fontPx}">
+          <span class="range-val" id="ls-font-val">${fontPx}px</span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label>Schedule (optional)</label>
+        <p style="font-size:11px;color:var(--muted);margin-top:2px;margin-bottom:8px">Automatically switch at set times — the buttons above still work too, any time.</p>
+        <div id="ls-schedule-list" style="display:flex;flex-direction:column;gap:10px"></div>
+        <button type="button" class="btn" id="ls-schedule-add-btn" style="width:100%;margin-top:8px;background:var(--card);border:1px solid var(--border)">+ Add a scheduled switch</button>
+      </div>
+      <div class="settings-row">
+        <label>Copy This Switcher To Another Layout</label>
+        <div style="display:flex;gap:8px;margin-top:4px">
+          <select class="form-input" id="ls-copy-target" style="flex:1"><option value="">Loading layouts…</option></select>
+          <button type="button" class="btn" id="ls-copy-btn" style="background:var(--card);border:1px solid var(--border);white-space:nowrap">Copy</button>
+        </div>
+        <p style="font-size:11px;color:var(--muted);margin-top:6px">Places an identical switcher (same assigned targets, same position) onto that display — so switching to a layout that doesn't have its own switcher yet never becomes a dead end.</p>
+      </div>
+    `;
   } else if (w.type === 'onthisday') {
     const fontPx = w.otdFontPx || 15;
     const maxItems = w.otdMaxItems || 4;
@@ -9235,20 +9963,15 @@ async function drawWidgetSettingsPanel() {
         <label style="margin-bottom:0">Show Multi-day Events</label>
         <input type="checkbox" id="show-multiday-toggle" ${w.showMultiDay !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
-      <div class="settings-row">
-        <div class="acc-section" data-acc="fop">
-          <button class="acc-head" data-acc-toggle="fop" type="button">
-            <span class="acc-ic">🎨</span>
-            <span class="acc-text"><span class="acc-label">Per-Feed Opacity</span><span class="acc-sub">this display only</span></span>
-            <span class="acc-caret">▸</span>
-          </button>
-          <div class="acc-body" data-acc-body="fop" style="display:none">
+      <div class="settings-row" id="fop-accordion-wrap">
+        ${accordionSection({ id: 'fop', icon: '🎨', label: 'Per-Feed Opacity', sub: 'this display only',
+          inner: `
             <p style="font-size:11px;color:var(--muted);margin:0 0 8px">Override a calendar's opacity for just this widget, without changing its global default in Calendar Feeds.</p>
             <div id="feed-opacity-override-list" style="display:flex;flex-direction:column;gap:10px">
               <div style="font-size:12px;color:var(--muted)">Loading calendars…</div>
             </div>
-          </div>
-        </div>
+          `
+        })}
       </div>
     `;
   }
@@ -9661,13 +10384,16 @@ async function drawWidgetSettingsPanel() {
   }
 
   if (w.type === 'minical') {
+    wireAccordion('minical-settings-acc');
     $('cal-layout-select').addEventListener('change', (e) => {
       w.calLayout = e.target.value;
+      _calSettingsOpenSection = 'layout'; // stay open in the section the control that triggered this redraw lives in
       drawWidgetSettingsPanel(); // re-render so the right sub-settings show for the chosen layout
     });
     $('cal-color-coding-toggle').addEventListener('change', (e) => {
       w.calColorCoding = e.target.checked; // stored as false only when explicitly off — matches the !== false check used at render time
       // Full-Day Event Style's row visibility depends on this.
+      _calSettingsOpenSection = 'colors';
       drawWidgetSettingsPanel();
     });
     $('cal-view-select').addEventListener('change', (e) => {
@@ -9701,12 +10427,14 @@ async function drawWidgetSettingsPanel() {
       renderColorSwatches('cal-today-color-swatches', 'cal-today-color-custom', w.calTodayColor, (val) => {
         w.calTodayColor = val;
         autoSaveLayout(); // swatches are buttons, not native inputs — see the audit note by panelExpandBtn above
+        _calSettingsOpenSection = 'colors'; // safe by construction (only reachable while Colors & Style is open) but set explicitly
         drawWidgetSettingsPanel(); // re-render so "Use Theme Default" appears and label updates
       });
       $('cal-today-color-custom').addEventListener('input', (e) => {
         w.calTodayColor = e.target.value;
       });
       $('cal-today-color-custom').addEventListener('change', () => {
+        _calSettingsOpenSection = 'colors';
         drawWidgetSettingsPanel(); // commit re-render once the picker closes, avoids redrawing mid-drag
       });
     }
@@ -9714,6 +10442,7 @@ async function drawWidgetSettingsPanel() {
       $('cal-today-color-reset-btn').addEventListener('click', () => {
         delete w.calTodayColor;
         autoSaveLayout();
+        _calSettingsOpenSection = 'colors';
         drawWidgetSettingsPanel();
       });
     }
@@ -9728,6 +10457,7 @@ async function drawWidgetSettingsPanel() {
         // mode — that only gets recomputed by re-rendering this settings
         // panel, so (unlike most fields here) this one needs an explicit
         // redraw rather than relying on the panel's general autosave.
+        _calSettingsOpenSection = 'layout'; // safe by construction (this control only exists in the DOM while Layout is already open) but set explicitly rather than relying on that
         drawWidgetSettingsPanel();
       });
     }
@@ -9755,6 +10485,7 @@ async function drawWidgetSettingsPanel() {
       $('cal-show-stickers-toggle').addEventListener('change', (e) => {
         w.calShowStickers = e.target.checked;
         // Badge Position's row visibility depends on this.
+        _calSettingsOpenSection = 'stickers';
         drawWidgetSettingsPanel();
       });
     }
@@ -9773,6 +10504,7 @@ async function drawWidgetSettingsPanel() {
       $('cal-show-reminders-toggle').addEventListener('change', (e) => {
         w.calShowReminders = e.target.checked;
         // Badge Position/Size rows' visibility depends on this.
+        _calSettingsOpenSection = 'reminders';
         drawWidgetSettingsPanel();
       });
     }
@@ -10128,6 +10860,372 @@ async function drawWidgetSettingsPanel() {
       w.timerRemainingSec = null;
       autoSaveLayout();
       drawWidgetSettingsPanel();
+    });
+  }
+
+  if (w.type === 'layoutswitcher') {
+    if ($('ls-font-range')) $('ls-font-range').addEventListener('input', (e) => {
+      w.switcherFontPx = parseInt(e.target.value);
+      $('ls-font-val').textContent = w.switcherFontPx + 'px';
+    });
+    // Same shape as display.html's own normalizeSwitcherTargets()/
+    // switcherTargetKey() — duplicated here rather than shared, matching
+    // this codebase's established convention for client-side logic that
+    // needs to exist in both the app and the display (different runtime
+    // contexts, no shared module between them). Reads either the new
+    // switcherTargets field or the legacy switcherPresetIds (bare numbers,
+    // always meant a saved_layout id, from before live displays could be a
+    // target) so a widget saved before this expansion still shows its
+    // existing selections correctly.
+    const normTargets = (raw) => (Array.isArray(raw) ? raw : []).map(t => {
+      if (typeof t === 'number' || (typeof t === 'string' && /^\d+$/.test(t))) return { type: 'saved', id: Number(t) };
+      if (t && t.type === 'saved' && Number.isInteger(Number(t.id))) return { type: 'saved', id: Number(t.id) };
+      if (t && t.type === 'display' && typeof t.id === 'string' && t.id) return { type: 'display', id: t.id };
+      return null;
+    }).filter(Boolean);
+    const targetKey = (t) => `${t.type}:${t.id}`;
+    const currentTargets = () => new Map(normTargets(w.switcherTargets || w.switcherPresetIds).map(t => [targetKey(t), t]));
+    const toggleTarget = (target, checked) => {
+      const map = currentTargets();
+      if (checked) map.set(targetKey(target), target); else map.delete(targetKey(target));
+      w.switcherTargets = [...map.values()];
+      delete w.switcherPresetIds; // fully migrated to the new field the moment this widget's selection is touched at all
+      // Schedule rules' own target dropdowns are now filtered to only the
+      // targets checked here — without this, toggling a checkbox wouldn't
+      // update what the schedule offers until some unrelated schedule edit
+      // happened to re-render it.
+      renderScheduleRules();
+    };
+    (async () => {
+      const assigned = currentTargets();
+
+      const displayListEl = $('ls-display-list');
+      if (displayListEl) {
+        let displays = [];
+        try { displays = await getDisplaysList(true); } catch {}
+        const others = (displays || []).filter(d => d.slug !== currentDisplaySlug);
+        if (!others.length) {
+          displayListEl.innerHTML = `<div style="font-size:12px;color:var(--muted)">No other displays yet.</div>`;
+        } else {
+          displayListEl.innerHTML = others.map(d => `
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+              <input type="checkbox" class="ls-display-cb" data-id="${d.slug}" ${assigned.has(`display:${d.slug}`) ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--accent)">
+              ${escapeHtml(d.name)}
+            </label>
+          `).join('');
+          displayListEl.querySelectorAll('.ls-display-cb').forEach(cb => {
+            cb.addEventListener('change', () => toggleTarget({ type: 'display', id: cb.dataset.id }, cb.checked));
+          });
+        }
+      }
+
+      let presets = [];
+      try { presets = await apiFetch('/api/saved-layouts'); } catch {}
+      const listEl = $('ls-preset-list');
+      if (listEl) {
+        if (!Array.isArray(presets) || !presets.length) {
+          listEl.innerHTML = `<div style="font-size:12px;color:var(--muted)">No saved layouts yet — save one from the Layout tab first.</div>`;
+        } else {
+          listEl.innerHTML = presets.map(p => `
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+              <input type="checkbox" class="ls-preset-cb" data-id="${p.id}" ${assigned.has(`saved:${p.id}`) ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--accent)">
+              ${escapeHtml(p.name)}
+            </label>
+          `).join('');
+          listEl.querySelectorAll('.ls-preset-cb').forEach(cb => {
+            cb.addEventListener('change', () => toggleTarget({ type: 'saved', id: Number(cb.dataset.id) }, cb.checked));
+          });
+        }
+      }
+
+      // Copy-to-another-layout target list — every OTHER display profile
+      // (copying onto the one already showing this widget wouldn't do
+      // anything useful, so it's excluded). Reuses the same "displays"
+      // fetch as the Live Displays checklist above rather than fetching
+      // twice.
+      const targetEl = $('ls-copy-target');
+      if (targetEl) {
+        let displays = [];
+        try { displays = await getDisplaysList(true); } catch {}
+        const others = (displays || []).filter(d => d.slug !== currentDisplaySlug);
+        targetEl.innerHTML = others.length
+          ? others.map(d => `<option value="${d.slug}">${escapeHtml(d.name)}</option>`).join('')
+          : `<option value="">No other layouts yet</option>`;
+      }
+
+      // Schedule rules — reuses the same displays/presets already fetched
+      // above for the checklists, rather than a third fetch. Each rule is
+      // {time, daysOfWeek, target}; the target here is single-select (a
+      // dropdown, not a checklist) since a rule only ever switches to ONE
+      // place, unlike the buttons above which offer several as options.
+      let scheduleDisplays = [], schedulePresets = [];
+      try { scheduleDisplays = await getDisplaysList(); } catch {}
+      try { schedulePresets = await apiFetch('/api/saved-layouts'); } catch {}
+      const dayNames = ['S','M','T','W','T','F','S'];
+      const targetOptionsHtml = (selected) => {
+        const selKey = selected ? `${selected.type}:${selected.id}` : '';
+        // Restricted to only the targets currently checked in the "Live
+        // Displays"/"Saved Templates" checklists above — by explicit
+        // request. See display.html's identical fix for the full
+        // reasoning, including why the currently-selected target is
+        // always included even if it's since been unchecked.
+        const checkedKeys = new Set(normTargets(w.switcherTargets || w.switcherPresetIds).map(t => `${t.type}:${t.id}`));
+        // Also always includes the current display being edited
+        // (currentDisplaySlug) — see display.html's identical fix for the
+        // full reasoning: it's deliberately excluded from the switcher's
+        // own checklist above (a manual button switching to where you
+        // already are is pointless), so it was never checkable and
+        // therefore never survived the restriction above either. A
+        // rotation should still be able to cycle back to this display's
+        // own native content.
+        const dispOpts = (scheduleDisplays || []).filter(d => checkedKeys.has(`display:${d.slug}`) || selKey === `display:${d.slug}` || d.slug === currentDisplaySlug)
+          .map(d => `<option value="display:${d.slug}" ${selKey === `display:${d.slug}` ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('');
+        const presetOpts = (Array.isArray(schedulePresets) ? schedulePresets : []).filter(p => checkedKeys.has(`saved:${p.id}`) || selKey === `saved:${p.id}`)
+          .map(p => `<option value="saved:${p.id}" ${selKey === `saved:${p.id}` ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+        return `<optgroup label="Live Displays">${dispOpts}</optgroup><optgroup label="Saved Templates">${presetOpts}</optgroup>`;
+      };
+      const targetLabel = (t) => {
+        if (!t) return '(unknown)';
+        if (t.type === 'display') {
+          const d = (scheduleDisplays || []).find(d => d.slug === t.id);
+          return d ? d.name : t.id;
+        }
+        const p = (Array.isArray(schedulePresets) ? schedulePresets : []).find(p => p.id === t.id);
+        return p ? p.name : `Template #${t.id}`;
+      };
+      const renderScheduleRules = () => {
+        const listEl = $('ls-schedule-list');
+        if (!listEl) return;
+        const rules = Array.isArray(w.switcherSchedule) ? w.switcherSchedule : [];
+        if (!rules.length) {
+          listEl.innerHTML = `<div style="font-size:12px;color:var(--muted)">No scheduled switches yet.</div>`;
+          return;
+        }
+        const conflicted = scheduleConflictIndices(rules);
+        listEl.innerHTML = rules.map((rule, idx) => {
+          const mode = rule.mode === 'interval' ? 'interval' : rule.mode === 'rotation' ? 'rotation' : 'time';
+          const intervalInputsHtml = `
+               <input type="number" class="form-input ls-rule-interval-value" min="1" value="${rule.intervalValue || 30}" style="width:64px;flex-shrink:0">
+               <select class="form-input ls-rule-interval-unit" style="width:96px;flex-shrink:0">
+                 <option value="seconds"${rule.intervalUnit === 'seconds' ? ' selected' : ''}>Seconds</option>
+                 <option value="minutes"${(rule.intervalUnit || 'minutes') === 'minutes' ? ' selected' : ''}>Minutes</option>
+                 <option value="hours"${rule.intervalUnit === 'hours' ? ' selected' : ''}>Hours</option>
+               </select>`;
+          const timingRowHtml = mode === 'rotation'
+            ? `<div class="ls-rule-timing-row" style="display:flex;gap:8px;align-items:center">
+                 ${intervalInputsHtml}
+                 <span style="font-size:11px;color:var(--muted)">per display</span>
+               </div>
+               <div class="ls-rotation-targets" style="margin-top:8px;display:flex;flex-direction:column;gap:6px">
+                 ${(Array.isArray(rule.targets) ? rule.targets : []).map((t, tIdx) => `
+                   <div class="ls-rotation-target-row" data-tidx="${tIdx}" style="display:flex;gap:6px;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:6px 8px">
+                     <span style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(targetLabel(t))}</span>
+                     <button type="button" class="ls-rot-move-up" aria-label="Move up" ${tIdx === 0 ? 'disabled' : ''} style="background:none;border:none;color:var(--muted);font-size:14px;padding:2px 6px;flex-shrink:0">↑</button>
+                     <button type="button" class="ls-rot-move-down" aria-label="Move down" ${tIdx === (rule.targets.length - 1) ? 'disabled' : ''} style="background:none;border:none;color:var(--muted);font-size:14px;padding:2px 6px;flex-shrink:0">↓</button>
+                     <button type="button" class="ls-rot-remove-target" aria-label="Remove" ${rule.targets.length <= 2 ? 'disabled' : ''} style="background:none;border:none;color:var(--muted);font-size:16px;padding:2px 6px;flex-shrink:0">✕</button>
+                   </div>
+                 `).join('')}
+                 <select class="form-input ls-rot-add-target" style="margin-top:2px">
+                   <option value="">+ Add a display or template…</option>
+                   ${targetOptionsHtml(null)}
+                 </select>
+               </div>`
+            : `<div class="ls-rule-timing-row" style="display:flex;gap:8px;align-items:center">
+                 ${mode === 'interval' ? intervalInputsHtml : `<input type="time" class="form-input ls-rule-time" value="${rule.time || '08:00'}" style="width:110px;flex-shrink:0">`}
+                 <select class="form-input ls-rule-target" style="flex:1">${targetOptionsHtml(rule.target)}</select>
+               </div>`;
+          const enabled = rule.enabled !== false;
+          const hasConflict = conflicted.has(idx);
+          return `
+          <div class="ls-schedule-rule" data-idx="${idx}" style="border:1px solid ${hasConflict ? '#ffb020' : 'var(--border)'};border-radius:10px;padding:10px;opacity:${enabled ? '1' : '0.55'}">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text);flex:1;cursor:pointer">
+                <input type="checkbox" class="ls-rule-enabled" ${enabled ? 'checked' : ''} style="width:16px;height:16px;accent-color:var(--accent)">
+                Enabled
+              </label>
+              <button type="button" class="ls-rule-remove" aria-label="Remove" style="background:none;border:none;color:var(--muted);font-size:18px;padding:4px 8px;flex-shrink:0">✕</button>
+            </div>
+            ${hasConflict ? `<div style="font-size:11px;color:#ffb020;background:rgba(255,176,32,0.12);border-radius:6px;padding:6px 8px;margin-bottom:10px">⚠️ Same time and day as another rule below — whichever fires last will win.</div>` : ''}
+            <div style="display:flex;gap:6px;margin-bottom:8px">
+              <button type="button" class="ls-rule-mode-btn${mode === 'time' ? ' active' : ''}" data-mode="time"
+                style="flex:1;padding:7px 0;border-radius:6px;border:1px solid var(--border);font-size:11px;font-weight:600;
+                  background:${mode === 'time' ? 'rgba(74,144,217,0.3)' : 'var(--card)'};color:${mode === 'time' ? '#fff' : 'var(--muted)'}">At a time</button>
+              <button type="button" class="ls-rule-mode-btn${mode === 'rotation' ? ' active' : ''}" data-mode="rotation"
+                style="flex:1;padding:7px 0;border-radius:6px;border:1px solid var(--border);font-size:11px;font-weight:600;
+                  background:${mode === 'rotation' ? 'rgba(74,144,217,0.3)' : 'var(--card)'};color:${mode === 'rotation' ? '#fff' : 'var(--muted)'}">Rotate</button>
+            </div>
+            ${timingRowHtml}
+            <div style="display:flex;gap:4px;margin-top:8px">
+              ${dayNames.map((d, i) => `<button type="button" class="ls-rule-dow-btn${(rule.daysOfWeek || []).includes(i) ? ' active' : ''}" data-dow="${i}"
+                style="flex:1;padding:7px 0;border-radius:6px;border:1px solid var(--border);font-size:11px;font-weight:700;
+                  background:${(rule.daysOfWeek || []).includes(i) ? 'rgba(74,144,217,0.3)' : 'var(--card)'};
+                  color:${(rule.daysOfWeek || []).includes(i) ? '#fff' : 'var(--muted)'}">${d}</button>`).join('')}
+            </div>
+          </div>
+        `;
+        }).join('');
+        listEl.querySelectorAll('.ls-schedule-rule').forEach(rowEl => {
+          const idx = Number(rowEl.dataset.idx);
+          const enabledCheckbox = rowEl.querySelector('.ls-rule-enabled');
+          if (enabledCheckbox) enabledCheckbox.addEventListener('change', (e) => {
+            w.switcherSchedule[idx].enabled = e.target.checked;
+            renderScheduleRules();
+          });
+          rowEl.querySelectorAll('.ls-rule-mode-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+              const newMode = btn.dataset.mode;
+              const current = w.switcherSchedule[idx].mode || 'time';
+              if (current === newMode) return;
+              w.switcherSchedule[idx].mode = newMode;
+              // Seed sensible defaults the first time a rule switches INTO
+              // a mode it's never used before, rather than leaving fields
+              // from another mode lying around unused (harmless, but
+              // confusing to find later) or leaving new fields undefined
+              // (which the timing inputs above already fall back to
+              // reasonable defaults for anyway — this just makes the
+              // underlying data match what's shown rather than relying on
+              // display-time fallbacks alone).
+              if ((newMode === 'interval' || newMode === 'rotation') && !w.switcherSchedule[idx].intervalValue) {
+                w.switcherSchedule[idx].intervalValue = 30;
+                w.switcherSchedule[idx].intervalUnit = 'minutes';
+              }
+              if (newMode === 'time' && !w.switcherSchedule[idx].time) {
+                w.switcherSchedule[idx].time = '08:00';
+              }
+              if (newMode === 'rotation' && !Array.isArray(w.switcherSchedule[idx].targets)) {
+                // Carry the single target forward as rotation's first entry
+                // when switching FROM a single-target mode — better than
+                // starting from an empty list every time, since it's
+                // usually the display someone was already about to pick
+                // for the rule anyway.
+                w.switcherSchedule[idx].targets = w.switcherSchedule[idx].target ? [w.switcherSchedule[idx].target] : [];
+              }
+              // The missing symmetric case — see display.html's identical
+              // fix for the full reasoning (a real report, not a
+              // hypothetical, though this surface doesn't auto-save so
+              // isn't exposed to that specific race): leaving rotation mode
+              // never set target (singular), which time/interval modes
+              // require — without this, the rule would silently carry no
+              // target at all and never fire, even once "Save Layout" runs.
+              if (newMode !== 'rotation' && !w.switcherSchedule[idx].target && Array.isArray(w.switcherSchedule[idx].targets) && w.switcherSchedule[idx].targets.length) {
+                w.switcherSchedule[idx].target = w.switcherSchedule[idx].targets[0];
+              }
+              renderScheduleRules();
+            });
+          });
+          const timeInput = rowEl.querySelector('.ls-rule-time');
+          if (timeInput) timeInput.addEventListener('change', (e) => {
+            w.switcherSchedule[idx].time = e.target.value;
+          });
+          const intervalValueInput = rowEl.querySelector('.ls-rule-interval-value');
+          if (intervalValueInput) intervalValueInput.addEventListener('change', (e) => {
+            w.switcherSchedule[idx].intervalValue = Number(e.target.value) || 1;
+          });
+          const intervalUnitSelect = rowEl.querySelector('.ls-rule-interval-unit');
+          if (intervalUnitSelect) intervalUnitSelect.addEventListener('change', (e) => {
+            w.switcherSchedule[idx].intervalUnit = e.target.value;
+          });
+          const targetSelect = rowEl.querySelector('.ls-rule-target');
+          if (targetSelect) targetSelect.addEventListener('change', (e) => {
+            const [type, id] = e.target.value.split(/:(.+)/); // split on first ':' only — a display slug could itself contain one
+            w.switcherSchedule[idx].target = { type, id: type === 'saved' ? Number(id) : id };
+          });
+          const addTargetSelect = rowEl.querySelector('.ls-rot-add-target');
+          if (addTargetSelect) addTargetSelect.addEventListener('change', (e) => {
+            if (!e.target.value) return;
+            const [type, id] = e.target.value.split(/:(.+)/);
+            if (!Array.isArray(w.switcherSchedule[idx].targets)) w.switcherSchedule[idx].targets = [];
+            w.switcherSchedule[idx].targets.push({ type, id: type === 'saved' ? Number(id) : id });
+            renderScheduleRules();
+          });
+          rowEl.querySelectorAll('.ls-rotation-target-row').forEach(trEl => {
+            const tIdx = Number(trEl.dataset.tidx);
+            const upBtn = trEl.querySelector('.ls-rot-move-up');
+            if (upBtn) upBtn.addEventListener('click', () => {
+              const targets = w.switcherSchedule[idx].targets;
+              [targets[tIdx - 1], targets[tIdx]] = [targets[tIdx], targets[tIdx - 1]];
+              renderScheduleRules();
+            });
+            const downBtn = trEl.querySelector('.ls-rot-move-down');
+            if (downBtn) downBtn.addEventListener('click', () => {
+              const targets = w.switcherSchedule[idx].targets;
+              [targets[tIdx + 1], targets[tIdx]] = [targets[tIdx], targets[tIdx + 1]];
+              renderScheduleRules();
+            });
+            trEl.querySelector('.ls-rot-remove-target').addEventListener('click', () => {
+              // Mirrors the disabled state on this same button above —
+              // rotation has a hard minimum of 2 targets, so removing down
+              // to 1 is never a state worth reaching at all.
+              if (w.switcherSchedule[idx].targets.length <= 2) return;
+              w.switcherSchedule[idx].targets.splice(tIdx, 1);
+              renderScheduleRules();
+            });
+          });
+          rowEl.querySelectorAll('.ls-rule-dow-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+              const dow = Number(btn.dataset.dow);
+              const days = new Set(w.switcherSchedule[idx].daysOfWeek || []);
+              if (days.has(dow)) days.delete(dow); else days.add(dow);
+              w.switcherSchedule[idx].daysOfWeek = [...days];
+              renderScheduleRules(); // re-render this one row's button states
+            });
+          });
+          const removeBtn = rowEl.querySelector('.ls-rule-remove');
+          if (removeBtn) removeBtn.addEventListener('click', () => {
+            w.switcherSchedule.splice(idx, 1);
+            renderScheduleRules();
+          });
+        });
+      };
+      if (!Array.isArray(w.switcherSchedule)) w.switcherSchedule = [];
+      renderScheduleRules();
+      if ($('ls-schedule-add-btn')) $('ls-schedule-add-btn').addEventListener('click', () => {
+        // Prefers the first CHECKED switcher target — see display.html's
+        // identical fix for the full reasoning.
+        const checkedTargets = normTargets(w.switcherTargets || w.switcherPresetIds);
+        const defaultTarget = checkedTargets[0] || ((scheduleDisplays && scheduleDisplays[0]) ? { type: 'display', id: scheduleDisplays[0].slug }
+          : (schedulePresets && schedulePresets[0]) ? { type: 'saved', id: schedulePresets[0].id } : null);
+        if (!defaultTarget) { showToast('Add a display or save a layout first.'); return; }
+        w.switcherSchedule.push({ mode: 'time', time: '08:00', daysOfWeek: [1, 2, 3, 4, 5], target: defaultTarget });
+        renderScheduleRules();
+      });
+    })();
+    if ($('ls-copy-btn')) $('ls-copy-btn').addEventListener('click', async () => {
+      const target = $('ls-copy-target').value;
+      if (!target) { showToast('No other layout to copy to yet.'); return; }
+      const targetName = $('ls-copy-target').selectedOptions[0]?.textContent || target;
+      // Diagnostic: shows the actual slug being used, not just the display
+      // name — if this doesn't match what was actually picked, that
+      // isolates the bug to the dropdown's own value/population rather
+      // than anything that happens after confirming.
+      if (!confirm(`Copy this Layout Switcher onto "${targetName}" (${target})?`)) return;
+      try {
+        for (const orientation of ['landscape', 'portrait']) {
+          const existing = await apiFetch(`/api/layouts/${orientation}?display=${encodeURIComponent(target)}`);
+          const widgets = Array.isArray(existing?.widgets) ? existing.widgets : [];
+          // A proper deep copy, not a shallow one — {...w} alone would leave
+          // nested arrays (switcherTargets, switcherSchedule, and the target
+          // objects inside each schedule rule) shared BY REFERENCE between
+          // the original and the copy, so editing either one's targets or
+          // schedule would silently mutate the other too. Confirmed as a
+          // real, reproducible bug, not a theoretical one: removing a
+          // target from the copy removed it from the original as well,
+          // since they were never actually two separate objects underneath
+          // the top level. JSON round-trip is safe here — widget objects
+          // are plain, fully JSON-serializable data, nothing that would
+          // break this (no functions, no circular references, no Date
+          // objects or similar).
+          const copy = JSON.parse(JSON.stringify(w));
+          copy.id = 'w_' + Math.random().toString(36).slice(2, 10);
+          widgets.push(copy);
+          await apiFetch(`/api/layouts/${orientation}?display=${encodeURIComponent(target)}`, {
+            method: 'PUT', body: JSON.stringify({ widgets }),
+          });
+        }
+        showToast(`Copied to ${targetName} (${target}) ✓`);
+      } catch {
+        showToast('❌ Could not copy — try again.');
+      }
     });
   }
 
@@ -10520,20 +11618,13 @@ async function drawWidgetSettingsPanel() {
     $('show-multiday-toggle').addEventListener('change', (e) => {
       w.showMultiDay = e.target.checked;
     });
-    // Per-Feed Opacity accordion — standalone single section (not part of a
-    // grouped accordion like Displays/Settings), so just a plain open/close
-    // toggle rather than wireAccordion()'s collapse-the-other-sections behavior.
-    const fopToggle = document.querySelector('[data-acc-toggle="fop"]');
-    if (fopToggle) {
-      fopToggle.addEventListener('click', () => {
-        const sec = fopToggle.closest('.acc-section');
-        const body = sec.querySelector(':scope > .acc-body');
-        const caret = fopToggle.querySelector('.acc-caret');
-        const isOpen = sec.classList.toggle('open');
-        body.style.display = isOpen ? '' : 'none';
-        caret.textContent = isOpen ? '▾' : '▸';
-      });
-    }
+    // Per-Feed Opacity now uses the same shared accordion mechanism as
+    // everything else (Displays/Settings, Mini Calendar's own settings
+    // groups below) instead of a hand-rolled one-off toggle. It's the only
+    // section inside its own container, so wireAccordion()'s "collapse the
+    // others" behavior is a no-op here — there's nothing else to collapse
+    // — but it's the same component either way, not a special case.
+    wireAccordion('fop-accordion-wrap');
   }
 
   $('layer-front-btn').addEventListener('click', () => { bringToFront(w); });
@@ -13597,6 +14688,14 @@ async function renderSettings() {
       <div id="update-status" style="margin-top:12px;font-size:13px"></div>
     </div>
 
+    <div class="section-header">Update Backups</div>
+    <div class="settings-card">
+      <p style="font-size:11px;color:var(--muted);padding:14px 16px 0;margin:0 0 10px">Kept automatically every time an update is applied — the last 10 (for rollback) plus one per calendar month for the first stable release, kept indefinitely as longer-term history. Download any of these as a zip (the same format as any other build), or restore straight to one.</p>
+      <div id="update-backups-list" style="padding:0 16px 16px">
+        <p style="font-size:12px;color:var(--muted)">Loading…</p>
+      </div>
+    </div>
+
     ${isBeta ? `
     <div class="section-header">Beta Checklist</div>
     <div class="settings-card">
@@ -14603,6 +15702,114 @@ async function renderSettings() {
         }
       });
     }
+  })();
+
+  // ── Update Backups: list, download, restore ────────────────────────────
+  // Populated once per Settings render, same "fetch on tab open" pattern as
+  // everything else here — backups only ever change as a side effect of an
+  // update or restore actually running, both of which already reload this
+  // page via their own restart-and-reconnect flow, so there's no need for
+  // this list to live-update on its own.
+  (async function loadUpdateBackupsList() {
+    const container = $('update-backups-list');
+    if (!container) return;
+    let data;
+    try {
+      data = await apiFetch('/api/update-backups');
+    } catch {
+      container.innerHTML = '<p style="font-size:12px;color:var(--danger, #ff5d5d)">Could not load backup history.</p>';
+      return;
+    }
+    if (!data || (!data.rolling.length && !data.monthly.length)) {
+      container.innerHTML = '<p style="font-size:12px;color:var(--muted)">No backups yet — one gets created automatically the next time an update is applied.</p>';
+      return;
+    }
+    const fmtDate = (iso) => {
+      if (!iso) return '';
+      try { return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }); }
+      catch { return iso; }
+    };
+    const renderGroup = (title, items) => {
+      if (!items.length) return '';
+      return `
+        <div style="margin-top:14px">
+          <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px">${title}</div>
+          ${items.map(b => `
+            <div class="backup-row" data-type="${b.type}" data-name="${escapeHtml(b.name)}" data-version="${escapeHtml(b.version)}" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
+              <div style="min-width:0">
+                <div style="font-size:13px;font-weight:600">v${escapeHtml(b.version)}${b.version === data.currentVersion ? ' <span style="font-weight:400;color:var(--muted)">(current)</span>' : ''}</div>
+                <div style="font-size:11px;color:var(--muted)">${fmtDate(b.createdAt)}</div>
+              </div>
+              <div style="display:flex;gap:6px;flex-shrink:0">
+                <button class="btn backup-download-btn" type="button" style="padding:8px 12px;font-size:12px;background:var(--card);border:1px solid var(--border)">Download</button>
+                <button class="btn backup-restore-btn" type="button" style="padding:8px 12px;font-size:12px;background:var(--card);border:1px solid var(--border);color:var(--danger, #ff5d5d)">Restore</button>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    };
+    container.innerHTML = renderGroup('Monthly (historical)', data.monthly) + renderGroup('Recent (last 10)', data.rolling);
+
+    // Same fetch+blob download approach as the data backup button above —
+    // surfaces a real error message instead of the browser navigating to a
+    // raw JSON error page on failure.
+    container.querySelectorAll('.backup-download-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const row = btn.closest('.backup-row');
+        const { type, name } = row.dataset;
+        btn.disabled = true;
+        const originalText = btn.textContent;
+        btn.textContent = 'Zipping…';
+        try {
+          const resp = await fetch(`/api/update-backups/${type}/${encodeURIComponent(name)}/download`);
+          if (!resp.ok) {
+            let msg = 'Download failed.';
+            try { const j = await resp.json(); if (j.error) msg = j.error; } catch {}
+            showToast('❌ ' + msg);
+            btn.disabled = false; btn.textContent = originalText;
+            return;
+          }
+          const blob = await resp.blob();
+          const cd = resp.headers.get('Content-Disposition') || '';
+          const match = cd.match(/filename="?([^"]+)"?/);
+          const filename = match ? match[1] : 'piazzahq-backup.zip';
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = filename;
+          document.body.appendChild(a); a.click(); a.remove();
+          URL.revokeObjectURL(url);
+          showToast('Downloaded ✓');
+        } catch {
+          showToast('❌ Download failed — check your connection and try again.');
+        }
+        btn.disabled = false; btn.textContent = originalText;
+      });
+    });
+    container.querySelectorAll('.backup-restore-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const row = btn.closest('.backup-row');
+        const { type, name, version } = row.dataset;
+        if (!confirm(`Restore to v${version}? This replaces the app's current code with this backup and restarts the server. Your calendar data, photos, and other content are never touched — only the app itself.`)) return;
+        btn.disabled = true;
+        btn.textContent = 'Restoring…';
+        try {
+          const resp = await apiFetch(`/api/update-backups/${type}/${encodeURIComponent(name)}/restore`, { method: 'POST' });
+          if (resp && resp.ok) {
+            showToast('Restoring — reconnecting shortly…');
+          } else {
+            showToast('❌ ' + ((resp && resp.error) || 'Restore failed'));
+            btn.disabled = false; btn.textContent = 'Restore';
+          }
+        } catch {
+          // A network error here often just means the restart already began
+          // before the response could come back — same ambiguity the normal
+          // Update Now flow already handles by treating it as success and
+          // polling for the server to come back.
+          showToast('Restoring — reconnecting shortly…');
+        }
+      });
+    });
   })();
 
   // Shared "a location was resolved/confirmed" success path — used both for
