@@ -1340,6 +1340,17 @@ const RELEASE_NOTES = {
     'New: "Open to Edit in New Tab" sessions get their own section on the Devices tab, name themselves after whatever they\'re previewing, and clean themselves up automatically instead of piling up.',
     'Plus various bug fixes and performance improvements.',
   ],
+  '1.83.1': [
+    'New: Combo Forecast widget — combines hourly and daily weather into one widget, with four layout styles to choose from (Stacked, Timeline, Split Columns, or Compact Tabs).',
+    'Current conditions can be shown right in that same widget, with your choice of layout automatically adjusting to fit it in well.',
+    'Plus various bug fixes and improvements.',
+  ],
+  '1.83.2': [
+    'New: tap any calendar event on the display to see its full detail — title, full date/time, which calendar it\'s from, and its description.',
+    'New: "Show Location Name" checkbox on every weather widget — turn off the location name and keep just the weather itself.',
+    'The Live Editing toolbar can now be moved and minimized, so it\'s easier to work around on a crowded screen.',
+    'Plus various bug fixes and improvements.',
+  ],
 };
 
 // Beta-suffix-aware version compare — same scheme as the mothership server's
@@ -1799,7 +1810,7 @@ function wireFlsSubAccordions() {
   document.querySelectorAll('#screens-list .acc-section[data-acc^="flssub-"]').forEach(sec => {
     const btn = sec.querySelector(':scope > .acc-head');
     if (!btn) return;
-    const [, deviceId, subId] = sec.dataset.acc.match(/^flssub-(.+)-(toggle|schedule)$/) || [];
+    const [, deviceId, subId] = sec.dataset.acc.match(/^flssub-(.+)-(toggle|schedule|editbar)$/) || [];
     if (!deviceId) return;
     btn.addEventListener('click', (e) => {
       e.stopPropagation(); // don't let this also trigger the outer Screen Switcher/Screen Settings toggles
@@ -5620,6 +5631,23 @@ async function loadScreens() {
             <button type="button" class="btn screen-fls-schedule-add-btn" data-id="${s.device_id}" style="width:100%;margin-top:8px;background:var(--card);border:1px solid var(--border)">+ Add a scheduled switch</button>
             </div>
           </div>
+          <div class="acc-section${openScreenSubAccordions.has(s.device_id+':fls-editbar')?' open':''}" data-acc="flssub-${s.device_id}-editbar">
+            <button class="acc-head" data-acc-toggle="flssub-${s.device_id}-editbar">
+              <span class="acc-text"><span class="acc-label">Edit Bar</span></span>
+              <span class="acc-caret">${openScreenSubAccordions.has(s.device_id+':fls-editbar')?'▾':'▸'}</span>
+            </button>
+            <div class="acc-body" data-acc-body="flssub-${s.device_id}-editbar" style="${openScreenSubAccordions.has(s.device_id+':fls-editbar')?'':'display:none'}">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:6px">Position</label>
+          <div class="screen-editbar-position-picker" data-id="${s.device_id}" style="display:flex;gap:6px">
+            ${['top','bottom'].map(pos => `
+              <button type="button" class="screen-editbar-position-btn${(s.edit_bar_position||'top')===pos?' active':''}" data-id="${s.device_id}" data-position="${pos}"
+                style="flex:1;padding:8px 0;border-radius:8px;border:1px solid var(--border);font-size:12px;font-weight:600;text-transform:capitalize;
+                  background:${(s.edit_bar_position||'top')===pos?'rgba(74,144,217,0.3)':'var(--card)'};color:${(s.edit_bar_position||'top')===pos?'#fff':'var(--muted)'}">${pos}</button>
+            `).join('')}
+          </div>
+          <p style="font-size:11px;color:var(--muted);margin:8px 0 0">Where the "Live Editing" bar sits on this screen while editing a layout. It can also be minimized down to a small button at any time by tapping the – on the bar itself, if a widget near that edge is still in the way.</p>
+            </div>
+          </div>
           </div>
         </div>
 
@@ -6034,6 +6062,21 @@ async function loadScreens() {
       if (r && r.error) { showToast('❌ ' + r.error); return; }
     });
   });
+  list.querySelectorAll('.screen-editbar-position-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      list.querySelectorAll(`.screen-editbar-position-btn[data-id="${id}"]`).forEach(b => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.style.background = active ? 'rgba(74,144,217,0.3)' : 'var(--card)';
+        b.style.color = active ? '#fff' : 'var(--muted)';
+      });
+      const r = await apiFetch(`/api/screens/${id}`, {
+        method:'PUT', body: JSON.stringify({ edit_bar_position: btn.dataset.position }),
+      });
+      if (r && r.error) { showToast('❌ ' + r.error); return; }
+    });
+  });
   list.querySelectorAll('.screen-fls-style-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.id;
@@ -6156,7 +6199,6 @@ async function loadScreens() {
           <input type="checkbox" class="screen-fls-display-cb" data-id="${id}" data-target-id="${d.slug}" ${existing ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--accent)">
           <input type="text" class="form-input screen-fls-target-icon" value="${escapeHtml(existing ? existing.icon || '' : '')}" maxlength="8" placeholder="icon" style="width:44px;text-align:center;font-size:15px;padding:6px">
           ${escapeHtml(d.name)}
-          <span style="font-size:10px;color:var(--muted);font-family:monospace">(${escapeHtml(d.slug)})</span>
         </label>
       `;
       }).join('');
@@ -6182,7 +6224,6 @@ async function loadScreens() {
           <input type="checkbox" class="screen-fls-preset-cb" data-id="${id}" data-target-id="${p.id}" ${existing ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--accent)">
           <input type="text" class="form-input screen-fls-target-icon" value="${escapeHtml(existing ? existing.icon || '' : '')}" maxlength="8" placeholder="icon" style="width:44px;text-align:center;font-size:15px;padding:6px">
           ${escapeHtml(p.name)}
-          <span style="font-size:10px;color:var(--muted);font-family:monospace">(#${p.id})</span>
         </label>
       `;
       }).join('');
@@ -6649,6 +6690,7 @@ const WIDGET_DEFS = [
   { type:'weatherCurrent',  label:'Current Wx', icon:'🌡️' },
   { type:'weatherForecast', label:'Forecast',   icon:'📆' },
   { type:'weatherHourly', label:'Hourly Wx', icon:'🕘' },
+  { type:'weatherComboForecast', label:'Combo Forecast', icon:'🌦️' },
   { type:'minical',  label:'Calendar', icon:'🗓️' },
   { type:'upcoming', label:'Upcoming', icon:'📋' },
   { type:'today',    label:'Today',    icon:'📍' },
@@ -6686,7 +6728,7 @@ const WIDGET_DEFS = [
 const WIDGET_CATEGORIES = [
   { id:'time',     label:'Time',     icon:'🕐', types:['clock','date','datetime','countdown','timer'] },
   { id:'calendar', label:'Calendar', icon:'🗓️', types:['minical','upcoming','today','agenda'] },
-  { id:'weather',  label:'Weather',  icon:'☀️', types:['weather','weatherCurrent','weatherForecast','weatherHourly','airquality','moonphase','metar','radar'] },
+  { id:'weather',  label:'Weather',  icon:'☀️', types:['weather','weatherCurrent','weatherForecast','weatherHourly','weatherComboForecast','airquality','moonphase','metar','radar'] },
   { id:'tasks',    label:'Tasks',    icon:'✅', types:['tasks','tasksCombined','todo'] },
   { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel'] },
   { id:'photos',   label:'Photos',   icon:'🖼️', types:['photo'] },
@@ -7252,6 +7294,9 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
       }
       if (def.type === 'weatherHourly') {
         newWidget.w = 42; newWidget.h = 20; newWidget.wxHourlyStyle = 'hourly'; newWidget.wxHours = 6;
+      }
+      if (def.type === 'weatherComboForecast') {
+        newWidget.w = 42; newWidget.h = 36; newWidget.wxComboStyle = 'stacked';
       }
       if (def.type === 'chorechart') {
         newWidget.w = 50; newWidget.h = 45; newWidget.choreTitle = 'Daily Chore Chart'; newWidget.choreShowDone = true; newWidget.choreFontPx = 15;
@@ -8474,17 +8519,23 @@ async function drawWidgetSettingsPanel() {
       <button class="btn" id="rem-manage-btn" type="button" style="width:100%;background:rgba(74,144,217,0.15);border:1px solid var(--border);color:var(--text);margin-top:4px">🗑️ Manage Reminders</button>
       <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">Reminders are shared across every Reminders widget and the calendar — add or edit one here, it updates everywhere.</p>
     `;
-  } else if (w.type === 'weather' || w.type === 'weatherCurrent' || w.type === 'weatherForecast' || w.type === 'weatherHourly') {
+  } else if (w.type === 'weather' || w.type === 'weatherCurrent' || w.type === 'weatherForecast' || w.type === 'weatherHourly' || w.type === 'weatherComboForecast') {
     const locationFontPx = w.wxLocationFontPx || 14;
     const locationAlign = w.wxLocationAlign || 'left';
     const contentPct = Math.round(((w.wxContentScale) || 1) * 100);
     wxSettings = await apiFetch('/api/settings');
     const locationVal = (wxSettings && (wxSettings.weather_location_manual || wxSettings.weather_location_auto)) || '';
-    // Forecast day count: combined + forecast default to 5; current-only defaults to 0 (off).
-    const defaultDays = w.type === 'weatherCurrent' ? 0 : 5;
+    // Forecast day count: combined + forecast default to 5; current-only defaults to 0 (off);
+    // the combo widget's own default matches renderWeatherComboForecast()'s own per-style
+    // defaults exactly, so this slider shows the same "effective" day count the widget itself
+    // would actually use — see display.html's identical comment for the full reasoning.
+    const comboStyleDayDefaults = { stacked: 5, timeline: 4, columns: 5, tabs: 6 };
+    const defaultDays = w.type === 'weatherCurrent' ? 0
+      : w.type === 'weatherComboForecast' ? (comboStyleDayDefaults[w.wxComboStyle || 'stacked'] || 5)
+      : 5;
     const forecastDays = (w.wxForecastDays !== undefined) ? w.wxForecastDays : defaultDays;
     const dayMin = w.type === 'weatherCurrent' ? 0 : 1;
-    const forecastSlider = (w.type === 'weather' || w.type === 'weatherForecast' || w.type === 'weatherCurrent') ? `
+    const forecastSlider = (w.type === 'weather' || w.type === 'weatherForecast' || w.type === 'weatherCurrent' || w.type === 'weatherComboForecast') ? `
       <div class="settings-row">
         <label>Forecast Days${w.type==='weatherCurrent' ? ' (0 = current only)' : ''}</label>
         <div class="range-row">
@@ -8495,19 +8546,55 @@ async function drawWidgetSettingsPanel() {
           How many days of forecast to show (up to 16). ${w.type==='weatherCurrent' ? 'Set to 0 for current conditions only.' : 'Default is 5.'}
         </p>
       </div>` : '';
+    // Combo Forecast's own Layout Style picker and current-conditions toggle
+    // — identical to display.html's own copy of these two controls.
+    const wxComboStyle = w.wxComboStyle || 'stacked';
+    const comboStyleControl = (w.type === 'weatherComboForecast') ? `
+      <div class="settings-row">
+        <label>Layout Style</label>
+        <select class="form-input" id="wx-combo-style-select">
+          <option value="stacked"  ${wxComboStyle==='stacked'?'selected':''}>Stacked — hourly row on top, daily list below</option>
+          <option value="timeline" ${wxComboStyle==='timeline'?'selected':''}>Timeline — one continuous strip, hours flowing into days</option>
+          <option value="columns"  ${wxComboStyle==='columns'?'selected':''}>Split Columns — hourly and daily side by side</option>
+          <option value="tabs"     ${wxComboStyle==='tabs'?'selected':''}>Compact Tabs — a tab switches between the two (tap it on the display)</option>
+        </select>
+      </div>
+      <div class="settings-row">
+        <label>Content Alignment ${infoBtn("Where the whole hourly/daily block sits within the widget's box, if the box is wider than the content needs. Applies to all four layout styles.")}</label>
+        <select class="form-input" id="wx-combo-align-select">
+          <option value="left"   ${(w.wxComboAlign||'left')==='left'?'selected':''}>Left</option>
+          <option value="center" ${w.wxComboAlign==='center'?'selected':''}>Center</option>
+          <option value="right"  ${w.wxComboAlign==='right'?'selected':''}>Right</option>
+        </select>
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show current conditions</label>
+        <input type="checkbox" id="wx-combo-show-current" ${w.wxComboShowCurrent !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>` : '';
     // Hourly-widget-specific controls: style (hourly strip vs morning/afternoon/evening)
-    // and, for the hourly strip, how many future hours to show.
+    // and, for the hourly strip, how many future hours to show. The combo widget's own
+    // per-style hour defaults match renderWeatherComboForecast()'s exactly.
+    const comboStyleHourDefaults = { stacked: 8, timeline: 6, columns: 5, tabs: 8 };
     const wxHourlyStyle = w.wxHourlyStyle || 'hourly';
-    const wxHours = w.wxHours || 6;
-    const hourlyControls = (w.type === 'weatherHourly') ? `
+    const wxHours = w.wxHours || (w.type === 'weatherComboForecast' ? (comboStyleHourDefaults[wxComboStyle] || 8) : 6);
+    const hourlyStyleControl = (w.type === 'weatherHourly') ? `
       <div class="settings-row">
         <label>Style</label>
         <select class="form-input" id="wx-hourly-style">
           <option value="hourly" ${wxHourlyStyle==='hourly'?'selected':''}>By hour (next N hours)</option>
           <option value="parts"  ${wxHourlyStyle==='parts'?'selected':''}>Morning / Afternoon / Evening</option>
         </select>
-      </div>
-      <div class="settings-row" id="wx-hours-row" style="${wxHourlyStyle==='hourly'?'':'display:none'}">
+      </div>` : '';
+    // Always rendered (not conditionally omitted) for weatherHourly — only its
+    // CSS display toggles based on Style above — so the existing show/hide JS
+    // (which looks up #wx-hours-row expecting it to already be in the DOM
+    // either way) keeps working correctly in both directions. Always included
+    // AND visible for the combo widget — see display.html's identical fix and
+    // its own comment for the full reasoning, including the bug this avoids.
+    const includeHoursSlider = w.type === 'weatherHourly' || w.type === 'weatherComboForecast';
+    const hoursSliderHidden = w.type === 'weatherHourly' && wxHourlyStyle !== 'hourly';
+    const hoursSlider = includeHoursSlider ? `
+      <div class="settings-row" id="wx-hours-row" style="${hoursSliderHidden ? 'display:none' : ''}">
         <label>Hours to Show ${infoBtn("Number of upcoming hours in the strip. Widen the widget box if they get cramped.")}</label>
         <div class="range-row">
           <input type="range" id="wx-hours-range" min="2" max="12" step="1" value="${wxHours}">
@@ -8523,7 +8610,9 @@ async function drawWidgetSettingsPanel() {
         </div>
       </div>
       ${forecastSlider}
-      ${hourlyControls}
+      ${comboStyleControl}
+      ${hourlyStyleControl}
+      ${hoursSlider}
       <div class="settings-row" style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--bg)">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <label style="margin-bottom:0">Override location for this widget</label>
@@ -8548,6 +8637,10 @@ async function drawWidgetSettingsPanel() {
           <option value="fahrenheit" ${w.wxUnit === 'fahrenheit' ? 'selected' : ''}>Fahrenheit (°F)</option>
           <option value="celsius" ${w.wxUnit === 'celsius' ? 'selected' : ''}>Celsius (°C)</option>
         </select>
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show Location Name ${infoBtn("Turn off to hide the location name entirely on this widget, keeping just the weather itself.")}</label>
+        <input type="checkbox" id="wx-show-location" ${w.wxShowLocation !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
       <div class="settings-row">
         <label>Location Name ${infoBtn("Set above, in the override box — the Label field there is this widget's location name.")}</label>
@@ -10275,7 +10368,7 @@ async function drawWidgetSettingsPanel() {
     // settings-panel open, or every rerun stacks another duplicate listener
     // onto the same never-recreated DOM nodes.
     if ($('rem-manage-btn')) $('rem-manage-btn').addEventListener('click', openManageRemindersModal);
-  } else if (w.type === 'weather' || w.type === 'weatherCurrent' || w.type === 'weatherForecast' || w.type === 'weatherHourly') {
+  } else if (w.type === 'weather' || w.type === 'weatherCurrent' || w.type === 'weatherForecast' || w.type === 'weatherHourly' || w.type === 'weatherComboForecast') {
     $('wx-content-scale').addEventListener('input', (e) => {
       const pct = parseInt(e.target.value);
       w.wxContentScale = pct / 100;
@@ -10299,6 +10392,28 @@ async function drawWidgetSettingsPanel() {
         $('wx-hours-val').textContent = w.wxHours;
       });
     }
+    if ($('wx-combo-style-select')) {
+      $('wx-combo-style-select').addEventListener('change', (e) => {
+        w.wxComboStyle = e.target.value;
+        // Re-renders the whole panel — a style change shifts the DISPLAYED
+        // default for both Forecast Days and Hours to Show at once (each
+        // style has its own), same reasoning as display.html's identical
+        // fix. drawWidgetSettingsPanel() takes no arguments — it reads the
+        // currently selected widget from the global selectedId itself, so
+        // this correctly rebuilds using the just-changed w.wxComboStyle.
+        drawWidgetSettingsPanel();
+      });
+    }
+    if ($('wx-combo-align-select')) {
+      $('wx-combo-align-select').addEventListener('change', (e) => {
+        w.wxComboAlign = e.target.value;
+      });
+    }
+    if ($('wx-combo-show-current')) {
+      $('wx-combo-show-current').addEventListener('change', (e) => {
+        w.wxComboShowCurrent = e.target.checked;
+      });
+    }
     $('wx-location-font-range').addEventListener('input', (e) => {
       w.wxLocationFontPx = parseInt(e.target.value);
       $('wx-location-font-val').textContent = w.wxLocationFontPx + 'px';
@@ -10317,6 +10432,9 @@ async function drawWidgetSettingsPanel() {
       $('wx-unit-select').addEventListener('change', (e) => {
         w.wxUnit = e.target.value || undefined; // '' (use global default) stores as no override at all
       });
+    }
+    if ($('wx-show-location')) {
+      $('wx-show-location').addEventListener('change', (e) => { w.wxShowLocation = e.target.checked; });
     }
 
     // Per-widget location override (e.g. vacation home).
@@ -11194,11 +11312,12 @@ async function drawWidgetSettingsPanel() {
       const target = $('ls-copy-target').value;
       if (!target) { showToast('No other layout to copy to yet.'); return; }
       const targetName = $('ls-copy-target').selectedOptions[0]?.textContent || target;
-      // Diagnostic: shows the actual slug being used, not just the display
-      // name — if this doesn't match what was actually picked, that
-      // isolates the bug to the dropdown's own value/population rather
-      // than anything that happens after confirming.
-      if (!confirm(`Copy this Layout Switcher onto "${targetName}" (${target})?`)) return;
+      // Historically included the raw target slug in parentheses here too,
+      // as a diagnostic to isolate a "Copy" landing on the wrong display"
+      // bug to the dropdown's own value/population rather than anything
+      // after confirming — removed by explicit request once no longer
+      // needed, along with every other leftover diagnostic from that era.
+      if (!confirm(`Copy this Layout Switcher onto "${targetName}"?`)) return;
       try {
         for (const orientation of ['landscape', 'portrait']) {
           const existing = await apiFetch(`/api/layouts/${orientation}?display=${encodeURIComponent(target)}`);

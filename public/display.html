@@ -273,6 +273,32 @@
       padding:12px 18px; font-size:15px; border-radius:14px;
       box-shadow:0 8px 24px -8px rgba(0,0,0,0.6);
     }
+    /* By explicit request: a position choice (top/bottom, a persisted
+       per-screen setting) and an independent manual-collapse toggle
+       (transient, resets to expanded each time Live Editing is freshly
+       turned on) — together, so the bar is both movable and dismissible
+       rather than just one or the other. */
+    #edit-mode-bar.edit-bar-bottom { top:auto; bottom:14px; }
+    #edit-mode-label-group { display:flex; align-items:center; gap:10px; min-width:0; }
+    #edit-mode-collapse-btn {
+      background:rgba(255,255,255,0.12) !important; color:#e8edf5 !important;
+      width:32px; height:32px; padding:0 !important; border-radius:50% !important;
+      font-size:19px; font-weight:700; flex-shrink:0; line-height:1;
+    }
+    /* Collapsed: shrinks to just the collapse button itself (now acting as
+       the expand trigger), anchored to the right edge — everything else in
+       the bar hides rather than the bar disappearing entirely, so it's
+       still immediately reachable with one tap, never fully gone. */
+    #edit-mode-bar.edit-bar-collapsed {
+      left:auto; right:14px; width:auto; padding:8px; gap:0;
+    }
+    #edit-mode-bar.edit-bar-collapsed #edit-mode-label,
+    #edit-mode-bar.edit-bar-collapsed #edit-mode-screen-settings-btn,
+    #edit-mode-bar.edit-bar-collapsed #edit-mode-add-btn,
+    #edit-mode-bar.edit-bar-collapsed #edit-mode-done {
+      display:none;
+    }
+    #edit-mode-bar.edit-bar-collapsed #edit-mode-collapse-btn { font-size:15px; }
     #edit-mode-bar button {
       background:#3ec97a; color:#062; border:none; border-radius:8px;
       padding:8px 20px; font-size:15px; font-weight:600;
@@ -337,6 +363,35 @@
       width:36px; height:36px; border-radius:50%; font-size:16px;
     }
     #screen-settings-body { flex:1; overflow-y:auto; padding:12px 16px 24px; }
+    /* Event detail modal — see the HTML comment above its markup for why
+       this is a centered card rather than a full-screen overlay like
+       Screen Settings above. Uses the globally-scoped --muted/--border
+       (defined on :root) rather than --text2, which is only defined
+       within .widget and wouldn't resolve correctly here. */
+    #event-detail-overlay {
+      position:fixed; inset:0; z-index:90;
+      background:rgba(4,6,12,0.75); backdrop-filter:blur(2px);
+      display:flex; align-items:center; justify-content:center; padding:24px;
+    }
+    #event-detail-card {
+      background:#12172a; color:#e8edf5; border-radius:16px; padding:24px;
+      max-width:440px; width:100%; max-height:80vh; overflow-y:auto;
+      position:relative; box-shadow:0 20px 60px -12px rgba(0,0,0,0.7);
+    }
+    #event-detail-close {
+      position:absolute; top:14px; right:14px; background:rgba(255,255,255,0.1);
+      color:#e8edf5; border:none; width:32px; height:32px; border-radius:50%;
+      font-size:15px;
+    }
+    #event-detail-colorbar { width:48px; height:5px; border-radius:3px; margin-bottom:14px; }
+    #event-detail-title { font-size:22px; font-weight:700; margin-bottom:10px; padding-right:36px; line-height:1.3; }
+    #event-detail-time { font-size:15px; color:var(--muted); margin-bottom:4px; }
+    #event-detail-source { font-size:13px; color:var(--muted); margin-bottom:16px; }
+    #event-detail-notes {
+      font-size:14px; line-height:1.5; white-space:pre-wrap;
+      border-top:1px solid var(--border); padding-top:14px;
+    }
+    [data-event-key] { cursor:pointer; }
     .wp-category {
       margin-bottom:8px; border-radius:10px; overflow:hidden;
       background:rgba(255,255,255,0.04);
@@ -2248,6 +2303,7 @@
 
     /* Hourly / time-of-day weather widget */
     .w-weather-hourly { display:flex; flex-direction:column; justify-content:center; }
+    .w-weather-combo { display:flex; flex-direction:column; }
     .wxh-strip { display:flex; gap:calc(4px * var(--wx-scale,1)); justify-content:space-between; }
     .wxh-hour { display:flex; flex-direction:column; align-items:center; gap:calc(3px * var(--wx-scale,1)); flex:1; min-width:0; }
     .wxh-hr { font-size:calc(13px * var(--wx-scale,1)); color:var(--text2); white-space:nowrap; }
@@ -2261,6 +2317,68 @@
     .wxh-part-icon svg { width:calc(40px * var(--wx-scale,1)); height:calc(40px * var(--wx-scale,1)); }
     .wxh-part-temp { font-size:calc(24px * var(--wx-scale,1)); font-weight:300; }
     .wxh-part-meta { font-size:calc(11px * var(--wx-scale,1)); color:var(--text2); text-align:center; }
+
+    /* Combo Hourly + Daily Forecast — one CSS block per layout style */
+    .wxc-hourly { display:flex; gap:calc(10px * var(--wx-scale,1)); overflow-x:auto; padding-bottom:2px; }
+    .wxc-hour { display:flex; flex-direction:column; align-items:center; gap:calc(3px * var(--wx-scale,1)); min-width:calc(38px * var(--wx-scale,1)); flex-shrink:0; }
+    .wxc-hr-label { font-size:calc(11px * var(--wx-scale,1)); color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; white-space:nowrap; }
+    .wxc-hr-icon svg { width:calc(28px * var(--wx-scale,1)); height:calc(28px * var(--wx-scale,1)); }
+    .wxc-hr-temp { font-size:calc(15px * var(--wx-scale,1)); font-weight:500; }
+    .wxc-hr-pop { font-size:calc(10px * var(--wx-scale,1)); color:#4A90D9; min-height:calc(12px * var(--wx-scale,1)); }
+    .wxc-divider { height:1px; background:var(--border); margin:calc(12px * var(--wx-scale,1)) 0; }
+    .wxc-daily { display:flex; flex-direction:column; gap:calc(7px * var(--wx-scale,1)); }
+    .wxc-day-row { display:flex; align-items:center; gap:calc(10px * var(--wx-scale,1)); }
+    .wxc-day-name { font-size:calc(13px * var(--wx-scale,1)); width:calc(38px * var(--wx-scale,1)); flex-shrink:0; }
+    .wxc-day-icon svg { width:calc(22px * var(--wx-scale,1)); height:calc(22px * var(--wx-scale,1)); }
+    .wxc-day-bar-wrap { flex:1; display:flex; align-items:center; gap:calc(8px * var(--wx-scale,1)); min-width:0; }
+    .wxc-day-lo { font-size:calc(12px * var(--wx-scale,1)); color:var(--text2); width:calc(24px * var(--wx-scale,1)); text-align:right; flex-shrink:0; }
+    .wxc-day-bar-track { position:relative; flex:1; height:4px; border-radius:2px; background:var(--border); min-width:calc(30px * var(--wx-scale,1)); }
+    .wxc-day-bar { position:absolute; top:0; height:100%; border-radius:2px; background:linear-gradient(90deg, #5b9bd5, #fbbf24); }
+    .wxc-day-hi { font-size:calc(13px * var(--wx-scale,1)); font-weight:500; width:calc(24px * var(--wx-scale,1)); flex-shrink:0; }
+
+    .wxc-timeline { display:flex; align-items:flex-end; gap:calc(4px * var(--wx-scale,1)); overflow-x:auto; padding-bottom:2px; }
+    .wxc-tl-cell { display:flex; flex-direction:column; align-items:center; gap:calc(4px * var(--wx-scale,1)); min-width:calc(44px * var(--wx-scale,1)); flex-shrink:0; padding:calc(6px * var(--wx-scale,1)) calc(3px * var(--wx-scale,1)); border-radius:8px; }
+    .wxc-tl-cell.now { background:rgba(74,144,217,0.16); }
+    .wxc-tl-cell.day-boundary { border-left:1px dashed var(--border); padding-left:calc(9px * var(--wx-scale,1)); margin-left:calc(5px * var(--wx-scale,1)); }
+    .wxc-tl-label { font-size:calc(10px * var(--wx-scale,1)); color:var(--text2); text-transform:uppercase; letter-spacing:0.4px; white-space:nowrap; }
+    .wxc-tl-icon svg { width:calc(24px * var(--wx-scale,1)); height:calc(24px * var(--wx-scale,1)); }
+    .wxc-tl-temp { font-size:calc(13px * var(--wx-scale,1)); font-weight:500; }
+    .wxc-tl-temp.lo { color:var(--text2); font-weight:400; font-size:calc(11px * var(--wx-scale,1)); }
+
+    .wxc-columns { display:flex; gap:calc(16px * var(--wx-scale,1)); }
+    .wxc-col { flex:1; min-width:0; }
+    .wxc-col-title { font-size:calc(10px * var(--wx-scale,1)); text-transform:uppercase; letter-spacing:1px; color:#7ec8e3; margin-bottom:calc(8px * var(--wx-scale,1)); }
+    .wxc-col-row { display:flex; align-items:center; gap:calc(7px * var(--wx-scale,1)); padding:calc(5px * var(--wx-scale,1)) 0; border-bottom:1px solid var(--border); }
+    .wxc-col-row:last-child { border-bottom:none; }
+    .wxc-col-label { font-size:calc(12px * var(--wx-scale,1)); width:calc(36px * var(--wx-scale,1)); flex-shrink:0; }
+    .wxc-col-icon svg { width:calc(19px * var(--wx-scale,1)); height:calc(19px * var(--wx-scale,1)); flex-shrink:0; }
+    .wxc-col-temp { font-size:calc(12px * var(--wx-scale,1)); font-weight:500; margin-left:auto; }
+    .wxc-col-lo { font-size:calc(11px * var(--wx-scale,1)); color:var(--text2); margin-left:calc(5px * var(--wx-scale,1)); font-weight:400; }
+    .wxc-col-divider { width:1px; background:var(--border); flex-shrink:0; }
+
+    .wxc-tabs { display:flex; gap:4px; margin-bottom:calc(10px * var(--wx-scale,1)); background:rgba(255,255,255,0.06); border-radius:8px; padding:3px; width:fit-content; cursor:pointer; }
+    .wxc-tab-btn { font-size:calc(11px * var(--wx-scale,1)); font-weight:600; padding:calc(5px * var(--wx-scale,1)) calc(13px * var(--wx-scale,1)); border-radius:6px; color:var(--text2); }
+    .wxc-tab-btn.active { background:#4A90D9; color:#fff; }
+    .wxc-tab-content-hourly { display:flex; gap:calc(9px * var(--wx-scale,1)); overflow-x:auto; }
+    .wxc-tab-hour { display:flex; flex-direction:column; align-items:center; gap:calc(3px * var(--wx-scale,1)); min-width:calc(34px * var(--wx-scale,1)); flex-shrink:0; }
+    .wxc-tab-hour-label { font-size:calc(10px * var(--wx-scale,1)); color:var(--text2); white-space:nowrap; }
+    .wxc-tab-hour-icon svg { width:calc(22px * var(--wx-scale,1)); height:calc(22px * var(--wx-scale,1)); }
+    .wxc-tab-hour-temp { font-size:calc(13px * var(--wx-scale,1)); font-weight:500; }
+    .wxc-tab-content-daily { display:flex; flex-direction:column; gap:calc(6px * var(--wx-scale,1)); }
+    .wxc-tab-day { display:flex; align-items:center; gap:calc(10px * var(--wx-scale,1)); }
+    .wxc-tab-day-name { font-size:calc(13px * var(--wx-scale,1)); width:calc(48px * var(--wx-scale,1)); flex-shrink:0; }
+    .wxc-tab-day-icon svg { width:calc(22px * var(--wx-scale,1)); height:calc(22px * var(--wx-scale,1)); }
+    .wxc-tab-day-temp { font-size:calc(13px * var(--wx-scale,1)); font-weight:500; margin-left:auto; }
+    .wxc-tab-day-lo { font-size:calc(12px * var(--wx-scale,1)); color:var(--text2); margin-left:calc(6px * var(--wx-scale,1)); font-weight:400; }
+
+    /* Compact current-conditions header — Columns style only; the other
+       three styles reuse the existing .cur/.icon/.temp/.desc classes above
+       (already scoped under .w-weather, which this widget's own wrapper
+       carries) rather than needing anything new here. */
+    .wxc-cur-compact { display:flex; align-items:center; gap:calc(10px * var(--wx-scale,1)); margin-bottom:calc(12px * var(--wx-scale,1)); }
+    .wxc-cur-compact-icon svg { width:calc(32px * var(--wx-scale,1)); height:calc(32px * var(--wx-scale,1)); display:block; }
+    .wxc-cur-compact-temp { font-size:calc(24px * var(--wx-scale,1)); font-weight:300; letter-spacing:-1px; flex-shrink:0; }
+    .wxc-cur-compact-desc { font-size:calc(12.5px * var(--wx-scale,1)); color:var(--text2); }
 
     .no-data { color:var(--text2); font-size:13px; }
   </style>
@@ -2290,7 +2408,10 @@
      deletable/editable. See wireDirectEditMode() below. -->
 <button id="edit-mode-trigger" aria-label="Live Editing">✏️</button>
 <div id="edit-mode-bar" style="display:none">
-  <span id="edit-mode-label">Live Editing — tap a widget to select it</span>
+  <div id="edit-mode-label-group">
+    <button id="edit-mode-collapse-btn" title="Minimize" aria-label="Minimize edit bar">–</button>
+    <span id="edit-mode-label">Live Editing — tap a widget to select it</span>
+  </div>
   <button id="edit-mode-screen-settings-btn" title="Screen settings">⚙️</button>
   <button id="edit-mode-add-btn" title="Add a widget">➕</button>
   <button id="edit-mode-done">Done</button>
@@ -2320,6 +2441,24 @@
     <button id="screen-settings-close" aria-label="Done">✕</button>
   </div>
   <div id="screen-settings-body"></div>
+</div>
+<!-- Event detail — tapping any calendar event (month grid, Agenda/Upcoming/
+     Today's list rows, MiniCal's own Agenda layout) opens this. A centered
+     card over a dismissible backdrop, not a full-screen takeover like
+     Screen Settings above — the content itself (title, time, source,
+     notes) is short enough that a full screen would feel like overkill for
+     "quick info about one event." Deliberately NOT scoped to edit mode —
+     available any time, since looking up what an event actually is isn't
+     an editing action. See openEventDetail()/wireEventDetailTaps() below. -->
+<div id="event-detail-overlay" style="display:none">
+  <div id="event-detail-card">
+    <button id="event-detail-close" aria-label="Close">✕</button>
+    <div id="event-detail-colorbar"></div>
+    <div id="event-detail-title"></div>
+    <div id="event-detail-time"></div>
+    <div id="event-detail-source"></div>
+    <div id="event-detail-notes"></div>
+  </div>
 </div>
 <!-- Placement banner: shown after picking a type, replaces the normal Live
      Editing bar until the person taps the canvas (or cancels) — tapping
@@ -3537,6 +3676,8 @@ function renderLayout() {
   requestAnimationFrame(wireMiniCalNav);
   requestAnimationFrame(wireEntityStatusTaps);
   requestAnimationFrame(wireLayoutSwitcherTaps);
+  requestAnimationFrame(wireWeatherComboTabTaps);
+  requestAnimationFrame(wireEventDetailTaps);
   if (editModeActive) requestAnimationFrame(wireWidgetDragging);
   // Phase 4: a full re-render (SSE 'layout' push, the periodic 5-min
   // refresh, etc.) recreates every widget element from scratch, including
@@ -3687,6 +3828,7 @@ function renderWidget(w) {
     case 'weatherCurrent':  return renderWeatherCurrent(w);
     case 'weatherForecast': return renderWeatherForecast(w);
     case 'weatherHourly': return renderWeatherHourly(w);
+    case 'weatherComboForecast': return renderWeatherComboForecast(w);
     case 'minical':  return renderMiniCal(w);
     case 'upcoming': return renderUpcoming(w);
     case 'today':    return renderToday(w);
@@ -4250,7 +4392,7 @@ function setupWeatherAutoFit() {
   });
   document.querySelectorAll('.widget[data-widget-id]').forEach(el => {
     const w = state.layout.find(x => String(x.id) === String(el.dataset.widgetId));
-    if (w && ['weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly'].includes(w.type) && w.wxAutoFit) {
+    if (w && ['weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast'].includes(w.type) && w.wxAutoFit) {
       // Applied directly here, not left to .observe()'s own initial firing —
       // ResizeObserver callbacks are ALWAYS asynchronous by spec, never
       // synchronous, regardless of whether .observe() itself is called
@@ -4427,10 +4569,11 @@ function renderWeather(widget) {
   const cur = wx.current, daily = wx.daily;
   const code = cur.weather_code ?? cur.weathercode;
   const locationLabel = (widget && widget.wxLabel) || weatherLocationLabel();
+  const showLoc = !widget || widget.wxShowLocation !== false;
   const forecastDays = (widget && widget.wxForecastDays) || 5;
   const unit = effectiveWxUnit(widget);
   const forecast = weatherForecastDays(daily, forecastDays, unit);
-  const locationHtml = locationLabel ? `<div class="wx-location">${locationLabel}</div>` : '';
+  const locationHtml = (showLoc && locationLabel) ? `<div class="wx-location">${locationLabel}</div>` : '';
   const curHtml = `<div class="cur">
       <div class="icon">${weatherSVG(code, cur.is_day)}</div>
       <div><div class="temp">${formatTemp(cur.temperature_2m, unit)}</div>
@@ -4458,12 +4601,13 @@ function renderWeatherCurrent(widget) {
   const cur = wx.current, daily = wx.daily;
   const code = cur.weather_code ?? cur.weathercode;
   const locationLabel = (widget && widget.wxLabel) || weatherLocationLabel();
+  const showLoc = !widget || widget.wxShowLocation !== false;
   const days = (widget && widget.wxForecastDays !== undefined) ? widget.wxForecastDays : 0;
   const unit = effectiveWxUnit(widget);
   const strip = days > 0 ? `<div class="forecast">${weatherForecastDays(daily, days, unit)}</div>` : '';
   const hi = daily.temperature_2m_max ? formatTemp(daily.temperature_2m_max[0], unit) : null;
   const lo = daily.temperature_2m_min ? formatTemp(daily.temperature_2m_min[0], unit) : null;
-  const locationHtml = locationLabel ? `<div class="wx-location">${locationLabel}</div>` : '';
+  const locationHtml = (showLoc && locationLabel) ? `<div class="wx-location">${locationLabel}</div>` : '';
   const curHtml = `<div class="cur">
       <div class="icon">${weatherSVG(code, cur.is_day)}</div>
       <div><div class="temp">${formatTemp(cur.temperature_2m, unit)}</div>
@@ -4580,6 +4724,297 @@ function renderWeatherHourly(widget) {
   </div>`;
 }
 
+// Raw, structured hourly data — shared by every Combo Forecast layout style
+// below, since each style formats the same underlying hours differently.
+// Reuses the exact same "find the current hour" logic as
+// renderWeatherHourly's own hourly-strip branch above, since both need the
+// identical starting point.
+function weatherComboHourlyCells(wx, count, unit) {
+  const h = wx.hourly;
+  if (!h || !h.time) return [];
+  const times = h.time, temps = h.temperature_2m || [], codes = h.weather_code || [], pops = h.precipitation_probability || [];
+  const isDayArr = h.is_day || null;
+  const now = new Date();
+  let startIdx = 0;
+  for (let i = 0; i < times.length; i++) {
+    const t = new Date(times[i]);
+    if (t >= new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours())) { startIdx = i; break; }
+  }
+  const cells = [];
+  for (let k = 0; k < count; k++) {
+    const i = startIdx + k;
+    if (temps[i] == null) break;
+    const dt = new Date(times[i]);
+    const hr = dt.getHours() % 12 || 12, ap = dt.getHours() < 12 ? 'AM' : 'PM';
+    const isDay = isDayArr ? isDayArr[i] : (dt.getHours() >= 6 && dt.getHours() < 19 ? 1 : 0);
+    cells.push({
+      label: k === 0 ? 'Now' : `${hr}${ap}`,
+      icon: weatherSVG(codes[i], isDay),
+      temp: formatTemp(temps[i], unit),
+      pop: pops[i] != null ? pops[i] : 0,
+    });
+  }
+  return cells;
+}
+
+// Raw, structured daily data — same underlying source as weatherForecastDays()
+// above, but returns plain objects instead of pre-built .fd-shaped HTML,
+// since none of the four Combo Forecast layouts below use that specific
+// markup shape (each needs its own). Keeps the raw hi/lo alongside the
+// formatted string — Stacked's gradient bar needs the actual numbers to
+// scale correctly; nothing else uses them.
+function weatherComboDailyCells(daily, days, unit) {
+  const dailyCodes = daily.weather_code ?? daily.weathercode ?? [];
+  const n = Math.min(days || 5, daily.time.length);
+  return daily.time.slice(0, n).map((t, i) => {
+    const d = new Date(t + 'T00:00:00');
+    return {
+      day: i === 0 ? 'Today' : DAYS_S[d.getDay()],
+      icon: weatherSVG(dailyCodes[i]),
+      hi: formatTemp(daily.temperature_2m_max[i], unit),
+      lo: formatTemp(daily.temperature_2m_min[i], unit),
+      hiRaw: daily.temperature_2m_max[i],
+      loRaw: daily.temperature_2m_min[i],
+    };
+  });
+}
+
+// Combo Hourly + Daily Forecast — one widget merging what weatherHourly and
+// weatherForecast otherwise show separately, in one of four selectable
+// layouts (wxComboStyle). Each style gets its own default hour/day count
+// Current-conditions block for the Combo widget — added after a mockup
+// review, by explicit request. The "full" version deliberately reuses the
+// app's EXISTING .cur/.icon/.temp/.desc/.wx-hilo markup shape verbatim
+// (same as renderWeather()/renderWeatherCurrent() build above) rather than
+// inventing new classes — those are already scoped under .w-weather in
+// CSS, which this widget's own outer wrapper already carries, so the
+// exact same styling applies with zero new CSS needed for this variant.
+// The "compact" version is Columns-specific — confirmed via the mockup
+// that the full 56px/48px hero block ran noticeably taller than either
+// column's own list below it, visibly unbalancing the widget; this
+// smaller treatment (its own new CSS, since nothing existing matches it)
+// keeps current conditions present without dominating a layout that's
+// already tight on vertical room.
+function weatherComboCurrentHtml(wx, unit, compact, locationLabel) {
+  const cur = wx.current, daily = wx.daily;
+  const code = cur.weather_code ?? cur.weathercode;
+  const hi = daily && daily.temperature_2m_max ? formatTemp(daily.temperature_2m_max[0], unit) : null;
+  const lo = daily && daily.temperature_2m_min ? formatTemp(daily.temperature_2m_min[0], unit) : null;
+  const locHtml = locationLabel ? `<div class="wx-location">${locationLabel}</div>` : '';
+  if (compact) {
+    return `<div class="wxc-cur-compact">
+      <div class="wxc-cur-compact-icon">${weatherSVG(code, cur.is_day)}</div>
+      <div>
+        <div class="wxc-cur-compact-temp">${formatTemp(cur.temperature_2m, unit)}</div>
+        ${locHtml}
+      </div>
+      <div class="wxc-cur-compact-desc">${WMO_DESC[code]||''}${hi!==null ? ` · H${hi} L${lo}` : ''}</div>
+    </div>`;
+  }
+  return `<div class="cur">
+      <div class="icon">${weatherSVG(code, cur.is_day)}</div>
+      <div><div class="temp">${formatTemp(cur.temperature_2m, unit)}</div>
+      ${locHtml}
+      <div class="desc">${WMO_DESC[code]||''}</div>
+      ${hi!==null ? `<div class="wx-hilo">H ${hi} · L ${lo}</div>` : ''}</div>
+    </div>`;
+}
+function renderWeatherComboForecast(widget) {
+  const wx = weatherForWidget(widget);
+  if (!wx || !wx.daily) return `<div class="w-weather"><div class="no-data">Loading weather…</div></div>`;
+  const w = widget || {};
+  const style = ['stacked', 'timeline', 'columns', 'tabs'].includes(w.wxComboStyle) ? w.wxComboStyle : 'stacked';
+  const unit = effectiveWxUnit(widget);
+  const showLoc = w.wxShowLocation !== false;
+  const locationLabel = w.wxLabel || weatherLocationLabel();
+  // Added after the mockup review, by explicit request — defaults ON,
+  // since a toggle (rather than always-on) keeps the leaner, no-current
+  // look available to anyone who preferred what shipped first.
+  const showCurrent = w.wxComboShowCurrent !== false;
+  const hasCur = showCurrent && wx.current;
+  // By explicit request: the location label now sits inside the
+  // current-conditions block itself, right after the temperature — not
+  // as its own separate line above everything. Only when there's an
+  // actual current-conditions block for it to sit inside, though — if
+  // "Show current conditions" is off, there's no temperature for it to
+  // be "aligned with" in the first place, so it falls back to its
+  // original standalone line instead of silently disappearing just
+  // because an unrelated toggle is off.
+  const curHtml = hasCur ? weatherComboCurrentHtml(wx, unit, style === 'columns', showLoc ? locationLabel : '') : '';
+  const standaloneLocationHtml = (!hasCur && showLoc && locationLabel) ? `<div class="wx-location">${locationLabel}</div>` : '';
+
+  const styleDefaults = {
+    stacked:  { hours: 8, days: 5 },
+    timeline: { hours: 6, days: 4 },
+    columns:  { hours: 5, days: 5 },
+    tabs:     { hours: 8, days: 6 },
+  };
+  const d = styleDefaults[style];
+  const hourCount = w.wxHours || d.hours;
+  const dayCount = (w.wxForecastDays !== undefined) ? w.wxForecastDays : d.days;
+
+  const hourly = weatherComboHourlyCells(wx, hourCount, unit);
+  const daily = weatherComboDailyCells(wx.daily, dayCount, unit);
+
+  let inner;
+  if (style === 'timeline') inner = curHtml + weatherComboTimelineHtml(hourly, daily);
+  else if (style === 'columns') inner = curHtml + weatherComboColumnsHtml(hourly, daily);
+  else if (style === 'tabs') inner = curHtml + weatherComboTabsHtml(w, hourly, daily);
+  else inner = curHtml + weatherComboStackedHtml(hourly, daily);
+
+  // By explicit request: the whole content block (current conditions +
+  // whichever style's own hourly/daily content) can be aligned left,
+  // right, or center within the widget's own box, for whenever that box
+  // is wider than the content actually needs. Applies uniformly across
+  // all four styles, not just one — wraps everything in a width:fit-content
+  // container (so the block only ever takes up its own natural width,
+  // never stretches) and positions that whole block via align-items on the
+  // outer flex column, rather than trying to align each piece of content
+  // individually.
+  const contentAlign = ['left', 'right', 'center'].includes(w.wxComboAlign) ? w.wxComboAlign : 'left';
+  const alignItemsValue = contentAlign === 'right' ? 'flex-end' : contentAlign === 'center' ? 'center' : 'flex-start';
+
+  return `<div class="w-weather w-weather-combo w-weather-combo-${style}" style="${weatherWidgetStyle(widget)};align-items:${alignItemsValue}">
+    ${standaloneLocationHtml}
+    <div style="width:fit-content;max-width:100%;display:flex;flex-direction:column;align-items:${alignItemsValue}">${inner}</div>
+  </div>`;
+}
+
+// Style 1: Stacked — hourly strip on top, daily list below a divider. Each
+// day's hi/lo bar is scaled to the WEEK's overall min/max, not just that
+// day's own range — the same convention most forecast apps use, so a
+// day's bar position/width is directly comparable to every other day's at
+// a glance, not just internally consistent with itself.
+function weatherComboStackedHtml(hourly, daily) {
+  const hourlyHtml = hourly.length ? `<div class="wxc-hourly">
+    ${hourly.map(h => `<div class="wxc-hour">
+      <div class="wxc-hr-label">${h.label}</div>
+      <div class="wxc-hr-icon">${h.icon}</div>
+      <div class="wxc-hr-temp">${h.temp}</div>
+      <div class="wxc-hr-pop">${h.pop > 0 ? h.pop + '%' : ''}</div>
+    </div>`).join('')}
+  </div>` : '';
+
+  const allHi = daily.map(d => d.hiRaw).filter(v => v != null);
+  const allLo = daily.map(d => d.loRaw).filter(v => v != null);
+  const weekMax = allHi.length ? Math.max(...allHi) : 100;
+  const weekMin = allLo.length ? Math.min(...allLo) : 0;
+  const range = Math.max(weekMax - weekMin, 1); // avoid divide-by-zero on a perfectly flat week
+
+  const dailyHtml = daily.length ? `<div class="wxc-divider"></div><div class="wxc-daily">
+    ${daily.map(d => {
+      const leftPct = (d.loRaw != null) ? ((d.loRaw - weekMin) / range) * 100 : 0;
+      const widthPct = (d.hiRaw != null && d.loRaw != null) ? Math.max(((d.hiRaw - d.loRaw) / range) * 100, 6) : 100;
+      return `<div class="wxc-day-row">
+        <div class="wxc-day-name">${d.day}</div>
+        <div class="wxc-day-icon">${d.icon}</div>
+        <div class="wxc-day-bar-wrap">
+          <div class="wxc-day-lo">${d.lo}</div>
+          <div class="wxc-day-bar-track"><div class="wxc-day-bar" style="left:${leftPct}%;width:${widthPct}%"></div></div>
+          <div class="wxc-day-hi">${d.hi}</div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>` : '';
+
+  return hourlyHtml + dailyHtml;
+}
+
+// Style 2: Timeline Continuum — one unbroken horizontal strip, hours
+// flowing directly into days. Skips daily[0] ("Today") deliberately — it's
+// already fully represented by the hourly cells immediately before it, so
+// showing it again would be genuinely redundant (the same day twice), not
+// just visually repetitive.
+function weatherComboTimelineHtml(hourly, daily) {
+  const hourCells = hourly.map((h, i) => `<div class="wxc-tl-cell${i===0?' now':''}">
+    <div class="wxc-tl-label">${h.label}</div>
+    <div class="wxc-tl-icon">${h.icon}</div>
+    <div class="wxc-tl-temp">${h.temp}</div>
+  </div>`).join('');
+  const dayCells = daily.slice(1).map((d, i) => `<div class="wxc-tl-cell${i===0?' day-boundary':''}">
+    <div class="wxc-tl-label">${d.day}</div>
+    <div class="wxc-tl-icon">${d.icon}</div>
+    <div class="wxc-tl-temp">${d.hi}</div>
+    <div class="wxc-tl-temp lo">${d.lo}</div>
+  </div>`).join('');
+  return `<div class="wxc-timeline">${hourCells}${dayCells}</div>`;
+}
+
+// Style 3: Split Columns — hourly and daily as two compact vertical lists
+// side by side, divided by a hairline.
+function weatherComboColumnsHtml(hourly, daily) {
+  return `<div class="wxc-columns">
+    <div class="wxc-col">
+      <div class="wxc-col-title">Hourly</div>
+      ${hourly.map(h => `<div class="wxc-col-row">
+        <div class="wxc-col-label">${h.label}</div>
+        <div class="wxc-col-icon">${h.icon}</div>
+        <div class="wxc-col-temp">${h.temp}</div>
+      </div>`).join('')}
+    </div>
+    <div class="wxc-col-divider"></div>
+    <div class="wxc-col">
+      <div class="wxc-col-title">Daily</div>
+      ${daily.map(d => `<div class="wxc-col-row">
+        <div class="wxc-col-label">${d.day}</div>
+        <div class="wxc-col-icon">${d.icon}</div>
+        <div class="wxc-col-temp">${d.hi}<span class="wxc-col-lo">${d.lo}</span></div>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+// Style 4: Compact Tabs — a tab switches between a full-width Hourly view
+// and a full-width Daily view rather than showing both at once. Which tab
+// is active is purely client-side, in-memory, per widget id — deliberately
+// NOT a persisted widget setting (not saved, doesn't sync to the app or
+// other screens), since it's "what this screen happens to be showing right
+// now," not a configuration choice someone made. Survives this widget being
+// individually re-rendered (rerenderSingleWidget reads it back from this
+// map before rebuilding) but not a full page reload — the same lifetime as
+// any other transient, glanceable UI state on the display, like which
+// Agenda day is scrolled into view.
+const _weatherComboActiveTab = {};
+function weatherComboTabsHtml(widget, hourly, daily) {
+  const id = widget && widget.id;
+  const active = _weatherComboActiveTab[id] || 'hourly';
+  const content = active === 'daily'
+    ? daily.map(d => `<div class="wxc-tab-day">
+        <div class="wxc-tab-day-name">${d.day}</div>
+        <div class="wxc-tab-day-icon">${d.icon}</div>
+        <div class="wxc-tab-day-temp">${d.hi}<span class="wxc-tab-day-lo">${d.lo}</span></div>
+      </div>`).join('')
+    : hourly.map(h => `<div class="wxc-tab-hour">
+        <div class="wxc-tab-hour-label">${h.label}</div>
+        <div class="wxc-tab-hour-icon">${h.icon}</div>
+        <div class="wxc-tab-hour-temp">${h.temp}</div>
+      </div>`).join('');
+  return `<div class="wxc-tabs" data-widget-id="${id}">
+    <div class="wxc-tab-btn${active==='hourly'?' active':''}" data-tab="hourly">Hourly</div>
+    <div class="wxc-tab-btn${active==='daily'?' active':''}" data-tab="daily">Daily</div>
+  </div>
+  <div class="wxc-tab-content ${active === 'daily' ? 'wxc-tab-content-daily' : 'wxc-tab-content-hourly'}">${content}</div>`;
+}
+// Delegated click listener per .wxc-tabs element — re-wires fresh on every
+// re-render since rerenderSingleWidget() replaces this element entirely
+// each time (same established pattern as wireChoreChartTaps() etc. above:
+// the _tapWired guard only prevents double-wiring the SAME element within
+// one call to this function, not across separate re-renders producing a
+// new element).
+function wireWeatherComboTabTaps() {
+  document.querySelectorAll('.wxc-tabs[data-widget-id]').forEach(el => {
+    if (el._tapWired) return;
+    el._tapWired = true;
+    el.addEventListener('click', (e) => {
+      const btn = e.target.closest('.wxc-tab-btn');
+      if (!btn) return;
+      const id = el.dataset.widgetId;
+      _weatherComboActiveTab[id] = btn.dataset.tab;
+      rerenderSingleWidget(id);
+    });
+  });
+}
+
 // Color palette for event pills (cycles per-event so different events are visually distinct,
 // but falls back to the event's own color if it has one assigned)
 // Converts a hex color (#rgb or #rrggbb) + this event's feed's opacity
@@ -4631,6 +5066,75 @@ function eventPillColor(e, widget) {
     : undefined;
   const opacity = (override !== undefined && override !== null) ? override : e.color_opacity;
   return hexWithOpacity(hex, opacity);
+}
+
+// Event detail modal — new feature, by explicit request: tapping any
+// calendar event (month grid, Agenda/Upcoming/Today's rows, MiniCal's own
+// Agenda layout) shows its full detail, most usefully the description
+// (server-side field `notes`, sliced to 500 chars from the source
+// calendar's own DESCRIPTION), which none of those compact views have
+// room to show at all today.
+//
+// Composite key uniquely identifies one OCCURRENCE of one event, not just
+// the event itself — a recurring ical event's `uid` (aliased to `id` by
+// the /api/events query) repeats across every occurrence date, so `id`
+// alone isn't unique; `source` ('local' vs 'ical') keeps the two
+// otherwise-separate id namespaces (autoincrement integer vs ical uid
+// string) from ever colliding.
+function eventDetailKey(e) {
+  return `${e.source}:${e.id}:${e.date}`;
+}
+function openEventDetail(key) {
+  const e = (state.events || []).find(ev => eventDetailKey(ev) === key);
+  if (!e) return;
+  const overlay = document.getElementById('event-detail-overlay');
+  if (!overlay) return;
+
+  document.getElementById('event-detail-colorbar').style.background = eventPillColor(e, null);
+  document.getElementById('event-detail-title').textContent = e.title;
+
+  const isMultiDay = e.end_date && e.end_date > e.date;
+  const startD = new Date(e.date + 'T00:00:00');
+  const fmt = globalDateFormat();
+  let timeText;
+  if (isMultiDay) {
+    const endD = new Date(e.end_date + 'T00:00:00');
+    timeText = `${monthDayLabel(startD, fmt)} – ${monthDayLabel(endD, fmt)}`;
+  } else {
+    const dayText = monthDayLabel(startD, fmt);
+    timeText = e.start_time
+      ? `${dayText} · ${fmtTime(e.start_time)}${e.end_time ? ' – ' + fmtTime(e.end_time) : ''}`
+      : `${dayText} · All day`;
+  }
+  document.getElementById('event-detail-time').textContent = timeText;
+
+  const sourceEl = document.getElementById('event-detail-source');
+  sourceEl.textContent = e.feed_name || '';
+  sourceEl.style.display = e.feed_name ? '' : 'none';
+
+  const notesEl = document.getElementById('event-detail-notes');
+  notesEl.textContent = e.notes || '';
+  notesEl.style.display = e.notes ? '' : 'none';
+
+  overlay.style.display = 'flex';
+}
+function closeEventDetail() {
+  const overlay = document.getElementById('event-detail-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+// Delegated, idempotent — same re-wire-on-every-render pattern as
+// wireChoreChartTaps() etc. elsewhere in this file. Listens on each
+// rendered widget root rather than one document-level listener, since
+// that's the granularity rerenderSingleWidget() re-wires at.
+function wireEventDetailTaps() {
+  document.querySelectorAll('[data-event-key]').forEach(el => {
+    if (el._eventTapWired) return;
+    el._eventTapWired = true;
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openEventDetail(el.dataset.eventKey);
+    });
+  });
 }
 
 // Chalkboard's cells render with a transparent background (see
@@ -5143,7 +5647,7 @@ function renderMiniCalGrid(widget) {
         const timeStr = (widget && widget.calShowEndTime && e.end_time)
           ? `${fmtTime(e.start_time, widget && widget.calAmpmCase).replace(' ','')}–${fmtTime(e.end_time, widget && widget.calAmpmCase).replace(' ','')}`
           : fmtTime(e.start_time, widget && widget.calAmpmCase).replace(' ','');
-        return `<div class="mc-ev-text">${marker}${timeStr} ${e.title}</div>`;
+        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}">${marker}${timeStr} ${e.title}</div>`;
       }
       // A 'dot' multi-day event has no start_time — reuses this exact same
       // colored-dot-plus-text row single-day events use, so it's visually
@@ -5152,11 +5656,11 @@ function renderMiniCalGrid(widget) {
       if (!colorCodingOn || fullDayColorStyle === 'none') {
         // Master switch off, OR this widget's Full-Day Event Style is
         // explicitly 'none': plain text, no dot, no pill background.
-        return `<div class="mc-ev-text">${prefix}${e.title}</div>`;
+        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}">${prefix}${e.title}</div>`;
       }
       if (fullDayColorStyle === 'dot') {
         // 'dot' style: same row shape a timed event uses, no highlight.
-        return `<div class="mc-ev-text"><span class="mc-ev-dot" style="background:${eventPillColor(e, widget)}"></span>${prefix}${e.title}</div>`;
+        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}"><span class="mc-ev-dot" style="background:${eventPillColor(e, widget)}"></span>${prefix}${e.title}</div>`;
       }
       // 'highlight' (default): colored pill background only — no inner dot
       // anymore, see this function's own opening comment for why. Chalkboard
@@ -5164,7 +5668,7 @@ function renderMiniCalGrid(widget) {
       // eventPillBackgroundStyle() (beta.11), and its title text now
       // correctly follows --pill-text (beta.12) instead of a hardcoded
       // color, so the pill alone carries enough contrast on its own.
-      return `<div class="mc-ev-pill" style="${eventPillBackgroundStyle(e, widget)}">${prefix}${e.title}</div>`;
+      return `<div class="mc-ev-pill" data-event-key="${eventDetailKey(e)}" style="${eventPillBackgroundStyle(e, widget)}">${prefix}${e.title}</div>`;
     }).join('');
     const moreHtml = moreCount > 0 ? `<div class="mc-ev-more" data-base-more="${moreCount}">+${moreCount} more</div>` : `<div class="mc-ev-more" data-base-more="0" style="display:none"></div>`;
 
@@ -5318,7 +5822,7 @@ function renderMiniCalAgenda(widget) {
       const titleHtml = wrapText
         ? `<span class="ag-title" style="white-space:normal">${e.title}</span>`
         : `<span class="ag-title">${e.title}</span>`;
-      return `<div class="ag-ev">
+      return `<div class="ag-ev" data-event-key="${eventDetailKey(e)}">
         ${colorCodingOn ? `<div class="ag-dot" style="background:${eventPillColor(e, widget)}"></div>` : ''}
         <div class="ag-time">${timeLabel}</div>
         ${titleHtml}
@@ -5410,7 +5914,7 @@ function buildEventRow(e, opts) {
   })() : '';
 
   if (layoutMode === 'cards') {
-    return `<div class="ev-card" style="border-left-color:${eventPillColor(e, widget)}">
+    return `<div class="ev-card" data-event-key="${eventDetailKey(e)}" style="border-left-color:${eventPillColor(e, widget)}">
       ${dateBadgeHtml}
       <div class="ev-card-body">
         <div class="ev-title">${e.title}</div>
@@ -5421,7 +5925,7 @@ function buildEventRow(e, opts) {
   }
 
   if (layoutMode === 'compact') {
-    return `<div class="ev-compact">
+    return `<div class="ev-compact" data-event-key="${eventDetailKey(e)}">
       <div class="ev-compact-dot" style="background:${eventPillColor(e, widget)}"></div>
       ${timeLabel ? `<div class="ev-compact-time">${timeLabel}</div>` : ''}
       <div class="ev-compact-title">${e.title}</div>
@@ -5430,7 +5934,7 @@ function buildEventRow(e, opts) {
   }
 
   // 'list' — original style
-  return `<div class="ev">
+  return `<div class="ev" data-event-key="${eventDetailKey(e)}">
     ${dateBadgeHtml}
     <div class="ev-bar" style="background:${eventPillColor(e, widget)}"></div>
     <div class="ev-body">
@@ -6195,20 +6699,20 @@ function wireDirectEditMode() {
   document.getElementById('edit-mode-trigger').addEventListener('click', enterEditMode);
   document.getElementById('edit-mode-done').addEventListener('click', exitEditMode);
   document.getElementById('edit-mode-add-btn').addEventListener('click', openWidgetPicker);
+  document.getElementById('edit-mode-collapse-btn').addEventListener('click', () => {
+    document.getElementById('edit-mode-bar').classList.toggle('edit-bar-collapsed');
+  });
   document.getElementById('edit-mode-screen-settings-btn').addEventListener('click', () => {
-    // Diagnostic + genuinely useful either way: confirms the tap itself
-    // registered, separate from whatever openScreenSettingsPanel() does
-    // afterward. If this toast never appears on a real tap, the problem is
-    // upstream of this code entirely (the click isn't reaching the handler
-    // at all — a DOM/overlap/hit-testing issue) rather than anything in
-    // openScreenSettingsPanel() itself, which sets its overlay visible
-    // synchronously before any await, so a later failure there wouldn't
-    // explain the panel never appearing either.
-    showDisplayToast('Opening screen settings…');
     openScreenSettingsPanel();
   });
   document.getElementById('screen-settings-close').addEventListener('click', () => {
     document.getElementById('screen-settings-overlay').style.display = 'none';
+  });
+  document.getElementById('event-detail-close').addEventListener('click', closeEventDetail);
+  document.getElementById('event-detail-overlay').addEventListener('click', (e) => {
+    // Only the backdrop itself dismisses — a tap on the card (or anything
+    // inside it) shouldn't close the modal out from under someone reading it.
+    if (e.target.id === 'event-detail-overlay') closeEventDetail();
   });
   document.getElementById('widget-place-cancel').addEventListener('click', cancelPlacementMode);
   wireCanvasPlacementTap();
@@ -6288,7 +6792,10 @@ function enterEditMode() {
   editModeActive = true;
   document.body.classList.add('edit-mode-active');
   document.getElementById('edit-mode-trigger').classList.remove('shown');
-  document.getElementById('edit-mode-bar').style.display = 'flex';
+  const editBar = document.getElementById('edit-mode-bar');
+  editBar.classList.toggle('edit-bar-bottom', state.editBarPosition === 'bottom');
+  editBar.classList.remove('edit-bar-collapsed');
+  editBar.style.display = 'flex';
   wireWidgetDragging();
   // Poll Home Assistant entity state much more frequently while Live Edit
   // is actually open — real report: these are externally-controlled
@@ -6698,7 +7205,7 @@ function applyResizeFrame() {
   // established pattern immediately below (onResizeEnd already does the
   // equivalent explicit call for the calendar's own fitting logic, rather
   // than relying on anything automatic for that one either).
-  if (w.type === 'weather' || w.type === 'weatherCurrent' || w.type === 'weatherForecast' || w.type === 'weatherHourly') {
+  if (w.type === 'weather' || w.type === 'weatherCurrent' || w.type === 'weatherForecast' || w.type === 'weatherHourly' || w.type === 'weatherComboForecast') {
     if (w.wxAutoFit) autoFitWeatherContent(el);
   } else if (['clock', 'date', 'countdown', 'timer', 'text'].includes(w.type)) {
     if (w.autoFit) autoFitTextWidgetContent(el, w);
@@ -6801,7 +7308,7 @@ function rerenderSingleWidget(id) {
   // replaced DOM. All idempotent (each checks its own _tapWired flag before
   // attaching), so calling them broadly here is safe and simpler than
   // scoping each one to just this element.
-  wireChoreChartTaps(); wireTodoWidgetTaps(); wireShoppingWidgetTaps(); wireTasksWidgetTaps(); wireMiniCalNav(); wireEntityStatusTaps(); wireLayoutSwitcherTaps();
+  wireChoreChartTaps(); wireTodoWidgetTaps(); wireShoppingWidgetTaps(); wireTasksWidgetTaps(); wireMiniCalNav(); wireEntityStatusTaps(); wireLayoutSwitcherTaps(); wireWeatherComboTabTaps(); wireEventDetailTaps();
   // QR codes are generated into their container by a separate pass after
   // any render (renderQRCodes(), normally run after a full renderLayout())
   // — innerHTML alone only creates an empty .qr-container div, so without
@@ -6834,7 +7341,7 @@ function rerenderSingleWidget(id) {
   // Runs synchronously (not requestAnimationFrame-deferred) — same "don't
   // let the browser paint an un-fit frame first" reasoning as
   // setupWeatherAutoFit/setupTextAutoFit's own comments.
-  if (['weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly'].includes(w.type)) {
+  if (['weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast'].includes(w.type)) {
     if (w.wxAutoFit) {
       autoFitWeatherContent(el);
       if (_weatherAutoFitObserver) _weatherAutoFitObserver.observe(el); // no-op if already observed
@@ -6872,7 +7379,7 @@ async function deleteWidget(id) {
 // separately-built settings UI ported field-for-field from app.html's own
 // drawWidgetSettingsPanel(), not a generic renderer. Add to this list only
 // alongside actually building that type's render/wire functions.
-const WIDGET_ADVANCED_TYPES = ['minical', 'weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'todo', 'shoppinglist', 'chorechart', 'chorelb', 'countdown', 'radar', 'qrcode', 'timer', 'moonphase', 'airquality', 'onthisday', 'dailyquote', 'metar', 'clock', 'date', 'news', 'stocks', 'travel', 'sports', 'text', 'decoration', 'upcoming', 'today', 'agenda', 'photo', 'tasks', 'tasksCombined', 'entitystatus', 'smarthomeDashboard', 'groupcontrol'];
+const WIDGET_ADVANCED_TYPES = ['minical', 'weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast', 'todo', 'shoppinglist', 'chorechart', 'chorelb', 'countdown', 'radar', 'qrcode', 'timer', 'moonphase', 'airquality', 'onthisday', 'dailyquote', 'metar', 'clock', 'date', 'news', 'stocks', 'travel', 'sports', 'text', 'decoration', 'upcoming', 'today', 'agenda', 'photo', 'tasks', 'tasksCombined', 'entitystatus', 'smarthomeDashboard', 'groupcontrol'];
 
 function openWidgetSettingsPanel(id) {
   const w = state.layout.find(x => String(x.id) === String(id));
@@ -7155,7 +7662,7 @@ function wireAccordion(containerId) {
 // panel only ever renders once per open, it's never re-rendered in place
 // the way Screens management's screen list periodically is.
 function wireFlsSubAccordionsPreview() {
-  ['ss-fls-toggle-section', 'ss-fls-schedule-section'].forEach(id => {
+  ['ss-fls-toggle-section', 'ss-fls-schedule-section', 'ss-editbar-section'].forEach(id => {
     const sec = document.querySelector(`#screen-settings-body [data-acc="${id}"]`);
     if (!sec) return;
     const btn = sec.querySelector(':scope > .acc-head');
@@ -7205,7 +7712,7 @@ async function openWidgetAdvancedPanel(id) {
     body.innerHTML = renderCalendarAdvancedSettings(w) + renderCalendarFamilyFilterHtml(w, feeds);
     wireCalendarAdvancedSettings(w);
     wireCalendarFamilyFilter(w);
-  } else if (['weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly'].includes(w.type)) {
+  } else if (['weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast'].includes(w.type)) {
     title.textContent = 'Weather Settings';
     body.innerHTML = '<p class="was-hint">Loading…</p>';
     let wxSettings = null;
@@ -8328,10 +8835,17 @@ function renderWeatherAdvancedSettings(w, wxSettings) {
   const locationAlign = w.wxLocationAlign || 'left';
   const contentPct = Math.round(((w.wxContentScale) || 1) * 100);
   const locationVal = (wxSettings && (wxSettings.weather_location_manual || wxSettings.weather_location_auto)) || '';
-  const defaultDays = w.type === 'weatherCurrent' ? 0 : 5;
+  // Matches renderWeatherComboForecast()'s own per-style defaults exactly —
+  // this slider should show the same "effective" day count the widget
+  // itself would actually use when wxForecastDays hasn't been explicitly
+  // set, not an unrelated flat default that wouldn't match what's on screen.
+  const comboStyleDayDefaults = { stacked: 5, timeline: 4, columns: 5, tabs: 6 };
+  const defaultDays = w.type === 'weatherCurrent' ? 0
+    : w.type === 'weatherComboForecast' ? (comboStyleDayDefaults[w.wxComboStyle] || 5)
+    : 5;
   const forecastDays = (w.wxForecastDays !== undefined) ? w.wxForecastDays : defaultDays;
   const dayMin = w.type === 'weatherCurrent' ? 0 : 1;
-  const forecastSlider = (w.type === 'weather' || w.type === 'weatherForecast' || w.type === 'weatherCurrent') ? `
+  const forecastSlider = (w.type === 'weather' || w.type === 'weatherForecast' || w.type === 'weatherCurrent' || w.type === 'weatherComboForecast') ? `
     <div class="was-row">
       <label>Forecast Days${w.type==='weatherCurrent' ? ' (0 = current only)' : ''}</label>
       <div class="was-range-row">
@@ -8340,17 +8854,52 @@ function renderWeatherAdvancedSettings(w, wxSettings) {
       </div>
       <p class="was-hint">How many days of forecast to show (up to 16). ${w.type==='weatherCurrent' ? 'Set to 0 for current conditions only.' : 'Default is 5.'}</p>
     </div>` : '';
+  const comboStyleHourDefaults = { stacked: 8, timeline: 6, columns: 5, tabs: 8 };
+  const wxComboStyle = w.wxComboStyle || 'stacked';
+  const comboStyleControl = (w.type === 'weatherComboForecast') ? `
+    <div class="was-row">
+      <label>Layout Style</label>
+      <select id="wx-combo-style-select">
+        <option value="stacked"  ${wxComboStyle==='stacked'?'selected':''}>Stacked — hourly row on top, daily list below</option>
+        <option value="timeline" ${wxComboStyle==='timeline'?'selected':''}>Timeline — one continuous strip, hours flowing into days</option>
+        <option value="columns"  ${wxComboStyle==='columns'?'selected':''}>Split Columns — hourly and daily side by side</option>
+        <option value="tabs"     ${wxComboStyle==='tabs'?'selected':''}>Compact Tabs — a tab switches between the two (tap it on the display)</option>
+      </select>
+    </div>
+    <div class="was-row">
+      <label>Content Alignment ${infoBtn("Where the whole hourly/daily block sits within the widget's box, if the box is wider than the content needs. Applies to all four layout styles.")}</label>
+      <select id="wx-combo-align-select">
+        <option value="left"   ${(w.wxComboAlign||'left')==='left'?'selected':''}>Left</option>
+        <option value="center" ${w.wxComboAlign==='center'?'selected':''}>Center</option>
+        <option value="right"  ${w.wxComboAlign==='right'?'selected':''}>Right</option>
+      </select>
+    </div>
+    <div class="was-toggle-row">
+      <label>Show current conditions</label>
+      <input type="checkbox" id="wx-combo-show-current" ${w.wxComboShowCurrent !== false ? 'checked' : ''}>
+    </div>` : '';
   const wxHourlyStyle = w.wxHourlyStyle || 'hourly';
-  const wxHours = w.wxHours || 6;
-  const hourlyControls = (w.type === 'weatherHourly') ? `
+  const wxHours = w.wxHours || (w.type === 'weatherComboForecast' ? (comboStyleHourDefaults[wxComboStyle] || 8) : 6);
+  const hourlyStyleControl = (w.type === 'weatherHourly') ? `
     <div class="was-row">
       <label>Style</label>
       <select id="wx-hourly-style">
         <option value="hourly" ${wxHourlyStyle==='hourly'?'selected':''}>By hour (next N hours)</option>
         <option value="parts"  ${wxHourlyStyle==='parts'?'selected':''}>Morning / Afternoon / Evening</option>
       </select>
-    </div>
-    <div class="was-row" id="wx-hours-row" style="${wxHourlyStyle==='hourly'?'':'display:none'}">
+    </div>` : '';
+  // Always rendered (not conditionally omitted) for weatherHourly, exactly
+  // like before this widget type existed — only its CSS display toggles
+  // based on Style above, so the existing show/hide JS (which looks up
+  // #wx-hours-row and expects it to already be in the DOM either way)
+  // keeps working correctly in both directions, including switching FROM
+  // Parts back TO "By hour" within the same panel session. Always included
+  // AND visible for the combo widget — none of its four layouts have an
+  // equivalent "parts" mode to hide this behind.
+  const includeHoursSlider = w.type === 'weatherHourly' || w.type === 'weatherComboForecast';
+  const hoursSliderHidden = w.type === 'weatherHourly' && wxHourlyStyle !== 'hourly';
+  const hoursSlider = includeHoursSlider ? `
+    <div class="was-row" id="wx-hours-row" style="${hoursSliderHidden ? 'display:none' : ''}">
       <label>Hours to Show ${infoBtn("Number of upcoming hours in the strip. Widen the widget box if they get cramped.")}</label>
       <div class="was-range-row">
         <input type="range" id="wx-hours-range" min="2" max="12" step="1" value="${wxHours}">
@@ -8380,7 +8929,9 @@ function renderWeatherAdvancedSettings(w, wxSettings) {
     </div>
     ${forecastSlider}
     ${locationPositionControl}
-    ${hourlyControls}
+    ${comboStyleControl}
+    ${hourlyStyleControl}
+    ${hoursSlider}
     <div class="was-box">
       <div class="was-toggle-row">
         <label>Override location for this widget ${infoBtn("Use a different location than the global one — e.g. a vacation-home display. Leave off to use the location from Settings → Weather.")}</label>
@@ -8404,6 +8955,12 @@ function renderWeatherAdvancedSettings(w, wxSettings) {
         <option value="fahrenheit" ${w.wxUnit === 'fahrenheit' ? 'selected' : ''}>Fahrenheit (°F)</option>
         <option value="celsius" ${w.wxUnit === 'celsius' ? 'selected' : ''}>Celsius (°C)</option>
       </select>
+    </div>
+    <div class="was-row">
+      <div class="was-toggle-row">
+        <label>Show Location Name ${infoBtn("Turn off to hide the location name entirely on this widget, keeping just the weather itself.")}</label>
+        <input type="checkbox" id="wx-show-location" ${w.wxShowLocation !== false ? 'checked' : ''}>
+      </div>
     </div>
     <div class="was-row">
       <label>Location Name ${infoBtn("Set above, in the override box — the Label field there is this widget's location name.")}</label>
@@ -8455,11 +9012,53 @@ function wireWeatherAdvancedSettings(w, wxSettings) {
       scheduleLayoutSave();
     });
   }
+  document.getElementById('wx-show-location').addEventListener('change', (e) => {
+    w.wxShowLocation = e.target.checked;
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  });
   const hourlyStyle = document.getElementById('wx-hourly-style');
   if (hourlyStyle) {
     hourlyStyle.addEventListener('change', (e) => {
       w.wxHourlyStyle = e.target.value;
       const hr = document.getElementById('wx-hours-row'); if (hr) hr.style.display = e.target.value === 'hourly' ? '' : 'none';
+      rerenderSingleWidget(w.id);
+      scheduleLayoutSave();
+    });
+  }
+  const comboStyleSelect = document.getElementById('wx-combo-style-select');
+  if (comboStyleSelect) {
+    comboStyleSelect.addEventListener('change', (e) => {
+      w.wxComboStyle = e.target.value;
+      rerenderSingleWidget(w.id);
+      scheduleLayoutSave();
+      // Re-renders the whole panel body, unlike the lighter single-element
+      // toggles above — a style change shifts the DISPLAYED default for
+      // both Forecast Days and Hours to Show at once (each style has its
+      // own), not just one element's visibility, so patching those two
+      // sliders individually would need duplicating this function's own
+      // default-lookup logic here too. Simplest correct fix: rebuild from
+      // the same render function already used to build this panel the
+      // first time, now with the just-changed w.wxComboStyle in scope.
+      const body = document.getElementById('widget-advanced-body');
+      if (body) {
+        body.innerHTML = renderWeatherAdvancedSettings(w, wxSettings);
+        wireWeatherAdvancedSettings(w, wxSettings);
+      }
+    });
+  }
+  const comboAlignSelect = document.getElementById('wx-combo-align-select');
+  if (comboAlignSelect) {
+    comboAlignSelect.addEventListener('change', (e) => {
+      w.wxComboAlign = e.target.value;
+      rerenderSingleWidget(w.id);
+      scheduleLayoutSave();
+    });
+  }
+  const comboShowCurrent = document.getElementById('wx-combo-show-current');
+  if (comboShowCurrent) {
+    comboShowCurrent.addEventListener('change', (e) => {
+      w.wxComboShowCurrent = e.target.checked;
       rerenderSingleWidget(w.id);
       scheduleLayoutSave();
     });
@@ -11310,6 +11909,7 @@ const WIDGET_DEFS = [
   { type:'weatherCurrent',  label:'Current Wx', icon:'🌡️' },
   { type:'weatherForecast', label:'Forecast',   icon:'📆' },
   { type:'weatherHourly', label:'Hourly Wx', icon:'🕘' },
+  { type:'weatherComboForecast', label:'Combo Forecast', icon:'🌦️' },
   { type:'minical',  label:'Calendar', icon:'🗓️' },
   { type:'upcoming', label:'Upcoming', icon:'📋' },
   { type:'today',    label:'Today',    icon:'📍' },
@@ -11343,7 +11943,7 @@ const WIDGET_DEFS = [
 const WIDGET_CATEGORIES = [
   { id:'time',     label:'Time',     icon:'🕐', types:['clock','date','datetime','countdown','timer'] },
   { id:'calendar', label:'Calendar', icon:'🗓️', types:['minical','upcoming','today','agenda'] },
-  { id:'weather',  label:'Weather',  icon:'☀️', types:['weather','weatherCurrent','weatherForecast','weatherHourly','airquality','moonphase','metar','radar'] },
+  { id:'weather',  label:'Weather',  icon:'☀️', types:['weather','weatherCurrent','weatherForecast','weatherHourly','weatherComboForecast','airquality','moonphase','metar','radar'] },
   { id:'tasks',    label:'Tasks',    icon:'✅', types:['tasks','tasksCombined','todo'] },
   { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel'] },
   { id:'photos',   label:'Photos',   icon:'🖼️', types:['photo'] },
@@ -11377,6 +11977,7 @@ function buildNewWidgetDefaults(type) {
   else if (type === 'weatherCurrent') { w.w = 24; w.h = 22; w.wxForecastDays = 0; }
   else if (type === 'weatherForecast') { w.w = 40; w.h = 18; w.wxForecastDays = 5; }
   else if (type === 'weatherHourly') { w.w = 42; w.h = 20; w.wxHourlyStyle = 'hourly'; w.wxHours = 6; }
+  else if (type === 'weatherComboForecast') { w.w = 42; w.h = 36; w.wxComboStyle = 'stacked'; }
   else if (type === 'chorechart') { w.w = 50; w.h = 45; w.choreTitle = 'Daily Chore Chart'; w.choreShowDone = true; w.choreFontPx = 15; }
   else if (type === 'countdown') { w.w = 24; w.h = 22; w.cdTitle = 'Countdown'; w.cdFontPx = 22; w.cdRepeatYearly = false; }
   else if (type === 'moonphase') { w.w = 22; w.h = 22; w.mpFontPx = 20; w.mpShowIllum = true; w.mpShowAge = false; }
@@ -11494,14 +12095,38 @@ async function openScreenSettingsPanel() {
     <div id="ss-fls-schedule-list" style="display:flex;flex-direction:column;gap:10px"></div>
     <button type="button" class="btn" id="ss-fls-schedule-add-btn" style="width:100%;margin-top:8px;background:var(--card);border:1px solid var(--border)">+ Add a scheduled switch</button>
   `;
+  const editBarSectionInner = `
+    <label class="was-hint" style="display:block;margin-bottom:6px">Position</label>
+    <div id="ss-editbar-position-picker" style="display:flex;gap:6px">
+      ${['top','bottom'].map(pos => `
+        <button type="button" class="ss-editbar-position-btn${(state.editBarPosition||'top')===pos?' active':''}" data-position="${pos}"
+          style="flex:1;padding:8px 0;border-radius:8px;border:1px solid rgba(255,255,255,0.18);font-size:12px;font-weight:600;text-transform:capitalize;color:#e8edf5;
+            background:${(state.editBarPosition||'top')===pos?'rgba(74,144,217,0.5)':'rgba(255,255,255,0.08)'}">${pos}</button>
+      `).join('')}
+    </div>
+    <p class="was-hint" style="margin-top:8px">Where the "Live Editing" bar sits while editing a layout. It can also be minimized down to a small button at any time by tapping the – on the bar itself, if a widget near that edge is still in the way.</p>
+  `;
   body.innerHTML = `
     <div style="padding:16px;display:flex;flex-direction:column;gap:12px">
       ${accordionSection({ id: 'ss-fls-toggle-section', label: 'Show Screen Switcher', inner: toggleSectionInner }, true)}
       ${accordionSection({ id: 'ss-fls-schedule-section', label: 'Schedule', inner: scheduleSectionInner })}
+      ${accordionSection({ id: 'ss-editbar-section', label: 'Edit Bar', inner: editBarSectionInner })}
     </div>
   `;
   overlay.style.display = 'flex';
   wireFlsSubAccordionsPreview();
+  document.querySelectorAll('.ss-editbar-position-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.ss-editbar-position-btn').forEach(b => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.style.background = active ? 'rgba(74,144,217,0.5)' : 'rgba(255,255,255,0.08)';
+      });
+      state.editBarPosition = btn.dataset.position;
+      document.getElementById('edit-mode-bar').classList.toggle('edit-bar-bottom', btn.dataset.position === 'bottom');
+      saveAppearance('edit_bar_position', btn.dataset.position);
+    });
+  });
 
   document.getElementById('ss-fls-toggle').addEventListener('change', async (e) => {
     document.getElementById('ss-fls-presets').style.display = e.target.checked ? '' : 'none';
@@ -11626,7 +12251,6 @@ async function openScreenSettingsPanel() {
             <input type="checkbox" data-target-id="${escapeHtmlD(d.slug)}" ${existing ? 'checked' : ''}>
             <input type="text" class="ss-target-icon" data-target-id="${escapeHtmlD(d.slug)}" value="${escapeHtmlD(existing ? existing.icon || '' : '')}" maxlength="8" placeholder="icon" style="width:44px;text-align:center;font-size:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:6px;color:#e8edf5;padding:6px">
             ${escapeHtmlD(d.name)}
-            <span style="font-size:10px;opacity:0.5;font-family:monospace">(${escapeHtmlD(d.slug)})</span>
           </label>`;
         }).join('')
       : `<div class="was-hint">No other displays yet.</div>`;
@@ -11647,7 +12271,6 @@ async function openScreenSettingsPanel() {
             <input type="checkbox" data-target-id="${p.id}" ${existing ? 'checked' : ''}>
             <input type="text" class="ss-target-icon" data-target-id="${p.id}" value="${escapeHtmlD(existing ? existing.icon || '' : '')}" maxlength="8" placeholder="icon" style="width:44px;text-align:center;font-size:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:6px;color:#e8edf5;padding:6px">
             ${escapeHtmlD(p.name)}
-            <span style="font-size:10px;opacity:0.5;font-family:monospace">(#${p.id})</span>
           </label>`;
         }).join('')
       : `<div class="was-hint">No saved layouts yet.</div>`;
@@ -14925,6 +15548,7 @@ async function resolveAssignedProfile() {
       state.floatingSwitcherStyle = cfg.floating_switcher_style || 'circles';
       state.floatingSwitcherBarMode = cfg.floating_switcher_bar_mode || 'icons';
       state.floatingSwitcherReveal = cfg.floating_switcher_reveal || 'always';
+      state.editBarPosition = cfg.edit_bar_position || 'top';
       renderFloatingSwitcher();
       prefetchSwitcherPresets().catch(() => {});
     }
