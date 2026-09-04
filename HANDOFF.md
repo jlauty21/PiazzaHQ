@@ -4961,3 +4961,19 @@ project's zip-building only started running on Windows partway through this
 beta cycle. Nothing shipped to actual customers (pre-license-required
 releases, or anyone on stable) carries this defect; it was contained to
 this beta cycle's own testers.
+
+---
+
+## Session note: the arm64 Docker fix is properly its own version (beta.11 → beta.12)
+
+Follow-up correction, same session: the arm64 GHCR fix was originally folded
+into beta.11's own CHANGELOG entry (reasoning at the time: "no app code
+changed, just fixes something published minutes ago"). Explicit standing
+instruction from Jon going forward: **any change gets its own beta.N, full
+stop** — no folding a real change into a prior version's entry just because
+it's CI-only or same-day. Split the CHANGELOG entry out into its own
+`## 1.83.3-beta.12` section and bumped the version everywhere
+(`package.json` ×2, `package-lock.json`, `piazzahq.iss`). Content is
+otherwise identical to what beta.11 already had (Pi/Windows byte-for-byte
+unchanged) — only the version number and the CHANGELOG's own bookkeeping
+changed.

@@ -287,3 +287,14 @@ Docker and mostly happens on the first real image build.
 - [ ] (Windows) Nothing to check — this fix never touches
       `windows/build-input/app/`; `server.js`/`public/` are byte-for-byte
       beta.10.
+
+### beta.12 — Docker arm64 image fix (CI-only, no Pi/Windows change)
+
+- [ ] (has Docker + a real arm64 box, e.g. a Pi 4/5) `docker pull
+      ghcr.io/jlauty21/piazzahq:beta` then `docker run` — should come up
+      clean with no "exec format error" and no platform-mismatch warning.
+      (Already verified once this cycle on a real Pi 3 — this item is about
+      confirming it stays fixed on a future republish, not discovering it
+      fresh.)
+- [ ] (Pi/Windows) Nothing to check — `server.js`/`public/`/`install.sh`
+      are byte-for-byte beta.11. This version bump is CI-workflow-only.

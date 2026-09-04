@@ -35,6 +35,8 @@ publish a build.
     (beta.3 through beta.10); anyone on an affected build should update to
     beta.11+ to get a Pi/kiosk that self-heals its own permissions and
     correctly detects X11 vs Wayland going forward.
+
+## 1.83.3-beta.12
 - **Docker: added arm64 to the published image (Pi 4/5, arm64 NAS boxes).**
   The image was amd64-only until now — confirmed broken on real arm64
   hardware, not just theoretically: `docker pull` succeeded (the tag
@@ -48,6 +50,11 @@ publish a build.
   (arm64) each built and ran the underlying Dockerfile correctly locally;
   this closes the gap between "the packaging works" and "the published
   image actually works," specifically for arm64 pullers.
+- **No Pi/Windows-facing change** — this is a `.github/workflows/` CI file
+  only. `server.js`/`public/`/`install.sh` are byte-for-byte beta.11; a
+  device that's already on beta.11 has nothing to gain from updating to
+  beta.12 specifically. This version bump exists purely so the published
+  Pi zip and the GitHub repo state stay in sync with each other.
 
 ## 1.83.3-beta.10
 - **Windows wall display: an on-screen "Exit full-screen" button.** The
