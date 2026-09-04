@@ -1,6 +1,6 @@
 {
   "name": "piazzahq",
-  "version": "1.83.3-beta.12",
+  "version": "1.83.3",
   "description": "Always-on Raspberry Pi calendar display with mobile control app",
   "main": "server.js",
   "scripts": {

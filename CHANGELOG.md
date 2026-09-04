@@ -4,6 +4,53 @@ All notable changes to Piazza HQ (formerly Pi Calendar). The central server
 reads the top matching section here to pre-fill release notes when you
 publish a build.
 
+## 1.83.3
+Promoted from the beta.1–beta.12 cycle. Highlights below; see each beta
+section further down for the full blow-by-blow (native module gaps found,
+exact fixes, verification done at each step).
+
+- **New: Piazza HQ now runs on Windows.** A single bundled installer (Node.js
+  included, no separate install step), no admin rights needed. Choose during
+  setup whether this PC is a normal control device or a dedicated wall
+  display (full-screen kiosk, starts at sign-in). Self-updates automatically,
+  same as the Pi.
+- **New: Docker support**, for a NAS, mini PC, or home server you already
+  run other self-hosted apps on — no dedicated hardware, no display
+  required, managed entirely from a browser. Published as a real
+  multi-platform image (amd64 and arm64), verified end-to-end on real
+  hardware of both architectures before this release.
+- **New: on the Windows wall display, tap the screen to reveal a button that
+  exits full-screen mode** — Alt+F4 always worked but wasn't discoverable on
+  a touchscreen kiosk with no keyboard.
+- **Website redesign** to reflect all of the above — no longer presented as
+  Pi-only; a platform picker (Pi / Windows / Docker) drives both the
+  homepage and a full step-by-step guide for each.
+- Plus various under-the-hood fixes found and closed out during the beta
+  cycle: a Windows installer upgrade failure over a running instance, a Pi
+  kiosk that could fail to auto-launch after a fresh install (packaging +
+  session-detection bugs, both fixed with self-healing behavior going
+  forward), and the Docker image's own arm64 gap.
+
+## 1.83.3-beta.12
+- **Docker: added arm64 to the published image (Pi 4/5, arm64 NAS boxes).**
+  The image was amd64-only until now — confirmed broken on real arm64
+  hardware, not just theoretically: `docker pull` succeeded (the tag
+  existed), but `docker run` failed outright with "exec format error," since
+  there was no matching platform in the manifest for Docker to fall back to.
+  `.github/workflows/docker-publish.yml` now builds both `linux/amd64` and
+  `linux/arm64` (via `docker/setup-qemu-action`) and pushes a real
+  multi-platform manifest — `docker pull`/`run` on either architecture now
+  transparently gets the right one. Verified end-to-end on real hardware
+  before AND after this change: a Windows PC (amd64) and a Raspberry Pi 3
+  (arm64) each built and ran the underlying Dockerfile correctly locally;
+  this closes the gap between "the packaging works" and "the published
+  image actually works," specifically for arm64 pullers.
+- **No Pi/Windows-facing change** — this is a `.github/workflows/` CI file
+  only. `server.js`/`public/`/`install.sh` are byte-for-byte beta.11; a
+  device that's already on beta.11 has nothing to gain from updating to
+  beta.12 specifically. This version bump exists purely so the published
+  Pi zip and the GitHub repo state stay in sync with each other.
+
 ## 1.83.3-beta.11
 - **Fix: the Pi kiosk display could fail to auto-launch on boot, with no
   error anywhere — found live on a real device.** Two independent bugs
@@ -35,26 +82,6 @@ publish a build.
     (beta.3 through beta.10); anyone on an affected build should update to
     beta.11+ to get a Pi/kiosk that self-heals its own permissions and
     correctly detects X11 vs Wayland going forward.
-
-## 1.83.3-beta.12
-- **Docker: added arm64 to the published image (Pi 4/5, arm64 NAS boxes).**
-  The image was amd64-only until now — confirmed broken on real arm64
-  hardware, not just theoretically: `docker pull` succeeded (the tag
-  existed), but `docker run` failed outright with "exec format error," since
-  there was no matching platform in the manifest for Docker to fall back to.
-  `.github/workflows/docker-publish.yml` now builds both `linux/amd64` and
-  `linux/arm64` (via `docker/setup-qemu-action`) and pushes a real
-  multi-platform manifest — `docker pull`/`run` on either architecture now
-  transparently gets the right one. Verified end-to-end on real hardware
-  before AND after this change: a Windows PC (amd64) and a Raspberry Pi 3
-  (arm64) each built and ran the underlying Dockerfile correctly locally;
-  this closes the gap between "the packaging works" and "the published
-  image actually works," specifically for arm64 pullers.
-- **No Pi/Windows-facing change** — this is a `.github/workflows/` CI file
-  only. `server.js`/`public/`/`install.sh` are byte-for-byte beta.11; a
-  device that's already on beta.11 has nothing to gain from updating to
-  beta.12 specifically. This version bump exists purely so the published
-  Pi zip and the GitHub repo state stay in sync with each other.
 
 ## 1.83.3-beta.10
 - **Windows wall display: an on-screen "Exit full-screen" button.** The

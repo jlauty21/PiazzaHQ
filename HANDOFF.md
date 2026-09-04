@@ -4977,3 +4977,49 @@ it's CI-only or same-day. Split the CHANGELOG entry out into its own
 otherwise identical to what beta.11 already had (Pi/Windows byte-for-byte
 unchanged) — only the version number and the CHANGELOG's own bookkeeping
 changed.
+
+---
+
+## Session note: promoted to stable — v1.83.3 (beta.1 through beta.12 → 1.83.3)
+
+Closes out the whole cycle this Windows/Docker work happened in. Jon's
+explicit instruction: beta is tester-only (just him) — public-facing
+surfaces shouldn't reference it at all, and the actual Windows/Docker
+release users get needs to be a real stable build, not a beta.
+
+- Version bumped everywhere (`package.json` ×2, `package-lock.json`,
+  `piazzahq.iss`) from `1.83.3-beta.12` straight to `1.83.3` — no `-beta`
+  suffix, matching this project's established promotion convention (drop
+  the suffix entirely, don't reset to `.0`).
+- `CHANGELOG.md`: new `## 1.83.3` entry at the top summarizing the whole
+  cycle (Windows support, Docker support, the kiosk exit button, the
+  website redesign, "plus various fixes" for everything else) — this is
+  what the mothership pre-fills its release-notes field from when Jon
+  publishes the build. Also caught and fixed an ordering bug from earlier
+  this session: beta.12's entry had landed BELOW beta.11's instead of
+  above it when it was split out — CHANGELOG order should always be
+  newest-first; fixed before this promotion, not carried into it.
+- `app.html`'s `RELEASE_NOTES['1.83.3']` — the actual in-app "What's New"
+  popup real users see. Feature bullets only (Windows, Docker, the kiosk
+  exit button), fixes consolidated into one closing line, per this
+  project's own established style for that popup. Synced to
+  `windows/build-input/app/public/app.html` too.
+- `BETA_CHECKLIST.md` reset to its documented clean-state template (the
+  file's own header explicitly calls for this on every promotion) — the
+  next beta cycle starts with an empty list, not carrying forward every
+  item from beta.1–beta.12. **Still needs doing on the mothership side**:
+  the file's header also says promotion should `DELETE FROM
+  beta_checklist_checked` there — that's a database operation on the
+  running mothership, not something this repo's files can do; flagging so
+  it isn't missed.
+- Website: removed the one remaining public beta reference (a Docker guide
+  FAQ item that mentioned the `:beta` image tag) — confirmed via a full
+  grep of every public page that nothing else mentions beta anywhere.
+
+**Still to do, deliberately not done as part of this promotion**: the
+actual publish (Jon uploads the new Pi zip through the mothership admin
+panel's "Publish a release," channel=stable) — that's what triggers the
+existing `pushReleaseToGitHub()` push to `main`, which is what the Docker
+workflow listens on for its own `:latest` + `:1.83.3` build. Not done here
+on purpose — that push is the mothership's own automation's job, not
+something to bypass by pushing to `main` directly from this session.
