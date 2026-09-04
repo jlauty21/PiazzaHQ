@@ -35,6 +35,19 @@ publish a build.
     (beta.3 through beta.10); anyone on an affected build should update to
     beta.11+ to get a Pi/kiosk that self-heals its own permissions and
     correctly detects X11 vs Wayland going forward.
+- **Docker: added arm64 to the published image (Pi 4/5, arm64 NAS boxes).**
+  The image was amd64-only until now — confirmed broken on real arm64
+  hardware, not just theoretically: `docker pull` succeeded (the tag
+  existed), but `docker run` failed outright with "exec format error," since
+  there was no matching platform in the manifest for Docker to fall back to.
+  `.github/workflows/docker-publish.yml` now builds both `linux/amd64` and
+  `linux/arm64` (via `docker/setup-qemu-action`) and pushes a real
+  multi-platform manifest — `docker pull`/`run` on either architecture now
+  transparently gets the right one. Verified end-to-end on real hardware
+  before AND after this change: a Windows PC (amd64) and a Raspberry Pi 3
+  (arm64) each built and ran the underlying Dockerfile correctly locally;
+  this closes the gap between "the packaging works" and "the published
+  image actually works," specifically for arm64 pullers.
 
 ## 1.83.3-beta.10
 - **Windows wall display: an on-screen "Exit full-screen" button.** The

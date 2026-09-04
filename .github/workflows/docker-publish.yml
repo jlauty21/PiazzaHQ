@@ -66,6 +66,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Needed to cross-build linux/arm64 on this amd64 runner (QEMU
+      # user-mode emulation) — confirmed necessary the hard way: without
+      # this, `docker run` on a real Pi against the resulting image fails
+      # outright with "exec format error" (Docker silently falls back to
+      # amd64-only when it can't build the requested platform, rather than
+      # erroring at build time, so this gap doesn't show up until someone
+      # actually tries to run the image on ARM).
+      - uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -77,10 +86,14 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          # amd64 for now. To also build ARM (Pi 4/5, ARM NAS): add
-          # `linux/arm64` here plus a `docker/setup-qemu-action@v3` step
-          # above (or use a native arm64 runner — emulated builds are slow).
-          platforms: linux/amd64
+          # Both amd64 (typical NAS/mini-PC/home-server hardware) and arm64
+          # (Pi 4/5, arm64 NAS) — verified end-to-end on real hardware for
+          # both: a Windows PC (amd64) and a Raspberry Pi 3 (arm64) each
+          # built AND ran the image correctly before this was added here.
+          # QEMU emulation makes the arm64 leg of this build noticeably
+          # slower than the amd64-only build was — expect several extra
+          # minutes, not a hang.
+          platforms: linux/amd64,linux/arm64
           push: true
           provenance: false
           tags: ${{ needs.meta.outputs.tags }}
