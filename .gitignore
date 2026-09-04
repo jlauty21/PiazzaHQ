@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Runtime state (also relocatable via DATA_DIR)
+calendar.db
+calendar.db-wal
+calendar.db-shm
+.session-secret
+.device-id
+.update-tmp/
+.update-backups-rolling/
+.update-backups-monthly/
+.update-pending
+.pre-restore-backup/
+logs/
+public/uploads/
+
+# Windows installer build artifacts (staged locally, never committed)
+windows/build-input/node/
+windows/build-input/app/node_modules/
+windows/build-input/app/package-lock.json
+windows/Output/
+windows/build-input/app/logs/
+windows/build-input/**/calendar.db
+kiosk-profile/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,17 @@
+[Unit]
+Description=Piazza HQ - Display Rotation Watchdog
+After=graphical-session.target pi-kiosk.service
+Wants=pi-kiosk.service
+
+[Service]
+Type=simple
+# Adjust the path below if your project folder isn't at this location
+ExecStart=/home/jlauty/piazzahq/scripts/rotation-watchdog.sh
+Restart=always
+RestartSec=10
+User=jlauty
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+
+[Install]
+WantedBy=graphical-session.target

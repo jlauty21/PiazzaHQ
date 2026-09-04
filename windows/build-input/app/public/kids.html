@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>My Chores</title>
+<style>
+  :root { --bg:#0f1320; --card:#1b2133; --text:#eef2fb; --muted:#9aa6c0; --accent:#4A90D9; --done:#3ec97a; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+  body { display:flex; flex-direction:column; }
+
+  /* Name picker */
+  #picker { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; gap:24px; }
+  #picker h1 { font-size:clamp(24px,6vw,40px); margin:0; text-align:center; }
+  .kid-grid { display:flex; flex-wrap:wrap; gap:18px; justify-content:center; max-width:760px; }
+  .kid-btn { background:var(--card); border:none; border-radius:24px; padding:24px 28px; min-width:150px;
+    display:flex; flex-direction:column; align-items:center; gap:10px; cursor:pointer; color:var(--text);
+    box-shadow:0 6px 18px rgba(0,0,0,0.3); transition:transform .1s; }
+  .kid-btn:active { transform:scale(0.95); }
+  .kid-btn .av { font-size:64px; line-height:1; }
+  .kid-btn .nm { font-size:24px; font-weight:600; }
+
+  /* Header */
+  header { display:flex; align-items:center; gap:14px; padding:16px 20px; background:var(--card);
+    position:sticky; top:0; z-index:5; box-shadow:0 2px 10px rgba(0,0,0,0.3); }
+  header .av { font-size:40px; }
+  header .who { flex:1; }
+  header .who .nm { font-size:22px; font-weight:700; }
+  header .who .sub { font-size:13px; color:var(--muted); }
+  header .switch { background:transparent; border:1px solid var(--muted); color:var(--muted);
+    border-radius:12px; padding:8px 12px; font-size:13px; cursor:pointer; }
+  header .streak { font-size:18px; font-weight:700; color:#ffb454; white-space:nowrap; }
+  header .stickers-badge { font-size:16px; font-weight:700; color:var(--text); white-space:nowrap;
+    background:var(--bg); border:1px solid var(--muted); border-radius:12px; padding:6px 10px; cursor:pointer; display:flex; align-items:center; gap:4px; }
+
+  /* Progress */
+  #progress-wrap { padding:14px 20px 4px; }
+  #progress-bar { height:14px; background:var(--card); border-radius:8px; overflow:hidden; }
+  #progress-fill { height:100%; width:0; background:var(--done); transition:width .4s ease; }
+  #progress-text { font-size:14px; color:var(--muted); margin-top:6px; text-align:center; }
+  #goal-wrap { padding:2px 20px 4px; }
+  #goal-label { font-size:13px; color:var(--muted); margin-bottom:6px; text-align:center; }
+  #goal-bar { height:10px; background:var(--card); border-radius:6px; overflow:hidden; }
+  #goal-fill { height:100%; width:0; background:#ffb454; transition:width .4s ease; }
+
+  /* Chore list */
+  #list { flex:1; overflow-y:auto; padding:12px 16px 80px; display:flex; flex-direction:column; gap:12px; }
+  .chore { background:var(--card); border-radius:18px; padding:18px 18px; display:flex; align-items:center; gap:16px;
+    cursor:pointer; transition:transform .1s, opacity .2s; user-select:none; }
+  .chore:active { transform:scale(0.98); }
+  .chore .ic { font-size:46px; line-height:1; width:56px; height:56px; text-align:center; flex-shrink:0; display:flex; align-items:center; justify-content:center; }
+  .chore .label { flex:1; font-size:22px; font-weight:600; }
+  .chore .overdue-tag { font-size:12px; color:#ffb454; font-weight:700; display:block; margin-top:2px; }
+  .chore .chore-notes { font-size:13px; color:var(--muted); font-weight:500; margin-top:3px; }
+  .chore .chore-pay { font-size:15px; font-weight:700; color:#3ec97a; flex-shrink:0; white-space:nowrap; }
+  .chore .check { width:42px; height:42px; border-radius:50%; border:3px solid var(--muted); flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; font-size:26px; color:transparent; }
+  .chore.done { opacity:0.55; }
+  .chore.done .check { background:var(--done); border-color:var(--done); color:#062; }
+  .chore.done .label { text-decoration:line-through; color:var(--muted); }
+  .chore.words-only .ic { display:none; }
+  .chore.pics-only .label { font-size:18px; color:var(--muted); font-weight:500; }
+  .chore .camera-tag { font-size:12px; color:var(--accent); font-weight:700; display:block; margin-top:2px; }
+  .chore .proof-thumb { width:40px; height:40px; border-radius:8px; object-fit:cover; flex-shrink:0; }
+
+  /* Bonus chores */
+  #bonus-wrap { padding:0 16px; display:none; }
+  #bonus-head { font-size:15px; font-weight:700; color:#ffb454; margin:4px 0 10px; }
+  .bonus-chore { background:var(--card); border:2px dashed #ffb454; border-radius:16px; padding:14px 16px;
+    display:flex; align-items:center; gap:14px; margin-bottom:10px; }
+  .bonus-chore .ic { font-size:34px; width:44px; text-align:center; flex-shrink:0; }
+  .bonus-chore .label { flex:1; font-size:18px; font-weight:600; }
+  .bonus-chore .claim-btn { background:#ffb454; color:#1b1400; border:none; border-radius:12px;
+    padding:10px 16px; font-size:14px; font-weight:700; cursor:pointer; white-space:nowrap; }
+
+  /* History overlay */
+  #hist-overlay { position:fixed; inset:0; background:var(--bg); z-index:40; display:none;
+    flex-direction:column; padding:20px; overflow-y:auto; }
+  #hist-overlay h2 { margin:0 0 16px; }
+  .hist-stats { display:flex; gap:10px; margin-bottom:18px; }
+  .hist-stat { flex:1; background:var(--card); border-radius:14px; padding:14px; text-align:center; }
+  .hist-stat .n { font-size:24px; font-weight:800; }
+  .hist-stat .l { font-size:11px; color:var(--muted); margin-top:2px; }
+  #hist-bars { display:flex; gap:3px; align-items:flex-end; padding:10px 4px; background:var(--card);
+    border-radius:14px; margin-bottom:16px; }
+  #hist-close { background:var(--card); border:1px solid var(--muted); color:var(--text); border-radius:12px;
+    padding:12px; font-size:15px; cursor:pointer; }
+
+  /* Sticker board overlay — same shell as the history overlay */
+  #sticker-overlay { position:fixed; inset:0; background:var(--bg); z-index:40; display:none;
+    flex-direction:column; padding:20px; overflow-y:auto; }
+  #sticker-overlay h2 { margin:0 0 16px; }
+  #sticker-balance-big { font-size:44px; font-weight:800; text-align:center; margin:0 0 20px; }
+  .sk-section-header { font-size:15px; font-weight:700; color:var(--muted); margin:0 0 10px; }
+  .sk-reward-row { display:flex; align-items:center; gap:12px; background:var(--card); border-radius:14px;
+    padding:12px 14px; margin-bottom:8px; }
+  .sk-reward-row.unaffordable { opacity:0.5; }
+  .sk-reward-row .ic { font-size:26px; }
+  .sk-reward-row .title { flex:1; font-size:15px; font-weight:600; }
+  .sk-reward-row .cost { font-size:14px; font-weight:700; color:#ffb454; white-space:nowrap; }
+  .sk-sticker-grid { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:20px; }
+  .sk-sticker-grid .badge { width:40px; height:40px; }
+  #sticker-close { background:var(--card); border:1px solid var(--muted); color:var(--text); border-radius:12px;
+    padding:12px; font-size:15px; cursor:pointer; }
+
+  #empty { text-align:center; color:var(--muted); padding:60px 20px; font-size:20px; }
+  #alldone { text-align:center; padding:40px 20px; font-size:26px; font-weight:700; color:var(--done); display:none; }
+
+  /* Celebration */
+  #celebrate { position:fixed; inset:0; pointer-events:none; z-index:50; overflow:hidden; }
+  .confetti { position:absolute; width:12px; height:12px; opacity:0.9; animation:fall 1.4s ease-in forwards; }
+  @keyframes fall { 0% { transform:translateY(-20px) rotate(0); opacity:1; } 100% { transform:translateY(105vh) rotate(540deg); opacity:0; } }
+</style>
+</head>
+<body>
+  <div id="picker">
+    <h1>Whose chores are these?</h1>
+    <div class="kid-grid" id="kid-grid"></div>
+  </div>
+
+  <header id="header" style="display:none">
+    <div class="av" id="h-av">🙂</div>
+    <div class="who"><div class="nm" id="h-name"></div><div class="sub" id="h-date"></div></div>
+    <div class="streak" id="h-streak" style="display:none">🔥 <span id="h-streak-n"></span></div>
+    <button class="stickers-badge" id="stickers-btn"><span id="h-sticker-icon">⭐</span><span id="h-sticker-n">0</span></button>
+    <button class="switch" id="hist-btn" title="History">📊</button>
+    <button class="switch" id="switch-btn">Switch</button>
+  </header>
+  <div id="progress-wrap" style="display:none">
+    <div id="progress-bar"><div id="progress-fill"></div></div>
+    <div id="progress-text"></div>
+  </div>
+  <div id="goal-wrap" style="display:none">
+    <div id="goal-label"></div>
+    <div id="goal-bar"><div id="goal-fill"></div></div>
+  </div>
+  <div id="list" style="display:none"></div>
+  <div id="bonus-wrap">
+    <div id="bonus-head">🎁 Bonus chores — first to tap claims it!</div>
+    <div id="bonus-list"></div>
+  </div>
+  <div id="alldone">🎉 All done! Great job! 🎉</div>
+  <div id="celebrate"></div>
+  <input type="file" id="proof-file-input" accept="image/*" capture="environment" style="display:none">
+
+  <div id="hist-overlay">
+    <h2>📊 My History</h2>
+    <div class="hist-stats">
+      <div class="hist-stat"><div class="n" id="hist-streak">—</div><div class="l">day streak</div></div>
+      <div class="hist-stat"><div class="n" id="hist-7">—</div><div class="l">last 7 days</div></div>
+      <div class="hist-stat"><div class="n" id="hist-30">—</div><div class="l">last 30 days</div></div>
+    </div>
+    <div style="font-size:13px;color:var(--muted);margin:0 0 8px">Last 4 weeks</div>
+    <div id="hist-bars"></div>
+    <div style="font-size:13px;color:var(--muted);margin:0 0 20px" id="hist-alltime"></div>
+    <button id="hist-close">Close</button>
+  </div>
+
+  <!-- Sticker board — balance, recent stickers, and rewards (view-only; a
+       parent redeems from app.html, matching the same trust boundary as
+       everything else in this file). -->
+  <div id="sticker-overlay">
+    <h2>⭐ My Stickers</h2>
+    <div id="sticker-balance-big">⭐ 0</div>
+    <div class="sk-section-header">Recent stickers</div>
+    <div class="sk-sticker-grid" id="sticker-grid"></div>
+    <div class="sk-section-header">Rewards</div>
+    <div id="sticker-rewards"></div>
+    <button id="sticker-close">Close</button>
+  </div>
+
+<script>
+const LS_KEY = 'chores-kid-id';
+let kids = [], currentKid = null, currentData = null;
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error('http ' + r.status);
+  return r.json();
+}
+
+async function loadKids() {
+  kids = await api('/api/kids');
+  const grid = document.getElementById('kid-grid');
+  if (!kids.length) {
+    grid.innerHTML = '<div style="color:var(--muted);font-size:18px;text-align:center">No kids set up yet.<br>Ask a parent to add you in the app.</div>';
+    return;
+  }
+  grid.innerHTML = kids.map(k =>
+    `<button class="kid-btn" data-id="${k.id}"><span class="av">${k.avatar||'🙂'}</span><span class="nm" style="color:${k.color}">${esc(k.name)}</span></button>`
+  ).join('');
+  grid.querySelectorAll('.kid-btn').forEach(b =>
+    b.addEventListener('click', () => selectKid(parseInt(b.dataset.id))));
+}
+
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// Same sticker badge spec as app.html's stickerBadgeHtmlApp — kept in sync by
+// hand since kids.html and app.html don't share a module system (same
+// constraint noted elsewhere in this project for server.js/admin.html's
+// version-compare logic).
+function stickerBadgeHtml(kid, sizePx = 28) {
+  const initial = (kid.name || '?').trim().charAt(0).toUpperCase() || '?';
+  if (kid.sticker_style === 'avatar') {
+    return `<span style="font-size:${sizePx}px;line-height:1">${kid.avatar || '🙂'}</span>`;
+  }
+  if (kid.sticker_style === 'custom' && kid.sticker_emoji) {
+    return `<span style="font-size:${sizePx}px;line-height:1">${kid.sticker_emoji}</span>`;
+  }
+  return `<span style="position:relative;display:inline-block;width:${sizePx}px;height:${sizePx}px">
+    <svg viewBox="0 0 24 24" width="${sizePx}" height="${sizePx}"><path fill="${kid.color || '#4A90D9'}" d="M12 1.5l3.09 6.26 6.91 1-5 4.87 1.18 6.88L12 17.27l-6.18 3.24L7 13.63l-5-4.87 6.91-1z"/></svg>
+    <span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding-top:${Math.round(sizePx*0.08)}px;font-size:${Math.round(sizePx*0.42)}px;font-weight:800;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.35)">${initial}</span>
+  </span>`;
+}
+// A chore icon is either an emoji or an uploaded image token "img:<filename>".
+function choreIconHtml(icon){
+  if (icon && icon.indexOf('img:') === 0) {
+    return `<img src="/uploads/${encodeURIComponent(icon.slice(4))}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:10px">`;
+  }
+  return icon || '✅';
+}
+
+function selectKid(id) {
+  currentKid = kids.find(k => k.id === id);
+  if (!currentKid) return;
+  try { localStorage.setItem(LS_KEY, String(id)); } catch {}
+  document.getElementById('picker').style.display = 'none';
+  document.getElementById('header').style.display = 'flex';
+  document.getElementById('progress-wrap').style.display = 'block';
+  document.getElementById('list').style.display = 'flex';
+  document.getElementById('h-av').textContent = currentKid.avatar || '🙂';
+  const nm = document.getElementById('h-name'); nm.textContent = currentKid.name; nm.style.color = currentKid.color;
+  document.getElementById('h-sticker-icon').innerHTML = stickerBadgeHtml(currentKid, 18);
+  loadChores();
+  loadBonusChores();
+}
+
+function switchKid() {
+  try { localStorage.removeItem(LS_KEY); } catch {}
+  currentKid = null;
+  document.getElementById('picker').style.display = 'flex';
+  document.getElementById('header').style.display = 'none';
+  document.getElementById('progress-wrap').style.display = 'none';
+  document.getElementById('list').style.display = 'none';
+  document.getElementById('alldone').style.display = 'none';
+  document.getElementById('bonus-wrap').style.display = 'none';
+  closeHistory();
+  loadKids();
+}
+
+async function loadChores() {
+  if (!currentKid) return;
+  try {
+    currentData = await api(`/api/kids/${currentKid.id}/chores`);
+  } catch { return; }
+  const d = new Date(currentData.date + 'T00:00:00');
+  document.getElementById('h-date').textContent =
+    d.toLocaleDateString(undefined, { weekday:'long', month:'long', day:'numeric' });
+  const streakEl = document.getElementById('h-streak');
+  const streak = currentData.streak || 0;
+  if (streak > 0) {
+    document.getElementById('h-streak-n').textContent = `${streak} day${streak === 1 ? '' : 's'}`;
+    streakEl.style.display = 'block';
+  } else {
+    streakEl.style.display = 'none';
+  }
+  const goalWrap = document.getElementById('goal-wrap');
+  document.getElementById('h-sticker-n').textContent = currentData.stickerBalance || 0;
+  const goalName = currentKid.savings_goal_name, goalAmount = Number(currentKid.savings_goal_amount) || 0;
+  if (goalName && goalAmount > 0 && currentData.balance !== null && currentData.balance !== undefined) {
+    const balance = Math.max(0, currentData.balance);
+    const pct = Math.min(100, Math.round((balance / goalAmount) * 100));
+    document.getElementById('goal-label').textContent =
+      pct >= 100 ? `🎉 Goal reached: ${goalName}!` : `🎯 Saving for ${goalName}: $${balance.toFixed(2)} / $${goalAmount.toFixed(2)}`;
+    document.getElementById('goal-fill').style.width = pct + '%';
+    goalWrap.style.display = 'block';
+  } else {
+    goalWrap.style.display = 'none';
+  }
+  renderChores();
+}
+
+function renderChores() {
+  const list = document.getElementById('list');
+  const chores = (currentData && currentData.chores) || [];
+  const mode = currentKid.display_mode || 'both';
+  const modeClass = mode === 'words' ? 'words-only' : mode === 'pictures' ? 'pics-only' : '';
+
+  if (!chores.length) {
+    list.innerHTML = '<div id="empty">No chores today! 🎈</div>';
+    updateProgress(0, 0);
+    return;
+  }
+  list.innerHTML = chores.map(c => `
+    <div class="chore ${c.done ? 'done' : ''} ${modeClass}" data-inst="${c.instance_id}" data-celebrate="${c.celebrate?1:0}" data-photo-required="${c.photo_required?1:0}" data-has-proof="${c.proof_photo?1:0}">
+      <div class="ic">${choreIconHtml(c.icon)}</div>
+      <div class="label">${esc(c.title)}${c.overdue ? '<span class="overdue-tag">⏰ from before</span>' : ''}
+        ${c.notes ? `<div class="chore-notes">${esc(c.notes)}</div>` : ''}
+        ${(c.photo_required && !c.done) ? '<span class="camera-tag">📷 photo needed</span>' : ''}
+      </div>
+      ${(currentKid.allowance_enabled && currentKid.allowance_mode === 'per_chore' && c.pay_amount > 0) ? `<div class="chore-pay">+$${Number(c.pay_amount).toFixed(2)}</div>` : ''}
+      ${c.proof_photo ? `<img class="proof-thumb" src="/uploads/${encodeURIComponent(c.proof_photo)}" alt="">` : ''}
+      <div class="check">✓</div>
+    </div>`).join('');
+  list.querySelectorAll('.chore').forEach(el =>
+    el.addEventListener('click', () => toggleChore(el)));
+  const done = chores.filter(c => c.done).length;
+  updateProgress(done, chores.length);
+}
+
+function updateProgress(done, total) {
+  const pct = total ? Math.round((done/total)*100) : 0;
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('progress-text').textContent =
+    total ? `${done} of ${total} done` : '';
+  document.getElementById('alldone').style.display = (total && done === total) ? 'block' : 'none';
+}
+
+let _pendingPhotoInstId = null; // chore instance waiting on a photo before it can be marked done
+
+async function toggleChore(el) {
+  const instId = el.dataset.inst;
+  const wasDone = el.classList.contains('done');
+  const photoRequired = el.dataset.photoRequired === '1';
+  const hasProof = el.dataset.hasProof === '1';
+  // About to mark DONE, requires a photo, and doesn't have one yet -- capture
+  // the photo first instead of toggling immediately. The upload's own success
+  // handler calls toggleChore again (this time hasProof will be true), so the
+  // actual done-flip happens right after, same as the normal path below.
+  if (!wasDone && photoRequired && !hasProof) {
+    _pendingPhotoInstId = instId;
+    document.getElementById('proof-file-input').click();
+    return;
+  }
+  // optimistic flip
+  el.classList.toggle('done');
+  recomputeProgress();
+  try {
+    const r = await api(`/api/chore-instances/${instId}/toggle`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ done: !wasDone })
+    });
+    if (r.done && r.celebrate && el.dataset.celebrate === '1') celebrate();
+    if (r.done && allDoneNow()) bigCelebrate();
+  } catch {
+    el.classList.toggle('done'); // revert on failure
+    recomputeProgress();
+  }
+}
+
+document.getElementById('proof-file-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  const instId = _pendingPhotoInstId;
+  e.target.value = ''; // allow picking the same file again later
+  _pendingPhotoInstId = null;
+  if (!file || !instId) return;
+  const el = document.querySelector(`.chore[data-inst="${instId}"]`);
+  const fd = new FormData();
+  fd.append('photo', file);
+  try {
+    await api(`/api/chore-instances/${instId}/proof`, { method: 'POST', body: fd });
+    if (el) { el.dataset.hasProof = '1'; toggleChore(el); } // now actually mark it done
+    else loadChores();
+  } catch {
+    showToastKid('❌ Photo upload failed — try again.');
+  }
+});
+
+function showToastKid(msg) {
+  // Minimal inline toast -- kids.html has no existing toast system to reuse.
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--card);color:var(--text);padding:12px 18px;border-radius:12px;font-size:14px;z-index:60;box-shadow:0 6px 18px rgba(0,0,0,.4)';
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2500);
+}
+
+function recomputeProgress() {
+  const all = [...document.querySelectorAll('.chore')];
+  updateProgress(all.filter(c => c.classList.contains('done')).length, all.length);
+}
+function allDoneNow() {
+  const all = [...document.querySelectorAll('.chore')];
+  return all.length && all.every(c => c.classList.contains('done'));
+}
+
+function celebrate() {
+  const colors = ['#4A90D9','#3ec97a','#ffd454','#ff6b9d','#a78bfa'];
+  const box = document.getElementById('celebrate');
+  for (let i = 0; i < 24; i++) {
+    const c = document.createElement('div');
+    c.className = 'confetti';
+    c.style.left = Math.random()*100 + 'vw';
+    c.style.background = colors[i % colors.length];
+    c.style.animationDelay = (Math.random()*0.3) + 's';
+    box.appendChild(c);
+    setTimeout(() => c.remove(), 1800);
+  }
+}
+function bigCelebrate() { for (let i=0;i<3;i++) setTimeout(celebrate, i*250); }
+
+// ── Bonus chores ──────────────────────────────────────────────────────────────
+async function loadBonusChores() {
+  if (!currentKid) return;
+  const wrap = document.getElementById('bonus-wrap');
+  let bonusChores;
+  try { bonusChores = await api(`/api/kids/${currentKid.id}/bonus-chores`); }
+  catch { wrap.style.display = 'none'; return; }
+  if (!bonusChores.length) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+  document.getElementById('bonus-list').innerHTML = bonusChores.map(c => `
+    <div class="bonus-chore" data-chore="${c.id}">
+      <div class="ic">${choreIconHtml(c.icon)}</div>
+      <div class="label">${esc(c.title)}${(currentKid.allowance_enabled && currentKid.allowance_mode === 'per_chore' && c.pay_amount > 0) ? ` <span style="color:#3ec97a;font-weight:800">+$${Number(c.pay_amount).toFixed(2)}</span>` : ''}</div>
+      <button class="claim-btn" data-chore="${c.id}">I did this!</button>
+    </div>`).join('');
+  document.querySelectorAll('.claim-btn').forEach(b => b.addEventListener('click', () => claimBonus(parseInt(b.dataset.chore))));
+}
+async function claimBonus(choreId) {
+  if (!currentKid) return;
+  try {
+    const r = await api(`/api/kids/${currentKid.id}/claim-bonus/${choreId}`, { method: 'POST' });
+    if (r.celebrate) celebrate();
+    loadChores();
+    loadBonusChores();
+  } catch (e) {
+    showToastKid('❌ Someone beat you to it!');
+    loadBonusChores(); // refresh so it disappears from the pool
+  }
+}
+
+// ── History overlay ─────────────────────────────────────────────────────────
+async function openHistory() {
+  if (!currentKid) return;
+  document.getElementById('hist-overlay').style.display = 'flex';
+  let data;
+  try { data = await api(`/api/kids/${currentKid.id}/stats?days=28`); }
+  catch { return; }
+  const pctText = p => p === null ? '—' : `${p}%`;
+  document.getElementById('hist-streak').textContent = data.streak > 0 ? `🔥${data.streak}` : '—';
+  document.getElementById('hist-7').textContent = pctText(data.last7Pct);
+  document.getElementById('hist-30').textContent = pctText(data.last30Pct);
+  document.getElementById('hist-alltime').textContent =
+    `✅ ${data.allTimeCompleted} chore${data.allTimeCompleted === 1 ? '' : 's'} completed all-time. Gray bars mean nothing was due that day.`;
+  document.getElementById('hist-bars').innerHTML = data.daily.map(d => {
+    const pct = d.total ? Math.round((d.done / d.total) * 100) : null;
+    const color = pct === null ? '#333a52' : pct === 100 ? '#3ec97a' : pct > 0 ? '#ffb454' : '#fb7185';
+    const h = pct === null ? 6 : Math.max(6, Math.round(pct * 0.01 * 46));
+    const dow = new Date(d.date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'narrow' });
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:0">
+      <div style="width:100%;max-width:14px;height:46px;display:flex;align-items:flex-end">
+        <div style="width:100%;height:${h}px;background:${color};border-radius:3px 3px 0 0"></div>
+      </div>
+      <div style="font-size:9px;color:var(--muted)">${dow}</div>
+    </div>`;
+  }).join('');
+}
+function closeHistory() { document.getElementById('hist-overlay').style.display = 'none'; }
+
+// ── Sticker board overlay ────────────────────────────────────────────────────
+async function openStickers() {
+  if (!currentKid) return;
+  document.getElementById('sticker-overlay').style.display = 'flex';
+  let data, rewards;
+  try {
+    [data, rewards] = await Promise.all([
+      api(`/api/kids/${currentKid.id}/stickers`),
+      api('/api/rewards'),
+    ]);
+  } catch { return; }
+  const balance = data.balance || 0;
+  document.getElementById('sticker-balance-big').innerHTML = `${stickerBadgeHtml(currentKid, 40)} ${balance}`;
+  document.getElementById('sticker-grid').innerHTML = (data.stickers || []).length
+    ? data.stickers.slice(0, 30).map(() => `<div class="badge">${stickerBadgeHtml(currentKid, 40)}</div>`).join('')
+    : `<div style="color:var(--muted);font-size:14px">None yet — keep at it!</div>`;
+  const kidRewards = (rewards || []).filter(r => r.active &&
+    (r.assignee === 'all' || String(r.assignee).split(',').map(s=>s.trim()).includes(String(currentKid.id))));
+  document.getElementById('sticker-rewards').innerHTML = kidRewards.length
+    ? kidRewards.map(r => `
+      <div class="sk-reward-row ${balance >= r.star_cost ? '' : 'unaffordable'}">
+        <span class="ic">${r.icon}</span>
+        <span class="title">${esc(r.title)}</span>
+        <span class="cost">⭐ ${r.star_cost}</span>
+      </div>`).join('')
+    : `<div style="color:var(--muted);font-size:14px">Ask a parent to add some rewards!</div>`;
+}
+function closeStickers() { document.getElementById('sticker-overlay').style.display = 'none'; }
+
+document.getElementById('switch-btn').addEventListener('click', switchKid);
+document.getElementById('hist-btn').addEventListener('click', openHistory);
+document.getElementById('hist-close').addEventListener('click', closeHistory);
+document.getElementById('stickers-btn').addEventListener('click', openStickers);
+document.getElementById('sticker-close').addEventListener('click', closeStickers);
+
+// Live updates: refresh when chores change on the host (parent edits, other tablets).
+function connectLive() {
+  try {
+    const es = new EventSource('/api/live');
+    es.onmessage = (ev) => {
+      try { const d = JSON.parse(ev.data); if (d.topic === 'chores' && currentKid) { loadChores(); loadBonusChores(); } } catch {}
+    };
+    es.onerror = () => {};
+  } catch {}
+}
+// Also poll as a fallback and to roll over at midnight.
+setInterval(() => { if (currentKid) { loadChores(); loadBonusChores(); } }, 60000);
+
+
+(async function init() {
+  await loadKids();
+  let saved = null;
+  try { saved = parseInt(localStorage.getItem(LS_KEY)); } catch {}
+  if (saved && kids.find(k => k.id === saved)) selectKid(saved);
+  connectLive();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+#
+# kiosk — control the Pi Calendar fullscreen display
+# ---------------------------------------------------
+# Stops or (re)starts the Chromium kiosk on demand, so you can get to the desktop
+# for maintenance without racing an auto-relaunching browser.
+#
+#   kiosk off       hide the kiosk (kill Chromium), bring the cursor back
+#   kiosk on        (re)launch the kiosk fullscreen
+#   kiosk toggle    flip between on and off  (handy for a keyboard shortcut)
+#   kiosk restart   cleanly relaunch (off then on)
+#   kiosk status    show whether the kiosk is currently running
+#
+# Run it over SSH, or bind `kiosk toggle` to a keyboard shortcut (see README).
+#
+# Notes:
+#  • This controls the BROWSER only. The Pi Calendar server keeps running, so the
+#    display picks up right where it left off when you turn the kiosk back on.
+#  • While the kiosk is off, the mouse cursor is restored (unclutter is paused)
+#    so you can actually use the desktop.
+
+set -uo pipefail
+
+URL="${PI_CALENDAR_URL:-http://localhost:3000?nopreview}"
+# ?nopreview is explicit and deterministic — without it, the page guesses "preview
+# mode" from viewport size alone, and a smaller or portrait-oriented real display
+# can trip that same guess (meant for the in-app layout-editor preview on a
+# phone/tablet). Preview mode disables the cursor-hiding CSS rule among other
+# things, which looks exactly like a cursor/unclutter problem but isn't one.
+# Match any kiosk Chromium regardless of binary name (chromium vs chromium-browser).
+KIOSK_MATCH="\-\-kiosk"
+KIOSK_FLAGS="--kiosk --disable-gpu --disable-extensions --disable-component-update --disable-background-networking --disable-sync --disable-features=Translate --renderer-process-limit=1 --noerrdialogs --disable-infobars --disable-restore-session-state --check-for-update-interval=31536000"
+# --disable-gpu: some Pi/driver combos (e.g. VideoCore IV on a Pi 3 or
+# earlier — no ES 3.0 support at all) fail to create a GLES 3.0 context,
+# which cascades into real Chromium instability and a white screen that
+# never resolves. Software rendering is plenty for this app's mostly-static
+# content. The rest trims subsystems this kiosk never needs (extensions,
+# background update checks, GCM registration retries, sync, translate),
+# which matters on lower-RAM Pi's where Chromium's process tree is competing
+# with the server's own boot-time work for headroom.
+
+GRN=$'\033[32m'; YLW=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
+
+# Chromium goes by a few binary names depending on the OS build.
+chromium_bin() {
+  for b in chromium-browser chromium chromium-browser-v7; do
+    command -v "$b" >/dev/null 2>&1 && { echo "$b"; return 0; }
+  done
+  echo "chromium-browser"
+}
+
+is_running() {
+  pgrep -f "$KIOSK_MATCH" >/dev/null 2>&1
+}
+
+kiosk_off() {
+  if is_running; then
+    # Kill the kiosk Chromium instances. -f matches the full command line so we
+    # only hit the kiosk, not an unrelated browser window.
+    pkill -f "$KIOSK_MATCH"
+    # Pause the cursor-hider so the desktop is usable.
+    pkill -x unclutter 2>/dev/null || true
+    # NOT pkill -x here: "unclutter-xfixes" is 16 characters, one over Linux's
+    # 15-char /proc/pid/comm limit — the kernel truncates it to "unclutter-xfixe",
+    # so an exact-name match against the untruncated string silently never
+    # matches, leaving it running forever after "kiosk off" (confirmed on real
+    # hardware: the process survives every "off", still hiding the cursor).
+    # -f matches the full command line instead, which isn't truncated.
+    pkill -f 'unclutter-xfixes' 2>/dev/null || true
+    sleep 1
+    echo "${YLW}Kiosk stopped.${RST} Desktop is now usable; cursor restored."
+    echo "${DIM}Turn it back on with:  kiosk on${RST}"
+  else
+    echo "Kiosk is already off."
+  fi
+}
+
+kiosk_on() {
+  if is_running; then
+    echo "Kiosk is already running."
+    return 0
+  fi
+  local bin; bin="$(chromium_bin)"
+  # Launch detached so it survives this shell/SSH session ending.
+  # Wayland/labwc kiosks read these env vars; they're harmless if already set.
+  nohup "$bin" $KIOSK_FLAGS "$URL" >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  # Restart the cursor-hider too (ignore if not installed). Prefer the Wayland-
+  # capable xfixes build if present; fall back to classic unclutter on X11.
+  if command -v unclutter-xfixes >/dev/null 2>&1; then
+    # --start-hidden: on a kiosk with no real mouse, unclutter-xfixes otherwise
+    # waits for a genuine pointer motion event before it first hides the cursor —
+    # with no physical mouse to generate one, it can sit visible indefinitely.
+    nohup unclutter-xfixes --timeout 1 --hide-on-touch --start-hidden >/dev/null 2>&1 & disown 2>/dev/null || true
+  elif command -v unclutter >/dev/null 2>&1; then
+    nohup unclutter -idle 0.1 -root >/dev/null 2>&1 & disown 2>/dev/null || true
+  fi
+  sleep 1
+  if is_running; then
+    echo "${GRN}Kiosk started.${RST} Showing ${URL}"
+  else
+    echo "${YLW}Tried to start the kiosk but it isn't showing as running.${RST}"
+    echo "${DIM}If you're on a headless/SSH-only session, the kiosk needs the Pi's"
+    echo "desktop session to be active on the physical screen.${RST}"
+  fi
+}
+
+kiosk_status() {
+  if is_running; then
+    echo "${GRN}Kiosk is ON${RST} (Chromium kiosk running)."
+  else
+    echo "${YLW}Kiosk is OFF${RST}."
+  fi
+}
+
+case "${1:-}" in
+  off|stop)    kiosk_off ;;
+  on|start)    kiosk_on ;;
+  toggle)      if is_running; then kiosk_off; else kiosk_on; fi ;;
+  restart)     kiosk_off; sleep 1; kiosk_on ;;
+  status|"")   kiosk_status ;;
+  *)
+    echo "Usage: kiosk {on|off|toggle|restart|status}"
+    exit 1
+    ;;
+esac
