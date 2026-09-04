@@ -1,0 +1,106 @@
+name: Publish Docker image
+
+# The mothership's release flow (pushReleaseToGitHub in
+# piazzahq-server/server.js) pushes the app source to GitHub when a release
+# is published. This builds a container image from that push and publishes
+# it to GHCR, on a channel derived from the version string:
+#
+#   stable  (x.y.z)        -> ghcr.io/jlauty21/piazzahq:latest  + :x.y.z
+#   beta    (x.y.z-beta.N)  -> ghcr.io/jlauty21/piazzahq:beta    + :x.y.z-beta.N
+#
+# A normal docker-compose.yml uses :latest and only ever gets stable.
+# A beta tester changes that one line to :beta. Same opt-in channel model as
+# the Pi.
+#
+# Which branch betas arrive on depends on the mothership config — this
+# listens on both `main` and `beta` so it works either way.
+
+on:
+  push:
+    branches: [main, beta]
+    paths:
+      - 'server.js'
+      - 'templates.js'
+      - 'tv-control.js'
+      - 'public/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'docker/**'
+      - '.github/workflows/docker-publish.yml'
+  workflow_dispatch: {}
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tags: ${{ steps.v.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          IMAGE: ghcr.io/jlauty21/piazzahq
+        run: |
+          V="$(node -p "require('./package.json').version")"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          if echo "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            printf 'tags=%s\n' "$IMAGE:latest,$IMAGE:$V" >> "$GITHUB_OUTPUT"
+            echo "::notice::stable $V -> :latest, :$V"
+          elif echo "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$'; then
+            printf 'tags=%s\n' "$IMAGE:beta,$IMAGE:$V" >> "$GITHUB_OUTPUT"
+            echo "::notice::beta $V -> :beta, :$V"
+          else
+            echo "tags=" >> "$GITHUB_OUTPUT"
+            echo "::notice::$V is neither x.y.z nor x.y.z-beta.N — skipping image publish."
+          fi
+
+  publish:
+    needs: meta
+    if: needs.meta.outputs.tags != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Needed to cross-build linux/arm64 on this amd64 runner (QEMU
+      # user-mode emulation) — confirmed necessary the hard way: without
+      # this, `docker run` on a real Pi against the resulting image fails
+      # outright with "exec format error" (Docker silently falls back to
+      # amd64-only when it can't build the requested platform, rather than
+      # erroring at build time, so this gap doesn't show up until someone
+      # actually tries to run the image on ARM).
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Both amd64 (typical NAS/mini-PC/home-server hardware) and arm64
+          # (Pi 4/5, arm64 NAS) — verified end-to-end on real hardware for
+          # both: a Windows PC (amd64) and a Raspberry Pi 3 (arm64) each
+          # built AND ran the image correctly before this was added here.
+          # QEMU emulation makes the arm64 leg of this build noticeably
+          # slower than the amd64-only build was — expect several extra
+          # minutes, not a hang.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: ${{ needs.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=Piazza HQ
+            org.opencontainers.image.description=Self-hosted family wall calendar — device app server
+            org.opencontainers.image.source=https://github.com/jlauty21/PiazzaHQ
+            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

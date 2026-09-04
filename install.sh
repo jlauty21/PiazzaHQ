@@ -83,6 +83,20 @@ fi
 echo "    App:   ${PROJECT_DIR}"
 echo
 
+# ── Executable bits, unconditionally ────────────────────────────────────────
+# Defense-in-depth, not a fix for a specific incident: several scripts here
+# (notably scripts/wait-for-server-and-launch-kiosk.sh, invoked DIRECTLY from
+# the desktop session's autostart file, not via `bash script.sh`) genuinely
+# need their executable bit set to run at all — and that bit is exactly the
+# kind of thing that silently doesn't survive some paths a zip can travel
+# (confirmed on real hardware: a zip built on a Windows machine landed every
+# .sh file as non-executable, and the kiosk autostart line failed with no
+# error anywhere — it just never launched). Running this unconditionally, on
+# every install AND every re-run, means it self-heals regardless of how the
+# code got onto this Pi, rather than trusting upstream packaging to always
+# get it right. chmod is a no-op (and silent) if the bit's already set.
+chmod +x "$PROJECT_DIR"/*.sh "$PROJECT_DIR"/scripts/*.sh 2>/dev/null || true
+
 # ── 0. Enable SSH ────────────────────────────────────────────────────────────
 # Done first, before anything else that could fail or need attention — so even
 # if this run is happening at the Pi directly (monitor+keyboard, not SSH) and
@@ -286,6 +300,23 @@ if [[ "$SESSION_TYPE" == "unknown" ]]; then
     SESSION_TYPE="wayland"
   elif [[ -n "${DISPLAY:-}" ]]; then
     SESSION_TYPE="x11"
+  fi
+fi
+# Ask what's ACTUALLY running, seat-independent — more trustworthy than
+# either loginctl (can misreport on some lightdm/logind combinations,
+# confirmed on real hardware: Xorg+lightdm demonstrably running while
+# loginctl reported no x11/wayland seat0 session at all) or the env-var
+# fallback above (only works from inside the graphical session). A real
+# Xorg process means x11, full stop, regardless of what any config file or
+# service manager claims; same for labwc/wayfire meaning wayland. Checked
+# before raspi-config specifically because raspi-config's nonint interface
+# isn't guaranteed to have the function this needs on every OS image (see
+# the warning above it).
+if [[ "$SESSION_TYPE" == "unknown" ]]; then
+  if pgrep -x Xorg >/dev/null 2>&1; then
+    SESSION_TYPE="x11"
+  elif pgrep -x labwc >/dev/null 2>&1 || pgrep -x wayfire >/dev/null 2>&1; then
+    SESSION_TYPE="wayland"
   fi
 fi
 # Next-to-last resort: ask raspi-config, if its nonint function for this

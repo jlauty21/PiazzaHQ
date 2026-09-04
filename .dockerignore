@@ -1,0 +1,42 @@
+# Keep the image lean and free of anything Pi/Windows/dev-only.
+.git
+.github
+.gitignore
+node_modules
+npm-debug.log*
+
+# The Windows installer build tree (huge — bundled Node + node_modules).
+windows
+
+# Dev docs — not read at runtime.
+CHANGELOG.md
+HANDOFF.md
+BETA_CHECKLIST.md
+REMOTE_ACCESS.md
+
+# Pi-only install / kiosk plumbing — irrelevant headless.
+install.sh
+setup-remote-access.sh
+hide-cursor.sh
+scripts
+
+# The Docker build files themselves.
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker/README.md
+
+# Runtime state that must never bake into an image (also lives in /data
+# via DATA_DIR, but exclude here in case a build runs from a dev checkout).
+calendar.db
+calendar.db-*
+.session-secret
+.device-id
+.update-tmp
+.update-backups-rolling
+.update-backups-monthly
+.update-pending
+.pre-restore-backup
+logs
+kiosk-profile
+public/uploads
