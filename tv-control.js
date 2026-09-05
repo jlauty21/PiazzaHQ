@@ -44,19 +44,31 @@ const cecDriver = {
 
 // ── HDMI signal cut (no extra hardware — for monitors/displays with no CEC
 // support at all, which describes most computer monitors) ───────────────────
-// Doesn't ask the display to power off — most monitors don't understand any
-// such request over HDMI without CEC. Instead this just stops the Pi from
-// sending a signal at all, relying on the display's own built-in "no signal,
-// go to sleep" behavior (DPMS), which is near-universal even on displays with
-// zero smart features.
+// Doesn't ask the display to power off over CEC — most monitors don't
+// understand any such request without it. Instead this sends the actual
+// VESA DPMS "go to sleep" signal (the same mechanism a Windows PC uses to
+// put a monitor to sleep, over VGA/DVI/HDMI/DisplayPort alike), relying on
+// the display's own built-in DPMS handling, which is near-universal even on
+// displays with zero smart features.
 //
-// xrandr (disabling the actual HDMI output at the X server level) is tried
-// first — confirmed to work on the current KMS/DRM driver stack. vcgencmd
-// display_power was the original approach, but testing showed it's a silent
-// no-op on that same stack: it returns success without actually doing
-// anything to the output, a known limitation of that legacy-era command on
-// current Raspberry Pi OS. Kept only as a last-resort fallback in case xrandr
-// genuinely isn't usable (no X server running at all).
+// DPMS (`xset dpms force off/on`) is tried first — confirmed live on real
+// hardware to actually put a monitor to sleep (not just show a "no signal"
+// alert), and it's the more correct request: a real power-state signal,
+// not just "the Pi stopped sending video." xrandr (disabling the output at
+// the X server level) is the fallback if `xset`/DPMS isn't usable for some
+// reason — also confirmed working, though on at least one real monitor it
+// only produced a persistent "check signal cable" alert rather than true
+// sleep, where DPMS on the same hardware gave a few seconds of real black
+// first. vcgencmd display_power was the original last-resort approach, but
+// testing showed it's a silent no-op on the current KMS/DRM driver stack:
+// it returns success without actually doing anything to the output, a known
+// limitation of that legacy-era command on current Raspberry Pi OS. Kept
+// only as the final fallback in case neither of the above is usable at all
+// (e.g. no X server running).
+//
+// Whichever monitor is on the other end, actual sleep-vs-just-an-alert
+// behavior is that monitor's own firmware decision once the signal drops —
+// nothing software here can push past that.
 //
 // This runs from a background systemd service, not an interactive login
 // session, so DISPLAY and XAUTHORITY can't be assumed to already be set
@@ -68,6 +80,14 @@ function xEnv() {
     DISPLAY: process.env.DISPLAY || ':0',
     XAUTHORITY: process.env.XAUTHORITY || path.join(os.homedir(), '.Xauthority'),
   };
+}
+function dpmsSetPower(on) {
+  return new Promise((resolve, reject) => {
+    execFile('xset', ['dpms', 'force', on ? 'on' : 'off'], { timeout: 5000, env: xEnv() }, (err, stdout) => {
+      if (err) return reject(err);
+      resolve(stdout);
+    });
+  });
 }
 function findXrandrOutput() {
   return new Promise((resolve, reject) => {
@@ -98,12 +118,16 @@ function vcgencmdDisplayPower(on) {
 }
 async function setHdmiSignal(on) {
   try {
-    return await xrandrSetPower(on);
-  } catch (xrandrErr) {
+    return await dpmsSetPower(on);
+  } catch (dpmsErr) {
     try {
-      return await vcgencmdDisplayPower(on);
-    } catch (vcgencmdErr) {
-      throw new Error(`Could not control the display output. xrandr: ${xrandrErr.message} — vcgencmd: ${vcgencmdErr.message}`);
+      return await xrandrSetPower(on);
+    } catch (xrandrErr) {
+      try {
+        return await vcgencmdDisplayPower(on);
+      } catch (vcgencmdErr) {
+        throw new Error(`Could not control the display output. dpms: ${dpmsErr.message} — xrandr: ${xrandrErr.message} — vcgencmd: ${vcgencmdErr.message}`);
+      }
     }
   }
 }

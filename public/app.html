@@ -1357,6 +1357,11 @@ const RELEASE_NOTES = {
     'New: on the Windows wall display, tap the screen to reveal a button that exits full-screen mode.',
     'Plus various bug fixes and improvements.',
   ],
+  '1.83.4': [
+    'Fixed a real, serious bug: a screen rotating between displays could — under a specific, now-understood set of conditions — silently overwrite a real, named display\'s own content with whatever the rotation was showing at that moment. Fixed at the actual save function itself, so this can\'t happen through any path.',
+    'Fixed: deleting or editing a TV-control schedule slot on a slave device could silently fail (report success but not actually apply).',
+    'Improved: the "cut the signal" TV-control option (for monitors without CEC) now tries the display\'s actual sleep signal (DPMS) first, which puts more monitors into a genuine low-power sleep rather than just showing a "no signal" message.',
+  ],
 };
 
 // Beta-suffix-aware version compare — same scheme as the mothership server's

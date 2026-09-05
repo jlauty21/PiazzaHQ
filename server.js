@@ -4604,6 +4604,18 @@ function slaveWriteGuard(req, res, next) {
   // These are genuinely LOCAL to this device — never proxy them to the host.
   const localOnly = p.startsWith('/api/sync/') ||
                     p.startsWith('/api/screen') ||      // presence check-in / config
+                    p.startsWith('/api/tv-schedule') || // real bug found live: PUT/DELETE here
+                    // live at /api/tv-schedule/:id, NOT under /api/screens/, so this was
+                    // falling through to proxyWriteToHost() below despite TV schedule
+                    // slots being per-device local data (same reasoning as TV control
+                    // itself — see runTvAction's own comment on why this can't be proxied).
+                    // On a slave this meant editing/deleting a schedule slot silently hit
+                    // the HOST's copy instead of this device's own — which never has a
+                    // matching row (slots are created locally via /api/screens/:id/tv-
+                    // schedule, correctly covered by the /api/screen prefix above), so the
+                    // host's delete/update always affected 0 rows while still reporting
+                    // {ok:true}. Reproduced live on a real slave; a clean non-slave
+                    // instance never showed it since the guard no-ops entirely there.
                     p === '/api/update' ||              // receive host-pushed update
                     p.startsWith('/api/auth');          // local login/PIN
   if (localOnly) return next();
@@ -11172,7 +11184,12 @@ app.put('/api/tv-schedule/:id', (req, res) => {
   res.json({ ok: true });
 });
 app.delete('/api/tv-schedule/:id', (req, res) => {
-  db.prepare(`DELETE FROM tv_schedule_slots WHERE id = ?`).run(req.params.id);
+  // Report what actually happened rather than a blind {ok:true} — this is
+  // exactly how the slaveWriteGuard misrouting bug above went unnoticed: a
+  // delete that matched nothing (wrong device, already gone, or silently
+  // proxied to the wrong host) still claimed success with no way to tell.
+  const info = db.prepare(`DELETE FROM tv_schedule_slots WHERE id = ?`).run(req.params.id);
+  if (!info.changes) return res.status(404).json({ error: 'Time slot not found.' });
   res.json({ ok: true });
 });
 

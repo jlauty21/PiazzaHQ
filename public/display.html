@@ -7295,6 +7295,32 @@ async function saveLayoutNow() {
     showDisplayToast('❌ Could not save — no display selected.');
     return;
   }
+  // Never save while state.layout is a schedule-driven override (see
+  // _scheduleOverrideActive's own comment) — real incident, confirmed live:
+  // state.layout at that point holds a ROTATION TARGET's widgets, not
+  // DISPLAY_SLUG's own, and this is the single actual choke point every
+  // layout save funnels through. switchToLayoutTarget() itself already
+  // knows never to persist a schedule-engine-triggered switch (see its own
+  // callerTag check) — but that protection lives only in ONE caller. It did
+  // NOT cover this: applyLocally() (called by every switch, including a
+  // rotation's) fires a background refetch for any widget type new this
+  // session, which for a 'stocks' widget runs
+  // migrateLegacyStockTickersIfNeeded() — a one-time legacy-settings
+  // migration with no awareness of rotation/preview context at all. It
+  // found state.layout (at that moment the ROTATION TARGET's widgets, not
+  // this screen's own) contained a stocks widget needing migration, and
+  // called scheduleLayoutSave() — silently persisting the target's entire
+  // layout onto DISPLAY_SLUG, permanently overwriting a real, named
+  // display's own content the very first time its rotation ever reached a
+  // target with an unmigrated stocks widget. Guarding the actual save
+  // choke point, rather than patching that one caller, protects against
+  // this same class of mistake from any OTHER path that ever calls
+  // scheduleLayoutSave()/saveLayoutNow() without knowing about schedule
+  // overrides — which is exactly how this one slipped through undetected.
+  if (_scheduleOverrideActive) {
+    console.error('saveLayoutNow(): blocked — state.layout is currently a schedule-driven override, not DISPLAY_SLUG\'s own content. Refusing to save it over the real display.');
+    return;
+  }
   _lastLocalLayoutSaveAt = Date.now();
   try {
     await fetch(`/api/layouts/${encodeURIComponent(currentOrientation)}?display=${encodeURIComponent(DISPLAY_SLUG)}`, {
