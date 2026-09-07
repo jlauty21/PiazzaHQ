@@ -641,6 +641,32 @@ current look).
 - [ ] App banner appears even with phone push turned off / this phone not
       enrolled — it's independent of push
 
+### 1.85.0-beta.6 — fleet-health telemetry (phase 1)
+
+Device side only; the central server ignores the new params until its own
+phase-2 change, so a normal build is functionally unchanged.
+
+- [ ] `[AV]` Normal boot: no crash, `.last-crash` absent, `/api/version`
+      unchanged. The 6h check-in still works (watch the log for the
+      update-check line, or hit `/api/update-check`).
+- [ ] `[AV]` `fetchUpdateInfo` adds `deployment` / `uptime` / `disk` and,
+      when HA is configured, `ha=1|0` to the update-check URL. Confirm by
+      pointing `update_server_url` at a request bin, or reading the outbound
+      URL in a debug log line.
+- [ ] Crash-marker round trip: kill the process with an uncaught error
+      (or `kill -SEGV`? no — force an exception), confirm `.last-crash` is
+      written in the data dir; restart; confirm the log says "Recovered
+      from a crash …" and the file is gone after the next check-in.
+- [ ] `ha` reflects reality: with HA configured and reachable → `ha=1`
+      within ~2 min (checkHaAlerts poll); break the HA URL → next check-in
+      sends `ha=0`; HA not configured at all → no `ha` param.
+- [ ] `crash` is sent once, not repeated — a second check-in after a
+      recovery carries no `crash` param.
+- [ ] Windows + container builds: the consolidated crash handler still
+      exits the process (systemd Restart / the Windows supervisor / auto-
+      rollback all rely on that) — a forced uncaught error must not leave a
+      zombie.
+
 Server-side verified this pass (Pi 87 host / 110 slave, real HA):
 - [x] `[AV]` state trims carry the right fields per domain (light:
       brightness+colorTempK+colorModes+rgbColor; media: volumeLevel+muted;

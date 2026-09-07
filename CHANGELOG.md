@@ -4,6 +4,24 @@ All notable changes to Piazza HQ (formerly Pi Calendar). The central server
 reads the top matching section here to pre-fill release notes when you
 publish a build.
 
+## 1.85.0-beta.6
+- **Fleet-health telemetry** (phase 1 of FLEET-OBSERVABILITY-SPEC.md). The
+  6-hourly check-in to the central server now also carries `deployment`
+  (pi/windows/container), process `uptime` (a value that resets every
+  check-in points at a crash loop), free disk space on the data volume,
+  and — if Home Assistant is configured — whether the last HA request
+  actually succeeded. Nothing about the request otherwise changes; it's
+  still a GET, still best-effort.
+- **Crash marker.** An uncaught error now drops a `.last-crash` file before
+  exiting; the next boot reads it, reports the timestamp + first line on
+  the following check-in, then clears it — so a crash that happened while
+  the device was offline is still visible centrally once it's back. Also
+  consolidated the previously Windows-only uncaught-exception handler into
+  one that runs on every platform (same "a crash exits the process"
+  behaviour the supervisors depend on).
+- Nothing is shown for any of this yet — the admin-panel fleet view is a
+  later phase. This build just gets the data flowing.
+
 ## 1.85.0-beta.5
 - **HA alert banner: bigger, screen-relative sizes + a Center option.**
   - Text size now scales with the screen instead of fixed pixels, so

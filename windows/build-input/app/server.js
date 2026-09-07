@@ -44,6 +44,26 @@ const DEPLOYMENT = IS_CONTAINER ? 'container' : (IS_WIN ? 'windows' : 'pi');
 // port — before it spawns the replacement process.
 let httpServer = null;
 
+// ── Fatal-error handling + crash marker (all platforms) ──────────────────────
+// One place that enforces "an uncaught error exits the process" — systemd
+// Restart, the Windows supervisor, and autoRollbackGuard all depend on that.
+// It also drops a `.last-crash` file (read + cleared on the next boot, then
+// reported on the following fleet check-in) so a crash that happened while
+// the device was offline still gets seen centrally.
+function fatalCrash(err, kind) {
+  const msg = (err && (err.stack || err.message)) || String(err);
+  try { console.error(`FATAL (${kind}):`, msg); } catch {}
+  try {
+    const dir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
+    fs.writeFileSync(path.join(dir, '.last-crash'),
+      Date.now() + '\t' + String(msg).replace(/\s+/g, ' ').trim().slice(0, 300));
+  } catch {}
+  process.exit(1);
+}
+process.on('uncaughtException', (e) => fatalCrash(e, 'uncaughtException'));
+process.on('unhandledRejection', (r) => fatalCrash(
+  r instanceof Error ? r : new Error('Unhandled rejection: ' + require('util').format(r)), 'unhandledRejection'));
+
 // ── Windows: log to a file, and make crashes visible ─────────────────────────
 // On the Pi, `journalctl -u piazzahq` captures stdout/stderr and an uncaught
 // error prints there before the process exits. On Windows the server runs via
@@ -86,15 +106,10 @@ if (IS_WIN) {
       const orig = console[name].bind(console);
       console[name] = (...args) => { writeLine(level, args); orig(...args); };
     }
-    process.on('uncaughtException', (e) => {
-      console.error('UNCAUGHT EXCEPTION:', (e && e.stack) || e);
-      process.exit(1); // preserve "a crash exits" — supervisedWindowsRestart / autoRollbackGuard depend on it
-    });
-    process.on('unhandledRejection', (reason) => {
-      // Re-throw so it becomes an uncaughtException handled above — keeps
-      // Node's default "unhandled rejection is fatal" while making it visible.
-      throw (reason instanceof Error ? reason : new Error('Unhandled rejection: ' + nodeUtil.format(reason)));
-    });
+    // uncaughtException / unhandledRejection are handled once, globally, by
+    // fatalCrash() above (registered before this block) — which console.error's
+    // through this same tee and then exits. Nothing platform-specific needed
+    // here any more.
     console.log(`File logging active -> ${LOG_FILE}`);
   } catch (e) {
     // Never let logging setup stop the server from starting.
@@ -252,6 +267,24 @@ const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : nul
 if (DATA_DIR) { try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {} }
 function dataPath(name) { return path.join(DATA_DIR || __dirname, name); }
 const DB_PATH = dataPath('calendar.db');
+
+// If the previous run crashed, fatalCrash() left a `.last-crash` marker.
+// Read it once here, delete it, and stash it so the next fleet check-in
+// (fetchUpdateInfo) can report it — then it's cleared. So a crash that
+// happened while the device was offline is still reported once it's back.
+let _lastCrash = null; // { at: epochMs, reason: string } | null
+try {
+  const cf = dataPath('.last-crash');
+  if (fs.existsSync(cf)) {
+    const raw = fs.readFileSync(cf, 'utf8').trim();
+    fs.unlinkSync(cf);
+    const tab = raw.indexOf('\t');
+    if (tab > 0) {
+      _lastCrash = { at: Number(raw.slice(0, tab)) || Date.now(), reason: raw.slice(tab + 1).slice(0, 300) };
+      console.log(`Recovered from a crash at ${new Date(_lastCrash.at).toISOString()}: ${_lastCrash.reason}`);
+    }
+  }
+} catch {}
 
 // ── Database setup ──────────────────────────────────────────────────────────
 const db = new Database(DB_PATH);
@@ -9087,8 +9120,13 @@ app.get('/api/todoist/projects', async (req, res) => {
 function haRequest(pathAndQuery) {
   return haRequestWith(getSetting('ha_base_url'), getSetting('ha_token'), pathAndQuery);
 }
+// Last outcome of a real HA REST interaction — powers the `ha` field in the
+// fleet check-in (fetchUpdateInfo). null = this device has never talked to
+// HA (either not configured, or configured but nothing's polled yet).
+let _haHealth = null; // { ok: boolean, at: epochMs } | null
 function haRequestWith(baseUrl, token, pathAndQuery, method = 'GET', body = null) {
-  return new Promise((resolve, reject) => {
+  const configured = !!(baseUrl && token);
+  const p = new Promise((resolve, reject) => {
     if (!baseUrl || !token) return reject({ status: 400, message: 'Home Assistant isn\'t configured yet — add a URL and token in Settings' });
     let target;
     try { target = new URL(baseUrl.replace(/\/+$/, '') + pathAndQuery); } catch { return reject({ status: 400, message: 'Invalid Home Assistant URL' }); }
@@ -9128,6 +9166,14 @@ function haRequestWith(baseUrl, token, pathAndQuery, method = 'GET', body = null
     if (bodyStr) r.write(bodyStr);
     r.end();
   });
+  // Only "HA is configured but we couldn't reach/authenticate it" is a health
+  // signal — the not-configured reject above isn't. A token/permission error
+  // (status 401) counts as unhealthy; so does any transport failure.
+  if (!configured) return p;
+  return p.then(
+    (v) => { _haHealth = { ok: true, at: Date.now() }; return v; },
+    (e) => { _haHealth = { ok: false, at: Date.now() }; throw e; }
+  );
 }
 
 // GET /api/ha/discover — best-effort auto-detection of a Home Assistant
@@ -11808,12 +11854,31 @@ function fetchUpdateInfo() {
     u.searchParams.set('device', deviceId);
     u.searchParams.set('role', role);
     if (deviceName) u.searchParams.set('name', deviceName);
+    // ── Fleet-health telemetry (see FLEET-OBSERVABILITY-SPEC.md) ──
+    // Generic device-health fields, deliberately not phrased around
+    // "update-check" — a future faster health-ping sends the same set.
+    u.searchParams.set('deployment', DEPLOYMENT);            // pi | windows | container
+    u.searchParams.set('uptime', String(Math.round(process.uptime()))); // seconds; resets each check-in => crash-looping
+    if (_haHealth) u.searchParams.set('ha', _haHealth.ok ? '1' : '0');   // omitted = never talked to HA
+    try {
+      const st = fs.statfsSync(DATA_DIR || __dirname);
+      u.searchParams.set('disk', String(Math.round(st.bfree * st.bsize / 1048576))); // free MB on the data volume
+    } catch { /* statfsSync unsupported here — skip */ }
+    if (_lastCrash) {
+      u.searchParams.set('crash', `${Math.round(_lastCrash.at / 1000)}:${_lastCrash.reason}`.slice(0, 320));
+    }
     const mod = u.protocol === 'https:' ? https : http;
     const reqOpts = { timeout: 10000, headers: licenseKey ? { 'x-license-key': licenseKey } : {} };
     const req = mod.get(u.toString(), reqOpts, (r) => {
       let data = '';
       r.on('data', c => data += c);
-      r.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('Bad response from update server.')); } });
+      r.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          _lastCrash = null; // reported — don't repeat it on the next check-in
+          resolve(parsed);
+        } catch (e) { reject(new Error('Bad response from update server.')); }
+      });
     });
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('Update server timed out.')); });

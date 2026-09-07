@@ -30,7 +30,7 @@
 
 #define MyAppName "Piazza HQ"
 ; Keep in step with build-input\app\package.json's "version" — see BUILD.md.
-#define MyAppVersion "1.85.0-beta.5"
+#define MyAppVersion "1.85.0-beta.6"
 #define MyAppPublisher "Piazza HQ"
 #define MyAppExeDesc "Piazza HQ — family calendar display"
 
