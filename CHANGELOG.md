@@ -4,6 +4,651 @@ All notable changes to Piazza HQ (formerly Pi Calendar). The central server
 reads the top matching section here to pre-fill release notes when you
 publish a build.
 
+## 1.85.0-beta.5
+- **HA alert banner: bigger, screen-relative sizes + a Center option.**
+  - Text size now scales with the screen instead of fixed pixels, so
+    "Large" on a 4K TV is actually large. Added a **Huge** step above Extra
+    large. Padding and the dismiss button scale with the text.
+  - New **Center (card)** position — a notification card in the middle of
+    the screen over a dimmed background, instead of an edge strip. Hardest
+    to miss.
+- **Active HA alerts now show in the phone app too, and can be dismissed
+  from there.** A red banner appears at the top of the app (any tab, host
+  or slave) whenever an alert is firing; its ✕ clears the alert everywhere,
+  including the wall display — independent of whether this phone is set up
+  to receive push notifications. Polls every 60s and on app focus.
+
+## 1.85.0-beta.4
+- **The Home Assistant alert banner is now configurable per screen.**
+  Devices → a screen → Screen Settings → Display → "Home Assistant alert
+  banner":
+  - **Position** — top or bottom (follows the layout's rotation, so it
+    stays upright on a sideways screen).
+  - **Text size** — Small / Medium / Large / Extra large; scales the text,
+    padding and dismiss button together, so a banner readable across the
+    room on a TV can be smaller on a nearby tablet.
+  - **Style** — Solid red bar (default), Solid red bold, Solid amber,
+    Dark with a red edge, Dark outline, or Corner toast (a smaller rounded
+    card instead of a full-width strip).
+  Changes apply live — a banner that's already showing restyles at once.
+  New `screens.alert_banner_position` / `_size` / `_style` columns; existing
+  screens default to the previous look (solid red, top, medium).
+
+## 1.85.0-beta.3
+- **Edit a Home Assistant alert rule after it's placed.** Each rule row in
+  Settings → Home Assistant → Alerts now has a ✎ button that reopens the
+  form pre-filled with that rule's entity, condition, value, dwell time and
+  message. Saving updates the rule in place — its enabled / 📺 / 📱 state is
+  kept. Previously the only way to change a rule was to delete and re-add it.
+
+## 1.85.0-beta.2
+- **Reject on/off/toggle aimed at a read-only entity.** A Light/Switch tile
+  (or an alert action) pointed at a `sensor`, `binary_sensor`, `weather`,
+  `sun`, `air_quality` or `zone` entity now returns a clear "read-only —
+  no on/off/toggle control" error instead of Home Assistant silently
+  no-op'ing the call and it looking like it worked.
+- Dev: `npm run preflight` — checks the three version-declaration sites
+  agree and the `windows/build-input/app` mirror is in sync before a
+  build (`-- --fix` syncs the mirror). Not shipped to devices.
+
+## 1.85.0-beta.1
+- **Searchable entity picker for Home Assistant alerts.** Adding an alert
+  rule (Settings → Home Assistant → Alerts → + Add alert) used to mean
+  scrolling one giant unsearchable dropdown of every entity. It's now the
+  same bottom-sheet search used elsewhere in the app — type part of the
+  name or the entity id, optionally filter by area, current state shown
+  under each. The saved rule rows now also show the entity id, so a
+  wrong pick is obvious at a glance.
+- **The Favorites card entity pickers now match on entity id too**, not
+  just friendly name, and show the id under each result.
+- Under the hood the widget-settings entity picker and this new one are
+  now one shared function.
+
+## 1.84.0
+A feature release. The headline additions since 1.83: two-way calendar
+sync (push local events out to iCloud and Google), creating events from
+the wall display itself (typed or handwritten), a much deeper set of Home
+Assistant controls on the display and in the app, and phone notifications
+for Home Assistant alerts. Everything below shipped and was verified
+across the 1.84.0-beta.1–40 cycle; the per-beta notes are kept underneath
+for reference.
+
+**Calendar**
+- **Push local events out to iCloud and Google Calendar.** Calendars used
+  to only come in (subscribe to an .ics link, show it read-only); now an
+  event you create in Piazza HQ can also be written to your real iCloud
+  and/or Google calendar, so it shows up in Apple Calendar / Google
+  Calendar. One-way and opt-in, set up under Settings → Data Sources →
+  "Push to iCloud Calendar" / "Push to Google Calendar". Best-effort: a
+  failed push never delays the event itself, it's retried every 15
+  minutes. Edits and deletes propagate to the same remote event. If you
+  also subscribe to that calendar as a feed, Piazza HQ recognises its own
+  pushed-out events and doesn't re-import them as duplicates. No backfill —
+  only events created after you connect an account.
+- **Add events from the wall display.** Long-press any day on a month-view
+  calendar widget for a quick add-event sheet — title, date, all-day or a
+  start/end time, and an optional end date for multi-day. On a secondary
+  display the write is proxied to the host, and pushes out to iCloud/Google
+  from there if enabled.
+- **Optionally handwrite the event title.** With handwriting turned on in
+  the app (needs a free MyScript key — one per account), the add-event
+  sheet gets a ✍️ pad: print the title and it's converted to text, still
+  editable. On-device recognition where the platform supports it, otherwise
+  the strokes go to MyScript (the signing secret never leaves the server).
+- **"Add to" calendar picker.** The add-event sheet lets you choose where a
+  new event goes: this device only, any of your iCloud calendars, or
+  Google — showing only what you've set up.
+- **Delete an event from the display.** Tapping a Piazza HQ event shows a
+  Delete button (with a confirm); it's removed from iCloud/Google too if it
+  was pushed there.
+- **Hide from display for subscribed events.** Feed events can't be deleted
+  (they'd just re-sync), so tapping one now offers "Hide from display" —
+  and "Hide every …" for recurring events — a local suppression that
+  survives syncs and is reversible from the app's Manage events screen.
+
+**Home Assistant — display and app controls**
+- **Covers and locks:** `cover` entities get open / stop / close and `lock`
+  entities get a Lock / Unlock button, in the Entity Status widget and the
+  Smart Home Dashboard, where before they were read-only text.
+- **Light dimming and colour:** a dimmable light that's on shows a
+  brightness slider; a colour or tunable-white light also shows a warm-cool
+  colour-temperature slider and/or a row of preset colour swatches.
+- **Media players:** previous / play-pause / next, the current track title,
+  and a volume slider.
+- **Fan speed:** a variable-speed fan that's on shows a speed slider.
+- **Sensor sparklines:** a numeric sensor shows a small 24-hour trend line
+  under its value, backed by a new cached `/api/ha/history` proxy.
+- **Phone-app Favorites cards** for Garage/Blind/Cover, Lock, and Media
+  Player, matching the display's controls.
+
+**Home Assistant — condition alerts**
+- **Alert rules** (Settings → Home Assistant → Alerts) like "garage open
+  for 15 minutes" or "freezer above 10". The host checks every 2 minutes;
+  when one holds for its dwell time a red banner appears on every display
+  until dismissed, then re-arms only after the condition clears. The banner
+  is rotation-aware.
+- **Phone push:** "Also send alerts to my phone" + "Enable on this phone"
+  relays a fired alert as a push notification (through piazzahq.com, since
+  the Pi app has no HTTPS of its own for push). Needs the matching server
+  update.
+- **Per-channel delivery:** 📺 Screen / 📱 Phone checkboxes per
+  notification type and per rule, so one rule can be display-only and
+  another phone-only.
+
+**Settings**
+- Calendar Sync, both calendar-push sections, and Handwriting now live
+  together under **Data Sources** instead of scattered as their own
+  top-level entries, and Settings no longer jumps to the top when you
+  toggle something inside a sub-section.
+
+**Reliability (the back half of the beta cycle)**
+- **Optimistic HA controls:** tapping a light/lock/cover/media control on
+  the display updates instantly and holds the commanded state instead of
+  waiting a poll cycle and flickering. Slow Z-Wave/Zigbee locks and covers
+  hold the new state until HA confirms it, with a minimum hold so there's
+  no flash back to the old value; a genuine error or a jammed lock still
+  shows through promptly.
+- **Faster HA refresh:** a change made directly in the HA app shows on the
+  display within ~5s (was ~15s); Live Edit tiles refresh within ~4s.
+- **Live Edit drag fix:** dragging or resizing a widget a long way in one
+  motion no longer stops partway when the edit-mode refresh rebuilds the
+  canvas, and a detached drag can't wedge the whole display on a stale
+  value.
+- **In Live Edit, tapping a calendar event or chore-chart row selects the
+  widget** instead of also opening the event / toggling the chore.
+- **A deleted alert rule clears its banner** instead of leaving it stuck
+  until a restart.
+
+**Demo mode (infrastructure — a normal build is unchanged)**
+- A `DEMO_MODE` build powers the public try-it demo at piazzahq.com/demo:
+  locked-down settings, sanitised text, a lease countdown, and a broker
+  that hands out short-lived private instances.
+
+## 1.84.0-beta.40
+- **"Hide from display" for subscribed-calendar events.** Tapping an event
+  that came from an iCal feed now offers *Hide from display* (and, for
+  events that recur, *Hide every "…"*) in the detail popup, where feed
+  events previously had no action at all — Piazza HQ can't delete an event
+  out of someone else's calendar, so this is a local suppression instead.
+  Hidden events stay hidden across syncs and are restorable from the app's
+  Manage events screen. Events created in Piazza HQ still show *Delete*.
+
+## 1.84.0-beta.39
+- **Fixed: deleting a Home Assistant alert rule left its banner on the
+  display.** Removing the rule cleared its internal state but not the
+  on-screen notification, so a stale banner stuck around until the next
+  server restart. It's cleared now when the rule goes away.
+
+## 1.84.0-beta.38
+- **Lock/cover flash-back, hopefully the last take.** HA's lock entity
+  briefly reports the target ("unlocked") as its own optimistic guess, then
+  the real Z-Wave/Zigbee status comes back as the old value for a beat
+  before settling — that middle read was slipping through. The optimistic
+  hold now has a **minimum duration** (5s for locks/covers) during which no
+  incoming state can flip the control except a genuine error or "jammed";
+  after that it takes HA's value as soon as it confirms the target.
+
+## 1.84.0-beta.37
+- **Fixed: the HA sensor sparkline only appeared while resizing the widget.**
+  A full re-render (the periodic HA poll, an SSE push) recreated the empty
+  trend-line placeholder but never refilled it — only a single-widget
+  re-render (which is what a resize triggers) did. It now refills on every
+  render, straight from cache.
+- **Lock/cover flash-back, take three.** The optimistic hold was released as
+  soon as HA reported *any* state other than the old one — including the
+  "unlocking"/"opening" transient and momentary bounces back to the old
+  value — so the control still blinked before settling. It now holds the
+  commanded state until HA reports *exactly the target* (or a real problem
+  state like "jammed"/"unavailable", or the 20s cap for locks/covers).
+
+## 1.84.0-beta.36
+- **Locks/covers no longer flash back to the old state.** Slow devices
+  (Z-Wave/Zigbee locks especially) can take several seconds to report their
+  new state to HA. The display now holds the commanded state until HA
+  reports *anything other than* the pre-tap value — the new state, a
+  transient like "unlocking", "jammed", etc. — up to a 20s cap for
+  locks/covers (5s for everything else), with a few extra confirm reads so
+  it catches up without waiting on the poll.
+- Ambient HA poll eased from 6s to 8s.
+
+## 1.84.0-beta.35
+- **Fixed: an HA control would flash to the new state then snap back.** The
+  confirm read fired before Home Assistant's own entity state had caught up
+  to the service call, so it briefly re-applied the old value. Now, after
+  an optimistic tap, reads that still show the pre-tap state are ignored
+  for a short settle window (2.5s for toggles, 6s for covers/locks), and
+  the confirm read is delayed until after it. A rejected action still snaps
+  back right away.
+
+## 1.84.0-beta.34
+- **HA widgets refresh faster.** The display's ambient HA poll drops from
+  15s to 6s and the server-side per-entity state cache from 10s to 4s, so a
+  change made in the HA app or by an automation shows on the wall within a
+  few seconds (Live Edit's own poll goes 8s → 4s). Taps still update
+  instantly (beta.33) and don't wait for the poll.
+
+## 1.84.0-beta.33
+- **HA controls on the display now respond instantly.** Tapping a toggle /
+  lock / cover / play-pause, or moving a brightness / volume / colour
+  slider, snaps the widget to the commanded state right away instead of
+  waiting out the poll, then reconciles with Home Assistant's real state on
+  a confirm read (and again ~1.5s later for covers/locks, which take a
+  moment to move). If HA rejects the action the widget snaps back and a
+  brief message explains why.
+
+## 1.84.0-beta.32
+- **Fixed: Live Edit could freeze the whole display.** If a widget drag or
+  resize ended abnormally (the element got detached before the pointer was
+  released), the internal drag flag never cleared, so every subsequent
+  re-render was skipped and every widget — HA tiles included — stayed
+  frozen on its last drawn state indefinitely. The render path now detects
+  and clears a wedged drag state, and a window-level pointer-release
+  backstop ensures a drag always ends. Most visible via "Open to Edit in
+  New Tab".
+
+## 1.84.0-beta.31
+- **Fixed: HA widgets on a slave display could show a stale state right
+  after you tapped a control.** On a slave the action is forwarded to the
+  host (which owns the HA connection) while the state read‑back is served
+  locally, so the post‑tap confirm fetch returned this device's pre‑action
+  cached value and the control appeared to snap back. The slave now drops
+  its own cached state for the touched entities the moment it forwards the
+  action, so the confirm fetch comes back fresh.
+
+## 1.84.0-beta.30
+- **Demo: first-run nudge to the edit pencil.** After the intro tour, a
+  bubble points at the bottom-right pencil ("Tap the pencil to move widgets
+  around") and reveals it; shown once per browser. The tour also now leads
+  with the pencil tip.
+
+## 1.84.0-beta.29
+- **Aviation template: the METAR/TAF widget now defaults to KLAX** instead
+  of shipping blank ("enter an ICAO code"). Applies to any new use of the
+  template.
+- **Demo: the countdown pill hides during Live Edit** so it can't sit on
+  top of the "Done" button.
+
+## 1.84.0-beta.28
+- **Demo: showier switcher layouts.** The three the visitor can flip
+  between are now Home Hub, Summer Days, and Aviation (was Home Hub /
+  Command Center / Daily Digest) — the themed ones have animated weather.
+
+## 1.84.0-beta.27
+- **Fixed: dragging a widget in Live Edit "sticks" after a short distance.**
+  The 8-second edit-mode refresh (and any other re-render) was rebuilding
+  the canvas mid-drag, dropping the element under your pointer. `renderLayout()`
+  now defers while a drag/resize is in progress and runs once when it ends.
+  (General fix — not demo-only.)
+- **Demo: the wall shows a layout switcher.** The seed ships three profiles
+  (Home Hub, Command Center, Daily Digest) and demo screens get the
+  floating switcher bar turned on with all three, so a visitor can flip
+  between layouts. (`/api/screen-config` synthesizes this in demo mode.)
+- **Demo: weather has a real default location** (Chicago) so the widget
+  shows live data instead of nothing — open-meteo is keyless.
+
+## 1.84.0-beta.26
+- **Demo: fixes from live testing.**
+  - Moving/editing a widget no longer pops "couldn't save" — a fresh demo
+    screen now auto-adopts the seeded display profile so layout saves have
+    a target (`/api/screen-config` fills an empty slug in demo).
+  - Rightward widget drags no longer trigger the browser's back-swipe
+    (`overscroll-behavior:none` on the display).
+  - In Live Edit, tapping a calendar event or a chore now just selects the
+    widget instead of also opening the event/toggling the chore.
+  - The countdown runs all the way to 0 and then returns you to
+    piazzahq.com, instead of stalling around 1:30 (needs `_server`
+    1.33.25 — the lease is now a fixed window; heartbeats keep the slot
+    alive but don't extend it).
+  - A phone that scanned the wall QR follows the wall home when its lease
+    ends (`demoScan` flag on `/api/version`; polls the broker instead of
+    heartbeating).
+
+## 1.84.0-beta.25
+- **Demo mode: friendlier display.** The bottom "Demo" bar is now a compact
+  pill in the top-right corner (countdown + "Get your own →") so it no
+  longer covers widgets along the bottom edge.
+- **Scan to control the demo from your phone.** The pill shows a QR to
+  `d<n>.piazzahq.com/app?scan=1`; a phone that scans it joins the same demo
+  instance without its own lease (it rides the wall's lease and is bounced
+  when that ends). Needs the broker's new `?scan=1` lease-ok mode
+  (`_server` 1.33.24). Static per-instance QR assets `public/demo-qr-<n>.svg`.
+- **Guided tour.** A one-time (per browser) overlay on first demo load:
+  long-press to add an event, tap widgets, scan to control from a phone,
+  everything resets. Dismissed with "Start exploring".
+- All demo-only; a normal build and a standalone `DEMO_MODE=1` instance are
+  unchanged.
+
+## 1.84.0-beta.24
+- **Demo mode: broker glue.** When a demo instance is wired to the pool
+  broker (`DEMO_BROKER_URL` + `DEMO_INSTANCE`, set by the pool's systemd
+  unit), every load of the display or the control app checks the visitor's
+  lease against the broker and bounces them to `/demo` for a fresh one once
+  it lapses; the page also heartbeats the broker every 45s to hold an
+  active lease open. Fails open if the broker is briefly unreachable.
+  Unset (a normal build, or a standalone demo) → no behaviour change.
+
+## 1.84.0-beta.23
+- **Demo mode (foundation).** A build launched with `DEMO_MODE=1` runs as a
+  throwaway, shared showcase: external integrations (Home Assistant, Todoist,
+  iCloud/Google calendar push, handwriting, daily briefing, phone push),
+  the app PIN, multi-device sync, backups/restore and self-update are all
+  refused at the API and hidden from Settings. Locally-typed text (events,
+  to-dos, shopping, chores, reminders) is length-capped and profanity-masked.
+  The wall display shows a "Demo — resets in mm:ss" strip and a "demo
+  finished" curtain when the lease (`DEMO_LEASE_ENDS`, epoch ms) runs out.
+  A normal build is completely unaffected. The lease broker / auto-reset
+  that drives the public demo pool comes in a later step.
+
+## 1.84.0-beta.22
+- **Fixed: saving anything in Settings kicked you back to the top.**
+  Toggling an alert, saving iCloud/Google/handwriting, etc. now keeps the
+  section you're in open and your scroll position, instead of collapsing
+  everything. Per-alert 📺/📱/enable toggles no longer re-render at all.
+- **Alert entity picker: just the name.** The dropdown showed the full
+  `sensor.long_entity_id` in parentheses after every name, wrapping to
+  several lines each on a phone. Now it's just the friendly name.
+
+## 1.84.0-beta.21
+- **Fixed: the alert banner ignored screen rotation.** It's now inside the
+  rotated content frame, so it lands on the right edge and reads the right
+  way up on a display with an in-browser rotation set.
+- **Alert rules: pick the state from a list.** When adding an alert with
+  "state is", you now choose from that entity's likely states (on/off,
+  open/closed, home/not_home, playing/paused, …) plus its current state,
+  instead of typing a value blind. "above/below" still take a number, and
+  there's an "Other…" escape hatch for unusual states.
+
+## 1.84.0-beta.20
+- **Settings tidy-up.** "Calendar Sync", "Push to iCloud Calendar", "Push
+  to Google Calendar" and "Handwriting input" now live together under
+  **Data Sources** in Settings, instead of scattered as their own
+  top-level entries. Calendar Sync moved out of Advanced.
+
+## 1.84.0-beta.19
+- **Choose where each notification goes.** Settings → Home Assistant →
+  "Notification delivery": a row per notification type with 📺 Screen and
+  📱 Phone checkboxes. And each alert rule now has its own 📺 / 📱 toggles,
+  so one rule can be display-only and another phone-only. Phone still also
+  needs the global "send to my phone" switch + an enabled phone.
+
+## 1.84.0-beta.18
+- **Alerts on your phone, not just the display.** Settings → Home
+  Assistant → "Also send alerts to my phone", then tap "Enable on this
+  phone" and allow notifications. When an alert fires it now also pushes to
+  every phone you've enabled. (Relayed through piazzahq.com, since the app
+  on the Pi has no HTTPS of its own for push — needs the matching server
+  update.)
+- Under the hood the alert banner is now a general notification channel, so
+  other kinds of notification can use the same on-screen + phone path
+  later.
+
+## 1.84.0-beta.17
+- **Home Assistant condition alerts.** Settings → Home Assistant → Alerts:
+  add rules like "garage door is open for 15 minutes" or "freezer above
+  10". The host checks them every 2 minutes; when one holds for its set
+  time, a red banner appears on every display until dismissed. It fires
+  once, then re-arms only after the condition clears.
+
+## 1.84.0-beta.16
+- **Sensor sparklines.** A numeric Home Assistant sensor in an Entity
+  Status widget now shows a small 24-hour trend line under its value, so a
+  temperature/humidity/power reading is glanceable, not just a number.
+  Backed by a new cached `/api/ha/history` proxy.
+
+## 1.84.0-beta.15
+- **Light colour control from the display.** A colour or tunable-white
+  Home Assistant light that's on now shows a warm-cool colour-temperature
+  slider and/or a row of preset colour swatches, under the brightness
+  slider, in the Entity Status widget and the dashboard grid.
+
+## 1.84.0-beta.14
+- **Fixed: with two Home Assistant Favorites cards of the same kind, only
+  the first one's buttons worked.** Each card now wires its own buttons.
+
+## 1.84.0-beta.13
+- **New Favorites cards in the phone app: Garage/Blind/Cover, Lock, and
+  Media Player.** The wall display already controls these; now the app's
+  Favorites tab does too. Cover gets open/stop/close, Lock gets a
+  Lock/Unlock button, Media Player gets previous/play-pause/next.
+
+## 1.84.0-beta.12
+- **Fan speed from the display.** A variable-speed Home Assistant `fan`
+  that's on now shows a speed slider under its on/off switch, same as the
+  light dimmer.
+
+## 1.84.0-beta.11
+- **Media player controls on the display.** Home Assistant `media_player`
+  entities now show previous / play-pause / next buttons, the current
+  track title, and a volume slider — in the Entity Status widget and the
+  Smart Home Dashboard grid. Previously just read-only text.
+
+## 1.84.0-beta.10
+- **Dim your lights from the display.** A dimmable Home Assistant light
+  that's on now shows a brightness slider under its on/off switch, in the
+  Entity Status widget and the Smart Home Dashboard's grid view. Drag and
+  release to set the level; the percentage shows in place of "On".
+
+## 1.84.0-beta.9
+- **Control garage doors, blinds, and locks from the display.** Home
+  Assistant `cover` entities now get open / stop / close buttons, and
+  `lock` entities get a Lock / Unlock button, in the Entity Status widget
+  and the Smart Home Dashboard — previously these showed as read-only
+  text. Pick them the same way as any other entity in the widget's
+  settings.
+
+## 1.84.0-beta.8
+- **Pick which calendar a new event goes to.** The add-event sheet on the
+  wall display (long-press a day) now has an "Add to" picker: this device
+  only, any of your iCloud calendars, or Google. It shows only what you've
+  set up, and defaults to your configured default calendar. To get the full
+  iCloud list, re-run "Find my calendars" in Settings once — every calendar
+  it finds becomes a choice on the display (you still pick one as the
+  default there).
+- **Delete an event from the display.** Tapping a Piazza HQ event now shows
+  a Delete button (with a confirm). It's removed from iCloud/Google too if
+  it was pushed there. Events pulled from a subscribed feed stay read-only.
+
+## 1.84.0-beta.7
+- **Fixed: handwriting recognition could get stuck failing until a restart.**
+  Outbound calls to MyScript (and to iCloud/Google for calendar push) no
+  longer reuse pooled connections — a bad key attempt could leave a
+  poisoned keep-alive socket that made every later request fail with a
+  generic "Recognition service error". Each call now opens a fresh
+  connection.
+- **Handwriting settings: paste-proof the keys.** The MyScript application
+  and HMAC keys are now extracted as UUIDs from whatever you paste, so a
+  stray "* " bullet or surrounding quotes no longer silently break auth.
+
+## 1.84.0-beta.6
+- **Fixed: handwriting recognition always failed with "Recognition service
+  error".** The request asked MyScript for a response format it doesn't
+  produce, so every call 406'd before it got anywhere. Now asks for JIIX
+  (its structured result format). Also surfaces MyScript's own error text
+  when something else goes wrong, instead of a generic message. Keys /
+  HMAC / endpoint were all fine — no need to touch the MyScript settings.
+
+## 1.84.0-beta.5
+- **New: add events from the wall display.** Long-press any day on a
+  calendar widget (month view) to open a quick add-event sheet — title,
+  date, all-day or a start/end time, and an optional end date for
+  multi-day. It saves like any local event: on a secondary display the
+  write is proxied to the host, and from there it pushes out to
+  iCloud/Google if you've turned those on. The long-press is deliberately
+  stationary so it never fights the swipe-to-change-month gesture.
+- **New (optional): handwrite the event title.** With handwriting turned on
+  in the phone app's Settings (needs a free MyScript key — one key covers
+  every display on the account), the add-event sheet gets a ✍️ button: print
+  the title on a stroke pad and it's converted to text, still fully
+  editable. On-device recognition is used when the platform supports it
+  (ChromeOS, some Windows builds); otherwise the strokes go to MyScript for
+  recognition — the signing secret stays on the server, never on a display.
+  Typing always works regardless.
+
+## 1.84.0-beta.4
+- **Fixed: Google connect reported success but showed no calendars.** The
+  `calendar.events` scope can create/edit/delete events but can't *list*
+  your calendars — so the picker came up empty. Dropped the picker: events
+  go to your **primary calendar** by default, with an optional "Calendar
+  ID" field for pushing into a different one. Also added the lightweight
+  `email` scope so it can show which account is connected. Verified
+  end-to-end against real Google + iCloud accounts: create (all-day /
+  timed / multi-day), edit-in-place, and delete all propagate correctly to
+  both, and neither service's pushed events come back as duplicates if you
+  also subscribe to that calendar as a feed.
+- Already-connected accounts keep working; the account email fills in next
+  time you connect.
+
+## 1.84.0-beta.3
+- **Reworked the Google Calendar connect flow.** The previous beta used
+  Google's device-code flow, which turned out not to permit Calendar
+  scopes at all. Now: tap "Connect Google account" → a Google sign-in page
+  opens → pick your account and approve → done. Google redirects through
+  piazzahq.com (a stable address this display doesn't have), which relays a
+  one-time code back here; this device then completes the token exchange
+  itself, with PKCE, so the client secret never leaves it and the
+  mothership only ever sees a code it can't use. iCloud push is unchanged.
+- **Requires the matching mothership update** (server 1.33.17) to be
+  deployed first, and the Google OAuth client reconfigured as a "Web
+  application" — see MANUAL-TASKS.md.
+
+## 1.84.0-beta.2
+- **Fixed: "Find my calendars" for iCloud could report "no writable
+  calendars" on an account that clearly has them.** The CalDAV response
+  parser was too strict about tag formatting and namespace placement, which
+  varies between iCloud accounts. Reworked it to be lenient by default —
+  keep any calendar collection under your calendar home, only dropping one
+  that explicitly declares itself event-less (a Reminders/VTODO list). If it
+  still finds nothing, the error now lists the collections iCloud actually
+  returned so the mismatch is diagnosable.
+- Google Calendar push is unchanged from beta.1.
+
+## 1.84.0-beta.1
+**New: push local events out to iCloud and Google Calendar.** Until now
+calendars only came IN (subscribe to a published .ics link, display it
+read-only). This adds the other direction: an event you create in Piazza HQ
+(the Add Event form) can now also be written to your real iCloud and/or
+Google calendar, so it shows up in Apple Calendar / Google Calendar on your
+phone. One-way — changes made on Apple's or Google's side don't sync back —
+and entirely opt-in. Subscribed calendar feeds are unaffected.
+
+- **Setup lives in Settings → "Push to iCloud Calendar" / "Push to Google
+  Calendar".**
+  - iCloud needs your Apple ID and an app-specific password (generate one at
+    appleid.apple.com → Sign-In and Security). Tap "Find my calendars", pick
+    one, turn it on.
+  - Google uses a "connect on your phone" flow: tap Connect, open the short
+    link shown, enter the code, approve. Then pick a calendar and turn it on.
+    (Requires the server to have a Google OAuth client configured — a paste-in
+    field appears if it doesn't yet.)
+- **Best-effort by design.** A push that fails — wrong password, service
+  down, no network — never blocks or delays the event itself; it's recorded
+  and retried automatically every 15 minutes.
+- **Edits and deletes propagate too**, to the same remote event.
+- **No duplicates.** If you also subscribe to the same calendar as a feed,
+  Piazza HQ recognizes its own pushed-out events and doesn't re-import them.
+- Only events created *after* you connect an account are pushed — no
+  backfill of your existing local events.
+
+Beta: works end to end in local testing, but the CalDAV/OAuth flows haven't
+been exercised against a wide range of real accounts yet. Feedback welcome.
+
+## 1.83.5
+Prompted by the 1.83.4 rotation incident: rather than trust that the rest of
+the app was fine because nothing else had been reported broken, went
+through essentially the entire codebase looking for the same *class* of
+mistake elsewhere — silent failures, unsafe assumptions about which device
+an action runs on, and unescaped content. Found 18 real issues total; the
+ones with genuine user impact are below (a few more were internal-only
+consistency fixes, e.g. a token-comparison helper not quite matching its
+own documented behavior, with no practical exposure — not itemized here).
+
+- **Fixed a real, confirmed process crash on Windows.** Downloading a full
+  backup, or a saved code backup, could crash the entire running server —
+  not intermittently: reproduced on every single attempt in testing. Root
+  cause: post-download cleanup (`fs.rmSync` on a staging folder) ran inside
+  an async callback outside the route's own error handling, so a Windows
+  filesystem quirk (a just-emptied directory briefly refusing removal —
+  antivirus/file-handle timing) became an *uncaught* exception instead of a
+  handled error. Both affected routes now catch and log a cleanup failure
+  instead of taking the whole app down over it.
+- **Security: fixed a real stored-content-injection gap.** Many places
+  rendered user-entered or externally-sourced text — calendar event titles
+  and notes (including from **subscribed external calendar feeds**), news
+  headlines, stock labels, weather location overrides, and several
+  display/feed/layout/Todoist-project names — directly into the page
+  without escaping it first, while other, newer widgets already did this
+  correctly. In practice this meant a maliciously (or just unusually)
+  crafted calendar feed, or a name typed with the wrong characters, could
+  inject markup that the display would render as part of the page instead
+  of as plain text. Fixed across roughly 45 sites in the wall display and
+  the control app. No indication this was ever exploited.
+- **Fixed 7 more cases of the same routing bug 1.83.4 fixed for TV
+  schedules**: on a slave/mirror screen, installing an update, restoring a
+  backup or code snapshot, running the mothership-install helper, and the
+  Windows kiosk-exit button could each silently target the host instead of
+  the actual device, or simply fail, because they weren't recognized as
+  "must run on this exact device" actions.
+- **Fixed two Daylight Saving Time bugs**, both confirmed with real dates:
+  a recurring "every N weeks" event could gain or lose a week's alignment
+  right at a DST change, and the Countdown widget could show one day off
+  (e.g. "8 days to go" instead of "7") for part of the day leading into a
+  DST change. Both were plain local-time date subtraction not accounting
+  for the hour DST adds or removes; fixed with DST-safe date math.
+- Extensively re-verified the 1.83.4 rotation fix has no siblings, confirmed
+  the write-routing guard against every mutating route in the app (not just
+  the ones already known to be wrong), and reproduced every fix above
+  against either a disposable local instance or real hardware before
+  considering it done — see HANDOFF.md for the full session narrative.
+
+## 1.83.4
+- **Fixed a real, serious data-loss bug in the Layout Switcher's rotation
+  mode.** A schedule-driven rotation between two or more real, named
+  displays is only ever supposed to *show* each target locally — never
+  persist over the screen's own true assignment (that protection has
+  existed since beta.2, specifically to prevent a rotation from destroying
+  a display's content). That protection covered the rotation's own switch
+  logic, but not a separate path: `applyLocally()` (run on every switch,
+  including a rotation's) triggers a background refetch for any widget
+  type new to the session, and for a `stocks` widget that refetch runs a
+  one-time legacy-settings migration (`migrateLegacyStockTickersIfNeeded()`)
+  with no awareness of rotation/preview context at all. If it found a
+  legacy `stock_tickers` setting still present, it called
+  `scheduleLayoutSave()` directly — silently persisting whatever the
+  rotation was currently showing onto the screen's real, named display.
+  Confirmed as a genuine live incident, not a hypothetical: a household's
+  own "Mirror Display" got permanently overwritten with a different
+  display's content this way.
+  - **Fix: `saveLayoutNow()` — the single function every layout save
+    actually funnels through — now refuses to save while a schedule-driven
+    override is active**, regardless of what triggered the save attempt.
+    This protects against the specific path found above AND any other
+    current or future code path that might call it without knowing about
+    rotation/preview context, rather than patching just the one caller.
+  - **Verified two ways:** an isolated test running the actual extracted
+    function confirmed the save is blocked while an override is active and
+    unaffected otherwise; then reproduced the exact real-world failure live
+    (legacy stock-ticker setting present, rotating into a display with an
+    unmigrated stocks widget) against a disposable throwaway display on
+    real hardware — the rotation switched through the vulnerable target
+    and the throwaway display's stored content came through byte-for-byte
+    unchanged.
+- **Fixed: `PUT`/`DELETE /api/tv-schedule/:id` could silently no-op on a
+  slave device.** Every other TV-schedule route lives under
+  `/api/screens/...`, correctly recognized as safe to run locally on a
+  slave — these two didn't, so they fell through to being proxied to the
+  host instead, hit a row that only ever existed on the slave, matched
+  nothing, and still reported success. Fixed by adding them to the
+  local-only allowlist; `DELETE` also now honestly reports 404 instead of
+  a blind `{ok:true}` when nothing actually matched.
+- **Improved: the `hdmi-signal` TV-control driver (for monitors with no
+  CEC support) now tries real DPMS (`xset dpms force off/on`) first**
+  before falling back to the previous `xrandr`-based signal cut, then
+  `vcgencmd` as a last resort. DPMS is the actual power-management
+  signal — the same one a PC uses to put a monitor to sleep — and tested
+  live as putting more monitors into genuine sleep rather than leaving
+  them on a "no signal" message. Whether a given monitor sleeps cleanly or
+  just shows an alert is that monitor's own firmware decision either way.
+
 ## 1.83.3
 Promoted from the beta.1–beta.12 cycle. Highlights below; see each beta
 section further down for the full blow-by-blow (native module gaps found,

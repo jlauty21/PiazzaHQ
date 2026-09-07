@@ -1064,6 +1064,10 @@
     <span id="feedback-reply-banner-text" style="cursor:pointer"></span>
     <button id="feedback-reply-banner-close" style="background:none;border:none;color:#7ae0a0;font-size:15px;cursor:pointer;padding:0 2px;line-height:1">✕</button>
   </div>
+  <div id="ha-alert-banner-app" style="display:none;background:#3a1d1c;border-bottom:1px solid #b0413a;color:#ffb3ac;font-size:13px;padding:10px 14px;text-align:center;align-items:center;justify-content:center;gap:10px">
+    <span id="ha-alert-banner-app-text" style="cursor:pointer;min-width:0;overflow:hidden;text-overflow:ellipsis"></span>
+    <button id="ha-alert-banner-app-close" title="Dismiss" style="background:none;border:none;color:#ffb3ac;font-size:15px;cursor:pointer;padding:0 2px;line-height:1;flex:0 0 auto">✕</button>
+  </div>
   <div id="slave-banner" style="display:none;background:#16321f;border-bottom:1px solid #1f6a3a;color:#7ae0a0;font-size:12px;padding:8px 14px;text-align:center">
     📡 This screen is linked to your host. Edits you make here are saved to the host and synced to all screens.
   </div>
@@ -1357,6 +1361,18 @@ const RELEASE_NOTES = {
     'New: on the Windows wall display, tap the screen to reveal a button that exits full-screen mode.',
     'Plus various bug fixes and improvements.',
   ],
+  '1.83.4': [
+    'Fixed a real, serious bug: a screen rotating between displays could — under a specific, now-understood set of conditions — silently overwrite a real, named display\'s own content with whatever the rotation was showing at that moment. Fixed at the actual save function itself, so this can\'t happen through any path.',
+    'Fixed: deleting or editing a TV-control schedule slot on a slave device could silently fail (report success but not actually apply).',
+    'Improved: the "cut the signal" TV-control option (for monitors without CEC) now tries the display\'s actual sleep signal (DPMS) first, which puts more monitors into a genuine low-power sleep rather than just showing a "no signal" message.',
+  ],
+  '1.83.5': [
+    'Fixed a real bug on Windows: downloading a full backup (or a code backup) could crash the whole server, not just the download — confirmed happening consistently, not a rare edge case.',
+    'Security: closed a real gap where certain text — event titles and notes from your calendar (including subscribed calendar feeds), news headlines, and a few other fields — wasn\'t being safely escaped before display. Nothing suggests this was ever exploited; fixed as a precaution across every place it applied.',
+    'Fixed: several more actions (installing an update, restoring a backup, the Windows kiosk-exit button) could silently target the wrong device, or fail outright, when run from a secondary/mirror screen.',
+    'Fixed: a recurring "every N weeks" event, or a countdown widget, could be off by one day right around a Daylight Saving Time change.',
+    'A round of hardening across the app — no other user-visible changes.',
+  ],
 };
 
 // Beta-suffix-aware version compare — same scheme as the mothership server's
@@ -1464,6 +1480,12 @@ async function copyToClipboard(text) {
 // used to carry a wordy always-visible <p> of context. Text can include simple
 // HTML (e.g. <b>) since callers control it directly, never user input.
 window._infoTexts = {
+  'alert-banner-help':
+    `Controls how a fired Home Assistant alert appears <b>on this screen</b> — each display can differ, so a banner readable across the room on a big TV can be smaller on a nearby tablet.<br><br>
+    <b>Position</b>: <b>Top</b> / <b>Bottom</b> are edge strips (the logical edge — they rotate with the layout, so they stay upright on a sideways-mounted screen). <b>Center (card)</b> floats a notification card in the middle of the screen over a dimmed background — hardest to miss.<br><br>
+    <b>Text size</b> scales with the screen, so "Large" on a 4K TV is genuinely large. "Huge" is for a big display seen from across a room.<br><br>
+    <b>Style</b>: <b>Solid red bar</b> is the default full-width strip. <b>Bold</b> adds heavier framing. <b>Amber</b> is a less-alarming colour. <b>Dark w/ red edge</b> and <b>Dark outline</b> are lower-key. <b>Corner toast</b> is a smaller rounded card in the corner.<br><br>
+    Changes apply live — if a banner is currently showing it updates immediately.`,
   'screen-settings-help':
     `Orientation and rotation here follow this physical screen — handy for a TV mounted sideways.<br><br>
     <b>Screensaver Source</b> picks what this screen's screensaver/photo mode draws from — a tag (cycles through every photo with that tag) or one specific photo (no cycling); tag photos in the Photos tab.<br><br>
@@ -1906,6 +1928,7 @@ const SETTINGS_ICONS = {
   'General':'🏠', 'Display':'🖥️', 'Photo Widget Defaults':'🖼️', 'Features & Family Hub':'✨', 'Weather':'☀️', 'Calendar Sync':'🔄', 'Todoist':'✅', 'To-Do Lists':'📝',
   'Stocks':'📈', 'News':'📰', 'Daily Briefing':'✉️', 'Feedback & Ideas':'💬', 'Version & License':'⬆️', 'Security':'🔒', 'Multi-Device':'🖥️', 'Home Assistant':'🏠', 'App Preferences':'📱', 'Beta Checklist':'✅',
   'Support the Project':'☕',
+  'Push to iCloud Calendar':'📅', 'Push to Google Calendar':'📅', 'Handwriting input':'✍️',
 };
 // Sections nested inside a named group's own mini-accordion, rather than
 // sitting as top-level accordion items — cuts the scanning distance for a
@@ -1921,13 +1944,16 @@ const SETTINGS_GROUPS = {
   'Display':               'Display & Appearance',
   'Photo Widget Defaults': 'Display & Appearance',
   'Custom Theme':          'Display & Appearance',
-  'Weather':        'Data Sources',
-  'Travel Time':    'Data Sources',
-  'News':           'Data Sources',
-  'Stocks':         'Data Sources',
-  'Todoist':        'Data Sources',
-  'Home Assistant': 'Data Sources',
-  'Calendar Sync':      'Advanced',
+  'Weather':                 'Data Sources',
+  'Travel Time':             'Data Sources',
+  'News':                    'Data Sources',
+  'Stocks':                  'Data Sources',
+  'Todoist':                 'Data Sources',
+  'Home Assistant':          'Data Sources',
+  'Calendar Sync':           'Data Sources',
+  'Push to iCloud Calendar': 'Data Sources',
+  'Push to Google Calendar': 'Data Sources',
+  'Handwriting input':       'Data Sources',
   'Version & License':  'Advanced', // was 'Software Update' — stale after that section got renamed; fixed here too
   'Multi-Device':       'Advanced',
   'Daily Briefing':     'Advanced',
@@ -1942,10 +1968,71 @@ const SETTINGS_GROUPS = {
 // transformSettingsToAccordion(), AFTER the Advanced group's own
 // end-of-list placement, so both of these end up below Advanced too.
 const BOTTOM_ANCHORED_SECTIONS = ['Feedback & Ideas', 'Support the Project'];
+// Settings sections with no meaning inside a shared, resettable demo instance —
+// every one of these either drives an external integration, a credential, the
+// update/host machinery, or the app PIN, all of which the demo server also
+// blocks at the API. Removed from the DOM before the accordion is built (see
+// transformSettingsToAccordion) whenever /api/version reports demo mode.
+const DEMO_HIDDEN_SETTINGS_SECTIONS = new Set([
+  'Custom Theme', 'Calendar Sync', 'Push to iCloud Calendar', 'Push to Google Calendar',
+  'Handwriting input', 'Todoist', 'Home Assistant', 'Voice Control (Siri Shortcuts)',
+  'Daily Briefing', 'Security', 'Feedback & Ideas', 'Multi-Device', 'Version & License',
+  'Update Backups', 'Beta Checklist', 'Backup',
+]);
+// Demo mode in the control app: a slim countdown strip + a broker heartbeat
+// that holds the lease open while this tab is here (mirrors display.html).
+// No-op unless /api/version reports demo mode.
+let _appDemoBeat = null;
+function initAppDemo(v) {
+  if (!v || !v.demo) return;
+  window.__isDemo = true;
+  window.__demoLeaseEndsAt = Number(v.demoLeaseEndsAt) || 0;
+  let bar = document.getElementById('app-demo-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'app-demo-bar';
+    bar.style.cssText = 'position:sticky;top:0;z-index:9999;display:flex;gap:10px;align-items:center;justify-content:center;'
+      + 'padding:6px 12px;font-size:12px;font-weight:600;background:#23262B;color:#fff;';
+    bar.innerHTML = '<span>Demo</span><span class="adb-count" style="font-variant-numeric:tabular-nums"></span>'
+      + '<a href="https://piazzahq.com" target="_blank" rel="noopener" style="color:#8ec3ff;font-weight:700">Get your own →</a>';
+    document.body.insertBefore(bar, document.body.firstChild);
+  }
+  const home = 'https://piazzahq.com/';
+  const bail = () => { try { location.href = home; } catch {} };
+  const countEl = bar.querySelector('.adb-count');
+  setInterval(() => {
+    const endsAt = Number(window.__demoLeaseEndsAt) || 0;
+    if (!endsAt) { countEl.textContent = ''; return; }
+    const s = Math.max(0, Math.floor((endsAt - Date.now()) / 1000));
+    countEl.textContent = `resets in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    if (s <= 0) bail();
+  }, 1000);
+  if (v.demoBrokerUrl && !_appDemoBeat) {
+    if (v.demoScan) {
+      // Scanned-in phone: no lease of its own — just poll whether the wall's
+      // lease is still alive, and follow it home when it ends.
+      const poll = () => fetch(v.demoBrokerUrl + '/demo/lease-ok?scan=1&n=' + encodeURIComponent(v.demoInstance))
+        .then(r => r.json()).then(j => {
+          if (j && j.ok === false) bail();
+          else if (j && j.endsAt) window.__demoLeaseEndsAt = j.endsAt;
+        }).catch(() => {});
+      poll();
+      _appDemoBeat = setInterval(poll, 20000);
+    } else {
+      const beat = () => fetch(v.demoBrokerUrl + '/demo/heartbeat', { method: 'POST', credentials: 'include', keepalive: true })
+        .then(r => r.json()).then(j => {
+          if (j && j.ok === false) bail();
+          else if (j && j.endsAt) window.__demoLeaseEndsAt = j.endsAt;
+        }).catch(() => {});
+      beat();
+      _appDemoBeat = setInterval(beat, 45000);
+    }
+  }
+}
 const SETTINGS_GROUP_META = {
   'Display & Appearance': { icon: '🖥️', summary: 'Display behavior, photo defaults, custom theme', deferToEnd: false },
-  'Data Sources':         { icon: '🔌', summary: 'Weather, travel time, news, stocks, Todoist', deferToEnd: false },
-  'Advanced':             { icon: '⚙︎', summary: 'Calendar sync, version & license, multi-device, briefing, feedback, backup', deferToEnd: true },
+  'Data Sources':         { icon: '🔌', summary: 'Weather, news, stocks, calendars, Home Assistant, Todoist, handwriting', deferToEnd: false },
+  'Advanced':             { icon: '⚙︎', summary: 'Version & license, multi-device, briefing, feedback, backup', deferToEnd: true },
 };
 // Settings Search — synonym expansion table. This is the "broad concept"
 // layer: the index itself is auto-scraped from the live DOM (every
@@ -2240,6 +2327,18 @@ function wireSettingsSearch() {
 function transformSettingsToAccordion() {
   const content = $('content');
   if (!content) return;
+  if (window.__isDemo) {
+    // Strip the demo-irrelevant sections (header + every sibling up to the
+    // next header/save button) before they're folded into the accordion.
+    [...content.querySelectorAll('.section-header')].forEach(h => {
+      if (!DEMO_HIDDEN_SETTINGS_SECTIONS.has(h.textContent.trim())) return;
+      let n = h.nextElementSibling;
+      while (n && !n.classList.contains('section-header') && !n.classList.contains('settings-save')) {
+        const next = n.nextElementSibling; n.remove(); n = next;
+      }
+      h.remove();
+    });
+  }
   const headers = [...content.querySelectorAll('.section-header')];
   if (!headers.length) return;
 
@@ -2334,6 +2433,27 @@ function transformSettingsToAccordion() {
   // Wire the outer accordion and every group's own inner mini-accordion independently.
   wireAccordion(accId);
   Object.keys(groupInner).forEach(groupName => wireAccordion(groupInner[groupName].id));
+}
+
+// Re-render the Settings tab WITHOUT throwing the user back to the top: it
+// records which accordion sections are open + the scroll position, calls
+// renderSettings(), then re-opens the same path and restores scroll. Use
+// this instead of a bare renderSettings() after an in-section save so a
+// toggle/add/delete doesn't collapse everything.
+async function renderSettingsKeepPlace() {
+  const root = document.getElementById('settings-accordion');
+  const openIds = root ? [...root.querySelectorAll('.acc-section.open')].map(s => s.dataset.acc).filter(Boolean) : [];
+  const sc = document.getElementById('content');
+  const sy = sc ? sc.scrollTop : 0;
+  await renderSettings();
+  // Document order puts an outer group before its sub-sections, so opening
+  // in this order restores the full "group → section" path correctly.
+  for (const id of openIds) {
+    const head = document.querySelector(`#settings-accordion [data-acc-toggle="${String(id).replace(/["\\]/g, '\\$&')}"]`);
+    const sec = head && head.closest('.acc-section');
+    if (head && sec && !sec.classList.contains('open')) head.click();
+  }
+  if (sc) sc.scrollTop = sy;
 }
 
 // ── Formatting ────────────────────────────────────────────────────────────────
@@ -3215,7 +3335,8 @@ const FAVORITE_CARD_DEFS = {
         </button>`;
     },
     wire(card) {
-      const btn = document.querySelector('.fav-ha-toggle-btn');
+      const root = document.querySelector(`.fav-card[data-id="${card.id}"]`);
+      const btn = root && root.querySelector('.fav-ha-toggle-btn');
       if (!btn) return; // empty state (entity not found) — see render() above, no button to wire
       btn.addEventListener('click', async (e) => {
         const btn = e.currentTarget;
@@ -3239,8 +3360,9 @@ const FAVORITE_CARD_DEFS = {
           <span style="flex-shrink:0;width:34px;height:19px;border-radius:10px;background:${anyOn?'var(--accent)':'var(--border)'};position:relative;transition:background .15s"><span style="position:absolute;top:2px;left:${anyOn?'17px':'2px'};width:15px;height:15px;border-radius:50%;background:#fff;transition:left .15s"></span></span>
         </button>`;
     },
-    wire() {
-      const btn = document.querySelector('.fav-ha-group-btn');
+    wire(card) {
+      const root = document.querySelector(`.fav-card[data-id="${card.id}"]`);
+      const btn = root && root.querySelector('.fav-ha-group-btn');
       if (!btn) return; // empty state (no entities found for this group) — see render() above, no button to wire
       btn.addEventListener('click', async (e) => {
         const btn = e.currentTarget;
@@ -3267,8 +3389,9 @@ const FAVORITE_CARD_DEFS = {
       const isScript = ent.entity_id.startsWith('script.');
       return `<button class="btn btn-primary fav-ha-trigger-btn" data-entity-id="${ent.entity_id}" style="margin-top:0;padding:10px;width:100%">${isScript?'📜':'🎬'} ${escapeHtml(ent.friendly_name)}</button>`;
     },
-    wire() {
-      const triggerBtn = document.querySelector('.fav-ha-trigger-btn');
+    wire(card) {
+      const root = document.querySelector(`.fav-card[data-id="${card.id}"]`);
+      const triggerBtn = root && root.querySelector('.fav-ha-trigger-btn');
       if (!triggerBtn) return; // empty state (scene/script not found) — see render() above, no button to wire
       triggerBtn.addEventListener('click', async (e) => {
         const btn = e.currentTarget;
@@ -3277,6 +3400,80 @@ const FAVORITE_CARD_DEFS = {
         btn.disabled = false;
         if (r && r.ok) showToast(`✓ ${btn.textContent.trim()} triggered`);
         else showToast('❌ ' + ((r && r.error) || 'Could not trigger'));
+      });
+    },
+  },
+  ha_cover: {
+    label: 'Garage / Blind / Cover', icon: '🪟', category: 'Home Assistant', needs: ['ha_entities'], configField: 'ha_cover',
+    render(card, data) {
+      const ent = (data.haEntities || []).find(e => e.entity_id === card.config.entity_id);
+      if (!ent) return `<p style="font-size:12px;color:var(--muted);margin:0">Cover not found — check Home Assistant, or remove this card.</p>`;
+      const st = (ent.state || '').toLowerCase();
+      const stText = st === 'open' ? 'Open' : st === 'closed' ? 'Closed' : st ? st.charAt(0).toUpperCase()+st.slice(1) : '—';
+      const b = (act, glyph, aria) => `<button class="fav-cover-btn" data-act="${act}" data-entity-id="${ent.entity_id}" aria-label="${aria}" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:15px;cursor:pointer">${glyph}</button>`;
+      return `
+        <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:6px">🪟 ${escapeHtml(ent.friendly_name)} <span style="color:var(--muted);font-weight:400">· ${stText}</span></div>
+        <div style="display:flex;gap:6px">${b('open_cover','▲','Open')}${b('stop_cover','■','Stop')}${b('close_cover','▼','Close')}</div>`;
+    },
+    wire(card) {
+      const root = document.querySelector(`.fav-card[data-id="${card.id}"]`);
+      if (!root) return;
+      root.querySelectorAll('.fav-cover-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          btn.disabled = true; btn.style.opacity = '.5';
+          const r = await apiFetch('/api/ha/call-action', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ entityId: btn.dataset.entityId, action: btn.dataset.act }) });
+          if (r && r.ok) setTimeout(renderFavoritesTab, 700);
+          else { btn.disabled = false; btn.style.opacity = ''; showToast('❌ ' + ((r && r.error) || 'Could not move it')); }
+        });
+      });
+    },
+  },
+  ha_lock: {
+    label: 'Lock', icon: '🔒', category: 'Home Assistant', needs: ['ha_entities'], configField: 'ha_lock',
+    render(card, data) {
+      const ent = (data.haEntities || []).find(e => e.entity_id === card.config.entity_id);
+      if (!ent) return `<p style="font-size:12px;color:var(--muted);margin:0">Lock not found — check Home Assistant, or remove this card.</p>`;
+      const locked = ent.state === 'locked';
+      const stText = ent.state === 'unlocked' ? 'Unlocked' : locked ? 'Locked' : (ent.state || '—');
+      return `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <span style="font-size:12.5px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${locked?'🔒':'🔓'} ${escapeHtml(ent.friendly_name)} <span style="color:var(--muted);font-weight:400">· ${stText}</span></span>
+          <button class="btn btn-primary fav-lock-btn" data-entity-id="${ent.entity_id}" data-act="${locked?'unlock':'lock'}" style="margin-top:0;padding:8px 14px;flex-shrink:0">${locked?'Unlock':'Lock'}</button>
+        </div>`;
+    },
+    wire(card) {
+      const root = document.querySelector(`.fav-card[data-id="${card.id}"]`);
+      const btn = root && root.querySelector('.fav-lock-btn');
+      if (!btn) return;
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const r = await apiFetch('/api/ha/call-action', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ entityId: btn.dataset.entityId, action: btn.dataset.act }) });
+        if (r && r.ok) setTimeout(renderFavoritesTab, 700);
+        else { btn.disabled = false; showToast('❌ ' + ((r && r.error) || 'Could not change the lock')); }
+      });
+    },
+  },
+  ha_media: {
+    label: 'Media Player', icon: '📺', category: 'Home Assistant', needs: ['ha_entities'], configField: 'ha_media',
+    render(card, data) {
+      const ent = (data.haEntities || []).find(e => e.entity_id === card.config.entity_id);
+      if (!ent) return `<p style="font-size:12px;color:var(--muted);margin:0">Media player not found — check Home Assistant, or remove this card.</p>`;
+      const playing = ent.state === 'playing';
+      const b = (act, glyph, aria) => `<button class="fav-media-btn" data-act="${act}" data-entity-id="${ent.entity_id}" aria-label="${aria}" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:15px;cursor:pointer">${glyph}</button>`;
+      return `
+        <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:6px">📺 ${escapeHtml(ent.friendly_name)} <span style="color:var(--muted);font-weight:400">· ${escapeHtml(ent.state||'—')}</span></div>
+        <div style="display:flex;gap:6px">${b('media_previous_track','⏮','Previous')}${b('media_play_pause',playing?'⏸':'▶',playing?'Pause':'Play')}${b('media_next_track','⏭','Next')}</div>`;
+    },
+    wire(card) {
+      const root = document.querySelector(`.fav-card[data-id="${card.id}"]`);
+      if (!root) return;
+      root.querySelectorAll('.fav-media-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          btn.disabled = true; btn.style.opacity = '.5';
+          const r = await apiFetch('/api/ha/call-action', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ entityId: btn.dataset.entityId, action: btn.dataset.act }) });
+          if (r && r.ok) setTimeout(renderFavoritesTab, 700);
+          else { btn.disabled = false; btn.style.opacity = ''; showToast('❌ ' + ((r && r.error) || 'Could not control playback')); }
+        });
       });
     },
   },
@@ -3299,8 +3496,9 @@ const FAVORITE_CARD_DEFS = {
           </div>
         </div>`;
     },
-    wire() {
-      document.querySelectorAll('.fav-thermo-btn').forEach(btn => {
+    wire(card) {
+      const root = document.querySelector(`.fav-card[data-id="${card.id}"]`);
+      (root ? root.querySelectorAll('.fav-thermo-btn') : []).forEach(btn => {
         btn.addEventListener('click', async () => {
           const step = parseFloat(btn.dataset.step) || 0.5;
           const target = parseFloat(btn.dataset.target) || 70;
@@ -3562,7 +3760,8 @@ function openAddFavoriteCardPicker() {
         openPickKidForFavoriteCard(type);
         return;
       }
-      if (def.configField === 'ha_entity' || def.configField === 'ha_scene' || def.configField === 'ha_thermostat') {
+      if (def.configField === 'ha_entity' || def.configField === 'ha_scene' || def.configField === 'ha_thermostat'
+          || def.configField === 'ha_cover' || def.configField === 'ha_lock' || def.configField === 'ha_media') {
         closeSheet();
         openPickHaEntityForFavoriteCard(type, def.configField);
         return;
@@ -3587,6 +3786,9 @@ const HA_DOMAIN_FILTERS = {
   ha_entity: ['light', 'switch', 'fan', 'input_boolean', 'cover', 'lock'],
   ha_scene: ['scene', 'script'],
   ha_thermostat: ['climate'],
+  ha_cover: ['cover'],
+  ha_lock: ['lock'],
+  ha_media: ['media_player'],
 };
 async function openPickHaEntityForFavoriteCard(type, configField) {
   showSheet(`<h3 style="margin:0 0 10px">Loading…</h3>`);
@@ -3611,10 +3813,10 @@ async function openPickHaEntityForFavoriteCard(type, configField) {
   `);
   const renderList = (q) => {
     const ql = (q || '').toLowerCase();
-    const shown = filtered.filter(e => !ql || e.friendly_name.toLowerCase().includes(ql));
+    const shown = filtered.filter(e => !ql || e.friendly_name.toLowerCase().includes(ql) || e.entity_id.toLowerCase().includes(ql));
     $('ha-pick-list').innerHTML = shown.length ? shown.map(e => `
-      <button class="ha-pick-item" data-entity-id="${e.entity_id}" style="display:flex;justify-content:space-between;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;cursor:pointer;color:var(--text);font-size:13.5px;text-align:left">
-        <span>${escapeHtml(e.friendly_name)}</span><span style="font-size:11px;color:var(--muted)">${e.state}</span>
+      <button class="ha-pick-item" data-entity-id="${e.entity_id}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;cursor:pointer;color:var(--text);font-size:13.5px;text-align:left">
+        <span style="min-width:0"><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.friendly_name)}</span><span style="font-size:11px;color:var(--muted);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.entity_id)}</span></span><span style="font-size:11px;color:var(--muted);flex:0 0 auto">${escapeHtml(e.state)}</span>
       </button>`).join('') : `<p style="font-size:12px;color:var(--muted)">No matches.</p>`;
     document.querySelectorAll('.ha-pick-item').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -3659,11 +3861,11 @@ async function openPickHaGroupForFavoriteCard(type) {
   `);
   const renderList = (q) => {
     const ql = (q || '').toLowerCase();
-    const shown = controllable.filter(e => !ql || e.friendly_name.toLowerCase().includes(ql));
+    const shown = controllable.filter(e => !ql || e.friendly_name.toLowerCase().includes(ql) || e.entity_id.toLowerCase().includes(ql));
     $('ha-group-list').innerHTML = shown.length ? shown.map(e => `
       <label style="display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 12px;font-size:13.5px;cursor:pointer">
-        <input type="checkbox" class="ha-group-check" data-entity-id="${e.entity_id}" ${selected.has(e.entity_id)?'checked':''} style="width:18px;height:18px;accent-color:var(--accent)">
-        ${escapeHtml(e.friendly_name)}
+        <input type="checkbox" class="ha-group-check" data-entity-id="${e.entity_id}" ${selected.has(e.entity_id)?'checked':''} style="width:18px;height:18px;accent-color:var(--accent);flex:0 0 auto">
+        <span style="min-width:0"><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.friendly_name)}</span><span style="font-size:11px;color:var(--muted);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.entity_id)}</span></span>
       </label>`).join('') : `<p style="font-size:12px;color:var(--muted)">No matches.</p>`;
     document.querySelectorAll('.ha-group-check').forEach(cb => {
       cb.addEventListener('change', () => { if (cb.checked) selected.add(cb.dataset.entityId); else selected.delete(cb.dataset.entityId); });
@@ -4097,7 +4299,7 @@ async function renderCalendarsSubTab() {
         <div class="event-card">
           <div class="event-color-bar feed-color-bar" data-id="${f.id}" data-color="${f.color}" style="background:${f.color};cursor:pointer" title="Tap to edit"></div>
           <div class="event-card-body feed-edit-toggle" data-id="${f.id}" style="cursor:pointer">
-            <div class="event-card-title">${f.name}</div>
+            <div class="event-card-title">${escapeHtml(f.name)}</div>
             <div class="event-card-sub">${synced} · ${f.enabled ? 'Active' : 'Paused'} · tap to edit</div>
           </div>
           <div class="event-card-actions">
@@ -4743,7 +4945,7 @@ function buildProfilesListHtml(displays, visibleDisplays, inactiveCount) {
       ? `<span style="display:inline-block;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;background:var(--accent2);color:#fff;border-radius:6px;padding:2px 7px;margin-left:8px;vertical-align:middle">🎨 ${d.theme}</span>`
       : '';
     html += `
-      <div class="swipe-wrap" data-id="${d.id}" data-name="${d.name}" data-slug="${d.slug}" data-can-delete="${displays.length > 1 ? 1 : 0}">
+      <div class="swipe-wrap" data-id="${d.id}" data-name="${escapeHtml(d.name)}" data-slug="${d.slug}" data-can-delete="${displays.length > 1 ? 1 : 0}">
         <div class="swipe-bg">
           <span class="swipe-bg-dup">⧉ Duplicate</span>
           <span class="swipe-bg-del">Delete 🗑️</span>
@@ -4751,14 +4953,14 @@ function buildProfilesListHtml(displays, visibleDisplays, inactiveCount) {
         <div class="event-card swipe-card" style="flex-direction:column;align-items:stretch;gap:8px">
         <div style="display:flex;align-items:center;gap:10px">
           <div style="flex:1;min-width:0">
-            <div class="event-card-title">${d.name}${themeBadge}</div>
+            <div class="event-card-title">${escapeHtml(d.name)}${themeBadge}</div>
             <div class="event-card-sub" style="word-break:break-all">${url}</div>
           </div>
           <div class="event-card-actions" style="flex-shrink:0">
             <button class="icon-btn display-copy-btn" data-url="${url}" title="Copy URL">📋</button>
-            <button class="icon-btn display-editlayout-btn" data-slug="${d.slug}" data-name="${d.name}" title="Edit this profile's layout">🎛️</button>
-            <button class="icon-btn display-rename-btn" data-id="${d.id}" data-name="${d.name}" title="Rename">✏️</button>
-            ${displays.length > 1 ? `<button class="icon-btn del display-del-btn" data-id="${d.id}" data-name="${d.name}" title="Remove">🗑️</button>` : ''}
+            <button class="icon-btn display-editlayout-btn" data-slug="${d.slug}" data-name="${escapeHtml(d.name)}" title="Edit this profile's layout">🎛️</button>
+            <button class="icon-btn display-rename-btn" data-id="${d.id}" data-name="${escapeHtml(d.name)}" title="Rename">✏️</button>
+            ${displays.length > 1 ? `<button class="icon-btn del display-del-btn" data-id="${d.id}" data-name="${escapeHtml(d.name)}" title="Remove">🗑️</button>` : ''}
           </div>
         </div>
         <!-- Deliberately NOT appending ?preview=1 here — that flag disables
@@ -5112,7 +5314,7 @@ async function loadSavedLayouts() {
   }
 
   const displayOptions = (displays || []).map(d =>
-    `<option value="${d.slug}">${d.name}</option>`
+    `<option value="${d.slug}">${escapeHtml(d.name)}</option>`
   ).join('');
 
   list.innerHTML = presets.map(p => {
@@ -5123,7 +5325,7 @@ async function loadSavedLayouts() {
       <div class="event-card" style="flex-direction:column;align-items:stretch;gap:10px">
         <div style="display:flex;align-items:center;gap:10px">
           <div style="flex:1;min-width:0">
-            <div class="event-card-title">${p.name}${themeBadge}</div>
+            <div class="event-card-title">${escapeHtml(p.name)}${themeBadge}</div>
           </div>
           <button class="icon-btn del saved-del-btn" data-id="${p.id}" data-name="${(p.name||'').replace(/"/g,'&quot;')}" title="Delete preset">🗑️</button>
         </div>
@@ -5272,7 +5474,7 @@ async function loadScreens() {
   }
 
   const displayOptions = (slug) => (displays || []).map(d =>
-    `<option value="${d.slug}" ${d.slug===slug?'selected':''}>${d.name}</option>`
+    `<option value="${d.slug}" ${d.slug===slug?'selected':''}>${escapeHtml(d.name)}</option>`
   ).join('');
 
   // Preview screen identities (see previewScreenName()'s own comment in
@@ -5403,6 +5605,41 @@ async function loadScreens() {
               <option value="1"    ${!s.fx_density||(s.fx_density||'1')==='1'?'selected':''}>Default</option>
               <option value="1.75" ${(s.fx_density||'1')==='1.75'?'selected':''}>Lots</option>
               <option value="2.5"  ${(s.fx_density||'1')==='2.5'?'selected':''}>Tons</option>
+            </select>
+          </div>
+        </div>
+
+        <p style="font-size:11px;color:var(--muted);margin:14px 0 8px;border-top:1px solid var(--border);padding-top:12px">
+          Home Assistant alert banner <span class="info-btn" onclick="showInfoPopup('alert-banner-help')">ⓘ</span>
+        </p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <div style="flex:1;min-width:120px">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Position</label>
+            <select class="form-input screen-alert-position" data-id="${s.device_id}">
+              <option value="top"    ${(s.alert_banner_position||'top')==='top'?'selected':''}>Top</option>
+              <option value="bottom" ${(s.alert_banner_position||'top')==='bottom'?'selected':''}>Bottom</option>
+              <option value="center" ${(s.alert_banner_position||'top')==='center'?'selected':''}>Center (card)</option>
+            </select>
+          </div>
+          <div style="flex:1;min-width:120px">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Text size</label>
+            <select class="form-input screen-alert-size" data-id="${s.device_id}">
+              <option value="s"   ${(s.alert_banner_size||'m')==='s'?'selected':''}>Small</option>
+              <option value="m"   ${(s.alert_banner_size||'m')==='m'?'selected':''}>Medium</option>
+              <option value="l"   ${(s.alert_banner_size||'m')==='l'?'selected':''}>Large</option>
+              <option value="xl"  ${(s.alert_banner_size||'m')==='xl'?'selected':''}>Extra large</option>
+              <option value="xxl" ${(s.alert_banner_size||'m')==='xxl'?'selected':''}>Huge</option>
+            </select>
+          </div>
+          <div style="flex:1;min-width:140px">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Style</label>
+            <select class="form-input screen-alert-style" data-id="${s.device_id}">
+              <option value="solid"   ${(s.alert_banner_style||'solid')==='solid'?'selected':''}>Solid red bar</option>
+              <option value="strong"  ${(s.alert_banner_style||'solid')==='strong'?'selected':''}>Solid red, bold</option>
+              <option value="amber"   ${(s.alert_banner_style||'solid')==='amber'?'selected':''}>Solid amber</option>
+              <option value="bar"     ${(s.alert_banner_style||'solid')==='bar'?'selected':''}>Dark w/ red edge</option>
+              <option value="outline" ${(s.alert_banner_style||'solid')==='outline'?'selected':''}>Dark outline</option>
+              <option value="toast"   ${(s.alert_banner_style||'solid')==='toast'?'selected':''}>Corner toast</option>
             </select>
           </div>
         </div>
@@ -5776,6 +6013,18 @@ async function loadScreens() {
       if (r && r.error) { showToast('❌ ' + r.error); return; }
     });
   });
+
+  const wireAlertBannerField = (cls, key) => list.querySelectorAll(cls).forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const r = await apiFetch(`/api/screens/${sel.dataset.id}`, {
+        method:'PUT', body: JSON.stringify({ [key]: sel.value }),
+      });
+      if (r && r.error) { showToast('❌ ' + r.error); return; }
+    });
+  });
+  wireAlertBannerField('.screen-alert-position', 'alert_banner_position');
+  wireAlertBannerField('.screen-alert-size', 'alert_banner_size');
+  wireAlertBannerField('.screen-alert-style', 'alert_banner_style');
 
   list.querySelectorAll('.screen-orientation').forEach(sel => {
     sel.addEventListener('change', async () => {
@@ -11780,7 +12029,7 @@ async function populateTasksProjectDropdown(w) {
   sel.innerHTML = `
     <option value="">All Projects</option>
     ${cachedTodoistProjects.map(p => `
-      <option value="${p.id}" ${w.projectId === p.id ? 'selected' : ''}>${p.name}</option>
+      <option value="${p.id}" ${w.projectId === p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>
     `).join('')}
   `;
 
@@ -11818,9 +12067,9 @@ async function populateTasksCombinedProjectList(w) {
 
   container.innerHTML = cachedTodoistProjects.map(p => `
     <label style="display:flex;align-items:center;gap:10px;margin-bottom:0;font-weight:400;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text)">
-      <input type="checkbox" class="tc-project-cb" data-id="${p.id}" data-name="${p.name}" ${activeSet.has(p.id) ? 'checked' : ''}
+      <input type="checkbox" class="tc-project-cb" data-id="${p.id}" data-name="${escapeHtml(p.name)}" ${activeSet.has(p.id) ? 'checked' : ''}
         style="width:18px;height:18px;accent-color:var(--accent);flex-shrink:0">
-      ${p.name}
+      ${escapeHtml(p.name)}
     </label>
   `).join('');
 
@@ -11902,7 +12151,7 @@ async function populateSourceFilterList(w) {
       <input type="checkbox" class="source-filter-cb" data-id="${s.id}" ${activeSet.has(s.id) ? 'checked' : ''}
         style="width:18px;height:18px;accent-color:var(--accent);flex-shrink:0">
       <span style="width:10px;height:10px;border-radius:50%;background:${s.color};flex-shrink:0"></span>
-      ${s.name}
+      ${escapeHtml(s.name)}
     </label>
   `).join('');
 
@@ -11946,7 +12195,7 @@ async function populateFeedOpacityOverrideList(w) {
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
           <label style="margin-bottom:0;display:flex;align-items:center;gap:8px;font-size:13px">
             <span style="width:10px;height:10px;border-radius:50%;background:${f.color};display:inline-block;flex-shrink:0"></span>
-            ${f.name}
+            ${escapeHtml(f.name)}
           </label>
           <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);cursor:pointer">
             Override
@@ -13380,7 +13629,17 @@ async function ensureHaAreasLoaded() {
   } catch { cachedHaAreas = { areas: [], entityAreas: {} }; }
   return cachedHaAreas;
 }
-function openEntityPicker(w) {
+// Generic searchable HA entity picker — a bottom sheet with text search
+// (matches friendly name AND entity_id) plus an optional area filter.
+// opts.onPick(entityId, friendlyName) fires on selection, then the sheet
+// closes. opts.domains (optional) limits the list to those entity-id
+// prefixes; opts.current (optional) highlights the row already chosen.
+// Shared by the layout widget picker (openEntityPicker) and the Home
+// Assistant alert form's entity chooser.
+function openHaEntitySearch(opts) {
+  const onPick = (opts && opts.onPick) || (() => {});
+  const current = (opts && opts.current) || '';
+  const domainSet = (opts && Array.isArray(opts.domains) && opts.domains.length) ? new Set(opts.domains) : null;
   let ov = $('ha-entity-picker');
   if (!ov) {
     ov = document.createElement('div');
@@ -13392,7 +13651,7 @@ function openEntityPicker(w) {
   ov.innerHTML = `
     <div style="background:var(--bg);width:100%;max-width:520px;height:75vh;display:flex;flex-direction:column;border-radius:18px 18px 0 0;padding:16px 16px 0">
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">
-        <input class="form-input" id="ha-entity-search" placeholder="Search entities…" autocomplete="off" style="flex:1;width:auto;min-width:0;font-size:16px;padding:12px 14px">
+        <input class="form-input" id="ha-entity-search" placeholder="Search name or entity id…" autocomplete="off" style="flex:1;width:auto;min-width:0;font-size:16px;padding:12px 14px">
         <button class="btn" id="ha-entity-close" style="background:var(--card);border:1px solid var(--border);flex-shrink:0;width:auto;margin-top:0;padding:12px 16px">Done</button>
       </div>
       <div style="margin-bottom:10px">
@@ -13412,28 +13671,14 @@ function openEntityPicker(w) {
     if (!items.length) { listEl.innerHTML = `<p style="padding:20px 4px">No matching entities.</p>`; return; }
     listEl.innerHTML = items.map(e => `
       <button type="button" class="ha-entity-item" data-id="${escapeHtml(e.entity_id)}" data-name="${escapeHtml(e.friendly_name)}"
-        style="display:flex;flex-direction:column;align-items:flex-start;width:100%;text-align:left;background:transparent;border:none;border-bottom:1px solid var(--border);padding:12px 4px;cursor:pointer">
-        <span style="font-size:14px;color:var(--text)">${escapeHtml(e.friendly_name)}</span>
+        style="display:flex;flex-direction:column;align-items:flex-start;width:100%;text-align:left;background:${e.entity_id === current ? 'var(--card)' : 'transparent'};border:none;border-bottom:1px solid var(--border);padding:12px 4px;cursor:pointer">
+        <span style="font-size:14px;color:var(--text)">${escapeHtml(e.friendly_name)}${e.entity_id === current ? ' ✓' : ''}</span>
         <span style="font-size:11px;color:var(--muted)">${escapeHtml(e.entity_id)} — ${escapeHtml(e.state)}${e.unit ? ' ' + escapeHtml(e.unit) : ''}</span>
       </button>`).join('');
     listEl.querySelectorAll('.ha-entity-item').forEach(btn => {
       btn.addEventListener('click', () => {
-        const newId = btn.dataset.id, newName = btn.dataset.name;
-        // Refresh the label to match the newly-picked entity whenever the
-        // current label is empty OR was itself auto-filled from whatever
-        // entity this widget PREVIOUSLY pointed to (haLabelAutoFor tracks
-        // that) — never touch a label someone actually typed themselves.
-        // Previously this only handled the empty case, so swapping which
-        // entity a widget points to silently kept showing the old entity's
-        // name — the label just never followed the entity change.
-        if (!w.haLabel || w.haLabelAutoFor === w.haEntityId) {
-          w.haLabel = newName;
-          w.haLabelAutoFor = newId;
-        }
-        w.haEntityId = newId;
-        autoSaveLayout(); // same missing-save class of bug found across this whole panel
         ov.style.display = 'none';
-        drawWidgetSettingsPanel(); // refresh so the picked entity shows in the main panel
+        onPick(btn.dataset.id, btn.dataset.name);
       });
     });
   };
@@ -13448,6 +13693,7 @@ function openEntityPicker(w) {
     const q = ($('ha-entity-search').value || '').trim().toLowerCase();
     const areaId = $('ha-area-filter') ? $('ha-area-filter').value : '';
     let list = cachedHaEntities;
+    if (domainSet) list = list.filter(en => domainSet.has(en.entity_id.split('.')[0]));
     if (areaId) {
       const entityAreas = (cachedHaAreas && cachedHaAreas.entityAreas) || {};
       list = list.filter(en => entityAreas[en.entity_id] === areaId);
@@ -13477,11 +13723,32 @@ function openEntityPicker(w) {
       // show a dropdown with nothing but "All areas" in it.
       areaSelect.parentElement.style.display = 'none';
     }
-    renderList(cachedHaEntities);
+    applyFilters();
   })();
 
   $('ha-entity-search').addEventListener('input', applyFilters);
   $('ha-area-filter').addEventListener('change', applyFilters);
+}
+
+// Layout widget entity picker — applies the pick to a widget object (label
+// auto-follow + autosave). Thin wrapper over openHaEntitySearch.
+function openEntityPicker(w) {
+  openHaEntitySearch({
+    current: w.haEntityId,
+    onPick: (newId, newName) => {
+      // Refresh the label to match the newly-picked entity whenever the
+      // current label is empty OR was itself auto-filled from whatever
+      // entity this widget PREVIOUSLY pointed to (haLabelAutoFor tracks
+      // that) — never touch a label someone actually typed themselves.
+      if (!w.haLabel || w.haLabelAutoFor === w.haEntityId) {
+        w.haLabel = newName;
+        w.haLabelAutoFor = newId;
+      }
+      w.haEntityId = newId;
+      autoSaveLayout();
+      drawWidgetSettingsPanel();
+    },
+  });
 }
 
 // Multi-select variant of openEntityPicker() above, for Tier 4's Smart Home
@@ -14059,19 +14326,33 @@ function buildTimezoneOptions(currentValue) {
   return opts;
 }
 async function renderSettings() {
-  const [s, bs, ps, verInfo, supportLinks] = await Promise.all([
+  const [s, bs, ps, verInfo, supportLinks, cs, gs, hs, haAlertsResp, phoneAlerts, notifPrefsResp] = await Promise.all([
     apiFetch('/api/settings'),
     apiFetch('/api/briefing-settings'),
     apiFetch('/api/photo-settings'),
     apiFetch('/api/version'),
     apiFetch('/api/support-links'),
+    apiFetch('/api/caldav-settings'),
+    apiFetch('/api/google-settings'),
+    apiFetch('/api/handwriting-settings'),
+    apiFetch('/api/ha-alerts').catch(() => ({ alerts: [] })),
+    apiFetch('/api/phone-alerts').catch(() => ({ enabled: '0', setup_url: '' })),
+    apiFetch('/api/notif-prefs').catch(() => ({ kinds: [], prefs: {} })),
   ]);
+
+  const haAlerts = (haAlertsResp && Array.isArray(haAlertsResp.alerts)) ? haAlertsResp.alerts : [];
+  window.__haAlerts = haAlerts.slice();
+  window.__phoneAlertsSetupUrl = (phoneAlerts && phoneAlerts.setup_url) || '';
+  const notifKinds = (notifPrefsResp && Array.isArray(notifPrefsResp.kinds)) ? notifPrefsResp.kinds : [];
+  const notifPrefs = (notifPrefsResp && notifPrefsResp.prefs) || {};
+  window.__notifPrefs = JSON.parse(JSON.stringify(notifPrefs));
   // Beta Checklist is a testing tool, not something a real end user on a
   // stable release should ever see — matches the server's own gate on
   // both /api/beta-checklist endpoints (isBetaVersion()), so hiding the
   // section here is a UI nicety on top of an actual enforcement, not the
   // only thing standing between a stable build and this feature.
   const isBeta = !!(verInfo && verInfo.isBeta);
+  window.__isDemo = !!(verInfo && verInfo.demo);
   // Fetched up front (not after the template renders) specifically so the
   // WHOLE "Support the Project" section — header included, now that it's
   // its own standalone accordion entry rather than tucked inside Feedback
@@ -14362,6 +14643,102 @@ async function renderSettings() {
       </div>
     </div>
 
+    <div class="section-header">Push to iCloud Calendar</div>
+    <div class="settings-card">
+      <div class="settings-row">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+          <input type="checkbox" id="s-icloud-enabled" ${cs.icloud_push_enabled==='1'?'checked':''} style="width:18px;height:18px;flex:0 0 auto">
+          <span>Push events created here to Apple Calendar ${infoBtn("Events you add in Piazza HQ get written to one of your iCloud calendars via CalDAV, so they show up in Apple Calendar on your other devices. One-way: changes you make in Apple Calendar don't flow back here. Subscribed iCal feeds are unaffected.")}</span>
+        </label>
+      </div>
+      <div class="settings-row">
+        <label>Apple ID</label>
+        <input class="form-input" id="s-icloud-user" type="email" value="${(cs.icloud_username||'').replace(/"/g,'&quot;')}" placeholder="you@icloud.com" autocomplete="off">
+      </div>
+      <div class="settings-row">
+        <label>App-Specific Password ${infoBtn("Generate one at <strong>appleid.apple.com</strong> → Sign-In and Security → App-Specific Passwords. This is NOT your regular Apple ID password. iCloud requires it for third-party calendar access on accounts with two-factor auth.")}</label>
+        <input class="form-input" id="s-icloud-pass" type="password" placeholder="${cs.icloud_app_password_set ? '•••••••••••••••• (saved — leave blank to keep)' : 'xxxx-xxxx-xxxx-xxxx'}" autocomplete="off">
+      </div>
+      <div class="settings-row" style="display:flex;align-items:center;gap:10px">
+        <button id="s-icloud-discover-btn" type="button" style="background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:9px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">🔍 Find my calendars</button>
+        <span id="s-icloud-discover-status" style="font-size:12px;color:var(--muted)"></span>
+      </div>
+      <div class="settings-row" id="s-icloud-calendar-row" style="${(cs.icloud_calendar_url||'') ? '' : 'display:none'}">
+        <label>Default calendar to push into ${infoBtn("New events default to this calendar. When you add an event on the wall display you can pick a different one per event — every calendar found here shows up in that picker.")}</label>
+        <select class="form-input" id="s-icloud-calendar">
+          ${(() => {
+            const list = Array.isArray(cs.icloud_calendars) && cs.icloud_calendars.length
+              ? cs.icloud_calendars
+              : ((cs.icloud_calendar_url||'') ? [{url: cs.icloud_calendar_url, name: cs.icloud_calendar_name || cs.icloud_calendar_url}] : []);
+            window.__icloudCals = list;
+            return list.map(c => `<option value="${String(c.url).replace(/"/g,'&quot;')}" ${c.url===cs.icloud_calendar_url?'selected':''}>${String(c.name||c.url).replace(/</g,'&lt;')}</option>`).join('');
+          })()}
+        </select>
+      </div>
+      <div class="settings-row">
+        <button id="s-icloud-save-btn" class="settings-save" type="button">Save iCloud settings</button>
+        <div id="s-icloud-save-status" style="font-size:12px;color:var(--muted);margin-top:6px;min-height:16px">${(cs.icloud_calendar_url||'') ? 'Connected to: ' + (cs.icloud_calendar_name||cs.icloud_calendar_url).replace(/</g,'&lt;') : ''}</div>
+      </div>
+    </div>
+
+    <div class="section-header">Push to Google Calendar</div>
+    <div class="settings-card">
+      ${!gs.google_client_configured ? `
+      <div class="settings-row">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">This server doesn't have a Google OAuth client configured yet. Paste the Client ID and Secret from your Google Cloud project (APIs &amp; Services &rarr; Credentials &rarr; a "TVs and Limited Input devices" OAuth client), or set <code>GOOGLE_OAUTH_CLIENT_ID</code> / <code>GOOGLE_OAUTH_CLIENT_SECRET</code> in the environment.</div>
+        <label>OAuth Client ID</label>
+        <input class="form-input" id="s-google-client-id" value="" placeholder="xxxxx.apps.googleusercontent.com" autocomplete="off">
+        <label style="margin-top:8px">OAuth Client Secret</label>
+        <input class="form-input" id="s-google-client-secret" type="password" value="" placeholder="GOCSPX-..." autocomplete="off">
+        <button id="s-google-client-save-btn" class="settings-save" type="button" style="margin-top:10px">Save client credentials</button>
+      </div>
+      ` : `
+      <div class="settings-row">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+          <input type="checkbox" id="s-google-enabled" ${gs.google_push_enabled==='1'?'checked':''} style="width:18px;height:18px;flex:0 0 auto">
+          <span>Push events created here to Google Calendar ${infoBtn("One-way: events you add in Piazza HQ get written to your Google Calendar. Changes made on Google's side don't flow back. Subscribed iCal feeds are unaffected.")}</span>
+        </label>
+      </div>
+      <div class="settings-row" id="s-google-connect-row" style="${gs.google_connected ? 'display:none' : ''}">
+        <button id="s-google-connect-btn" type="button" style="background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:9px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer">Connect Google account</button>
+        <div id="s-google-connect-status" style="font-size:12px;color:var(--muted);margin-top:8px;min-height:16px"></div>
+      </div>
+      <div class="settings-row" id="s-google-connected-row" style="${gs.google_connected ? '' : 'display:none'}">
+        <div style="font-size:13px;color:var(--text)">Connected as <strong id="s-google-email">${(gs.google_account_email||'').replace(/</g,'&lt;')}</strong>
+          <button id="s-google-disconnect-btn" type="button" style="margin-left:8px;background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;text-decoration:underline">Disconnect</button>
+        </div>
+      </div>
+      <div class="settings-row" id="s-google-calendar-row" style="${gs.google_connected ? '' : 'display:none'}">
+        <label>Calendar ID ${infoBtn("Leave blank to use your primary calendar. To push into a different one, get its ID from Google Calendar &rarr; that calendar's Settings &rarr; \"Integrate calendar\" &rarr; Calendar ID (looks like an email address).")}</label>
+        <input class="form-input" id="s-google-calendar" value="${(gs.google_calendar_id && gs.google_calendar_id !== 'primary') ? gs.google_calendar_id.replace(/"/g,'&quot;') : ''}" placeholder="(your primary calendar)" autocomplete="off">
+      </div>
+      <div class="settings-row">
+        <button id="s-google-save-btn" class="settings-save" type="button">Save Google settings</button>
+        <div id="s-google-save-status" style="font-size:12px;color:var(--muted);margin-top:6px;min-height:16px">${gs.google_calendar_id ? 'Pushing to: ' + (gs.google_calendar_name||gs.google_calendar_id).replace(/</g,'&lt;') : ''}</div>
+      </div>
+      `}
+    </div>
+
+    <div class="section-header">Handwriting input</div>
+    <div class="settings-card">
+      <div class="settings-row">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+          <input type="checkbox" id="s-hw-enabled" ${hs.handwriting_enabled==='1'?'checked':''} style="width:18px;height:18px;flex:0 0 auto">
+          <span>Let the display add events by handwriting ${infoBtn("On the wall display, long-press a day on a calendar widget to add an event. With this on, that sheet also gets a ✍️ button to print the title by hand. Strokes are sent to MyScript for recognition; the typed field always still works.")}</span>
+        </label>
+      </div>
+      <div class="settings-row">
+        <label>MyScript application key ${infoBtn("Free keys at developer.myscript.com (2,000 recognitions/month). One key covers every display on this account.")}</label>
+        <input class="form-input" id="s-hw-appkey" value="${(hs.myscript_app_key||'').replace(/"/g,'&quot;')}" placeholder="MyScript application key" autocomplete="off">
+        <label style="margin-top:8px">MyScript HMAC key</label>
+        <input class="form-input" id="s-hw-hmac" type="password" value="" placeholder="${hs.myscript_hmac_key_set ? '•••• (saved — leave blank to keep)' : 'MyScript HMAC key'}" autocomplete="off">
+      </div>
+      <div class="settings-row">
+        <button id="s-hw-save-btn" class="settings-save" type="button">Save handwriting settings</button>
+        <div id="s-hw-save-status" style="font-size:12px;color:var(--muted);margin-top:6px;min-height:16px"></div>
+      </div>
+    </div>
+
     <div class="section-header">Todoist</div>
     <div class="settings-card">
       <div class="settings-row">
@@ -14391,6 +14768,74 @@ async function renderSettings() {
       <div class="settings-row" style="display:flex;align-items:center;gap:10px">
         <button id="s-ha-test-btn" type="button" style="background:var(--accent);border:none;border-radius:9px;color:#fff;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">Test Connection</button>
         <span id="s-ha-test-result" style="font-size:13px"></span>
+      </div>
+
+      <div class="settings-row" style="border-top:1px solid var(--border);padding-top:14px;margin-top:6px">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+          <input type="checkbox" id="s-phone-alerts" ${(phoneAlerts && phoneAlerts.enabled === '1') ? 'checked' : ''} style="width:18px;height:18px;flex:0 0 auto">
+          <span>Also send alerts to my phone ${infoBtn("When an alert fires, push a notification to phones you've enabled below. The notification is relayed through piazzahq.com (the app on the Pi has no HTTPS of its own for push), so its title and text pass through that server in transit.")}</span>
+        </label>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">
+          <button id="s-phone-alerts-setup" type="button" style="background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:9px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer"${(phoneAlerts && phoneAlerts.setup_url) ? '' : ' disabled'}>📱 Enable on this phone</button>
+          <span style="font-size:12px;color:var(--muted)">${(phoneAlerts && phoneAlerts.setup_url) ? 'Opens a one-time permission page.' : 'This device has no license key yet.'}</span>
+        </div>
+      </div>
+
+      <div class="settings-row" style="border-top:1px solid var(--border);padding-top:14px;margin-top:6px">
+        <label>Notification delivery ${infoBtn("Choose where each kind of notification goes. 📺 = the banner on the wall display. 📱 = a push to phones you've enabled above. A per-alert override lives on each alert rule below.")}</label>
+        <div id="s-notifprefs" style="display:flex;flex-direction:column;gap:6px;margin-top:6px">
+          ${notifKinds.length ? notifKinds.map(k => {
+            const p = notifPrefs[k.id] || { screen: true, phone: true };
+            return `<div class="s-notifpref-row" data-kind="${(k.id||'').replace(/"/g,'&quot;')}" style="display:flex;align-items:center;gap:14px;background:var(--card);border:1px solid var(--border);border-radius:9px;padding:8px 12px">
+              <span style="flex:1;font-size:12.5px;font-weight:600">${escapeHtml(k.label || k.id)}</span>
+              <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer"><input type="checkbox" class="s-np-screen" ${p.screen !== false ? 'checked' : ''} style="width:15px;height:15px">📺 Screen</label>
+              <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer"><input type="checkbox" class="s-np-phone" ${p.phone !== false ? 'checked' : ''} style="width:15px;height:15px">📱 Phone</label>
+            </div>`;
+          }).join('') : `<div style="font-size:12px;color:var(--muted)">No notification types yet.</div>`}
+        </div>
+        <div id="s-notifprefs-status" style="font-size:12px;color:var(--muted);margin-top:6px;min-height:14px"></div>
+      </div>
+
+      <div class="settings-row" style="border-top:1px solid var(--border);padding-top:14px;margin-top:6px">
+        <label>Alerts ${infoBtn("Raise a banner on the display when an entity's state matches a condition for a set time — e.g. a garage door open for 15 minutes, a freezer above 10°. Evaluated every 2 minutes on the host. An alert fires once, then re-arms only after the condition clears.")}</label>
+        <div id="s-haalert-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+          ${haAlerts.length ? haAlerts.map(a => {
+            const opText = a.op === 'eq' ? `is "${a.value}"` : a.op === 'above' ? `> ${a.value}` : `< ${a.value}`;
+            return `<div class="s-haalert-row" data-id="${(a.id||'').replace(/"/g,'&quot;')}" style="display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:9px;padding:8px 10px">
+              <input type="checkbox" class="s-haalert-enabled" ${a.enabled!==false?'checked':''} style="width:16px;height:16px;flex:0 0 auto">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(a.name || a.entityId)} · ${escapeHtml(opText)}${a.dwellMin ? ` for ${a.dwellMin}m` : ''}</div>
+                <div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(a.entityId || '')}${a.message ? ' · ' + escapeHtml(a.message) : ''}</div>
+              </div>
+              <label title="Show on the display" style="flex:0 0 auto;cursor:pointer;font-size:13px"><input type="checkbox" class="s-haalert-screen" ${a.screen!==false?'checked':''} style="width:14px;height:14px;vertical-align:middle">📺</label>
+              <label title="Send to phone" style="flex:0 0 auto;cursor:pointer;font-size:13px"><input type="checkbox" class="s-haalert-phone" ${a.phone!==false?'checked':''} style="width:14px;height:14px;vertical-align:middle">📱</label>
+              <button type="button" class="s-haalert-edit" title="Edit this alert" style="flex:0 0 auto;background:none;border:none;color:var(--muted);font-size:14px;cursor:pointer">✎</button>
+              <button type="button" class="s-haalert-del" title="Delete this alert" style="flex:0 0 auto;background:none;border:none;color:var(--danger,#e85454);font-size:16px;cursor:pointer">✕</button>
+            </div>`;
+          }).join('') : `<div style="font-size:12px;color:var(--muted)">No alerts yet.</div>`}
+        </div>
+        <div id="s-haalert-form" style="display:none;background:var(--card);border:1px solid var(--border);border-radius:9px;padding:10px;margin-bottom:10px">
+          <button type="button" class="form-input" id="s-haalert-entity-btn" style="text-align:left;cursor:pointer;margin-bottom:8px;color:var(--muted)">Choose an entity…</button>
+          <input type="hidden" id="s-haalert-entity">
+          <div style="display:flex;gap:8px;margin-bottom:6px">
+            <select class="form-input" id="s-haalert-op" style="flex:0 0 44%">
+              <option value="eq">state is</option><option value="above">above</option><option value="below">below</option>
+            </select>
+            <div id="s-haalert-value-wrap" style="flex:1"></div>
+          </div>
+          <div id="s-haalert-cur" style="font-size:11px;color:var(--muted);margin-bottom:8px;min-height:13px"></div>
+          <div style="display:flex;gap:8px;margin-bottom:8px">
+            <input class="form-input" id="s-haalert-dwell" type="number" min="0" max="1440" value="0" placeholder="minutes" style="flex:0 0 44%">
+            <span style="font-size:12px;color:var(--muted);align-self:center">minutes it must hold</span>
+          </div>
+          <input class="form-input" id="s-haalert-msg" placeholder="Banner message (optional)" style="margin-bottom:8px">
+          <div style="display:flex;gap:8px">
+            <button id="s-haalert-add-confirm" class="settings-save" type="button" style="flex:1">Add alert</button>
+            <button id="s-haalert-add-cancel" type="button" style="flex:0 0 auto;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:9px;padding:0 14px">Cancel</button>
+          </div>
+        </div>
+        <button id="s-haalert-add-btn" type="button" style="background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:9px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer">+ Add alert</button>
+        <div id="s-haalert-status" style="font-size:12px;color:var(--muted);margin-top:8px;min-height:16px"></div>
       </div>
     </div>
 
@@ -16031,6 +16476,152 @@ async function renderSettings() {
     }
   });
 
+  // ── iCloud CalDAV push ────────────────────────────────────────────────────
+  if ($('s-icloud-discover-btn')) {
+    $('s-icloud-discover-btn').addEventListener('click', async () => {
+      const btn = $('s-icloud-discover-btn'), statusEl = $('s-icloud-discover-status');
+      const user = ($('s-icloud-user').value || '').trim();
+      const pass = ($('s-icloud-pass').value || '').trim(); // blank = server falls back to the saved password
+      if (!user) { statusEl.textContent = 'Enter your Apple ID first.'; return; }
+      btn.disabled = true; btn.textContent = 'Checking…'; statusEl.textContent = 'Contacting iCloud…';
+      try {
+        const r = await apiFetch('/api/caldav/discover', { method: 'POST', body: JSON.stringify({ username: user, app_password: pass }) });
+        if (r && r.ok && Array.isArray(r.calendars) && r.calendars.length) {
+          const sel = $('s-icloud-calendar');
+          const prev = sel.value;
+          window.__icloudCals = r.calendars.map(c => ({ url: c.url, name: c.name || c.url }));
+          sel.innerHTML = r.calendars.map(c =>
+            `<option value="${c.url.replace(/"/g,'&quot;')}" ${c.url===prev?'selected':''}>${(c.name||c.url).replace(/</g,'&lt;')}</option>`
+          ).join('');
+          $('s-icloud-calendar-row').style.display = '';
+          statusEl.textContent = `Found ${r.calendars.length} calendar${r.calendars.length===1?'':'s'} — pick a default and Save (all appear in the per-event picker on the display).`;
+        } else {
+          statusEl.textContent = (r && r.error) || 'Could not read your calendars.';
+        }
+      } catch (e) {
+        statusEl.textContent = 'Request failed — check your connection.';
+      }
+      btn.disabled = false; btn.textContent = '🔍 Find my calendars';
+    });
+  }
+  if ($('s-icloud-save-btn')) {
+    $('s-icloud-save-btn').addEventListener('click', async () => {
+      const btn = $('s-icloud-save-btn'), statusEl = $('s-icloud-save-status');
+      const sel = $('s-icloud-calendar');
+      const enabled = $('s-icloud-enabled').checked;
+      if (enabled && !sel.value) { statusEl.textContent = 'Find and pick a calendar before turning push on.'; return; }
+      const body = {
+        icloud_push_enabled: enabled ? '1' : '0',
+        icloud_username: ($('s-icloud-user').value || '').trim(),
+        icloud_calendar_url: sel.value || '',
+        icloud_calendar_name: sel.value ? (sel.options[sel.selectedIndex]?.text || '') : '',
+        icloud_calendars: Array.isArray(window.__icloudCals) ? window.__icloudCals : undefined,
+      };
+      const newPass = ($('s-icloud-pass').value || '').trim();
+      if (newPass) body.icloud_app_password = newPass;
+      btn.disabled = true; statusEl.textContent = 'Saving…';
+      try {
+        await apiFetch('/api/caldav-settings', { method: 'PUT', body: JSON.stringify(body) });
+        showToast('✓ iCloud settings saved');
+        await renderSettingsKeepPlace();
+      } catch (e) {
+        statusEl.textContent = 'Save failed.';
+        btn.disabled = false;
+      }
+    });
+  }
+
+  // ── Google Calendar push ──────────────────────────────────────────────────
+  if (window.__googlePoll) { clearTimeout(window.__googlePoll); window.__googlePoll = null; } // stop any poll from a prior render
+  if ($('s-google-client-save-btn')) {
+    $('s-google-client-save-btn').addEventListener('click', async () => {
+      const id = ($('s-google-client-id').value || '').trim();
+      const secret = ($('s-google-client-secret').value || '').trim();
+      if (!id || !secret) return;
+      $('s-google-client-save-btn').disabled = true;
+      try {
+        await apiFetch('/api/google-settings', { method: 'PUT', body: JSON.stringify({ google_oauth_client_id: id, google_oauth_client_secret: secret }) });
+        showToast('✓ Client credentials saved');
+        await renderSettingsKeepPlace();
+      } catch { $('s-google-client-save-btn').disabled = false; }
+    });
+  }
+  if ($('s-google-connect-btn')) {
+    $('s-google-connect-btn').addEventListener('click', async () => {
+      const btn = $('s-google-connect-btn'), statusEl = $('s-google-connect-status');
+      btn.disabled = true; statusEl.textContent = 'Preparing…';
+      let start;
+      try {
+        start = await apiFetch('/api/google/connect-start', { method: 'POST', body: '{}' });
+      } catch { statusEl.textContent = 'Request failed — check your connection.'; btn.disabled = false; return; }
+      if (!start || !start.auth_url) { statusEl.textContent = (start && start.error) || 'Could not start the connection.'; btn.disabled = false; return; }
+      // app.html is the phone control app, so just open the consent page
+      // directly; also leave a tappable link in case the popup is blocked.
+      try { window.open(start.auth_url, '_blank', 'noopener'); } catch {}
+      statusEl.innerHTML = `<a href="${start.auth_url}" target="_blank" rel="noopener" style="color:var(--accent)">Open the Google sign-in page</a>, pick the account you want, and approve.`
+        + `<div style="color:var(--muted);margin-top:6px">Waiting for you to approve…</div>`;
+      const deadline = Date.now() + 15 * 60 * 1000;
+      const poll = async () => {
+        if (Date.now() > deadline) { statusEl.innerHTML = 'Timed out — tap Connect to try again.'; btn.disabled = false; return; }
+        let r;
+        try { r = await apiFetch('/api/google/connect-poll', { method: 'POST', body: JSON.stringify({ state: start.state }) }); }
+        catch { window.__googlePoll = setTimeout(poll, 3000); return; }
+        if (r.status === 'pending') { window.__googlePoll = setTimeout(poll, 3000); return; }
+        if (r.status === 'connected') {
+          showToast('✓ Google account connected');
+          await renderSettingsKeepPlace();
+          return;
+        }
+        statusEl.innerHTML = r.status === 'denied' ? 'Access was not granted in the Google prompt.'
+          : ('Something went wrong: ' + (r.error || r.status));
+        btn.disabled = false;
+      };
+      window.__googlePoll = setTimeout(poll, 3000);
+    });
+  }
+  if ($('s-google-disconnect-btn')) {
+    $('s-google-disconnect-btn').addEventListener('click', async () => {
+      if (!confirm('Disconnect this Google account? New events will stop being pushed to it.')) return;
+      await apiFetch('/api/google-settings', { method: 'PUT', body: JSON.stringify({ disconnect: true }) });
+      showToast('Google account disconnected');
+      await renderSettingsKeepPlace();
+    });
+  }
+  if ($('s-google-save-btn')) {
+    $('s-google-save-btn').addEventListener('click', async () => {
+      const btn = $('s-google-save-btn'), statusEl = $('s-google-save-status');
+      const enabled = $('s-google-enabled').checked;
+      const calId = (($('s-google-calendar') && $('s-google-calendar').value) || '').trim() || 'primary';
+      btn.disabled = true; statusEl.textContent = 'Saving…';
+      try {
+        await apiFetch('/api/google-settings', { method: 'PUT', body: JSON.stringify({
+          google_push_enabled: enabled ? '1' : '0',
+          google_calendar_id: calId,
+          google_calendar_name: calId === 'primary' ? 'Primary calendar' : calId,
+        }) });
+        showToast('✓ Google settings saved');
+        await renderSettingsKeepPlace();
+      } catch { statusEl.textContent = 'Save failed.'; btn.disabled = false; }
+    });
+  }
+  if ($('s-hw-save-btn')) {
+    $('s-hw-save-btn').addEventListener('click', async () => {
+      const btn = $('s-hw-save-btn'), statusEl = $('s-hw-save-status');
+      const body = {
+        handwriting_enabled: $('s-hw-enabled').checked ? '1' : '0',
+        myscript_app_key: ($('s-hw-appkey').value || '').trim(),
+      };
+      const hmac = ($('s-hw-hmac').value || '').trim();
+      if (hmac) body.myscript_hmac_key = hmac;
+      btn.disabled = true; statusEl.textContent = 'Saving…';
+      try {
+        await apiFetch('/api/handwriting-settings', { method: 'PUT', body: JSON.stringify(body) });
+        showToast('✓ Handwriting settings saved');
+        await renderSettingsKeepPlace();
+      } catch { statusEl.textContent = 'Save failed.'; btn.disabled = false; }
+    });
+  }
+
   // Best-effort local-network scan (see /api/ha/discover's own comments for
   // what it actually tries) — a convenience for the common case, not a
   // guarantee; the URL field stays freely editable either way, and a
@@ -16126,6 +16717,231 @@ async function renderSettings() {
     });
   }
 
+  // ── Phone alerts (relayed through the mothership) ──────────────────────────
+  if ($('s-phone-alerts')) {
+    $('s-phone-alerts').addEventListener('change', async (e) => {
+      try { await apiFetch('/api/phone-alerts', { method: 'PUT', body: JSON.stringify({ enabled: e.target.checked ? '1' : '0' }) }); showToast(e.target.checked ? 'Phone alerts on' : 'Phone alerts off'); }
+      catch { e.target.checked = !e.target.checked; showToast('Could not save'); }
+    });
+  }
+  if ($('s-phone-alerts-setup')) {
+    $('s-phone-alerts-setup').addEventListener('click', () => {
+      const u = window.__phoneAlertsSetupUrl;
+      if (u) window.open(u, '_blank', 'noopener');
+      else showToast('No license key on this device yet');
+    });
+  }
+
+  // ── Home Assistant condition alerts ────────────────────────────────────────
+  if ($('s-haalert-add-btn')) {
+    const statusEl = $('s-haalert-status');
+    // PUT the whole list; no re-render (used by the per-row toggles — the
+    // checkbox already reflects the new state).
+    const putHaAlerts = async () => {
+      statusEl.textContent = 'Saving…';
+      try {
+        const r = await apiFetch('/api/ha-alerts', { method: 'PUT', body: JSON.stringify({ alerts: window.__haAlerts || [] }) });
+        window.__haAlerts = (r && Array.isArray(r.alerts)) ? r.alerts : (window.__haAlerts || []);
+        statusEl.textContent = 'Saved.';
+        setTimeout(() => { if (statusEl.textContent === 'Saved.') statusEl.textContent = ''; }, 1200);
+      } catch { statusEl.textContent = 'Save failed.'; }
+    };
+    // For add/delete the list rows change, so re-render — but keep the user
+    // where they are (don't collapse the accordion back to the top).
+    const saveHaAlerts = async () => { await putHaAlerts(); await renderSettingsKeepPlace(); };
+    // Set while the form is editing an existing rule (its id) rather than
+    // adding a new one; reset on every settings re-render since this whole
+    // block re-runs. null = add mode.
+    let _haAlertEditingId = null;
+    // Common state values per HA domain — so "state is" is a dropdown, not a
+    // guess. Anything not listed falls back to the entity's current state
+    // plus a free-text "Other…".
+    const HA_COMMON_STATES = {
+      binary_sensor:['on','off'], switch:['on','off'], light:['on','off'], fan:['on','off'],
+      input_boolean:['on','off'], update:['on','off'], automation:['on','off'], siren:['on','off'],
+      cover:['open','closed','opening','closing'], lock:['locked','unlocked','jammed','opening'],
+      person:['home','not_home'], device_tracker:['home','not_home'],
+      media_player:['playing','paused','idle','off','standby','buffering','on'],
+      climate:['off','heat','cool','heat_cool','auto','dry','fan_only'],
+      alarm_control_panel:['disarmed','armed_home','armed_away','armed_night','armed_vacation','pending','arming','triggered'],
+      vacuum:['cleaning','docked','paused','idle','returning','error'],
+      sun:['above_horizon','below_horizon'], water_heater:['off','eco','electric','gas','heat_pump','high_demand','performance'],
+    };
+    const curStateOf = (id) => {
+      const e = (window.__haAlertEntities || cachedHaEntities || []).find(x => x.entity_id === id);
+      return e ? e.state : '';
+    };
+    function rebuildValueField() {
+      const wrap = $('s-haalert-value-wrap'); if (!wrap) return;
+      const id = $('s-haalert-entity').value || '';
+      const op = $('s-haalert-op').value;
+      const domain = id.split('.')[0];
+      const cur = curStateOf(id);
+      $('s-haalert-cur').textContent = cur ? `Currently: ${cur}` : '';
+      if (op === 'above' || op === 'below') {
+        wrap.innerHTML = `<input class="form-input" id="s-haalert-value" type="number" step="any" placeholder="number" style="width:100%">`;
+        return;
+      }
+      const opts = [];
+      if (cur) opts.push(cur);
+      for (const v of (HA_COMMON_STATES[domain] || [])) if (!opts.includes(v)) opts.push(v);
+      if (!opts.length) {
+        wrap.innerHTML = `<input class="form-input" id="s-haalert-value" placeholder="state value" style="width:100%">`;
+        return;
+      }
+      wrap.innerHTML =
+        `<select class="form-input" id="s-haalert-value" style="width:100%">` +
+        opts.map(v => `<option value="${v.replace(/"/g,'&quot;')}"${v===cur?' selected':''}>${escapeHtml(v)}</option>`).join('') +
+        `<option value="__other__">Other…</option></select>` +
+        `<input class="form-input" id="s-haalert-value-other" placeholder="custom state" style="width:100%;margin-top:6px;display:none">`;
+      $('s-haalert-value').addEventListener('change', () => {
+        const o = $('s-haalert-value-other');
+        if (o) o.style.display = $('s-haalert-value').value === '__other__' ? 'block' : 'none';
+      });
+    }
+    const readValue = () => {
+      const v = ($('s-haalert-value') && $('s-haalert-value').value || '').trim();
+      if (v === '__other__') return ($('s-haalert-value-other') && $('s-haalert-value-other').value || '').trim();
+      return v;
+    };
+    const resetAlertEntityBtn = () => {
+      const btn = $('s-haalert-entity-btn'); if (!btn) return;
+      const id = $('s-haalert-entity').value || '';
+      if (id) {
+        const e = (window.__haAlertEntities || cachedHaEntities || []).find(x => x.entity_id === id);
+        btn.textContent = ((e && e.friendly_name) || id) + ' — ' + id;
+        btn.style.color = 'var(--text)';
+      } else {
+        btn.textContent = 'Choose an entity…';
+        btn.style.color = 'var(--muted)';
+      }
+    };
+    // Populate the form fields from a rule object (or clear them for `null`).
+    // Must run after the entities prefetch so the entity-button label and the
+    // "state is" dropdown can resolve names/current state.
+    const fillAlertForm = (a) => {
+      $('s-haalert-entity').value = (a && a.entityId) || '';
+      resetAlertEntityBtn();
+      $('s-haalert-op').value = (a && a.op) || 'eq';
+      $('s-haalert-dwell').value = (a && a.dwellMin) || 0;
+      $('s-haalert-msg').value = (a && a.message) || '';
+      rebuildValueField();
+      if (a && a.value != null && a.value !== '') {
+        const vf = $('s-haalert-value');
+        if (vf && vf.tagName === 'SELECT') {
+          if ([...vf.options].some(o => o.value === a.value)) {
+            vf.value = a.value;
+          } else {
+            vf.value = '__other__';
+            const o = $('s-haalert-value-other');
+            if (o) { o.style.display = 'block'; o.value = a.value; }
+          }
+        } else if (vf) {
+          vf.value = a.value;
+        }
+      }
+    };
+    const openAlertForm = async (editId) => {
+      _haAlertEditingId = editId || null;
+      $('s-haalert-form').style.display = 'block';
+      $('s-haalert-add-btn').style.display = 'none';
+      $('s-haalert-add-confirm').textContent = editId ? 'Save changes' : 'Add alert';
+      statusEl.textContent = '';
+      // Prefetch so curStateOf / the name lookup have data even before the
+      // search sheet is opened; the sheet itself also loads/caches entities.
+      try {
+        const ents = await apiFetch('/api/ha/entities');
+        window.__haAlertEntities = Array.isArray(ents) ? ents : [];
+        if (!cachedHaEntities && Array.isArray(ents)) cachedHaEntities = ents;
+      } catch {}
+      fillAlertForm(editId ? (window.__haAlerts || []).find(x => x.id === editId) : null);
+    };
+    $('s-haalert-add-btn').addEventListener('click', () => openAlertForm(null));
+    if ($('s-haalert-entity-btn')) $('s-haalert-entity-btn').addEventListener('click', () => {
+      openHaEntitySearch({
+        current: $('s-haalert-entity').value || '',
+        onPick: (id) => { $('s-haalert-entity').value = id; resetAlertEntityBtn(); rebuildValueField(); },
+      });
+    });
+    $('s-haalert-op').addEventListener('change', rebuildValueField);
+    $('s-haalert-add-cancel').addEventListener('click', () => {
+      _haAlertEditingId = null;
+      $('s-haalert-form').style.display = 'none';
+      $('s-haalert-add-btn').style.display = '';
+      statusEl.textContent = '';
+    });
+    $('s-haalert-add-confirm').addEventListener('click', async () => {
+      const entityId = ($('s-haalert-entity').value || '').trim();
+      const value = readValue();
+      if (!entityId) { statusEl.textContent = 'Pick an entity.'; return; }
+      if (!value) { statusEl.textContent = 'Enter a value to compare against.'; return; }
+      const ent = (window.__haAlertEntities || cachedHaEntities || []).find(e => e.entity_id === entityId);
+      const name = (ent && ent.friendly_name) || entityId;
+      const fields = {
+        entityId, name,
+        op: $('s-haalert-op').value,
+        value,
+        dwellMin: Math.max(0, Math.min(1440, parseInt($('s-haalert-dwell').value, 10) || 0)),
+        message: ($('s-haalert-msg').value || '').trim(),
+      };
+      window.__haAlerts = window.__haAlerts || [];
+      if (_haAlertEditingId) {
+        const a = window.__haAlerts.find(x => x.id === _haAlertEditingId);
+        if (a) Object.assign(a, fields); // keep id / enabled / screen / phone
+        _haAlertEditingId = null;
+      } else {
+        window.__haAlerts.push({ id: 'a' + Date.now().toString(36), enabled: true, ...fields });
+      }
+      await saveHaAlerts();
+    });
+    document.querySelectorAll('.s-haalert-row').forEach(row => {
+      const id = row.dataset.id;
+      const del = row.querySelector('.s-haalert-del');
+      const edit = row.querySelector('.s-haalert-edit');
+      const chk = row.querySelector('.s-haalert-enabled');
+      const scr = row.querySelector('.s-haalert-screen');
+      const phn = row.querySelector('.s-haalert-phone');
+      if (edit) edit.addEventListener('click', () => openAlertForm(id));
+      if (del) del.addEventListener('click', async () => {
+        window.__haAlerts = (window.__haAlerts || []).filter(a => a.id !== id);
+        await saveHaAlerts();
+      });
+      const patch = (field, val) => {
+        const a = (window.__haAlerts || []).find(x => x.id === id);
+        if (a) { a[field] = val; return putHaAlerts(); }
+      };
+      if (chk) chk.addEventListener('change', () => patch('enabled', chk.checked));
+      if (scr) scr.addEventListener('change', () => patch('screen', scr.checked));
+      if (phn) phn.addEventListener('change', () => patch('phone', phn.checked));
+    });
+  }
+
+  // ── Per-kind notification delivery matrix ─────────────────────────────────
+  if ($('s-notifprefs')) {
+    const st = $('s-notifprefs-status');
+    const saveNotifPrefs = async () => {
+      st.textContent = 'Saving…';
+      try {
+        const r = await apiFetch('/api/notif-prefs', { method: 'PUT', body: JSON.stringify({ prefs: window.__notifPrefs || {} }) });
+        window.__notifPrefs = (r && r.prefs) || window.__notifPrefs;
+        st.textContent = 'Saved.';
+        setTimeout(() => { if (st.textContent === 'Saved.') st.textContent = ''; }, 1500);
+      } catch { st.textContent = 'Save failed.'; }
+    };
+    document.querySelectorAll('.s-notifpref-row').forEach(row => {
+      const kind = row.dataset.kind;
+      const scr = row.querySelector('.s-np-screen');
+      const phn = row.querySelector('.s-np-phone');
+      const set = () => {
+        window.__notifPrefs = window.__notifPrefs || {};
+        window.__notifPrefs[kind] = { screen: !!(scr && scr.checked), phone: !!(phn && phn.checked) };
+        return saveNotifPrefs();
+      };
+      if (scr) scr.addEventListener('change', set);
+      if (phn) phn.addEventListener('change', set);
+    });
+  }
+
   // ── Voice control (Siri Shortcuts) token ────────────────────────────────────
   // Generation happens server-side (crypto.randomBytes) rather than letting
   // someone type their own value — unlike ha_token (pasted from HA itself,
@@ -16144,7 +16960,7 @@ async function renderSettings() {
       try {
         const r = await apiFetch('/api/voice-token/generate', { method: 'POST' });
         if (r && r.token) {
-          await renderSettings(); // re-render so the field/instructions/button label all reflect the new state
+          await renderSettingsKeepPlace(); // re-render so the field/instructions/button label all reflect the new state
           const freshInput = $('s-voice-token');
           if (freshInput) { freshInput.value = r.token; freshInput.type = 'text'; } // show once, easiest moment to copy
           showToast('Voice token generated');
@@ -16160,7 +16976,7 @@ async function renderSettings() {
         $('s-voice-token').value = '';
         $('s-voice-instructions').style.display = 'none';
         showToast('Voice token revoked');
-        await renderSettings(); // re-render so the button row reflects "no token" state
+        await renderSettingsKeepPlace(); // re-render so the button row reflects "no token" state
       } catch { showToast('Could not revoke — try again'); }
     });
   }
@@ -16239,7 +17055,7 @@ async function renderSettings() {
       <label style="display:flex;align-items:center;gap:10px;margin-bottom:0;font-weight:400;font-size:13px;color:var(--text)">
         <input type="checkbox" class="bf-project-cb" data-id="${p.id}" ${activeSet.has(p.id) ? 'checked' : ''}
           style="width:18px;height:18px;accent-color:var(--accent);flex-shrink:0">
-        ${p.name}
+        ${escapeHtml(p.name)}
       </label>
     `).join('');
     container.querySelectorAll('.bf-project-cb').forEach(cb => {
@@ -17328,6 +18144,10 @@ async function init() {
         // reasoning as startTour()'s own 600ms delay just above.
         setTimeout(() => { try { maybeShowFeedbackPopup(s); } catch (e) { console.error('feedback popup', e); } }, 1200);
       }
+      // HA alert banner — host AND slave (a slave proxies the active list).
+      checkHaAlertBannerApp();
+      setInterval(checkHaAlertBannerApp, 60_000);
+      window.addEventListener('focus', () => { checkHaAlertBannerApp(); });
     } catch {}
 
     // Watch for a server update and force a refresh — without yanking the page out
@@ -17338,7 +18158,7 @@ async function init() {
     // minutes if genuinely mid-task — but it does still force it eventually, fixing
     // the "I updated but the new feature isn't showing" stale-page confusion.
     let _appBootVersion = null;
-    try { const v = await apiFetch('/api/version'); if (v && !v.__authFailed) _appBootVersion = v.version; } catch {}
+    try { const v = await apiFetch('/api/version'); if (v && !v.__authFailed) { _appBootVersion = v.version; initAppDemo(v); } } catch {}
     // Staggered after the tour (600ms) and before the feedback popup
     // (1200ms) — same "don't compete for attention on first paint" reasoning
     // as both of those already use.
@@ -17668,6 +18488,35 @@ async function checkFeedbackReplyBanner() {
     }
     banner.style.display = 'flex';
   } catch { /* central server unreachable — leave prior banner state alone */ }
+}
+// ── HA alert banner (in the app) ────────────────────────────────────────────
+// The wall display shows a fired Home Assistant alert; this surfaces the same
+// active alerts in the app and lets them be dismissed from here — which clears
+// them everywhere (same /api/notifications/dismiss the display calls), whether
+// or not this phone is set up to receive push. Works on host and slave (a
+// slave proxies /api/notifications/active to its host).
+async function checkHaAlertBannerApp() {
+  const banner = document.getElementById('ha-alert-banner-app');
+  const textEl = document.getElementById('ha-alert-banner-app-text');
+  const closeBtn = document.getElementById('ha-alert-banner-app-close');
+  if (!banner || !textEl) return;
+  try {
+    const data = await apiFetch('/api/notifications/active');
+    const alerts = ((data && data.notifications) || []).filter(n => n && n.kind === 'ha-alert');
+    if (!alerts.length) { banner.style.display = 'none'; return; }
+    textEl.textContent = alerts.length === 1
+      ? `⚠ ${alerts[0].body || alerts[0].title || 'Home Assistant alert'}`
+      : `⚠ ${alerts.length} Home Assistant alerts active — tap to review`;
+    textEl.onclick = () => { const t = document.querySelector('.tab[data-tab="settings"]'); if (t) t.click(); };
+    if (closeBtn) closeBtn.onclick = async (e) => {
+      e.stopPropagation();
+      banner.style.display = 'none';
+      for (const a of alerts) {
+        try { await apiFetch('/api/notifications/dismiss', { method: 'POST', body: JSON.stringify({ key: a.key }) }); } catch {}
+      }
+    };
+    banner.style.display = 'flex';
+  } catch { /* server unreachable — leave whatever's shown */ }
 }
 // ── Periodic feedback prompt ─────────────────────────────────────────────────
 // Roughly-weekly nudge to submit feedback/feature ideas — real request, not

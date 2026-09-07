@@ -1,3 +1,7 @@
+# Secrets / local config — never commit
+.env
+.env.*
+
 # Dependencies
 node_modules/
 
@@ -15,6 +19,10 @@ calendar.db-shm
 logs/
 public/uploads/
 
+# Built release archives (published to the mothership, not the repo)
+/piazzahq-*.zip
+/piazzahq-server-*.zip
+
 # Windows installer build artifacts (staged locally, never committed)
 windows/build-input/node/
 windows/build-input/app/node_modules/
@@ -28,3 +36,8 @@ kiosk-profile/
 .DS_Store
 Thumbs.db
 *.log
+
+# Playwright output
+test/test-results/
+test/playwright-report/
+test/.node_modules_linux/

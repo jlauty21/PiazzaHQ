@@ -5023,3 +5023,1355 @@ existing `pushReleaseToGitHub()` push to `main`, which is what the Docker
 workflow listens on for its own `:latest` + `:1.83.3` build. Not done here
 on purpose — that push is the mothership's own automation's job, not
 something to bypass by pushing to `main` directly from this session.
+
+---
+
+## Session note: rotation destroyed a real display's content — v1.83.3 → 1.83.4
+
+Real incident, not a hypothetical, and worth reading in full before ever
+touching the switcher/rotation subsystem again — this is exactly the kind
+of "don't assume something is fixed just because the code reads
+correctly" case the top of this file already warns about, and it bit
+twice in one session: once for real, once as a false alarm from my own
+first attempt at a fix.
+
+**What actually happened.** Investigating the deferred "phase 2" idea
+from beta.2 (rotation surviving a reboot mid-rotation), I built a fix
+assuming rotation persists each step via pointer-reassignment
+(`assigned_display_slug`), same as a manual switch. Reading the *whole*
+`switchToLayoutTarget()` function (not just the branch I'd looked at
+first) showed that's wrong: `if (IS_PREVIEW || callerTag ===
+'schedule-engine') return` skips ALL persistence for anything the
+schedule engine triggers, added deliberately after an earlier incident
+where rotation's old copy-based persist was destroying real display
+content on every advance. Caught this via a live test before shipping it
+— reverted the wrong fix immediately, `display.html`'s rotation logic is
+back to exactly what it was.
+
+Then, testing what "phase 2" should actually look like, the SAME class of
+incident happened for real: rotating between two real displays on the
+actual production Mirror Pi permanently overwrote "Mirror Display"'s own
+portrait layout with a different display's content. No backup existed
+anywhere (no DB snapshots on either device, only code-update backups) —
+Jon is rebuilding that layout by hand.
+
+**Root cause, fully traced this time**, not guessed: the
+`callerTag === 'schedule-engine'` protection above only covers
+`switchToLayoutTarget()`'s OWN persist call. It does not cover
+`applyLocally()`'s background widget-data refetch (run on every switch,
+including rotation's, for any widget type new to the session) — for a
+`stocks` widget, that refetch calls `migrateLegacyStockTickersIfNeeded()`,
+a one-time legacy-settings migration with zero awareness of rotation
+context. It found the rotation target's `stocks` widget needing
+migration (this household still had a legacy `stock_tickers` setting) and
+called `scheduleLayoutSave()` directly — persisting the rotation target's
+entire layout onto the screen's real assigned display.
+
+**The fix** (see CHANGELOG's `1.83.4` entry for the full writeup) guards
+`saveLayoutNow()` itself — the actual save choke point — rather than
+patching that one caller, so any other path that ever calls
+`scheduleLayoutSave()`/`saveLayoutNow()` without knowing about a schedule
+override gets the same protection. Verified two ways: an isolated test
+running the real extracted function (not a reimplementation) confirmed
+the guard blocks the save while `_scheduleOverrideActive` is true and
+doesn't interfere otherwise; then reproduced the exact real failure live
+on the actual Mirror Pi — legacy `stock_tickers` setting present,
+rotating into "main" (which has an unmigrated `stocks` widget) — but
+pointed at a disposable throwaway display created just for this test, not
+the real one, so a second failure couldn't cost anything. The throwaway
+display's content came through byte-for-byte unchanged even though the
+rotation switched through the vulnerable target.
+
+**Process lesson, worth keeping:** after this incident, real hardware
+testing continued — but every subsequent test reassigned the screen to a
+disposable, just-created display first, specifically so a repeat failure
+could only ever damage something worthless. That's the right pattern for
+verifying ANY fix to this subsystem going forward — the switcher/rotation
+code is exactly the kind of "looks obviously correct" code that has now
+caused genuine data loss twice from two different, non-obvious causes.
+
+Also rolled into this release: the `slaveWriteGuard` proxy-routing bug
+found while investigating a separate TV-schedule report (`/api/tv-
+schedule/:id`'s PUT/DELETE weren't covered by the `/api/screen` prefix
+allowlist, so they silently proxied to the host on a slave instead of
+running locally), and reordering the `hdmi-signal` TV-control driver to
+try real DPMS before `xrandr` — confirmed live on two different real
+monitors that DPMS gets closer to genuine sleep than a plain signal cut,
+though the exact result (true sleep vs. a "no signal" message) is each
+monitor's own firmware decision either way.
+---
+
+## Session note: content-marker page detection fix (v1.33.10 → 1.33.11)
+
+Real bug, reported live by Jon: he uploaded `guide.html` through the new
+"Website preview & publish" card but left the target dropdown on
+`index.html`, and it silently staged as `index.html` — no auto-correction,
+no warning. Root cause: `pickFile()` in `admin.html` only auto-selected the
+dropdown when the uploaded file's *name* matched a known target exactly
+(`known.includes(f.name)`), with no fallback — and a phone's share/save
+flow routinely renames files on the way out, so that match just silently
+failed and whatever the dropdown happened to be sitting on won. The same
+weakness existed in the older "Reload static pages" card too, which is
+arguably higher-risk since it publishes immediately with no preview step.
+
+Fix: every previewable page (`index.html`, `guide.html`, `contact.html`,
+`troubleshooting.html`, `privacy.html`) now carries a
+`<!-- piazza-static-target: <filename> -->` marker as its literal first
+line, before `<!DOCTYPE html>` — harmless to real visitors (an HTML
+comment), but it means the server can determine a file's true identity
+from its own content, independent of both the uploaded filename and
+whatever the dropdown says. `detectStaticTarget()` in `server.js` reads
+the first 500 bytes and extracts it; both `/api/admin/stage-page` and
+`/api/admin/upload-static-page` use a detected marker as authoritative
+(overriding a mismatched `target` field), fall back to the submitted
+target when a file has no marker at all, and reject a marker naming a
+page this panel doesn't know about. Responses carry `detected`/`mismatch`
+so the admin UI can correct the dropdown and say plainly what happened
+rather than staying silent about the substitution.
+
+One real mistake made while verifying this locally, worth recording so it
+doesn't happen again: the "run a throwaway local instance and hit it with
+curl" verification discipline assumes `DATA_DIR`/`public/` point somewhere
+disposable. They don't when you just run `node server.js` straight out of
+the actual working copy — `APP_BASE` falls back to `__dirname`, so a
+publish-page call during testing overwrote the real
+`_server/public/privacy.html` on disk with test content. Caught
+immediately (a system reminder flagged the file changed unexpectedly),
+recovered by fetching the real page straight from the live production
+site (`https://piazzahq.com/privacy`, stripping the Cloudflare-injected
+challenge script that fetch adds at the edge) rather than guessing at the
+original content. No harm done since nothing from the test run was ever
+deployed — but the lesson stands: point local test runs at a copied/temp
+directory, not the actual repo checkout, when the route under test writes
+to disk.
+
+Verified end-to-end: reproduced the exact reported failure (staged
+`guide.html`'s real content with target left on `index.html`, confirmed
+it landed under `index.html` before the fix and under `guide.html` with
+`mismatch:true` after), confirmed a no-marker file still falls back to
+the submitted target, confirmed an unknown marker is rejected with 400,
+confirmed the immediate-publish route has the same fix, confirmed
+publish/discard still work, confirmed the route still 401s without a
+session.
+
+Also rolled into this release since they hadn't been through a version
+bump yet: `guide.html`'s Docker FAQ dropped the "DeleteFile failed /
+Access is denied" item and gained a "Does this work on Proxmox?" entry
+(written from how Proxmox works, not from hands-on testing — no spare
+hardware available; a volunteer user is going to test on real hardware
+and this entry should be corrected against what he finds).
+
+---
+
+## Session note: full-app audit — v1.83.4 → 1.83.5
+
+Direct follow-on to the rotation incident above. Jon's call, and the right
+one: rather than assume the rest of the app was fine because nothing else
+had been *reported* broken, spend real time looking for the same class of
+mistake — silent failures, wrong-device actions, unescaped content —
+everywhere else it could be hiding. This took a full session on its own
+and found 18 real issues. Recording the approach here as much as the
+findings, since the approach is the reusable part for next time.
+
+**Method**: prioritized by evidence and risk, not alphabetically or
+file-by-file. Concretely:
+- Once one bug in a class was found (e.g. the write-routing guard missing
+  `/api/tv-schedule`), grepped for every OTHER route with the same shape of
+  requirement ("must run on this exact device") and checked each one
+  against the guard individually — found 6 more this way (kiosk-exit,
+  self-update, mothership-install, data-restore, code-backup-restore,
+  ×2 for the two backup-download crash sites below).
+- Once the DST date-subtraction bug was found in `expandRecurrence()`,
+  grepped the whole codebase for the same `new Date(...) - new Date(...)`
+  shape and checked each hit individually — found one more real instance
+  (the Countdown widget) and correctly ruled out several look-alikes that
+  turned out to already use `Math.round()` (naturally DST-tolerant) instead
+  of `Math.floor()`/`Math.ceil()` (not).
+- Escaping was audited by finding the app's own `escapeHtmlD()`/
+  `escapeHtml()` helpers, then grepping for every `${x.title}` / `${x.name}`
+  / `${x.notes}`-shaped interpolation NOT already wrapped in one, then
+  manually confirming each hit actually lands in `innerHTML` (not
+  `textContent`, not a native `confirm()`/`alert()`, both of which are
+  inert regardless) and reflects real user/external content (not a
+  hardcoded internal constant, which several false-positive-shaped hits
+  turned out to be — template names, moon-phase labels, a stray `s.label`
+  that was really an unrelated settings-accordion helper).
+- Every fix was verified before moving on — either by extracting the REAL
+  function out of the actual file and running it in an isolated Node
+  sandbox against concrete before/after inputs (the DST fixes, the
+  save-guard), or by reproducing the exact failure live against a
+  disposable local instance (the crash fixes — confirmed the Windows
+  `ENOTEMPTY` crash was NOT a rare race, it fired on every single backup
+  download attempt in testing).
+
+**The crash bug** (`/api/backup/download` and `/api/update-backups/.../
+download`) is worth its own callout: `fs.rmSync()` cleaning up the staging
+folder ran inside `res.download()`'s completion callback, which executes
+OUTSIDE the route handler's own `try/catch` — so a cleanup failure there
+was a genuinely uncaught exception, not a handled 500. On Windows,
+`fs.rmSync` failing with `ENOTEMPTY` on a folder that was just supposedly
+emptied is a known real-world quirk (antivirus/file-handle timing), and it
+reproduced 5/5 times in testing, not occasionally. Both sites now wrap
+that cleanup in its own try/catch. Also found (by symmetry — same
+function, same shape, one more caller) a THIRD instance of "unguarded call
+inside an async callback" in `supervisedWindowsRestart()`'s own
+`spawnDetachedSelf()` call, mid-way through an actual update-apply
+restart — lower likelihood of firing than the other two (a synchronous
+`spawn()` throw is rarer than a Windows `rmSync` timing quirk) but same
+fix, same reasoning, matching the function's own other two call sites
+which already guarded it.
+
+**What was checked and found clean** (not exhaustive, but the areas that
+got real scrutiny): events/chores/rewards CRUD, the allowance ledger,
+iCal timezone parsing (already used the correct `Intl.DateTimeFormat`
+pattern), the briefing scheduler, feed sync, license/trial validation,
+auth/PIN middleware (a previously-fixed path-stripping bug was applied
+consistently, no gaps), the Alexa skill handler, custom themes, ambient/
+photo mode, Live Edit drag/resize, the onboarding wizard (already
+carefully hardened from real past incidents — a documented fix for
+silent save failures, a documented fix for a mirror-setup license gap),
+the floating switcher's manual UI, Home Assistant integration (client and
+both server routes), `templates.js` (24 hand-authored templates, checked
+programmatically for duplicate/missing fields and out-of-bounds widget
+positions — zero issues), `hub.html` and `kids.html` in full, the three
+shell scripts, the Dockerfile/entrypoint, and the GitHub Actions Docker
+workflow.
+
+This is genuinely comprehensive coverage — every code file in the repo got
+read at least once with this session's specific eye for silent failures,
+wrong-device actions, and unescaped content. Not a guarantee nothing else
+exists (a manual audit never is one), but a real, evidence-driven pass,
+not a token gesture.
+
+## Session note: rotation-bug regression test (`npm test`), dev-tooling only, no version bump
+
+Added `test/rotation-smoke-test.js` — the first automated regression test in
+this repo — specifically for the class of bug behind the v1.83.3 → v1.83.4
+incident (a schedule-driven rotation silently overwrote a real display's
+saved layout with the rotation target's content; see that section above for
+the full writeup). Rather than a hand-copied snapshot of the fixed code
+(which would silently drift out of sync the next time `saveLayoutNow()`
+changes), it extracts the function's real, current source straight out of
+`public/display.html` via brace-matching and runs it in a `vm` sandbox
+against three cases: a schedule-driven override in effect (must NOT save —
+the actual incident), no override in effect (must save normally — so a
+future "fix" that blocks saving entirely doesn't pass for the wrong reason),
+and no display slug set (the earlier, related guard in the same function).
+
+Deliberately scoped to `saveLayoutNow()` alone rather than trying to
+simulate the whole rotation engine (`switchToLayoutTarget()`,
+`applyLocally()`, the widget-refetch/migration path that actually triggered
+the incident) — that function is the single choke point every layout save
+funnels through regardless of caller, which is exactly why guarding it there
+(rather than patching the one caller that happened to trigger the original
+incident) was the actual fix. Testing the choke point directly covers any
+future path into it, not just the one already known about, for a fraction
+of the mocking effort a full rotation-engine simulation would need.
+
+Verified the test has real teeth before trusting it: temporarily stripped
+the `_scheduleOverrideActive` guard out of the extracted source (simulating
+the pre-fix code) in a throwaway script and confirmed the test's assertion
+would have failed — a save fired that should have been blocked — rather
+than just checking that it currently reports green against already-fixed
+code.
+
+Wired up as `npm test` (`package.json`). Dev-tooling only — no runtime file
+changed, nothing shipped to devices — so this does NOT get a version bump
+or a CHANGELOG.md entry (that file's top section is read verbatim into
+user-facing release notes; a test script has nothing to tell a real user).
+Run `npm test` before packaging a release zip going forward.
+
+## Session note: push local events OUT to iCloud + Google Calendar (not yet packaged)
+
+Until now, calendars only flowed one way: subscribe to a published .ics URL,
+display it read-only. This adds the push side — a local event created here
+(`POST /api/events`, e.g. from the app's Add Event form) also gets written to
+the household's real iCloud and/or Google calendar, so it shows up in Apple
+Calendar / Google Calendar on their other devices. Came out of a Reddit user
+asking about writing events on the wall display; built as its own thing since
+it's useful regardless of whether the handwriting idea happens.
+
+Approved plan lives at `~/.claude/plans/resilient-sprouting-music.md` (covers
+Phase 1 in detail; Phase 2 followed the same structure).
+
+**Shared design, both targets:**
+- Opt-in per household, one global toggle each (`icloud_push_enabled` /
+  `google_push_enabled`), not per-event.
+- Best-effort and NON-BLOCKING: `pushLocalEventTo{CalDAV,Google}()` and the
+  delete counterparts are fire-and-forget from the `/api/events` handlers,
+  self-swallow every error, and no-op unless fully configured. A failed push
+  is recorded on the row (`caldav_push_error` / `google_push_error`) and
+  retried by `retryFailedExternalPushes()` (15-min `setInterval`, host-only —
+  a slave proxies its event writes to the host so it never pushes).
+- Deterministic remote id so "edit" is just a re-PUT to the same place and no
+  separate update path is needed: iCloud object URL is
+  `<calendar>/piazzahq-local-<id>.ics`; Google uses a custom event id
+  `phqlocal<id>` (POST insert, 409 -> PUT update).
+- Dedup: if the household ALSO subscribes to the same calendar as an iCal
+  feed, `parseICS()`'s event-acceptance check skips UIDs matching
+  `piazzahq-local-\d+@piazzahq\.local` (CalDAV) or `phqlocal\d+@google\.com`
+  (Google) so pushed events don't come back as duplicate `ical:` rows.
+- New `events` columns (`caldav_*`, `google_*`) ride the host->slave sync for
+  free (that path is `SELECT *` / full-row replace).
+- All of it lives in a new "Pushing local events out to external calendars"
+  section in server.js right after the iCal sync code; `httpsRequest()` (a
+  rename of the first draft's `caldavRequest`) is the shared raw-`https`
+  helper — follows redirects (iCloud always 301s to a per-account host),
+  arbitrary methods + bodies, no new HTTP dependency.
+
+**iCloud (CalDAV):** Apple ID + an app-specific password (appleid.apple.com),
+stored like the briefing Gmail app-password. `discoverCalDAVCalendars()` does
+the 3-step RFC 6764 PROPFIND discovery; multistatus XML parsed with
+namespace-stripping + regex (no XML parser dep, same spirit as the hand-rolled
+`parseICS`). `buildEventICS()` handles all-day (exclusive DTEND) vs timed
+(floating local time) vs multi-day, with RFC-5545 escaping + line folding.
+Routes: `POST /api/caldav/discover` (tests unsaved creds, returns the calendar
+list — POST not GET so the password doesn't hit a log), `PUT`/`GET
+/api/caldav-settings` (masked-password pattern, mirrors briefing-settings).
+
+**Google (OAuth device flow):** the "TV and Limited Input Device" grant — user
+sees a short code + google.com/device link, approves on their phone, we poll
+for tokens; no browser redirect to the Pi needed. client_id/client_secret are
+ONE shared OAuth client for all households, read from env
+(`GOOGLE_OAUTH_CLIENT_ID` / `_SECRET`) first with a settings-row fallback (so
+the mothership can push them down at provision time later — Phase 2 rollout
+detail, not built yet; repo is public so they can't be committed).
+`getGoogleAccessToken()` caches + auto-refreshes the access token, and calls
+`setGoogleDisconnected()` on an `invalid_grant` so a revoked refresh token
+shows as disconnected instead of failing forever. Routes: `POST
+/api/google/device-code`, `POST /api/google/device-poll` (UI polls this every
+`interval`s), `GET /api/google/calendars`, `PUT`/`GET /api/google-settings`.
+
+**Tested locally** (no real accounts — that's on the MANUAL-TASKS.md list):
+migrations run clean; all routes respond correctly to the unconfigured / bad
+-creds / not-connected paths; a create with push enabled but not connected
+still returns in ~0.3s and doesn't spuriously error the row; a create with
+bad CalDAV creds records `caldav_push_error: "HTTP 401"` without blocking;
+`buildEventICS()` output verified correct for all-day/multi-day/timed;
+`device-code` genuinely reaches Google and surfaces its real error for a fake
+client id. **Not verified against real iCloud or real Google** — both are on
+`piazzahq/MANUAL-TASKS.md` with exact steps. Not packaged yet.
+
+## Session note: shipped beta 1/2, iCloud verified live, Google connect flow reworked (→ 1.84.0-beta.3)
+
+**beta.1** packaged the whole feature. **beta.2** fixed the iCloud
+calendar-discovery parser (was too strict about tag/namespace formatting;
+now lenient by default — keeps any calendar collection under the home,
+only drops one that explicitly declares itself event-less, and the
+no-match error now lists the collections it saw).
+
+**iCloud push verified end to end against Jon's real "Family" calendar** on
+the production host Pi (`100.115.65.87`, running beta.2): all-day / timed /
+multi-day events all pushed with correct ICS (exclusive DTEND, floating
+local time, right multi-day span — confirmed by GETting the .ics objects
+straight off iCloud's servers); edit re-PUTs to the same object URL (no
+dupe); push is non-blocking; `caldav_push_error` tracks failures. The one
+thing outstanding on iCloud is Jon's visual eyeball of Apple Calendar +
+the delete-propagation and feed-dedup checks — the three test events (id
+1/2/3, June 2030) are still sitting on the Family calendar. `icloud_push_enabled`
+was flipped on via the API during testing.
+
+**Google device flow is dead.** `POST /api/google/device-code` reached
+Google fine once the client id was corrected (it had been pasted from a
+screenshot, mangled and missing the `510623897572-` project-number prefix)
+— but then: `Invalid device flow scope: .../auth/calendar.events`. Google
+doesn't allow Calendar scopes through the device flow, full stop.
+
+**Reworked to an authorization-code + PKCE flow relayed through the
+mothership** (spec was written and approved in-conversation):
+- Mothership 1.33.17: `GET /oauth/google/callback` + `GET /api/oauth/google/relay/:state`.
+- Pi: `POST /api/google/device-code` / `device-poll` deleted, replaced with
+  `POST /api/google/connect-start` (mints `state` + PKCE verifier, returns a
+  Google consent URL pointing at the mothership redirect) and
+  `POST /api/google/connect-poll` (polls the mothership relay; on `ready`
+  does the token exchange with Google directly using the stored verifier +
+  client secret). `getGoogleAccessToken`, `googleApi`, `pushLocalEventToGoogle`,
+  the retry sweep, the settings routes — all unchanged.
+- `app.html`: the Google card's connect step went from "show a code, poll"
+  to "open the sign-in page, poll". `GOOGLE_DEVICE_CODE_URL` removed.
+
+Relay verified locally (pending → callback → ready → single-use, denied,
+bad-state). **Not verified against real Google** — needs the mothership
+deployed AND the OAuth client switched to "Web application" +
+`https://piazzahq.com/oauth/google/callback` registered (MANUAL-TASKS.md).
+Packaged as 1.84.0-beta.3.
+
+## Session note: Google connect debugged live, scope fixed, both integrations verified end-to-end (→ 1.84.0-beta.4)
+
+Jon deployed mothership 1.33.17, made a proper "Web application" OAuth
+client (redirect URI `https://piazzahq.com/oauth/google/callback`), and
+deployed beta.3 to the host Pi. The relay flow worked first try —
+`connect-start` → he approved on his phone → `connect-poll` picked the
+code off the relay → token exchange succeeded, `google_connected: true`.
+
+But `connect-poll` returned `email: "", calendars: []`. Root cause:
+**`calendar.events` scope can insert/update/delete events on any calendar
+but cannot LIST calendars or read calendar metadata** (both 403
+"insufficient scopes" — confirmed with a raw probe on the Pi). The broader
+`calendar`/`calendar.readonly` scope would fix listing but drags in a
+heavier OAuth verification.
+
+Fix (beta.4, piazzahq only — mothership unchanged):
+- `GOOGLE_SCOPE` → `openid email https://www.googleapis.com/auth/calendar.events`.
+  `openid email` is non-sensitive and gives the account address.
+- `googleListCalendars()` deleted, replaced with `googleGetAccountEmail()`
+  (the OIDC userinfo endpoint). `GET /api/google/calendars` route removed.
+- `connect-poll` no longer lists calendars — sets `google_calendar_id` to
+  `primary` on connect (unless already set) and stores the email.
+- app.html Google card: picker gone; instead an optional "Calendar ID"
+  text field (blank = primary). Save sends `primary` when blank.
+
+**Verified live on the host Pi (100.115.65.87) against Jon's real Google
+primary calendar AND real iCloud "Family" calendar:**
+- create: all-day (`{date}` + exclusive end), timed (Google applied the
+  Pi's tz → correct offset; iCloud floating local), multi-day (end date +1,
+  spans right) — all correct on both.
+- edit: re-targets the same remote object (`phqlocal<id>` / the fixed .ics
+  URL), search on Google returned 3 not 4 → no duplicate.
+- delete: Google → `status: cancelled`; iCloud → 404. Both propagate.
+- non-blocking: every `POST /api/events` returned in ~0.3s, pushes stamped
+  ~1s later; a bad iCloud password earlier recorded `caldav_push_error`
+  without blocking.
+- dedup: probed a Google custom-id event — its `iCalUID` is
+  `phqlocal999@google.com`, which the `parseICS()` filter skips. iCloud
+  stores `piazzahq-local-N@piazzahq.local` verbatim, also matched. (Didn't
+  wire up an actual feed round-trip — the UID formats are the mechanism
+  and both are confirmed.)
+
+All test events cleaned up; Jon confirmed the iCloud batch looked right in
+Apple Calendar before deletion, and OK'd testing on the production display.
+
+Still not exercised: a real second household / fresh Google account, and
+an actual feed-subscription round-trip. On BETA_CHECKLIST.md. Packaged as
+1.84.0-beta.4.
+
+---
+
+## Session note: add events from the wall display, + optional handwriting (→ 1.84.0-beta.5)
+
+The calendar-push feature above only had a *pull*-side entry point on the
+display (the read-only `#event-detail-overlay`); local events were created
+from the phone app, whose own "New Event" modal had actually been
+de-surfaced ("calendars are the supported way to add events now"). This
+adds a create path on the display itself, which then rides the existing
+push hooks out to iCloud/Google.
+
+**Typed flow (display.html):**
+- Every `.mc-cell` in `renderMiniCalGrid` now carries `data-date="YYYY-MM-DD"`
+  (both the normal and the postit return paths).
+- `wireCalCellLongPress()` (called at the end of `wireMiniCalNav()`, so it
+  re-wires every render, idempotent via `cal._addWired`) attaches pointer
+  handlers to each `.w-minical[data-widget-id]`. ~500ms hold, <10px travel,
+  not on an event pill → `openEventAddSheet(date)`. Stationary by design so
+  it never competes with the swipe-nav handler on the same element (that
+  needs >40px dx). Gated off when `EMBEDDED_THUMBNAIL`.
+- New `#event-add-overlay` sheet (styled to match `#event-detail-card`):
+  title, date, all-day checkbox, start/end time (shown when not all-day),
+  optional end date. Save → `POST /api/events` (no new backend; on a slave
+  `slaveWriteGuard()` proxies to host, host CRUD handler fires the
+  iCloud/Google push). On success: `fetchEvents()` + `renderLayout()`; the
+  SSE `broadcastUpdate('events')` would refresh it anyway.
+
+**Handwriting (optional, off by default):**
+- Settings: `handwriting_enabled`, `myscript_app_key`, `myscript_hmac_key`
+  (HMAC never echoed — `/api/handwriting-settings` GET returns
+  `myscript_hmac_key_set` + a `handwriting_ready` boolean the display uses
+  to decide whether to show the ✍️ button).
+- `POST /api/handwriting/recognize` — browser sends raw strokes
+  `[[{x,y,t}...]...]`; server builds the MyScript v4 batch payload, signs
+  with `crypto.createHmac('sha512', appKey+hmacKey)`, forwards via the
+  existing `httpsRequest()` to `cloud.myscript.com/api/v4.0/iink/batch`,
+  returns `{text}`. The HMAC secret never reaches a display.
+- Display: ✍️ swaps the title row for a stroke pad (same capture code as
+  the POC — plain pointer events). "Use this" tries the on-device Web
+  Handwriting API first (present + supported → ChromeOS / some Windows),
+  else falls back to the server route; result is appended to the title
+  field, still editable. Raspberry Pi OS Chromium has no on-device backend,
+  so in practice the Pi always uses the server route.
+
+**beta.6:** first live handwriting attempt on the host Pi returned
+`401 access.not.granted` in the app log, but a direct 4-way probe
+(batch/recognize × hmac/no-hmac) showed auth was actually fine — `batch` +
+HMAC returned `406 recognition.no.suitable.mime.type`. Cause: the route
+sent `Accept: application/json`, which MyScript's batch endpoint doesn't
+produce. Fixed to `Accept: application/vnd.myscript.jiix` (verified: 200,
+returns `{label, words[]}` — the shape the parser already expected). Route
+now also passes MyScript's own error `code`/`message` back to the client.
+MyScript keys/HMAC/endpoint all correct as-is; the "choose Web platform"
+note when creating the MyScript app still stands.
+
+**Still not tested on hardware:** the typed long-press flow (needs a real
+touchscreen) and end-to-end handwriting after the beta.6 fix.
+BETA_CHECKLIST.md has the full list. `_server` unchanged (still 1.33.17).
+
+---
+
+## Session note: beta autodeploy — Claude can ship betas without Jon (_server 1.33.18)
+
+Jon: "I'm the only beta user and will keep it that way. As long as
+everything is backed up and can be reverted, I'm fine with you pushing
+betas and I can always go back." So we built a path for Claude to run
+fix -> publish-to-beta -> deploy-to-Test-Pi -> verify, unattended.
+
+Design doc: `_server/AUTODEPLOY-SPEC.md`. What actually shipped:
+
+- **`_server` 1.33.18:** `POST /api/beta/publish` behind `requireBetaPublisher`
+  (scoped `beta_publish_key`, Bearer or `X-Beta-Publish-Key`, rate-limited,
+  timing-safe compare — same pattern as the feedback-digest key). Guardrails
+  in the handler: beta channel only; version `x.y.z-beta.N`; strictly newer
+  than `latestRelease('beta')`. Never calls the GitHub push. No tester-set
+  gate — an early draft required exactly one `is_tester` license; Jon
+  vetoed it ("I control who the testers are, it should still work with
+  more than one"). Kill switch is revoking the key.
+  `processReleaseUpload()` is a deliberate copy of the zip-validate/strip/
+  rebuild core from `POST /api/admin/releases` — the admin handler is left
+  byte-for-byte untouched; keep the two in sync. Admin routes
+  `/api/admin/beta-publish-key/{generate,status}` + DELETE, and a "Beta
+  publish key" card in admin.html next to the feedback-key card.
+- **Device side: nothing new needed.** `POST /api/update-from-server`
+  already does check -> download -> `installFromZip` (validate, back up,
+  swap, restart). requireAuth early-returns when no PIN is set (server.js
+  ~2109), so a localhost trigger on a PIN-less Test Pi needs no auth.
+- **`piazzahq/publish-beta.sh`:** reads the (already-bumped) version from
+  package.json, checks the build mirror is in sync, `node --check`, builds
+  the flat zip (WSL `zip` on Windows, native `zip` elsewhere), sha256s it,
+  POSTs to `/api/beta/publish` with `BETA_PUBLISH_KEY`, asserts the returned
+  version+sha match, SSHes the Test Pi to trigger the update, then polls
+  `/api/update-check` until `currentVersion` == the new version and tails
+  the log for rollback/boot markers. Env: `BETA_PUBLISH_KEY`,
+  `MOTHERSHIP_URL`, `TESTPI_SSH`, `TESTPI_SSH_KEY`, `TESTPI_APP_PORT`,
+  `TESTPI_APP_DIR` (gitignored `.env`).
+- **`Piazza HQ/CLAUDE.md`** (workspace root, not shipped): the standing
+  grant + the explicit "may not" list (no stable, no release deletes, no
+  self-update, no license edits, no GitHub push, no Mirror Pi).
+
+**Live as of 2026-09-05:** `_server` 1.33.18 deployed, `beta_publish_key`
+generated. The tester-count guardrail was dropped before deploy (Jon: "I
+control who the testers are"). `publish-beta.sh` reworked to push to a LIST
+of hosts (`BETA_HOSTS` in `.env`), not one — it now updates all three Pis
+(110 test-with-calendars, 87 production host, 109 bare spare) and verifies
+each. First real run shipped 1.84.0-beta.6 then 1.84.0-beta.7 end-to-end
+with no manual steps. Revert = delete the release row in the admin panel;
+a bad boot auto-rolls-back on the device.
+
+Corrections to earlier notes: the Pi at 100.106.21.110 is NOT off-limits
+(earlier notes mislabeled it the "Mirror Pi"). Off-limits = any device
+running a layout/template themed **"mirror"** or **"chalkboard"** — it's
+about the layout, not the box.
+
+## Session note: handwriting 502 root cause + paste-proofing (→ 1.84.0-beta.7)
+
+beta.6's `Accept: application/vnd.myscript.jiix` fix was correct, but
+handwriting still 502'd on Pi 110. Two compounding causes:
+1. The stored `myscript_app_key` was `"* 8e1521ba-..."` — a "* " bullet had
+   been pasted in with it. MyScript 401s on that (`access.not.granted`),
+   with no useful hint.
+2. Even after fixing the key via `PUT /api/handwriting-settings`, the
+   running process kept 502'ing until it was restarted. `getSetting()` is
+   uncached, so it wasn't a stale-value problem — it was a **poisoned
+   keep-alive socket**: the failed 401 attempts left a bad pooled
+   connection to `cloud.myscript.com` in `https.globalAgent`, and every
+   later `httpsRequest()` reused it and got a non-200 with an unparseable
+   body → the generic "Recognition service error." A fresh process fixed it.
+
+beta.7:
+- `httpsRequest()` now passes `agent: false` — no connection pooling for any
+  of these best-effort external calls (CalDAV push, Google push,
+  handwriting). Fresh connection per call; the class of bug is gone.
+  Verified: handwriting returns 200 on a fresh beta.7 process on both 110
+  and 87, no manual restart.
+- `PUT /api/handwriting-settings` runs both keys through `cleanMyScriptKey()`
+  — extracts the UUID from whatever was pasted, so "* ", quotes, etc. can't
+  break auth silently anymore.
+
+All three beta Pis on 1.84.0-beta.7. Handwriting end-to-end confirmed
+server-side (real MyScript round-trip). Still needs a human: the actual ✍️
+stroke pad on a touchscreen, and the typed long-press add-event flow.
+
+## Session note: per-event calendar target + delete-from-display (→ 1.84.0-beta.8)
+
+Two asks for the calendar-widget add flow.
+
+**Per-event "Add to" picker.** New `events.target_calendar` column:
+NULL = legacy default (push to configured iCloud default cal if enabled +
+Google if enabled), `'local'` = push nowhere, `'google'` = Google only,
+`'caldav:<calendarUrl>'` = that one iCloud calendar only. `POST /api/events`
+accepts+validates it. `pushLocalEventToCalDAV` / `pushLocalEventToGoogle`
+honor it — an explicit choice overrides the provider's global enable toggle
+(the user picked it on purpose); the NULL default still respects the toggle.
+`caldav_url` stored on the row reflects the chosen calendar so edit/delete
+hit the right place. `retryFailedExternalPushes` now gates on creds only,
+not the toggle, so an explicitly-targeted errored row still retries.
+
+iCloud calendar list is now persisted: `icloud_calendars_json` setting
+(`[{url,name}]`), written by `PUT /api/caldav-settings` when the client
+sends `icloud_calendars` (the app.html discover handler stashes the full
+list in `window.__icloudCals` and includes it on save). New
+`GET /api/event-targets` builds the picker list for the display
+(`{targets:[{id,label}], default}`) — only includes a target that's usable
+right now. Google stays single (its `calendar.events` scope can't list
+calendars — see the beta.4 note).
+
+Display: `#ea-target-row` select in the add sheet, populated from
+`/api/event-targets` on each open, hidden when the only option is local.
+`payload.target_calendar` set from it.
+
+**Delete from the display.** `#event-detail-delete` button on the
+(previously read-only) event-detail card, shown only for `e.source==='local'`
+events, confirm() then `DELETE /api/events/:id` (which already propagates to
+iCloud/Google) then close + refresh. Feed events stay read-only.
+
+All three beta Pis: run `publish-beta.sh` to ship. Not yet exercised on
+real hardware — the picker against multiple real iCloud calendars, and
+delete-propagation from the display.
+
+## Session note: HA cover + lock control (→ 1.84.0-beta.9)
+
+Started the "finish the HA control story" work (option #2 from the
+feature-ideas chat). `renderHaEntityControl()` in display.html previously
+handled toggle (light/switch/fan/input_boolean), climate steppers, and
+scene/script trigger buttons — everything else fell to read-only text.
+Covers and locks were already *selectable* in every HA widget's entity
+picker (no domain filter) and in app.html's `HA_DOMAIN_FILTERS.ha_entity`,
+they just rendered dead.
+
+- server.js `HA_ACTIONS`: added `open_cover`/`close_cover`/`stop_cover`
+  (→ `cover.*`) and `lock`/`unlock` (→ `lock.*`). New `DOMAIN_LOCKED_ACTIONS`
+  guard in `/api/ha/call-action` rejects e.g. `unlock` aimed at a non-`lock`
+  entity with a clear message (the service domain is hardcoded so HA would
+  just error otherwise).
+- display.html `renderHaEntityControl`: `cover` → ▲/■/▼ buttons
+  (`.ha-action-btn[data-ha-action]`) + Open/Closed state line; `lock` →
+  one Lock/Unlock button whose action + label follow `data.state`. New tap
+  handler in `wireEntityStatusTaps()` for `.ha-action-btn[data-ha-action]`
+  → `callHaAction(entityId, action)` (which already re-fetches the entity so
+  the state line + lock label update). Works in Entity Status and every
+  Smart Home Dashboard view except icon-only (read-only there by design,
+  same as climate/scene).
+- app.html unchanged — no `renderHaEntityControl` there; its Favorites
+  cards still have no cover/lock card type. Follow-up if wanted: a
+  `ha_cover` / `ha_lock` favorite card, and light brightness / media_player
+  / fan-speed controls (the rest of option #2).
+
+Shipped to all beta Pis via publish-beta.sh. Not hardware-tested against
+real cover/lock entities yet.
+
+## Session note: HA light dimming (→ 1.84.0-beta.10)
+
+Phase 2 of the HA control work. `/api/ha/state/:entityId` trim now also
+carries `brightness` (HA's 0-255) when present. `HA_ACTIONS.set_brightness`
+→ `light.turn_on` with `brightness_pct` added to the service data in the
+route (validated 1-100); `DOMAIN_LOCKED_ACTIONS` guards it to `light`.
+display.html `renderHaEntityControl` light branch: when the light is on and
+`data.brightness` is a number, renders `<input type=range class=ha-bright-slider>`
+under the toggle, state line shows the percent. Wiring in
+`wireEntityStatusTaps()` fires on `change` (release), one HA call per
+adjustment, then callHaAction's own re-fetch updates the tile. Grid
+dashboard view gets it (calls renderHaEntityControl); the other dashboard
+views use renderDashToggleTile and stay switch-only for now. Not
+hardware-tested against a real dimmable light.
+
+Remaining Phase 2 candidates: media_player (play/pause/next/prev/volume),
+fan speed %, light color/temp, and app.html Favorites cards for cover/lock.
+
+## Session note: HA media_player control (→ 1.84.0-beta.11)
+
+Phase 2 continued. `/api/ha/state` trim now also carries `mediaTitle`,
+`volumeLevel` (0-1), `volumeMuted` when present. New `HA_ACTIONS`:
+`media_play_pause` / `media_next_track` / `media_previous_track` (no data)
+and `volume_set` (route adds `volume_level` = volume_pct/100, validated
+0-100). All four guarded to `media_player` in `DOMAIN_LOCKED_ACTIONS`.
+display.html `renderHaEntityControl` media_player branch: transport row of
+`.ha-action-btn[data-ha-action]` + optional title + a volume slider that
+reuses `.ha-bright-slider` — the beta.10 slider wiring was generalized to
+read `data-ha-action` + `data-ha-param` off the element, so brightness and
+volume share one handler. Grid dashboard view gets it; other views stay
+read-ish, same as cover/lock/climate.
+
+Remaining Phase 2: fan speed %, light color/temp, app.html Favorites cards
+for cover/lock/media.
+
+## Session note: HA fan speed (→ 1.84.0-beta.12)
+
+Phase 2 continued (autonomous — Jon away). `/api/ha/state` trim carries
+`fanPercentage` (HA `percentage`, already 0-100) when present. New
+`HA_ACTIONS.set_fan_speed` → `fan.set_percentage` with `percentage` from
+`fan_pct` (validated 1-100), guarded to `fan`. The display.html toggle
+branch's brightness-slider logic was generalized: a light with `brightness`
+gets a brightness slider, a fan with `fanPercentage` gets a speed slider,
+both reuse `.ha-bright-slider` + the shared `data-ha-action`/`data-ha-param`
+change handler. Jon's HA has no fan entities exposed, so unverified against
+real hardware.
+
+## Session note: phone-app Favorites cards for cover/lock/media (→ 1.84.0-beta.13)
+
+Autonomous (Jon away). The display got cover/lock/media control in
+beta.9/11 but app.html's Favorites tab had no card types for them. Added
+`ha_cover`, `ha_lock`, `ha_media` to `FAVORITE_CARD_DEFS`, each with its
+own `HA_DOMAIN_FILTERS` entry and added to the picker-dispatch condition
+in the add-card sheet. They call the same `/api/ha/call-action` actions
+the display uses (open_cover/stop_cover/close_cover, lock/unlock,
+media_previous_track/media_play_pause/media_next_track). No volume slider
+in the app card — kept compact; volume stays a display-only control.
+
+Wiring note: unlike the older HA Favorites cards (which do
+`document.querySelector('.fav-xxx-btn')` and so only ever wire the FIRST
+card of that type — a pre-existing latent bug), these three scope to
+`.fav-card[data-id="${card.id}"]` and `querySelectorAll` within, so
+multiple cards of the same type each work. Worth back-porting that fix to
+ha_entity_toggle / ha_group_toggle / ha_scene_trigger sometime.
+
+server.js + display.html unchanged this build. Shipped to all beta Pis.
+
+## Session note: scoped Favorites-card wiring (→ 1.84.0-beta.14)
+
+Back-ported the fix noted in the beta.13 entry: ha_entity_toggle,
+ha_group_toggle, ha_scene_trigger, ha_thermostat all did
+`document.querySelector('.fav-xxx-btn')` in wire(), so with 2+ cards of one
+type only the first got listeners. Now each scopes to
+`.fav-card[data-id="${card.id}"]`. `ha_scene_trigger` / `ha_group_toggle` /
+`ha_thermostat` wire() gained the `card` param. app.html only; shipped to all beta Pis.
+
+## Session note: light colour + sensor sparklines (→ 1.84.0-beta.15/16)
+
+**beta.15 — light colour.** State trim adds `colorTempK`/`minColorTempK`/
+`maxColorTempK`/`colorModes`/`rgbColor`. Actions `set_color_temp` (→
+light.turn_on + `color_temp_kelvin` from `kelvin`, 1000-10000) and
+`set_color` (→ light.turn_on + `rgb_color` from a `"r,g,b"` string,
+each 0-255), both guarded to `light`. display.html light branch: an on
+light with `color_temp` in `colorModes` gets a warm↔cool `.ha-ct-slider`
+(gradient track, min/max = the kelvin range, reuses the generic slider
+handler); an on light with hs/rgb/xy/rgbw/rgbww gets a `.ha-swatch-row` of
+7 preset colour dots. The `.ha-action-btn` tap handler now also matches
+`.ha-swatch` and passes `{rgb}` from `data-ha-rgb`.
+
+**beta.16 — sparklines.** New `GET /api/ha/history/:entityId?hours=N`
+proxies HA `/api/history/period` (minimal_response, no_attributes,
+significant_changes_only), keeps only numeric points, downsamples to ~100,
+caches 5 min (`haHistoryCache`). display.html: `renderHaEntityControl` got a
+6th param `sparkline` (only `renderEntityStatus` passes true, not dashboard
+tiles); the Tier-1 read-only fallback emits an empty
+`<div class="ha-sparkline" data-entity-id>` for a numeric `sensor.`.
+`wireHaSparklines()` (in the render pipeline next to wireEntityStatusTaps)
+fetches history once per entity, caches the built SVG 10 min, and fills
+every current placeholder for that id (re-selects post-fetch since a
+re-render may have swapped the element).
+
+Jon's HA has real sensors, so sparklines are testable; colour needs a
+colour/tunable light (his are mostly groups — may or may not report the
+attrs). All shipped to the 3 beta Pis.
+
+## Session note: HA condition alerts (→ 1.84.0-beta.17)
+
+Third of the "3 more HA things" run. A small rules engine.
+
+- Setting `ha_alerts_json` = `[{id,entityId,name,op,value,dwellMin,message,enabled}]`.
+  op ∈ eq|above|below. Synced host→slave via the normal `settings` topic.
+- server.js: `checkHaAlerts()` on `setInterval(120s)` + a 20s post-boot
+  pass, `if (isSlave()) return`. Per rule: `haRequest('/api/states/<id>')`,
+  `evalHaAlertCondition`, runtime map `{since, firing, dismissed}`.
+  Fire-once: fires when held ≥ dwellMin AND !firing AND !dismissed; any
+  `!met` tick resets since/firing/dismissed (that's the re-arm). Active
+  alerts live in `_haActiveAlerts` (in-memory).
+- Routes: `GET/PUT /api/ha-alerts` (rule list; PUT sanitises, caps 40,
+  drops runtime for removed ids), `GET /api/ha-alerts/active` (proxies to
+  host when `isSlave()` so slave displays get the banner too),
+  `POST /api/ha-alerts/dismiss {id}` (clears active + sets dismissed:true
+  until the condition next goes false).
+- display.html: `pollHaAlerts()` on load + every 60s (no SSE plumbing —
+  just polling). Builds/updates a fixed `#ha-alert-banner` at top; each row
+  has a ✕ that removes it and POSTs dismiss.
+- app.html: Alerts subsection inside the Home Assistant settings card —
+  rule list with enable/delete, and an add form (entity `<select>` from
+  /api/ha/entities, op select, value, dwell, message). `window.__haAlerts`
+  holds the working copy; every change PUTs the whole list + re-renders.
+
+Not hardware-tested end-to-end (needs a real condition to trip). All
+shipped to the 3 beta Pis. That completes light-colour + sparklines +
+alerts. Remaining smaller HA ideas: button/input_button press,
+input_number/input_select, vacuum.
+
+## Session note: notifications — on-screen channel + phone push relay (→ 1.84.0-beta.18 / _server 1.33.19)
+
+Jon: "notifications, both on the screen and phone." Approved routing phone
+push through the mothership (no HTTPS on the device), opt-in per household.
+
+**On-screen (device).** The beta.17 HA-alert banner is now a general
+channel: `_activeNotifications` Map + `raiseNotification({kind,key,title,
+body,url})` / `clearNotification(key)`. `checkHaAlerts()` calls these on
+fire/clear/rule-removed. New `GET /api/notifications/active` (slave proxies
+to host) and `POST /api/notifications/dismiss` ({key}; an `ha-alert:<id>`
+key also flips that rule's runtime `dismissed`). display.html `pollHaAlerts`
+now reads `/api/notifications/active` and dismisses by `key`.
+`/api/ha-alerts/*` (rule CRUD + the old active/dismiss) still exist.
+
+**Phone (relay).** `raiseNotification` also calls `relayPushToPhones(title,
+body,url)` for NEW notifications: host-only, no-op unless
+`phone_alerts_enabled==='1'`, POSTs `{license,title,body,url}` to
+`${resolveUpdateServerUrl()}/api/push/relay`. New device routes
+`GET/PUT /api/phone-alerts` ({enabled, has_license, setup_url}). app.html
+Settings → Home Assistant: a "send to my phone" toggle + "Enable on this
+phone" button → `window.open(setup_url)`.
+
+**_server 1.33.19.** `customerPushSubscriptions` store array (separate from
+admin). `GET /notify-setup?license=` (self-contained HTML+inline JS:
+permission → register `/notify-sw.js` → `pushManager.subscribe` with the
+shared VAPID key → POST `/api/push/customer/subscribe`). `GET /notify-sw.js`
+(push + notificationclick handlers). `GET /api/push/vapid-public`,
+`POST /api/push/customer/{subscribe,unsubscribe}`,
+`POST /api/push/relay` (validates the license is real, rate-limited per
+license + per IP, fans out via the existing `webpush`, prunes 404/410).
+
+**Deploy order:** _server 1.33.19 first (delivered as a zip), then beta.18
+(autodeploy). beta.18 is safe to run before 1.33.19 — the relay just fails
+silently and `/notify-setup` 404s until the server updates.
+
+Not end-to-end tested (needs a real phone + the server deployed). CSP risk
+on `/notify-setup`'s inline script — if the mothership blocks it, move the
+script to its own file.
+
+## Session note: notification delivery prefs — per-kind + per-rule (→ 1.84.0-beta.19)
+
+Jon wanted both a per-kind screen/phone matrix (his real want) and a
+per-rule override.
+
+- server.js: `NOTIF_KINDS` list (just `ha-alert` today), `notif_prefs_json`
+  setting = `{ <kind>: {screen,phone} }`, `getNotifPrefs()` fills defaults
+  (both true). `raiseNotification({..., screen, phone})` gained optional
+  per-call overrides; effective delivery = `(override !== false) &&
+  notifKindAllows(kind, channel)` for each of screen/phone (they AND).
+  When screen is denied the key is deleted from `_activeNotifications`
+  rather than added. `GET/PUT /api/notif-prefs`. `PUT /api/ha-alerts`
+  sanitiser adds per-rule `screen`/`phone` (default true); `checkHaAlerts`
+  passes them into `raiseNotification`.
+- app.html: "Notification delivery" subsection (renders from
+  `/api/notif-prefs` kinds) with 📺/📱 checkboxes per kind, plus 📺/📱
+  checkboxes on every alert-rule row. `window.__notifPrefs` /
+  `window.__haAlerts` hold working copies; each toggle PUTs the whole thing.
+- display.html: unchanged — `/api/notifications/active` already only holds
+  screen-approved items.
+
+server.js + app.html only; shipped to the 3 beta Pis. Not UI-tested.
+
+## Session note: Settings IA — calendar + handwriting into Data Sources (→ 1.84.0-beta.20)
+
+app.html only. `SETTINGS_GROUPS`: `Calendar Sync` moved Advanced→Data
+Sources; added `Push to iCloud Calendar`, `Push to Google Calendar`,
+`Handwriting input` → Data Sources. Updated `SETTINGS_GROUP_META` summaries
+for both groups and added icon-map entries (📅/📅/✍️). The
+`transformSettingsToAccordion()` transform is DOM-order based, so no markup
+moved — the four sections already sit between Travel Time and Todoist in
+source, and now render inside the Data Sources mini-accordion in that order.
+
+## Session note: alert banner rotation + state dropdown (→ 1.84.0-beta.21)
+
+Two fixes from Jon's testing.
+
+1. **Banner ignored rotation.** `pollHaAlerts()` appended `#ha-alert-banner`
+   to `document.body` with `position:fixed` — outside `#rotate-wrap`, which
+   is the element `applyRotation()` transforms/resizes. Now appended into
+   `#rotate-wrap` (fallback body) and `position:absolute`, so it rotates +
+   sizes with the content frame.
+2. **Alert value was blind free-text.** app.html add-alert form:
+   `#s-haalert-value-wrap` is rebuilt by `rebuildValueField()` on entity/op
+   change. `eq` → a `<select>` of `HA_COMMON_STATES[domain]` + the entity's
+   current state (`window.__haAlertEntities` now retained from the picker
+   load) + an "Other…" option that reveals `#s-haalert-value-other`.
+   `above`/`below` → a number input. `readValue()` resolves the active
+   control. Server side unchanged — still stores the string.
+
+app.html + display.html; shipped to the 3 beta Pis.
+
+## Session note: Settings keep-place + alert picker cleanup (→ 1.84.0-beta.22)
+
+From Jon's phone testing: "every time you do something in Home Assistant it
+takes you out of it completely," and the entity dropdown was unreadable.
+
+- `renderSettingsKeepPlace()` (new, right after `transformSettingsToAccordion`):
+  records open `.acc-section` `data-acc` ids + `#content` scrollTop, calls
+  `renderSettings()`, re-`.click()`s the same heads in document order
+  (outer group before sub-section), restores scroll. All 8 `await
+  renderSettings()` calls in the settings-wiring block (>line 16000) swapped
+  to it via sed; the wrapper's own internal call untouched.
+- HA alerts: split `saveHaAlerts` → `putHaAlerts()` (PUT only, no render —
+  used by the per-row enable/📺/📱 toggles, which don't need one) and
+  `saveHaAlerts()` (= putHaAlerts + renderSettingsKeepPlace, for add/delete).
+- Alert entity `<option>` text is now just `friendly_name` (was
+  `friendly_name (entity_id)`); `name` on the new rule now comes from
+  `window.__haAlertEntities` rather than parsing the option text.
+
+app.html only. Shipped to the 3 beta Pis. The keep-place restore is
+DOM-click-driven; not verifiable without the phone, but logic follows
+wireAccordion's own open/close model.
+
+## Session note: demo mode foundation (→ 1.84.0-beta.23)
+
+First slice of the leased public-demo pool (full plan in
+`_server/DEMO-POOL-SPEC.md`). This build is the whole device-side gate; it
+is shippable on its own and a normal build is byte-for-byte unaffected in
+behaviour (every gate is `if (IS_DEMO)`).
+
+**The flag.** `const IS_DEMO = process.env.DEMO_MODE === '1'` and
+`const DEMO_LEASE_ENDS = Number(process.env.DEMO_LEASE_ENDS) || 0` (epoch
+ms), both near `const PORT`. `/api/version` now also returns
+`demo: IS_DEMO, demoLeaseEndsAt` — this is the only channel the two
+front-ends use to know they're in a demo.
+
+**HTTP fence** (one `app.use` right after the `slaveWriteGuard`
+registration, only mounted `if (IS_DEMO)`): any non-GET whose path is, or
+is under, a prefix in `DEMO_BLOCK_PREFIXES` → 403
+`{error:'Not available in the demo.'}`. Prefixes cover every external
+integration, file upload, the update/host/sync machinery, backups and the
+voice token. `demoAllowExact` re-permits `/api/notif-prefs` and
+`/api/settings` (both local-only, and `/api/settings` has its own key
+filter — see below).
+
+**`PUT /api/settings`** (top of the handler): in demo, silently `delete`s
+any key that could lock out the next lessee or point the box elsewhere —
+`app_pin*`, `device_role`, `host_url`, `update_server_url`,
+`auto_push_updates`, `update_schedule_*`, `license_key`, `voice_token`, and
+anything matching `/(_token|_pass|_password|_key|_secret|_url|_hmac)$/`.
+Cosmetic keys still save. Soft no-op, not a 403, so the rest of a bundled
+save still lands.
+
+**Text hygiene.** `demoCleanText(s, max)` (near `const PORT`): outside demo
+it's the identity function; in demo it hard-truncates and masks a small
+profanity list with `*`. Applied at every locally-typed write path —
+`POST/PUT /api/events` (title 120 / notes 500), todo lists + items,
+shopping items, chores (title/notes), reminders (name). Nothing that comes
+from an external service is run through it (those paths are fenced off
+anyway).
+
+**Background jobs**: `if (IS_DEMO) return;` at the top of
+`pushLocalEventToCalDAV`, `deleteEventFromCalDAV`, `pushLocalEventToGoogle`,
+`deleteEventFromGoogle`, `retryFailedExternalPushes`, `checkHaAlerts`,
+`relayPushToPhones`, `periodicUpdateCheck`, `checkBriefingSchedule`. Belt
+and suspenders on top of the HTTP fence.
+
+**display.html**: `initDemoBanner(v)` (called from the boot
+`/api/version` fetch) builds a fixed bottom `#demo-banner`
+("Demo · resets in m:ss · Get your own →") counting down to
+`demoLeaseEndsAt`; at 0 it calls `showDemoEnded()` which drops a
+full-screen `#demo-ended` curtain. With no `DEMO_LEASE_ENDS` the strip
+shows just "Demo" and the curtain never fires. All CSS is in the one
+`<style>` block next to `#ha-alert-banner`.
+
+**app.html**: `window.__isDemo` set from `verInfo.demo` in
+`renderSettings()`. `transformSettingsToAccordion()` gained a first pass
+that, when `__isDemo`, removes each `.section-header` in
+`DEMO_HIDDEN_SETTINGS_SECTIONS` (+ its trailing nodes) before the accordion
+is built — HA, Todoist, Calendar Sync, both calendar-push sections,
+Handwriting, Voice Control, Daily Briefing, Security, Feedback & Ideas,
+Multi-Device, Version & License, Update Backups, Custom Theme, Backup,
+Beta Checklist.
+
+server.js + display.html + app.html. Shipped to the 3 beta Pis (they run
+as normal builds — `DEMO_MODE` unset — so this is a no-op there; the demo
+path itself still needs a real `DEMO_MODE=1` smoke test). **Next demo
+phases** (all `_server`-side, need Jon / the VM): seed+reset script, the
+lease broker, systemd-templated hosting, the landing page + QR on
+index.html, Turnstile.
+
+## Session note: demo pool broker (`_server` 1.33.22)
+
+Phase 3 of the demo pool (spec: `_server/DEMO-POOL-SPEC.md`, now has a
+"Broker — as built" section). One `if (process.env.DEMO_POOL === '1')`
+block near the bottom of `_server/server.js`, above `app.listen`. **Dormant
+on the live server** — no routes, timers, or state exist unless `DEMO_POOL=1`.
+
+In-memory pool (`demoPool[]`, N from `DEMO_POOL_SIZE`, default 2), each slot
+`{n, port, host, status: free|leased|recycling, token, grantedAt, lastBeat,
+hardCapAt, lastIp, leases}`. Routes: `GET /demo` (lease/resume + `.piazzahq.com`
+cookie + 302 to `d<n>.piazzahq.com`, or a self-refreshing "busy" page at
+200 when full), `GET /demo/lease-ok?token=&n=` (instance-side lease check,
+CORS-echoed), `POST /demo/heartbeat`, `POST /demo/release`, `GET /demo/status`
+(`requireAdmin`). Sweep every `DEMO_SWEEP_MS` recycles expired leases via
+`DEMO_RESET_CMD` (`{n}` substituted) → free.
+
+Lease timing formula: `min(grantedAt+CEIL, max(grantedAt+LEASE, lastBeat+IDLE))`
+— no heartbeat → `DEMO_LEASE_MS` (7m); active heartbeats slide to
+`lastBeat+DEMO_IDLE_MS` (90s), hard-capped at `DEMO_LEASE_CEIL_MS` (15m).
+
+`DEMO_REDIRECT_MODE=port` makes it redirect to `localhost:<port>` instead of
+the subdomain — that's how it was tested here (no wildcard DNS locally):
+verified lease/resume/exhaust, token↔instance binding, heartbeat extension,
+sweep recycle, early release, CORS preflight, admin status, and the fully-
+dormant case. `_server` had no `node_modules` before this session; ran
+`npm install` there to be able to boot it (96 pkgs; the VM deploy does its
+own install, this is just local).
+
+Phase 4 (VM hosting) has a full runbook + scaffolding checked in at
+`_server/demo-pool/`: `PHASE4-RUNBOOK.md`, the `piazzahq-demo@.service`
+systemd template, the `reset-demo` script, a `sudoers-piazzahq-demo` drop-in,
+and `cloudflared-ingress.example.yml`. It's all "run this on the VM"
+material — nothing there executes as part of the mothership. §0 of the
+runbook flags that the pool needs a `DEMO_MODE`-capable build (1.84.0-
+beta.23+), so it waits on either a 1.84 stable promotion or a decision to
+run the pool on the beta.
+
+**Not built yet:** actually standing the pool up on the VM (Phase 4 — the
+runbook is written, not executed), the device-app glue that calls
+`/demo/lease-ok` per page load + heartbeats (Phase 5), landing/QR + Turnstile
+(Phases 5–6). The broker's Turnstile verify path is already there, gated
+behind `DEMO_TURNSTILE_SECRET`.
+
+## Session note: demo pool phase 5 device-app glue (→ 1.84.0-beta.24)
+
+Wires a demo instance to the phase-3 broker (`_server` 1.33.22). Active only
+when the pool's systemd unit sets `DEMO_BROKER_URL` + `DEMO_INSTANCE`
+(new consts next to `IS_DEMO`); a normal build and a bare `DEMO_MODE=1`
+instance are byte-for-byte unchanged in behaviour.
+
+- **`demoLeaseGate` middleware** on `GET /` and `GET /app` (server.js, next
+  to `sendCorePage`): reads the `demo_token` cookie, calls
+  `${DEMO_BROKER_URL}/demo/lease-ok?token=&n=${DEMO_INSTANCE}` server-to-
+  server (forwards the Cookie header), 302s to `${DEMO_BROKER_URL}/demo`
+  when the broker says the lease is dead / missing. Positive results cached
+  ~10s per token (`_demoLeaseCache`); negatives never cached. **Fails
+  open** on a broker network error — a blip must not lock a live visitor
+  out. Verified locally against the 1.33.22 broker in `port` mode: no
+  cookie / bogus cookie → 302, valid lease → 200, expired → 302.
+- **`/api/version`** now also returns `demoBrokerUrl` + `demoInstance` when
+  set.
+- **display.html `startDemoHeartbeat(v)`** (called from `initDemoBanner`)
+  and **app.html `initAppDemo(v)`** (called from the boot `/api/version`
+  fetch): `POST ${demoBrokerUrl}/demo/heartbeat` every 45s with
+  `credentials:'include'` (sends the `.piazzahq.com` lease cookie cross-
+  subdomain, same-site). Response `endsAt` feeds the countdown
+  (`window.__demoLeaseEndsAt`, now the single source the tick reads);
+  `ok:false` triggers the "demo finished" curtain. app.html also grows a
+  slim sticky "Demo · resets in m:ss · Get your own →" strip.
+
+server.js + display.html + app.html (+ mirror). Shipped to the 3 beta Pis
+(no-op there — the env isn't set). Still needs a real end-to-end run once
+the pool is up on the VM (phase 4).
+
+## Session note: demo pool — homepage entry + Turnstile (`_server` 1.33.23)
+
+Phase 5/6 bits that don't need the VM.
+
+- **`_server/public/index.html`**: a "Try it before you set it up" band
+  (`#try`, class `try-band`) after the hero — launch button to `/demo` + an
+  inline-SVG QR to `piazzahq.com/demo`. Shipped with `hidden` on the
+  `<section>` and a comment block listing the 3 steps to switch it on
+  (un-hide, add the nav link, reload static pages). Nothing else refs it,
+  so hidden = harmless. QR was generated with the `qrcode` npm lib
+  (`https://piazzahq.com/demo`, 27×27 module SVG) and pasted inline — no
+  asset file, no runtime dep.
+- **Broker Turnstile** (`_server/server.js`, in the `DEMO_POOL` block):
+  `GET /demo` now serves a `demoChallengePage()` — a Cloudflare Turnstile
+  widget that auto-submits back to `/demo?cf-turnstile-response=<token>` —
+  whenever `DEMO_TURNSTILE_SECRET` **and** `DEMO_TURNSTILE_SITEKEY` are both
+  set and the visitor has no live lease. `demoVerifyTurnstile()` (siteverify
+  POST) already existed; this adds the front door. Both env vars unset (the
+  default, and the live state) → unchanged: straight to a lease. Verified
+  locally with Cloudflare's test keys: no token → challenge, bad token →
+  challenge + "expired" note, `/demo/status` reports `turnstile:true`.
+
+`_server` only. Nothing live changes until those envs are set / the `#try`
+section is un-hidden.
+
+## Session note: demo pool stood up on the VM (phase 4 — 2026-09-06)
+
+The leased demo pool is **live but not yet public**: `https://piazzahq.com/demo`
+hands a visitor a private ~7-min instance and recycles it, verified end-to-end.
+
+Done this session over a new gcloud+SSH path from Jon's dev machine (see the
+`mothership-vm-access` memory / `reference_mothership_vm_access.md`):
+- `/srv/piazzahq-demo/`: `app/` = unpacked `piazzahq-1.84.0-beta.24.zip` +
+  `npm install --omit=dev` (better-sqlite3 prebuilt, no compiler needed);
+  `seed/` = a throwaway non-demo instance with the **Home Hub** template
+  applied (`POST /api/templates/apply`, then `DELETE /api/displays/1` so it's
+  the only profile) + `_server/demo-pool/seed-household.sh` data, WAL-
+  checkpointed and frozen; `1/` `2/` = per-instance `DATA_DIR`.
+- `piazzahq-demo@.service` systemd template installed; `@1`/`@2` enabled on
+  4101/4102. `/srv/piazzahq-demo/reset-demo <n>` + `/etc/sudoers.d/piazzahq-demo`
+  (jlauty may `systemctl stop|start|restart piazzahq-demo@N` passwordless).
+- cloudflared `/etc/cloudflared/config.yml` (+ `~/.cloudflared/config.yml`)
+  got `d1`/`d2.piazzahq.com` ingress → localhost:4101/4102; CNAMEs added via
+  `cloudflared tunnel route dns piazza-hq-server d{1,2}.piazzahq.com`.
+  **cloudflared does NOT auto-reload config — needs `systemctl restart`.**
+- Mothership `/home/jlauty/piazzahq-server/.env` gained `DEMO_POOL=1`,
+  `DEMO_POOL_SIZE=2`, `DEMO_RESET_CMD=sudo systemctl stop piazzahq-demo@{n} && /srv/piazzahq-demo/reset-demo {n} && sudo systemctl start piazzahq-demo@{n}`.
+  `.env` + both cloudflared configs were backed up (`.bak.<ts>`) first.
+- Added a **1 GB /swapfile** (+ fstab) — the e2-micro has 969 MB RAM and had
+  0 swap; mothership + 2 demo node procs + cloudflared runs ~80-100 MB free
+  RAM + light swap, stable.
+
+Gotcha seen: manually `systemctl restart`ing a demo instance outside the
+broker's flow desyncs the broker's in-memory pool state (it still shows the
+slot `leased` until the lease expires and its sweep runs `DEMO_RESET_CMD`).
+In normal operation the broker always drives the reset, so this only bites
+manual intervention — wait out the lease or restart `piazzahq-server`.
+
+**Left (Jon, deliberate):** Cloudflare Turnstile (`DEMO_TURNSTILE_SECRET` +
+`DEMO_TURNSTILE_SITEKEY` in the `.env`) THEN un-hide the `#try` band in
+`index.html` + nav link + purge the `/` cache. `_server` 1.33.23 (has the
+hidden band + the broker Turnstile challenge page) still needs deploying.
+
+## Session note: demo display polish — corner pill, scan-to-control, tour (→ 1.84.0-beta.25 / _server 1.33.24)
+
+From Jon's browser test of the live pool: the bottom demo bar covered
+bottom-edge widgets, and he wanted a way for a bystander to control the
+wall from their phone + a first-run tour.
+
+- **display.html**: `#demo-banner` is now a compact top-right pill
+  (flex-column: dot+countdown row, "Get your own →" row, then a 120px QR +
+  caption). `maybeShowDemoTour()` (called from `initDemoBanner`) drops a
+  one-time full-screen overlay — 4 bullets (long-press / tap / scan /
+  resets), `localStorage.demoTourSeen` gates it. All demo-only.
+- **Scan-to-control** (the "no runtime QR lib" approach): static per-
+  instance assets `public/demo-qr-<n>.svg` encode
+  `https://d<n>.piazzahq.com/app?scan=1`. The device app's `demoLeaseGate`
+  gained a **scan mode**: `?scan=1` (or a `demo_scan` host-only cookie it
+  then sets) with no `demo_token` → the gate asks the broker
+  `GET /demo/lease-ok?scan=1&n=<DEMO_INSTANCE>`, which returns ok only while
+  that instance is `leased` by *someone*. So the scanning phone rides the
+  wall's lease and is bounced to `/demo` once it ends — it never holds a
+  lease of its own. `demoLeaseGate` now also covers `/kids` `/chores`
+  `/hub`. The unused `demoLeaseToken` echo in `/api/version` was removed
+  (the token-in-QR design was dropped for this simpler one).
+- **_server 1.33.24**: `GET /demo/lease-ok` handles `?scan=1&n=N` →
+  `{ok: instance N is leased}`. Dormant unless `DEMO_POOL=1`.
+- Verified locally (broker + wired instance, port mode): QR asset serves;
+  `/app?scan=1` → 302 when the instance is free, 200 + `demo_scan` cookie
+  when leased; cookie reload rides the lease; goes back to 302 once the
+  instance is free again. Corner pill + tour are CSS/DOM only — not
+  browser-verified this session.
+- **QR subdomain assumption**: the assets hard-code `d1`/`d2.piazzahq.com`.
+  If `DEMO_SUBDOMAIN_FMT` ever changes, regenerate them (they were made with
+  the `qrcode` npm lib).
+
+## Session note: demo fixes from Jon's live testing (→ 1.84.0-beta.26 / _server 1.33.25)
+
+All from poking at the real pool on piazzahq.com/demo.
+
+- **"Couldn't save" on every widget move.** Root cause: a demo visitor's
+  browser is a fresh, unassigned `screens` row, so `DISPLAY_SLUG` stayed
+  empty and `saveLayoutNow()` refused ("no display selected"). Fix:
+  `/api/screen-config` now fills an empty `assigned_display_slug` with the
+  first `displays` row's slug **when `IS_DEMO`** (both the existing-screen
+  and new-screen branches). Harmless outside demo.
+- **Rightward widget drag = browser back.** Added `overscroll-behavior:none`
+  to `html,body` in display.html (good for any wall display, not just demo).
+- **Live Edit: tapping an event/chore fired its action.** `wireEventDetailTaps()`
+  and `wireChoreChartTaps()` now `if (editModeActive) return` — the tap
+  falls through to widget selection instead of opening the event detail /
+  toggling the chore. General fix (helps the real Live Edit too).
+- **Countdown stalled near 1:30, never hit 0.** The broker's `demoExpiry`
+  was `min(grant+LEASE, lastBeat+IDLE)` — once past `grant+LEASE-IDLE` the
+  heartbeat term dominated and the visible end kept sliding ~90 s ahead.
+  Redesigned: `demoExpiry = grant + DEMO_LEASE_MS` (a fixed window, counts
+  to 0); `demoAbandoned = now - lastBeat > DEMO_IDLE_MS` is a **separate**
+  early-free condition the sweep checks; `demoLive` requires both. Heartbeats
+  no longer extend anything — they only keep the slot from being reclaimed
+  as abandoned. `DEMO_LEASE_CEIL_MS` is now vestigial (defaults to
+  `DEMO_LEASE_MS`, only used for the cookie Max-Age).
+- **Reaching 0 / lease end now navigates home.** `showDemoEnded()` (display)
+  and the app-bar countdown/heartbeat (app.html) redirect to
+  `https://piazzahq.com/` after the "That's the demo" beat. A scanned-in
+  phone (`demoScan:true`, new on `/api/version` from the `demo_scan` cookie)
+  polls `GET <broker>/demo/lease-ok?scan=1&n=<instance>` every 20 s instead
+  of heartbeating, and follows the wall home on `{ok:false}`.
+
+Local-verified: fixed-countdown (`endsAt` stable across beats), abandon
+sweep, scan-mode gate. UI bits (pill/tour/edit-taps/overscroll) still need
+Jon's browser. **Deploy `_server` 1.33.25** (supersedes the 1.33.24 zip) —
+the countdown fix is broker-side.
+
+## Session note: drag-stick fix + demo layout switcher + demo weather (→ 1.84.0-beta.27)
+
+- **Widget drag "sticks" after a short distance** (Jon, live demo). Root
+  cause: `_editModeEventsPollTimer` / `_editModeHaPollTimer` call
+  `renderLayout()` every 8 s while Live Edit is open, which wipes
+  `#canvas` and rebuilds every `.widget` — including the one the pointer
+  is captured on, silently ending the drag. Fix: `renderLayout()` now
+  early-returns (setting `_renderDeferredDuringDrag`) whenever `_dragState`
+  or `_resizeState` is set; `onDragEnd`/`onResizeEnd` flush the one
+  deferred render. Also `touch-action:none` on `body.edit-mode-active
+  .widget`. General fix, helps the real Live Edit too.
+- **Demo layout switcher** (Jon wanted switchable layouts). `seed-household.sh`
+  now applies three templates (homehub / commandcenter / dailydigest) and
+  deletes "Main Display". New `demoSwitcherOverride()` in server.js: when
+  `IS_DEMO` and ≥2 `displays` rows, `/api/screen-config` returns
+  `floating_switcher_enabled:true` + a `{type:'display',id:slug,icon}`
+  preset per profile, `style:'bar'`, `bar_mode:'names'`. The switcher's
+  own `type:'display'` tap path (`POST /api/screens/:id/assign`) and
+  `type:'saved'` path are not demo-fenced, so switching works.
+- **Demo weather default** — `seed-household.sh` PUTs
+  `weather_lat/lon/zip/location_auto` for Chicago; `weather_provider` is
+  the keyless `open-meteo`, so the widget shows live data with no API key.
+
+server.js + display.html (+ mirror) + `_server/demo-pool/seed-household.sh`.
+Local-verified: screen-config switcher synthesis, seed profiles. The drag
+fix + switcher UI need Jon's browser.
+
+## Session note: demo switcher layouts → Home Hub / Summer / Aviation (→ 1.84.0-beta.28)
+
+Jon: the first three switcher layouts were "the most boring ones."
+`seed-household.sh` now applies `homehub summer aviation` (was `homehub
+commandcenter dailydigest`); `DEMO_SWITCHER_ICONS` gained `summer-days`
+(☀️) / `aviation` (✈️). Switcher is still `bar_mode:'names'`, so the icons
+are cosmetic-only for now. Rebuild the pool seed after deploying (§2).
+
+## Session note: aviation METAR default + edit-mode pill hide (→ 1.84.0-beta.29)
+
+- `templates.js` aviation template: both `metar` widgets (landscape +
+  portrait) now carry `wxIcao:'KLAX'` — the widget was shipping blank.
+  General product fix; the demo just benefits from it.
+- `display.html`: `body.edit-mode-active #demo-banner { display:none }` —
+  the top-right demo pill was covering Live Edit's "Done" button.
+
+templates.js + display.html (+ mirror). Rebuild the pool seed after
+deploying so the already-applied aviation profile picks up KLAX.
+
+## Session note: demo edit-pencil nudge (→ 1.84.0-beta.30)
+
+`display.html`: `showDemoEditHint()` — a one-time (`localStorage.demoEditHintSeen`)
+blue bubble anchored bottom-right above `#edit-mode-trigger`, which it also
+force-`.shown`s (the pencil is otherwise hidden until the first screen tap).
+Dismissed on pencil tap or after 8s. Called from the tour's "Start
+exploring" handler, and from `initDemoBanner` on a 1.5s delay when the tour
+was already seen. Tour gained a leading "Tap the pencil" bullet.
+`window.__isDemo` is now set in `initDemoBanner`. Hidden in edit mode via
+CSS. display.html only (+ mirror).
+
+## Session note: slave HA-widget stale-state-after-tap (→ 1.84.0-beta.31)
+
+Jon: HA Entity Status widgets on the slave (110) mismatch the real device
+state after a tap. Root cause: `slaveWriteGuard` proxies
+`POST /api/ha/call-action` (and `call-group-action`) to the host — the host
+busts *its* `haStateCache` — but `GET /api/ha/state/:id` is served **locally**
+on the slave (`GET` → `next()`), so the client's post-action confirm fetch
+read the slave's own pre-action cached value (up to `HA_STATE_CACHE_MS`=10s
+old) and the widget snapped back until the next 15s poll.
+
+Fix: in `slaveWriteGuard`, when proxying those two routes, `res.on('finish')`
+→ `haStateCache.delete(id)` for `body.entityId` / `body.entityIds`. The
+client's confirm fetch then hits HA fresh. Host path unchanged (its own
+call-action handler already busts its cache). Passive poll lag (~15s for a
+direct-in-HA change) is unchanged and expected.
+
+## Session note: Live Edit render-freeze from a wedged drag state (→ 1.84.0-beta.32)
+
+Jon: HA Entity Status widgets (lock, bar lights) on a tablet using "Open to
+Edit in New Tab" showed wrong state indefinitely — server `/api/ha/state`
+was returning correct values, so it wasn't HA or the poll.
+
+Root cause: beta.27 made `renderLayout()` early-return while `_dragState ||
+_resizeState` is set (so a mid-drag re-render can't detach the captured
+element). `_dragState` is only cleared in `onDragEnd`, which is bound to the
+dragged element's own `pointerup`/`pointercancel`. If that element is
+removed from the DOM before the pointer is released (capture lost, some
+other code path rebuilding the canvas), those events never fire →
+`_dragState` stays set forever → `renderLayout()` is a permanent no-op →
+EVERY widget freezes on its last state (not just HA — that's why both the
+lock and the lights were stuck).
+
+Fix (display.html):
+- `renderLayout()` guard now clears `_dragState`/`_resizeState` first if
+  `.el` is no longer `isConnected`, then proceeds normally.
+- `startDrag`/`startResize` also attach `onDragEnd`/`onResizeEnd` to
+  `window` (`{once:true}`) as a backstop, so a pointer release anywhere
+  ends the gesture even if the element-level listener is dead.
+`onDragEnd`/`onResizeEnd` already no-op on a pointerId mismatch, so the
+double-bind is safe.
+
+## Session note: optimistic HA control updates (-> 1.84.0-beta.33)
+
+Jon wanted HA controls to jump to the commanded state immediately instead
+of "eventually catching up". Added predictHaState(cur, action, extra) in
+display.html (toggle/turn_on/off, lock/unlock, open/close_cover,
+media_play_pause, set_brightness/fan_speed/volume/color_temp/color,
+set_temperature; null for trigger/scene/stop/next/prev). callHaAction now
+applies the prediction seq-bumped (an in-flight poll can't undo it) +
+renders, fires the action, then reconcile() (fresh seq-guarded
+/api/ha/state read) on success AND failure, plus a delayed reconcile ~1.5s
+later for cover/lock so HA reports the settled state not the transient. A
+rejected action also shows showDisplayToast with the error.
+callHaGroupAction got the same optimistic flip for all members. Pairs with
+the beta.32 render-freeze fix (that freeze was why "the lock never
+updated" - the whole display had stopped re-rendering).
+
+## Session note: faster HA polling (-> 1.84.0-beta.34)
+
+Jon wanted quicker passive refresh (a change made in the HA app showing on
+the wall). Ambient HA poll 15s -> 6s (display.html), edit-mode poll 8s ->
+4s, server HA_STATE_CACHE_MS 10s -> 4s (server.js). Load is fine - per
+-entity fetch is cheap, the 4s cache still absorbs multi-display overlap,
+and taps don't use the poll at all (optimistic + own confirm read, beta.33).
+A real-time HA WebSocket state_changed subscription pushed over the app's
+own SSE would eliminate the lag entirely - noted as the proper follow-up if
+6s still isn't snappy enough.
+
+## Session note: HA control flash-back fix (-> 1.84.0-beta.35)
+
+Jon: optimistic tap flashed the new state then "comes immediately back".
+Cause: callHaAction's immediate confirm read fired before HA's entity state
+had updated (service call returns first), re-applying the pre-tap value.
+Fix: `_haOptimisticHold[entityId] = { until, state }` set on the optimistic
+write; `applyHaEntityState` rejects any non-error read whose state hasn't
+reached the held value while the hold is active (2.5s toggles / 6s
+cover+lock), and clears the hold on a matching read or expiry. callHaAction
+no longer awaits an immediate reconcile when a prediction exists - it
+schedules reads at 1.2s and 3.5s; the 6s ambient poll covers the rest. A
+rejected action deletes the hold and reconciles at once. Same hold applied
+per-member in callHaGroupAction.
+
+## Session note: lock/cover flash-back — hold until confirmed (-> 1.84.0-beta.36)
+
+Jon: lock still "flashes back to the opposite state then back to correct".
+Cause: the beta.35 hold was a fixed 6s; his lock takes longer than that to
+report the new state, so at hold-expiry a still-'locked' read got applied
+(the flash) before HA finally reported 'unlocked'. Reworked
+`_haOptimisticHold` to `{ until, from, want }`: `applyHaEntityState` rejects
+a read only while it STILL equals `from` (the pre-tap state) and the cap
+hasn't passed; any other value (want / transient / jammed / error) clears
+the hold and applies. Cap 20s for open/close_cover + lock/unlock, 5s
+otherwise. callHaAction adds confirm reads at 7/12/18s for those slow
+domains. Ambient poll 6s -> 8s (Jon asked for a bit more spacing).
+
+## Session note: lock hold-until-target + sparkline refill (-> 1.84.0-beta.37)
+
+1. Lock still flashed: beta.36 released the optimistic hold on ANY state !=
+   old, so the 'unlocking' transient (or a momentary bounce) ended it early
+   and a later 'locked' read then applied. Now `applyHaEntityState` keeps
+   the hold until `data.state === hold.want` exactly, OR a terminal state
+   (jammed/unavailable/unknown), OR error, OR the cap (20s lock/cover, 5s
+   else). `_haOptimisticHold` shape simplified to `{ until, want }`.
+2. Sparkline only rendered during resize: `renderLayout()`'s rAF re-wire
+   block was missing `wireHaSparklines` (only `rerenderSingleWidget` called
+   it, which is what a resize triggers). Added
+   `requestAnimationFrame(wireHaSparklines)` alongside wireEntityStatusTaps;
+   it's cache-backed (HA_SPARK_TTL 10min) so full renders refill instantly.
+
+## Session note: lock hold minimum duration (-> 1.84.0-beta.38)
+
+Jon: lock still flashed (now ~2s each way). Cause: HA's lock entity emits
+its own optimistic 'unlocked' first, which satisfied `st === hold.want` and
+cleared the hold; the device's real status then came back 'locked' for a
+couple seconds with no hold to block it. Fix: `_haOptimisticHold` gained
+`minUntil` - within [now, minUntil] `applyHaEntityState` rejects EVERY
+incoming state except a real error / HA_TERMINAL_STATES (jammed etc.);
+`settled` (release on target) requires `now >= minUntil`. 5s min / 15s cap
+for lock+cover, 1.2s / 6s otherwise. Reconcile reads for slow domains moved
+to [5500, 8000, 11000, 14000].
+
+## Session note: HA checklist server-side pass + deleted-alert banner fix (-> 1.84.0-beta.39)
+
+Ran the HA-control checklist items that are verifiable server-side against
+Pi 87 (host) + 110 (slave) with Jon's real HA. All the `[AV]` plumbing
+holds: per-domain state trims, the wrong-domain 400 guard, /api/ha/history
+shape+cache+clamp, and the full condition-alert cycle (fire / active list /
+slave proxy / dismiss-and-hold / rule-removal cleanup).
+
+One real bug found + fixed: `PUT /api/ha-alerts` deleted `_haAlertRuntime`
+for a removed rule, which HID that id from `checkHaAlerts()`'s own cleanup
+loop (line ~7228), so `clearNotification('ha-alert:<id>')` never ran -> a
+deleted alert's on-screen banner stuck until server restart. Added the
+`clearNotification` call to the PUT handler's own removal loop.
+
+Not fixable from here (needs Jon on the wall / a real phone): the visual
+red banner, dwell timing on a real blip, light dim/colour/fan sliders
+moving real devices, media transport, phone push receipt, per-kind/per-rule
+delivery matrix behaviour. Those stay in BETA_CHECKLIST untagged.

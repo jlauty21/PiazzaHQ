@@ -1064,10 +1064,6 @@
     <span id="feedback-reply-banner-text" style="cursor:pointer"></span>
     <button id="feedback-reply-banner-close" style="background:none;border:none;color:#7ae0a0;font-size:15px;cursor:pointer;padding:0 2px;line-height:1">✕</button>
   </div>
-  <div id="ha-alert-banner-app" style="display:none;background:#3a1d1c;border-bottom:1px solid #b0413a;color:#ffb3ac;font-size:13px;padding:10px 14px;text-align:center;align-items:center;justify-content:center;gap:10px">
-    <span id="ha-alert-banner-app-text" style="cursor:pointer;min-width:0;overflow:hidden;text-overflow:ellipsis"></span>
-    <button id="ha-alert-banner-app-close" title="Dismiss" style="background:none;border:none;color:#ffb3ac;font-size:15px;cursor:pointer;padding:0 2px;line-height:1;flex:0 0 auto">✕</button>
-  </div>
   <div id="slave-banner" style="display:none;background:#16321f;border-bottom:1px solid #1f6a3a;color:#7ae0a0;font-size:12px;padding:8px 14px;text-align:center">
     📡 This screen is linked to your host. Edits you make here are saved to the host and synced to all screens.
   </div>
@@ -1480,12 +1476,6 @@ async function copyToClipboard(text) {
 // used to carry a wordy always-visible <p> of context. Text can include simple
 // HTML (e.g. <b>) since callers control it directly, never user input.
 window._infoTexts = {
-  'alert-banner-help':
-    `Controls how a fired Home Assistant alert appears <b>on this screen</b> — each display can differ, so a banner readable across the room on a big TV can be smaller on a nearby tablet.<br><br>
-    <b>Position</b>: <b>Top</b> / <b>Bottom</b> are edge strips (the logical edge — they rotate with the layout, so they stay upright on a sideways-mounted screen). <b>Center (card)</b> floats a notification card in the middle of the screen over a dimmed background — hardest to miss.<br><br>
-    <b>Text size</b> scales with the screen, so "Large" on a 4K TV is genuinely large. "Huge" is for a big display seen from across a room.<br><br>
-    <b>Style</b>: <b>Solid red bar</b> is the default full-width strip. <b>Bold</b> adds heavier framing. <b>Amber</b> is a less-alarming colour. <b>Dark w/ red edge</b> and <b>Dark outline</b> are lower-key. <b>Corner toast</b> is a smaller rounded card in the corner.<br><br>
-    Changes apply live — if a banner is currently showing it updates immediately.`,
   'screen-settings-help':
     `Orientation and rotation here follow this physical screen — handy for a TV mounted sideways.<br><br>
     <b>Screensaver Source</b> picks what this screen's screensaver/photo mode draws from — a tag (cycles through every photo with that tag) or one specific photo (no cycling); tag photos in the Photos tab.<br><br>
@@ -3813,10 +3803,10 @@ async function openPickHaEntityForFavoriteCard(type, configField) {
   `);
   const renderList = (q) => {
     const ql = (q || '').toLowerCase();
-    const shown = filtered.filter(e => !ql || e.friendly_name.toLowerCase().includes(ql) || e.entity_id.toLowerCase().includes(ql));
+    const shown = filtered.filter(e => !ql || e.friendly_name.toLowerCase().includes(ql));
     $('ha-pick-list').innerHTML = shown.length ? shown.map(e => `
-      <button class="ha-pick-item" data-entity-id="${e.entity_id}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;cursor:pointer;color:var(--text);font-size:13.5px;text-align:left">
-        <span style="min-width:0"><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.friendly_name)}</span><span style="font-size:11px;color:var(--muted);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.entity_id)}</span></span><span style="font-size:11px;color:var(--muted);flex:0 0 auto">${escapeHtml(e.state)}</span>
+      <button class="ha-pick-item" data-entity-id="${e.entity_id}" style="display:flex;justify-content:space-between;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;cursor:pointer;color:var(--text);font-size:13.5px;text-align:left">
+        <span>${escapeHtml(e.friendly_name)}</span><span style="font-size:11px;color:var(--muted)">${e.state}</span>
       </button>`).join('') : `<p style="font-size:12px;color:var(--muted)">No matches.</p>`;
     document.querySelectorAll('.ha-pick-item').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -3861,11 +3851,11 @@ async function openPickHaGroupForFavoriteCard(type) {
   `);
   const renderList = (q) => {
     const ql = (q || '').toLowerCase();
-    const shown = controllable.filter(e => !ql || e.friendly_name.toLowerCase().includes(ql) || e.entity_id.toLowerCase().includes(ql));
+    const shown = controllable.filter(e => !ql || e.friendly_name.toLowerCase().includes(ql));
     $('ha-group-list').innerHTML = shown.length ? shown.map(e => `
       <label style="display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 12px;font-size:13.5px;cursor:pointer">
-        <input type="checkbox" class="ha-group-check" data-entity-id="${e.entity_id}" ${selected.has(e.entity_id)?'checked':''} style="width:18px;height:18px;accent-color:var(--accent);flex:0 0 auto">
-        <span style="min-width:0"><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.friendly_name)}</span><span style="font-size:11px;color:var(--muted);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.entity_id)}</span></span>
+        <input type="checkbox" class="ha-group-check" data-entity-id="${e.entity_id}" ${selected.has(e.entity_id)?'checked':''} style="width:18px;height:18px;accent-color:var(--accent)">
+        ${escapeHtml(e.friendly_name)}
       </label>`).join('') : `<p style="font-size:12px;color:var(--muted)">No matches.</p>`;
     document.querySelectorAll('.ha-group-check').forEach(cb => {
       cb.addEventListener('change', () => { if (cb.checked) selected.add(cb.dataset.entityId); else selected.delete(cb.dataset.entityId); });
@@ -5609,41 +5599,6 @@ async function loadScreens() {
           </div>
         </div>
 
-        <p style="font-size:11px;color:var(--muted);margin:14px 0 8px;border-top:1px solid var(--border);padding-top:12px">
-          Home Assistant alert banner <span class="info-btn" onclick="showInfoPopup('alert-banner-help')">ⓘ</span>
-        </p>
-        <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <div style="flex:1;min-width:120px">
-            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Position</label>
-            <select class="form-input screen-alert-position" data-id="${s.device_id}">
-              <option value="top"    ${(s.alert_banner_position||'top')==='top'?'selected':''}>Top</option>
-              <option value="bottom" ${(s.alert_banner_position||'top')==='bottom'?'selected':''}>Bottom</option>
-              <option value="center" ${(s.alert_banner_position||'top')==='center'?'selected':''}>Center (card)</option>
-            </select>
-          </div>
-          <div style="flex:1;min-width:120px">
-            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Text size</label>
-            <select class="form-input screen-alert-size" data-id="${s.device_id}">
-              <option value="s"   ${(s.alert_banner_size||'m')==='s'?'selected':''}>Small</option>
-              <option value="m"   ${(s.alert_banner_size||'m')==='m'?'selected':''}>Medium</option>
-              <option value="l"   ${(s.alert_banner_size||'m')==='l'?'selected':''}>Large</option>
-              <option value="xl"  ${(s.alert_banner_size||'m')==='xl'?'selected':''}>Extra large</option>
-              <option value="xxl" ${(s.alert_banner_size||'m')==='xxl'?'selected':''}>Huge</option>
-            </select>
-          </div>
-          <div style="flex:1;min-width:140px">
-            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Style</label>
-            <select class="form-input screen-alert-style" data-id="${s.device_id}">
-              <option value="solid"   ${(s.alert_banner_style||'solid')==='solid'?'selected':''}>Solid red bar</option>
-              <option value="strong"  ${(s.alert_banner_style||'solid')==='strong'?'selected':''}>Solid red, bold</option>
-              <option value="amber"   ${(s.alert_banner_style||'solid')==='amber'?'selected':''}>Solid amber</option>
-              <option value="bar"     ${(s.alert_banner_style||'solid')==='bar'?'selected':''}>Dark w/ red edge</option>
-              <option value="outline" ${(s.alert_banner_style||'solid')==='outline'?'selected':''}>Dark outline</option>
-              <option value="toast"   ${(s.alert_banner_style||'solid')==='toast'?'selected':''}>Corner toast</option>
-            </select>
-          </div>
-        </div>
-
           </div>
         </div>
 
@@ -6013,18 +5968,6 @@ async function loadScreens() {
       if (r && r.error) { showToast('❌ ' + r.error); return; }
     });
   });
-
-  const wireAlertBannerField = (cls, key) => list.querySelectorAll(cls).forEach(sel => {
-    sel.addEventListener('change', async () => {
-      const r = await apiFetch(`/api/screens/${sel.dataset.id}`, {
-        method:'PUT', body: JSON.stringify({ [key]: sel.value }),
-      });
-      if (r && r.error) { showToast('❌ ' + r.error); return; }
-    });
-  });
-  wireAlertBannerField('.screen-alert-position', 'alert_banner_position');
-  wireAlertBannerField('.screen-alert-size', 'alert_banner_size');
-  wireAlertBannerField('.screen-alert-style', 'alert_banner_style');
 
   list.querySelectorAll('.screen-orientation').forEach(sel => {
     sel.addEventListener('change', async () => {
@@ -13629,17 +13572,7 @@ async function ensureHaAreasLoaded() {
   } catch { cachedHaAreas = { areas: [], entityAreas: {} }; }
   return cachedHaAreas;
 }
-// Generic searchable HA entity picker — a bottom sheet with text search
-// (matches friendly name AND entity_id) plus an optional area filter.
-// opts.onPick(entityId, friendlyName) fires on selection, then the sheet
-// closes. opts.domains (optional) limits the list to those entity-id
-// prefixes; opts.current (optional) highlights the row already chosen.
-// Shared by the layout widget picker (openEntityPicker) and the Home
-// Assistant alert form's entity chooser.
-function openHaEntitySearch(opts) {
-  const onPick = (opts && opts.onPick) || (() => {});
-  const current = (opts && opts.current) || '';
-  const domainSet = (opts && Array.isArray(opts.domains) && opts.domains.length) ? new Set(opts.domains) : null;
+function openEntityPicker(w) {
   let ov = $('ha-entity-picker');
   if (!ov) {
     ov = document.createElement('div');
@@ -13651,7 +13584,7 @@ function openHaEntitySearch(opts) {
   ov.innerHTML = `
     <div style="background:var(--bg);width:100%;max-width:520px;height:75vh;display:flex;flex-direction:column;border-radius:18px 18px 0 0;padding:16px 16px 0">
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">
-        <input class="form-input" id="ha-entity-search" placeholder="Search name or entity id…" autocomplete="off" style="flex:1;width:auto;min-width:0;font-size:16px;padding:12px 14px">
+        <input class="form-input" id="ha-entity-search" placeholder="Search entities…" autocomplete="off" style="flex:1;width:auto;min-width:0;font-size:16px;padding:12px 14px">
         <button class="btn" id="ha-entity-close" style="background:var(--card);border:1px solid var(--border);flex-shrink:0;width:auto;margin-top:0;padding:12px 16px">Done</button>
       </div>
       <div style="margin-bottom:10px">
@@ -13671,14 +13604,28 @@ function openHaEntitySearch(opts) {
     if (!items.length) { listEl.innerHTML = `<p style="padding:20px 4px">No matching entities.</p>`; return; }
     listEl.innerHTML = items.map(e => `
       <button type="button" class="ha-entity-item" data-id="${escapeHtml(e.entity_id)}" data-name="${escapeHtml(e.friendly_name)}"
-        style="display:flex;flex-direction:column;align-items:flex-start;width:100%;text-align:left;background:${e.entity_id === current ? 'var(--card)' : 'transparent'};border:none;border-bottom:1px solid var(--border);padding:12px 4px;cursor:pointer">
-        <span style="font-size:14px;color:var(--text)">${escapeHtml(e.friendly_name)}${e.entity_id === current ? ' ✓' : ''}</span>
+        style="display:flex;flex-direction:column;align-items:flex-start;width:100%;text-align:left;background:transparent;border:none;border-bottom:1px solid var(--border);padding:12px 4px;cursor:pointer">
+        <span style="font-size:14px;color:var(--text)">${escapeHtml(e.friendly_name)}</span>
         <span style="font-size:11px;color:var(--muted)">${escapeHtml(e.entity_id)} — ${escapeHtml(e.state)}${e.unit ? ' ' + escapeHtml(e.unit) : ''}</span>
       </button>`).join('');
     listEl.querySelectorAll('.ha-entity-item').forEach(btn => {
       btn.addEventListener('click', () => {
+        const newId = btn.dataset.id, newName = btn.dataset.name;
+        // Refresh the label to match the newly-picked entity whenever the
+        // current label is empty OR was itself auto-filled from whatever
+        // entity this widget PREVIOUSLY pointed to (haLabelAutoFor tracks
+        // that) — never touch a label someone actually typed themselves.
+        // Previously this only handled the empty case, so swapping which
+        // entity a widget points to silently kept showing the old entity's
+        // name — the label just never followed the entity change.
+        if (!w.haLabel || w.haLabelAutoFor === w.haEntityId) {
+          w.haLabel = newName;
+          w.haLabelAutoFor = newId;
+        }
+        w.haEntityId = newId;
+        autoSaveLayout(); // same missing-save class of bug found across this whole panel
         ov.style.display = 'none';
-        onPick(btn.dataset.id, btn.dataset.name);
+        drawWidgetSettingsPanel(); // refresh so the picked entity shows in the main panel
       });
     });
   };
@@ -13693,7 +13640,6 @@ function openHaEntitySearch(opts) {
     const q = ($('ha-entity-search').value || '').trim().toLowerCase();
     const areaId = $('ha-area-filter') ? $('ha-area-filter').value : '';
     let list = cachedHaEntities;
-    if (domainSet) list = list.filter(en => domainSet.has(en.entity_id.split('.')[0]));
     if (areaId) {
       const entityAreas = (cachedHaAreas && cachedHaAreas.entityAreas) || {};
       list = list.filter(en => entityAreas[en.entity_id] === areaId);
@@ -13723,32 +13669,11 @@ function openHaEntitySearch(opts) {
       // show a dropdown with nothing but "All areas" in it.
       areaSelect.parentElement.style.display = 'none';
     }
-    applyFilters();
+    renderList(cachedHaEntities);
   })();
 
   $('ha-entity-search').addEventListener('input', applyFilters);
   $('ha-area-filter').addEventListener('change', applyFilters);
-}
-
-// Layout widget entity picker — applies the pick to a widget object (label
-// auto-follow + autosave). Thin wrapper over openHaEntitySearch.
-function openEntityPicker(w) {
-  openHaEntitySearch({
-    current: w.haEntityId,
-    onPick: (newId, newName) => {
-      // Refresh the label to match the newly-picked entity whenever the
-      // current label is empty OR was itself auto-filled from whatever
-      // entity this widget PREVIOUSLY pointed to (haLabelAutoFor tracks
-      // that) — never touch a label someone actually typed themselves.
-      if (!w.haLabel || w.haLabelAutoFor === w.haEntityId) {
-        w.haLabel = newName;
-        w.haLabelAutoFor = newId;
-      }
-      w.haEntityId = newId;
-      autoSaveLayout();
-      drawWidgetSettingsPanel();
-    },
-  });
 }
 
 // Multi-select variant of openEntityPicker() above, for Tier 4's Smart Home
@@ -14805,18 +14730,16 @@ async function renderSettings() {
               <input type="checkbox" class="s-haalert-enabled" ${a.enabled!==false?'checked':''} style="width:16px;height:16px;flex:0 0 auto">
               <div style="flex:1;min-width:0">
                 <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(a.name || a.entityId)} · ${escapeHtml(opText)}${a.dwellMin ? ` for ${a.dwellMin}m` : ''}</div>
-                <div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(a.entityId || '')}${a.message ? ' · ' + escapeHtml(a.message) : ''}</div>
+                ${a.message ? `<div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(a.message)}</div>` : ''}
               </div>
               <label title="Show on the display" style="flex:0 0 auto;cursor:pointer;font-size:13px"><input type="checkbox" class="s-haalert-screen" ${a.screen!==false?'checked':''} style="width:14px;height:14px;vertical-align:middle">📺</label>
               <label title="Send to phone" style="flex:0 0 auto;cursor:pointer;font-size:13px"><input type="checkbox" class="s-haalert-phone" ${a.phone!==false?'checked':''} style="width:14px;height:14px;vertical-align:middle">📱</label>
-              <button type="button" class="s-haalert-edit" title="Edit this alert" style="flex:0 0 auto;background:none;border:none;color:var(--muted);font-size:14px;cursor:pointer">✎</button>
-              <button type="button" class="s-haalert-del" title="Delete this alert" style="flex:0 0 auto;background:none;border:none;color:var(--danger,#e85454);font-size:16px;cursor:pointer">✕</button>
+              <button type="button" class="s-haalert-del" style="flex:0 0 auto;background:none;border:none;color:var(--danger,#e85454);font-size:16px;cursor:pointer">✕</button>
             </div>`;
           }).join('') : `<div style="font-size:12px;color:var(--muted)">No alerts yet.</div>`}
         </div>
         <div id="s-haalert-form" style="display:none;background:var(--card);border:1px solid var(--border);border-radius:9px;padding:10px;margin-bottom:10px">
-          <button type="button" class="form-input" id="s-haalert-entity-btn" style="text-align:left;cursor:pointer;margin-bottom:8px;color:var(--muted)">Choose an entity…</button>
-          <input type="hidden" id="s-haalert-entity">
+          <select class="form-input" id="s-haalert-entity" style="margin-bottom:8px"><option value="">Loading entities…</option></select>
           <div style="display:flex;gap:8px;margin-bottom:6px">
             <select class="form-input" id="s-haalert-op" style="flex:0 0 44%">
               <option value="eq">state is</option><option value="above">above</option><option value="below">below</option>
@@ -16749,10 +16672,6 @@ async function renderSettings() {
     // For add/delete the list rows change, so re-render — but keep the user
     // where they are (don't collapse the accordion back to the top).
     const saveHaAlerts = async () => { await putHaAlerts(); await renderSettingsKeepPlace(); };
-    // Set while the form is editing an existing rule (its id) rather than
-    // adding a new one; reset on every settings re-render since this whole
-    // block re-runs. null = add mode.
-    let _haAlertEditingId = null;
     // Common state values per HA domain — so "state is" is a dropdown, not a
     // guess. Anything not listed falls back to the entity's current state
     // plus a free-text "Other…".
@@ -16768,7 +16687,7 @@ async function renderSettings() {
       sun:['above_horizon','below_horizon'], water_heater:['off','eco','electric','gas','heat_pump','high_demand','performance'],
     };
     const curStateOf = (id) => {
-      const e = (window.__haAlertEntities || cachedHaEntities || []).find(x => x.entity_id === id);
+      const e = (window.__haAlertEntities || []).find(x => x.entity_id === id);
       return e ? e.state : '';
     };
     function rebuildValueField() {
@@ -16804,68 +16723,22 @@ async function renderSettings() {
       if (v === '__other__') return ($('s-haalert-value-other') && $('s-haalert-value-other').value || '').trim();
       return v;
     };
-    const resetAlertEntityBtn = () => {
-      const btn = $('s-haalert-entity-btn'); if (!btn) return;
-      const id = $('s-haalert-entity').value || '';
-      if (id) {
-        const e = (window.__haAlertEntities || cachedHaEntities || []).find(x => x.entity_id === id);
-        btn.textContent = ((e && e.friendly_name) || id) + ' — ' + id;
-        btn.style.color = 'var(--text)';
-      } else {
-        btn.textContent = 'Choose an entity…';
-        btn.style.color = 'var(--muted)';
-      }
-    };
-    // Populate the form fields from a rule object (or clear them for `null`).
-    // Must run after the entities prefetch so the entity-button label and the
-    // "state is" dropdown can resolve names/current state.
-    const fillAlertForm = (a) => {
-      $('s-haalert-entity').value = (a && a.entityId) || '';
-      resetAlertEntityBtn();
-      $('s-haalert-op').value = (a && a.op) || 'eq';
-      $('s-haalert-dwell').value = (a && a.dwellMin) || 0;
-      $('s-haalert-msg').value = (a && a.message) || '';
-      rebuildValueField();
-      if (a && a.value != null && a.value !== '') {
-        const vf = $('s-haalert-value');
-        if (vf && vf.tagName === 'SELECT') {
-          if ([...vf.options].some(o => o.value === a.value)) {
-            vf.value = a.value;
-          } else {
-            vf.value = '__other__';
-            const o = $('s-haalert-value-other');
-            if (o) { o.style.display = 'block'; o.value = a.value; }
-          }
-        } else if (vf) {
-          vf.value = a.value;
-        }
-      }
-    };
-    const openAlertForm = async (editId) => {
-      _haAlertEditingId = editId || null;
+    $('s-haalert-add-btn').addEventListener('click', async () => {
       $('s-haalert-form').style.display = 'block';
       $('s-haalert-add-btn').style.display = 'none';
-      $('s-haalert-add-confirm').textContent = editId ? 'Save changes' : 'Add alert';
-      statusEl.textContent = '';
-      // Prefetch so curStateOf / the name lookup have data even before the
-      // search sheet is opened; the sheet itself also loads/caches entities.
+      const sel = $('s-haalert-entity');
       try {
         const ents = await apiFetch('/api/ha/entities');
         window.__haAlertEntities = Array.isArray(ents) ? ents : [];
-        if (!cachedHaEntities && Array.isArray(ents)) cachedHaEntities = ents;
-      } catch {}
-      fillAlertForm(editId ? (window.__haAlerts || []).find(x => x.id === editId) : null);
-    };
-    $('s-haalert-add-btn').addEventListener('click', () => openAlertForm(null));
-    if ($('s-haalert-entity-btn')) $('s-haalert-entity-btn').addEventListener('click', () => {
-      openHaEntitySearch({
-        current: $('s-haalert-entity').value || '',
-        onPick: (id) => { $('s-haalert-entity').value = id; resetAlertEntityBtn(); rebuildValueField(); },
-      });
+        sel.innerHTML = window.__haAlertEntities
+          .map(e => `<option value="${e.entity_id.replace(/"/g,'&quot;')}">${escapeHtml(e.friendly_name || e.entity_id)}</option>`).join('')
+          || '<option value="">No entities — check the connection</option>';
+      } catch { sel.innerHTML = '<option value="">Could not load entities</option>'; }
+      rebuildValueField();
     });
+    $('s-haalert-entity').addEventListener('change', rebuildValueField);
     $('s-haalert-op').addEventListener('change', rebuildValueField);
     $('s-haalert-add-cancel').addEventListener('click', () => {
-      _haAlertEditingId = null;
       $('s-haalert-form').style.display = 'none';
       $('s-haalert-add-btn').style.display = '';
       statusEl.textContent = '';
@@ -16875,33 +16748,26 @@ async function renderSettings() {
       const value = readValue();
       if (!entityId) { statusEl.textContent = 'Pick an entity.'; return; }
       if (!value) { statusEl.textContent = 'Enter a value to compare against.'; return; }
-      const ent = (window.__haAlertEntities || cachedHaEntities || []).find(e => e.entity_id === entityId);
+      const ent = (window.__haAlertEntities || []).find(e => e.entity_id === entityId);
       const name = (ent && ent.friendly_name) || entityId;
-      const fields = {
+      window.__haAlerts = window.__haAlerts || [];
+      window.__haAlerts.push({
+        id: 'a' + Date.now().toString(36),
         entityId, name,
         op: $('s-haalert-op').value,
         value,
         dwellMin: Math.max(0, Math.min(1440, parseInt($('s-haalert-dwell').value, 10) || 0)),
         message: ($('s-haalert-msg').value || '').trim(),
-      };
-      window.__haAlerts = window.__haAlerts || [];
-      if (_haAlertEditingId) {
-        const a = window.__haAlerts.find(x => x.id === _haAlertEditingId);
-        if (a) Object.assign(a, fields); // keep id / enabled / screen / phone
-        _haAlertEditingId = null;
-      } else {
-        window.__haAlerts.push({ id: 'a' + Date.now().toString(36), enabled: true, ...fields });
-      }
+        enabled: true,
+      });
       await saveHaAlerts();
     });
     document.querySelectorAll('.s-haalert-row').forEach(row => {
       const id = row.dataset.id;
       const del = row.querySelector('.s-haalert-del');
-      const edit = row.querySelector('.s-haalert-edit');
       const chk = row.querySelector('.s-haalert-enabled');
       const scr = row.querySelector('.s-haalert-screen');
       const phn = row.querySelector('.s-haalert-phone');
-      if (edit) edit.addEventListener('click', () => openAlertForm(id));
       if (del) del.addEventListener('click', async () => {
         window.__haAlerts = (window.__haAlerts || []).filter(a => a.id !== id);
         await saveHaAlerts();
@@ -18144,10 +18010,6 @@ async function init() {
         // reasoning as startTour()'s own 600ms delay just above.
         setTimeout(() => { try { maybeShowFeedbackPopup(s); } catch (e) { console.error('feedback popup', e); } }, 1200);
       }
-      // HA alert banner — host AND slave (a slave proxies the active list).
-      checkHaAlertBannerApp();
-      setInterval(checkHaAlertBannerApp, 60_000);
-      window.addEventListener('focus', () => { checkHaAlertBannerApp(); });
     } catch {}
 
     // Watch for a server update and force a refresh — without yanking the page out
@@ -18488,35 +18350,6 @@ async function checkFeedbackReplyBanner() {
     }
     banner.style.display = 'flex';
   } catch { /* central server unreachable — leave prior banner state alone */ }
-}
-// ── HA alert banner (in the app) ────────────────────────────────────────────
-// The wall display shows a fired Home Assistant alert; this surfaces the same
-// active alerts in the app and lets them be dismissed from here — which clears
-// them everywhere (same /api/notifications/dismiss the display calls), whether
-// or not this phone is set up to receive push. Works on host and slave (a
-// slave proxies /api/notifications/active to its host).
-async function checkHaAlertBannerApp() {
-  const banner = document.getElementById('ha-alert-banner-app');
-  const textEl = document.getElementById('ha-alert-banner-app-text');
-  const closeBtn = document.getElementById('ha-alert-banner-app-close');
-  if (!banner || !textEl) return;
-  try {
-    const data = await apiFetch('/api/notifications/active');
-    const alerts = ((data && data.notifications) || []).filter(n => n && n.kind === 'ha-alert');
-    if (!alerts.length) { banner.style.display = 'none'; return; }
-    textEl.textContent = alerts.length === 1
-      ? `⚠ ${alerts[0].body || alerts[0].title || 'Home Assistant alert'}`
-      : `⚠ ${alerts.length} Home Assistant alerts active — tap to review`;
-    textEl.onclick = () => { const t = document.querySelector('.tab[data-tab="settings"]'); if (t) t.click(); };
-    if (closeBtn) closeBtn.onclick = async (e) => {
-      e.stopPropagation();
-      banner.style.display = 'none';
-      for (const a of alerts) {
-        try { await apiFetch('/api/notifications/dismiss', { method: 'POST', body: JSON.stringify({ key: a.key }) }); } catch {}
-      }
-    };
-    banner.style.display = 'flex';
-  } catch { /* server unreachable — leave whatever's shown */ }
 }
 // ── Periodic feedback prompt ─────────────────────────────────────────────────
 // Roughly-weekly nudge to submit feedback/feature ideas — real request, not

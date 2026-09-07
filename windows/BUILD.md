@@ -105,10 +105,15 @@ mothership the same way a Pi does. Test it after installing (see
 - `tv-control.js` ships as-is; its CEC/HDMI-cut drivers are Linux-only and
   will just fail with a clear error if anyone tries to use TV power control
   from Windows. Not disabled, just non-functional there for now.
-- Server-side zip *creation* still shells out to the `zip` binary
-  (`buildBackupZip()`, `buildSelfUpdateZip()`, the backup-download route), so
-  "Download full backup" and host→slave push updates don't work from a
-  Windows host yet. A `tar.exe -a -cf` branch (mirroring the extraction one)
-  would close this.
 - `MyAppVersion` in `piazzahq.iss` still has to be bumped by hand to match
-  `build-input\app\package.json` — there's no build step that syncs them.
+  `build-input\app\package.json`. `npm run preflight` (from the repo root)
+  checks that all three version sites agree and that the `build-input\app`
+  mirror is in sync before a build — run it first.
+
+## Closed
+
+- Server-side zip *creation* on Windows — `buildBackupZip()` /
+  `buildSelfUpdateZip()` now go through `makeZip()` / `assertZipToolAvailable()`,
+  which use `System32\tar.exe` (bsdtar) on Windows the same way `extractZip()`
+  does. "Download full backup" and host→slave push updates work from a
+  Windows host.

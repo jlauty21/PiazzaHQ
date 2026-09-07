@@ -1,11 +1,12 @@
 {
   "name": "piazzahq",
-  "version": "1.83.3",
+  "version": "1.85.0-beta.5",
   "description": "Always-on Raspberry Pi calendar display with mobile control app",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "node test/rotation-smoke-test.js"
   },
   "dependencies": {
     "ask-sdk-core": "^2.14.0",

@@ -414,6 +414,7 @@ piazzahq/
 ├── server.js          # Express server + SQLite + API
 ├── package.json
 ├── calendar.db        # Created automatically on first run
+├── test/              # `npm test` — regression checks, run before packaging a release
 └── public/
     ├── display.html   # Always-on display (kiosk)
     └── app.html       # Mobile control app
