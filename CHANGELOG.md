@@ -4,6 +4,186 @@ All notable changes to Piazza HQ (formerly Pi Calendar). The central server
 reads the top matching section here to pre-fill release notes when you
 publish a build.
 
+## 1.86.0-beta.3
+- **Demo: a way to get the mouse cursor back.** The display hides the cursor
+  by design, which trips up anyone trying the public demo on a regular
+  monitor. The demo now says so — a line in the intro tour, plus a one-time
+  hint for repeat visitors — and pressing **Space** (or just moving the
+  mouse) shows the pointer for the rest of the session. Demo only; the real
+  wall display stays cursorless. (Reaches piazzahq.com/demo once the demo
+  pool's app is swapped to a build with this — runbook §8.)
+
+## 1.86.0-beta.2
+- **Fixed: a display could come back blank (no widgets) after a software
+  update**, until you switched to another display and back. Same root cause
+  as the portrait/landscape flip in 1.85.0-beta.13: if the page reloaded
+  while the server was still restarting, the layout fetch could time out and
+  leave nothing to render. The display now remembers its last good layout per
+  orientation and shows that instead of a blank screen, and if the boot fetch
+  fails it retries hard for a couple of minutes so it fills in on its own.
+
+## 1.86.0-beta.1
+- **Feedback replies now open in a full-screen conversation view** instead of
+  a reply box wedged into the bottom of the Settings page. Chat-bubble
+  layout, pinned to the latest message, with the input docked above the
+  keyboard and no page scrolling behind it — like a messaging app. The
+  "developer replied" banner opens the conversation directly when there's
+  just one.
+
+## 1.85.0
+A feature release. The headline additions since 1.84: per-person profiles for
+the companion app, event locations on the calendar, a searchable Home
+Assistant entity picker with editable alert rules and per-screen alert
+banners, and snappier smart-home buttons. Everything below shipped and was
+verified across the 1.85.0-beta.1–13 cycle; the per-beta notes are kept
+underneath for reference.
+
+**Family profiles**
+- **Give each household member their own view of the app.** A profile is a
+  name, colour and avatar plus a view configuration — it's a picker, not a
+  login, so switching is instant from the avatar chip in the header. With no
+  profiles set up, the app is exactly as it was.
+- **Presets** — Basic (Calendar + Family Hub, no Home Assistant or extra
+  integrations), Intermediate (all tabs, integrations off), Advanced (full
+  access), or Custom. A preset just seeds the toggles.
+- **Hide what a person doesn't use** — the Photos / Layout / Devices / Family
+  Hub tabs individually, Home Assistant everywhere it appears, and the extra
+  integrations (Todoist, calendar push, the daily email). Calendar, Favorites
+  and Settings always stay.
+- **Managers** can edit everyone's profile; everyone can tailor their own.
+  The first profile made is always a manager and the last one can't be
+  removed. An optional per-profile PIN is a gentle gate into that profile —
+  it locks nothing else.
+- **Event owners.** An event added on the wall can be tagged "for" a family
+  member; it then colour-codes by that person on every display, and the app's
+  event list gains a "<name> only" filter.
+
+**Calendar**
+- **Event locations.** The venue / address from a calendar now shows under
+  the event in the Agenda, Upcoming and Today views and on the event-detail
+  card. It's a per-calendar choice (Settings → Calendars → edit a feed →
+  "Show location"), off by default. Locally-added events (including from the
+  wall's add-event sheet, which gained a Location field) always show theirs,
+  and it's carried through the iCloud / Google push.
+- **Fine-grained control.** Each calendar widget has its own Show Location
+  toggle, and a 📍 Per-Feed Location section — like Per-Feed Opacity — to
+  force a specific calendar's location on or off for just that widget. Long
+  addresses wrap instead of being cut off.
+
+**Home Assistant**
+- **Searchable entity picker.** Anywhere you pick an HA entity (alerts,
+  Favorites cards, widgets) you can now search by name or entity id, with an
+  optional area filter and the current state shown under each.
+- **Edit an alert rule in place** instead of deleting and re-adding it.
+- **Per-screen alert banner.** Each display sets its own banner position
+  (top / bottom / centre card), size (five steps, screen-relative so "Large"
+  is actually large on a 4K TV) and style (six looks). Active HA alerts also
+  show in the app now and can be dismissed from there.
+- **Snappier buttons.** Favorites tiles and Group Control reply as soon as
+  Home Assistant accepts the command rather than waiting for a cover to
+  finish travelling — matching how a physical remote feels. Real failures
+  still surface.
+- A guard rejects an action aimed at the wrong kind of entity (e.g. "unlock"
+  on a light) before it reaches Home Assistant.
+
+**Fixes**
+- A display could flip portrait → landscape after a software update if it
+  reloaded while the server was still restarting. It now remembers its real
+  orientation and falls back to that instead of auto-detecting.
+
+## 1.85.0-beta.13
+- **Fixed: a display could flip portrait → landscape after a software update.**
+  If the page reloaded while the server was still restarting, its
+  `/api/display-config` fetch could time out and orientation fell back to
+  auto-detect — which reads the physical screen size and picks landscape on a
+  portrait screen that's rotated in the browser, then stayed that way until
+  the next reboot or settings change. Now the display remembers its real
+  orientation/rotation and falls back to that instead of guessing, and any
+  settings broadcast re-syncs it fully.
+
+## 1.85.0-beta.12
+- **The location controls are now in the phone app's Layout editor too**, not
+  just the wall's live-edit. Opening a calendar widget's settings in the app
+  gets the **Show Location** toggle and the **📍 Per-Feed Location** override
+  section, matching what the display already had.
+
+## 1.85.0-beta.11
+- **Per-widget, per-calendar location override.** Each calendar-style widget
+  (Calendar, Agenda, Upcoming, Today) gets a new **📍 Per-Feed Location**
+  section in its advanced settings — the same shape as Per-Feed Opacity. For
+  any calendar you can force its location **on or off for that one widget**,
+  without changing its global "Show location" in Settings → Calendars. Falls
+  back to the calendar's global setting when no override is set; the widget's
+  own Show Location toggle still has to be on.
+  - Resolution order: calendar's global setting → the widget's Show Location
+    master → this per-feed override (which wins). The event-detail popup shows
+    a location whenever the calendar's global setting allows it.
+
+## 1.85.0-beta.10
+- **Location wraps** in the Agenda views instead of being cut off with "…" —
+  a full venue/address now shows on as many lines as it needs.
+- **Location option for the Grid (month/week) calendar** too. Off by default
+  there (a day cell barely fits a title), it appends the location after the
+  title on the same line; turn on **Wrap Event Text** and it moves to its own
+  line under the title. The "Show Location" toggle now appears for both Grid
+  and Agenda calendar layouts.
+
+## 1.85.0-beta.9
+- **Event locations now show in the Calendar widget's Agenda mode** — the
+  first cut only reached the standalone Agenda / Upcoming / Today widgets, not
+  the Calendar widget's own agenda layout, which is where they were most
+  expected.
+- **Per-widget location toggle.** The Calendar (agenda), Agenda, Upcoming and
+  Today widgets each get a "Show Location" switch in their advanced settings,
+  **on by default** — so any calendar you've enabled location for shows it
+  everywhere, and you can quiet a specific widget without touching the feed.
+  In grid (month/week) calendar layout there's no room for an address in a day
+  cell; tap the event to see its location in the detail card.
+
+## 1.85.0-beta.8
+- **Event locations on the calendar** (feature request). Feed events now carry
+  their `LOCATION` (venue / address) from the source calendar, shown under the
+  event title in the Agenda / Upcoming / Today views and on the event-detail
+  card. It's a **per-calendar** toggle — Settings → Calendars → edit a feed →
+  "Show location on the display" — off by default, so upgrading doesn't add a
+  line of text under every event. Locally-added events (including from the
+  wall's add-event sheet, which gained a Location field) always show theirs,
+  and it's carried through the iCloud / Google push.
+- **Snappier Home Assistant buttons.** Favorites tiles and Group Control no
+  longer wait for HA to fully finish an action before responding — HA's REST
+  API holds that response until a cover finishes travelling (seconds), while
+  its own UI returns immediately. The button now un-greys as soon as HA
+  accepts the command (or a real error comes back), matching how a physical
+  remote feels. A genuine failure (bad token, missing entity, HA down) still
+  surfaces. Also raised the HA request ceiling from 8s to 35s so a slow cover
+  no longer times out mid-move.
+
+## 1.85.0-beta.7
+- **Family profiles.** Each household member can have their own profile in
+  the companion app and see only the tabs and features they use. It's a
+  persona picker, not a login: switching is instant from the header chip,
+  and a per-profile PIN (optional) is only a gentle gate into that profile —
+  it locks nothing else.
+  - **Presets** — Basic (Calendar + Family Hub, no Home Assistant or extras),
+    Intermediate (everything except the extra integrations), Advanced (full
+    access), or Custom. A preset just seeds the toggles; edit any and it
+    becomes Custom.
+  - **Two visibility layers** — hide the Photos / Layout / Devices / Family
+    Hub tabs individually, and/or hide Home Assistant everywhere it appears
+    (Favorites cards, the Layout widget palette, Settings, the in-app alert
+    banner) and the extra integrations (Todoist, calendar push, daily email).
+    Calendar, Favorites and Settings are always shown.
+  - **Managers** can edit everyone's profile; everyone can tailor their own.
+    The first profile created is always a manager, and the last manager
+    can't be removed or demoted.
+  - The active profile is remembered per device, so each phone/tablet stays
+    on whoever last used it. **With no profiles set up, the app is exactly
+    as it was.**
+- **Event owners.** An event added on the wall display can be tagged "for"
+  a family member; it then colour-codes by that person on every display,
+  and the app's event list gains a "&lt;name&gt; only" filter. Deleting a
+  profile just clears the tag from their events.
+
 ## 1.85.0-beta.6
 - **Fleet-health telemetry** (phase 1 of FLEET-OBSERVABILITY-SPEC.md). The
   6-hourly check-in to the central server now also carries `deployment`

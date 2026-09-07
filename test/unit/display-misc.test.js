@@ -17,6 +17,10 @@ const eventDetailKey = evalInSandbox(
   [extractFunction(HTML, 'function eventDetailKey(')], {}, ['eventDetailKey']
 ).eventDetailKey;
 
+const widgetShowsLocation = evalInSandbox(
+  [extractFunction(HTML, 'function widgetShowsLocation(')], {}, ['widgetShowsLocation']
+).widgetShowsLocation;
+
 const BANNER_SRC = [
   extractConst(HTML, 'BANNER_STYLES'),
   extractFunction(HTML, 'function applyAlertBannerConfig('),
@@ -58,6 +62,29 @@ function applyBanner(cfg) {
 
   await check('applyAlertBannerConfig defaults when the fields are absent', () => {
     eq(applyBanner({}), { pos: 'top', size: 'm', style: 'solid' });
+  });
+
+  await check('widgetShowsLocation: nothing to show without a location or with the widget master off', () => {
+    eq(widgetShowsLocation({ location: '', show_location: 1, source: 'ical', feed_id: 1 }, {}, true), false);
+    eq(widgetShowsLocation({ location: 'Rink 2', show_location: 1, source: 'ical', feed_id: 1 }, {}, false), false);
+  });
+
+  await check('widgetShowsLocation: feed default drives it when there is no override', () => {
+    eq(widgetShowsLocation({ location: 'Rink 2', show_location: 1, source: 'ical', feed_id: 1 }, {}, true), true);
+    eq(widgetShowsLocation({ location: 'Rink 2', show_location: 0, source: 'ical', feed_id: 1 }, {}, true), false);
+    // local events have no feed setting — always on when a location exists
+    eq(widgetShowsLocation({ location: 'Home', source: 'local' }, {}, true), true);
+  });
+
+  await check('widgetShowsLocation: per-feed override wins over the feed default (both ways)', () => {
+    const hideOne = { feedLocationOverride: { 1: false } };
+    const showOne = { feedLocationOverride: { 2: true } };
+    eq(widgetShowsLocation({ location: 'Rink 2', show_location: 1, source: 'ical', feed_id: 1 }, hideOne, true), false);
+    eq(widgetShowsLocation({ location: 'Rink 2', show_location: 0, source: 'ical', feed_id: 2 }, showOne, true), true);
+    // an override for a different feed doesn't touch this one
+    eq(widgetShowsLocation({ location: 'Rink 2', show_location: 1, source: 'ical', feed_id: 9 }, hideOne, true), true);
+    // master still gates even a force-on override
+    eq(widgetShowsLocation({ location: 'Rink 2', show_location: 0, source: 'ical', feed_id: 2 }, showOne, false), false);
   });
 
   report();

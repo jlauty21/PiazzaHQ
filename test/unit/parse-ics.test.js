@@ -73,6 +73,15 @@ const VEVENT = (body) => `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n${bo
     eq(e.notes, 'line1 line2');
   });
 
+  await check('parses LOCATION (plain and with a param), unset stays undefined', () => {
+    const [a] = parse(VEVENT('UID:l1\r\nSUMMARY:Game\r\nLOCATION:Cedar Rapids Ice Arena\r\nDTSTART;VALUE=DATE:20260704'));
+    eq(a.location, 'Cedar Rapids Ice Arena');
+    const [b] = parse(VEVENT('UID:l2\r\nSUMMARY:Game\r\nLOCATION;LANGUAGE=en:Rink 2\\, 123 Main St\r\nDTSTART;VALUE=DATE:20260704'));
+    eq(b.location, 'Rink 2, 123 Main St');
+    const [c] = parse(VEVENT('UID:l3\r\nSUMMARY:No place\r\nDTSTART;VALUE=DATE:20260704'));
+    eq(c.location, undefined);
+  });
+
   await check('unfolds RFC 5545 continuation lines before parsing', () => {
     const ics = 'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:f1\r\nSUMMARY:A very long title that spans\r\n  two folded lines\r\nDTSTART;VALUE=DATE:20260704\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n';
     eq(parse(ics)[0].title, 'A very long title that spans two folded lines');

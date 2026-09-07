@@ -401,6 +401,8 @@
     #event-detail-colorbar { width:48px; height:5px; border-radius:3px; margin-bottom:14px; }
     #event-detail-title { font-size:22px; font-weight:700; margin-bottom:10px; padding-right:36px; line-height:1.3; }
     #event-detail-time { font-size:15px; color:var(--muted); margin-bottom:4px; }
+    #event-detail-location { font-size:14px; color:var(--muted); margin-bottom:4px; }
+    #event-detail-location::before { content:"📍 "; }
     #event-detail-source { font-size:13px; color:var(--muted); margin-bottom:16px; }
     #event-detail-notes {
       font-size:14px; line-height:1.5; white-space:pre-wrap;
@@ -1705,6 +1707,8 @@
       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .mc-ev-dot { display:inline-block; width:calc(var(--cal-font) * 0.55); height:calc(var(--cal-font) * 0.55);
       border-radius:50%; margin-right:3px; vertical-align:baseline; flex-shrink:0; }
+    .mc-ev-loc { opacity:0.7; font-weight:400; }
+    .w-minical.cal-wrap .mc-ev-loc, .w-minical.cal-wrap2 .mc-ev-loc { display:block; }
     .mc-ev-more { font-size:var(--cal-font); color:var(--text2); padding:0 4px; }
 
     /* Multi-day event spanning bars — absolutely positioned overlay matching the day grid */
@@ -1837,12 +1841,15 @@
       text-transform:uppercase; color:var(--text2); margin:8px 0 4px; }
     .ag-day-label:first-child { margin-top:0; }
     .ag-day-label.today { color:var(--text); }
-    .ag-ev { display:flex; align-items:center; gap:8px; padding:4px 0;
+    .ag-ev { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:4px 0;
       border-bottom:1px solid var(--border); }
     .ag-dot { width:calc(var(--cal-font) * 0.55); height:calc(var(--cal-font) * 0.55); border-radius:50%; flex-shrink:0; }
     .ag-time { font-size:calc(var(--cal-font) * 0.85); color:var(--text2); min-width:calc(var(--cal-font) * 4); flex-shrink:0; }
     .ag-title { font-size:var(--cal-font); color:var(--text);
       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .ag-loc { flex-basis:100%; margin-left:calc(var(--cal-font) * 4 + 16px);
+      font-size:calc(var(--cal-font) * 0.8); color:var(--text2);
+      white-space:normal; overflow-wrap:anywhere; line-height:1.3; }
 
     /* ── Calendar: Strip layout ── */
     .w-minical-strip { display:flex; flex-direction:column; height:100%; }
@@ -1926,6 +1933,11 @@
       overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .w-upcoming .ev-notes { font-size:calc(var(--up-font) * 0.8); }
     .w-today .ev-notes { font-size:calc(var(--td-font) * 0.78); }
+    .ev-loc { color:var(--text2); margin-top:2px;
+      white-space:normal; overflow-wrap:anywhere; line-height:1.3; }
+    .w-agenda .ev-loc { font-size:calc(var(--ag-font) * 0.8); }
+    .w-upcoming .ev-loc { font-size:calc(var(--up-font) * 0.8); }
+    .w-today .ev-loc { font-size:calc(var(--td-font) * 0.78); }
     .ev-source { font-weight:600; letter-spacing:0.5px; text-transform:uppercase; opacity:0.8; }
     .w-upcoming .ev-source { font-size:calc(var(--up-font) * 0.75); }
     .w-today .ev-source { font-size:calc(var(--td-font) * 0.7); }
@@ -2263,6 +2275,22 @@
     body.edit-mode-active #demo-edit-hint { display:none !important; }
     #demo-banner a { color:#8ec3ff; text-decoration:none; font-weight:700; }
     @keyframes demoPulse { 0%{box-shadow:0 0 0 0 rgba(74,144,217,0.5);} 70%{box-shadow:0 0 0 8px rgba(74,144,217,0);} 100%{box-shadow:0 0 0 0 rgba(74,144,217,0);} }
+    /* Demo only: the cursor is hidden everywhere (top-of-file rule), but a
+       visitor on a regular computer needs their mouse pointer back. This
+       overrides that rule when <html> gets .demo-show-cursor (same
+       specificity, wins on source order). */
+    html.demo-show-cursor, html.demo-show-cursor * { cursor: auto !important; }
+    #demo-cursor-hint { position:fixed; left:50%; bottom:16px; transform:translateX(-50%);
+      z-index:2147483200; max-width:min(92vw,470px); padding:9px 10px 9px 15px; border-radius:999px;
+      background:rgba(20,22,26,0.92); color:#fff; border:1px solid rgba(255,255,255,0.12);
+      box-shadow:0 8px 24px -10px rgba(0,0,0,0.55); backdrop-filter:blur(6px);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+      font-size:12.5px; font-weight:600; line-height:1.3; text-align:center;
+      display:flex; align-items:center; gap:8px; transition:opacity .3s ease; }
+    #demo-cursor-hint b { color:#8ec3ff; font-weight:700; }
+    #demo-cursor-hint .dch-x { background:none; border:none; color:#fff; opacity:0.5;
+      font-size:15px; line-height:1; padding:0 4px; flex:0 0 auto; cursor:pointer; }
+    body.edit-mode-active #demo-cursor-hint { display:none !important; }
     #demo-tour { position:fixed; inset:0; z-index:2147483500; display:flex; align-items:center; justify-content:center;
       background:rgba(12,14,17,0.82); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
     #demo-tour .dt-card { background:#fff; color:#1b1d21; max-width:460px; margin:32px; padding:30px 32px;
@@ -2700,6 +2728,7 @@
     <div id="event-detail-colorbar"></div>
     <div id="event-detail-title"></div>
     <div id="event-detail-time"></div>
+    <div id="event-detail-location"></div>
     <div id="event-detail-source"></div>
     <div id="event-detail-notes"></div>
     <button id="event-detail-delete" type="button" hidden>Delete event</button>
@@ -2754,6 +2783,14 @@
     <div class="ea-row" id="ea-target-row" hidden>
       <label for="ea-target">Add to</label>
       <select id="ea-target"></select>
+    </div>
+    <div class="ea-row" id="ea-owner-row" hidden>
+      <label for="ea-owner">For</label>
+      <select id="ea-owner"></select>
+    </div>
+    <div class="ea-row">
+      <label for="ea-location">Location</label>
+      <input type="text" id="ea-location" placeholder="Optional — e.g. which rink" maxlength="300">
     </div>
     <div id="ea-error" class="ea-error" style="display:none"></div>
     <div class="ea-actions">
@@ -5375,7 +5412,12 @@ function hexWithOpacity(hex, opacity) {
 // the feed's own global setting (which every OTHER widget/display still
 // reads from by default).
 function eventPillColor(e, widget) {
-  const hex = e.color || '#4A90D9';
+  // A local event tagged to a family member takes that person's colour;
+  // everything else keeps its feed / stored colour.
+  let hex = e.color || '#4A90D9';
+  if (e.owner_profile_id != null && _profileColorById.has(Number(e.owner_profile_id))) {
+    hex = _profileColorById.get(Number(e.owner_profile_id)) || hex;
+  }
   const override = widget && widget.feedOpacityOverride && e.feed_id != null
     ? widget.feedOpacityOverride[e.feed_id]
     : undefined;
@@ -5424,8 +5466,19 @@ function openEventDetail(key) {
   document.getElementById('event-detail-time').textContent = timeText;
 
   const sourceEl = document.getElementById('event-detail-source');
-  sourceEl.textContent = e.feed_name || '';
-  sourceEl.style.display = e.feed_name ? '' : 'none';
+  const ownerName = e.owner_profile_id != null ? profileNameByIdD(e.owner_profile_id) : '';
+  const sourceText = e.feed_name || (ownerName ? `For ${ownerName}` : '');
+  sourceEl.textContent = sourceText;
+  sourceEl.style.display = sourceText ? '' : 'none';
+
+  const locEl = document.getElementById('event-detail-location');
+  if (locEl) {
+    // The detail popup isn't a widget, so no per-widget override here — just
+    // the feed's own setting (local events always show theirs).
+    const showLoc = e.location && (e.source === 'local' || e.show_location === 1 || e.show_location === true);
+    locEl.textContent = showLoc ? e.location : '';
+    locEl.style.display = showLoc ? '' : 'none';
+  }
 
   const notesEl = document.getElementById('event-detail-notes');
   notesEl.textContent = e.notes || '';
@@ -5560,6 +5613,7 @@ function openEventAddSheet(dateStr) {
   document.getElementById('ea-title').value = '';
   document.getElementById('ea-date').value = dateStr || today;
   document.getElementById('ea-enddate').value = '';
+  { const l = document.getElementById('ea-location'); if (l) l.value = ''; }
   document.getElementById('ea-allday').checked = true;
   document.getElementById('ea-start').value = '';
   document.getElementById('ea-end').value = '';
@@ -5571,6 +5625,7 @@ function openEventAddSheet(dateStr) {
   save.disabled = false; save.textContent = 'Add event';
   overlay.style.display = 'flex';
   eaLoadTargets();
+  eaLoadOwners();
   eaCheckHandwriting().then(ready => {
     const b = document.getElementById('ea-write-btn');
     if (b) b.hidden = !ready;
@@ -5581,6 +5636,20 @@ function closeEventAddSheet() {
   const overlay = document.getElementById('event-add-overlay');
   if (overlay) overlay.style.display = 'none';
   eaClosePad();
+}
+// Family member profiles: let whoever's adding an event on the wall tag it
+// for a person, so it colour-codes by owner. Row stays hidden unless the
+// household has set up profiles.
+function eaLoadOwners() {
+  const row = document.getElementById('ea-owner-row');
+  const sel = document.getElementById('ea-owner');
+  if (!row || !sel) return;
+  const profiles = Array.isArray(state.profiles) ? state.profiles : [];
+  if (!profiles.length) { row.hidden = true; sel.innerHTML = ''; return; }
+  row.hidden = false;
+  sel.innerHTML = `<option value="">Everyone</option>` +
+    profiles.map(p => `<option value="${p.id}">${escapeHtmlD(p.name)}</option>`).join('');
+  sel.value = '';
 }
 
 // ── Stroke pad for the add-event sheet (optional handwriting-to-text) ───────
@@ -5698,6 +5767,10 @@ async function submitEventAddSheet() {
     end_time: allDay ? null : (end || null),
   };
   if (targetRow && !targetRow.hidden && targetSel && targetSel.value) payload.target_calendar = targetSel.value;
+  const ownerSel = document.getElementById('ea-owner');
+  if (ownerSel && ownerSel.value) payload.owner_profile_id = Number(ownerSel.value) || null;
+  const locInput = document.getElementById('ea-location');
+  if (locInput && locInput.value.trim()) payload.location = locInput.value.trim();
   _eaSaving = true;
   const saveBtn = document.getElementById('ea-save');
   saveBtn.disabled = true; saveBtn.textContent = 'Adding…';
@@ -5896,9 +5969,25 @@ function distinctFeedsFromEvents() {
   const byId = new Map();
   (state.events || []).forEach(e => {
     if (e.source !== 'ical' || e.feed_id == null || byId.has(e.feed_id)) return;
-    byId.set(e.feed_id, { id: e.feed_id, name: e.feed_name || `Feed ${e.feed_id}`, color: e.color || '#4A90D9', color_opacity: e.color_opacity ?? 100 });
+    byId.set(e.feed_id, { id: e.feed_id, name: e.feed_name || `Feed ${e.feed_id}`, color: e.color || '#4A90D9',
+      color_opacity: e.color_opacity ?? 100, show_location: e.show_location === 1 || e.show_location === true });
   });
   return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Should this event's LOCATION show, in this widget? Three layers, resolved
+// here so every render path (agenda rows, grid cells, standalone Agenda/
+// Upcoming/Today) agrees:
+//   1. feed default  — ical_feeds.show_location (arrives as e.show_location);
+//                      local events have no feed and always count as "on"
+//   2. widget master — the widget's own "Show Location" toggle (masterOn)
+//   3. per-widget-per-feed override — widget.feedLocationOverride[feedId] is
+//      true/false and wins over the feed default (but the master must be on)
+function widgetShowsLocation(e, widget, masterOn) {
+  if (!e || !e.location || !masterOn) return false;
+  const ov = widget && widget.feedLocationOverride;
+  if (ov && e.feed_id != null && typeof ov[e.feed_id] === 'boolean') return ov[e.feed_id];
+  return e.source === 'local' ? true : (e.show_location === 1 || e.show_location === true);
 }
 
 // ── Per-widget feed opacity override — shared by every widget type that
@@ -5973,6 +6062,76 @@ function wireFeedOpacityOverrideSection(w) {
       w.feedOpacityOverride[feedId] = val;
       const label = document.querySelector(`.fop-slider-val[data-feed-id="${feedId}"]`);
       if (label) label.textContent = val + '%';
+      rerenderSingleWidget(w.id);
+      scheduleLayoutSave();
+    });
+  });
+}
+
+// Per-widget-per-feed LOCATION override — same shape as the opacity override
+// above, but the overridden value is a plain show/hide. widget.feedLocationOverride
+// = { [feedId]: true|false }; a feed absent from the map follows its own global
+// "Show location" setting from Calendar Feeds. See widgetShowsLocation().
+function renderFeedLocationOverrideSection(w) {
+  const feeds = distinctFeedsFromEvents();
+  if (!feeds.length) return '';
+  const overrides = w.feedLocationOverride || {};
+  const inner = `
+    <p style="font-size:11px;color:rgba(255,255,255,0.5);margin:0 0 10px">Force a calendar's location on or off for just this widget, without changing its global "Show location" in Calendar Feeds. Needs this widget's own Show Location turned on.</p>
+    ${feeds.map(f => {
+      const has = typeof overrides[f.id] === 'boolean';
+      const val = has ? overrides[f.id] : f.show_location;
+      return `
+      <div class="was-row flo-row" data-feed-id="${f.id}" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <label style="margin-bottom:0;display:flex;align-items:center;gap:8px">
+            <span style="width:10px;height:10px;border-radius:50%;background:${f.color};display:inline-block;flex-shrink:0"></span>
+            ${escapeHtmlD(f.name)}
+            <span style="font-size:10px;color:rgba(255,255,255,0.4)">${f.show_location ? 'on' : 'off'} globally</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:rgba(255,255,255,0.55);cursor:pointer">
+            Override
+            <input type="checkbox" class="flo-toggle" data-feed-id="${f.id}" ${has?'checked':''} style="width:16px;height:16px;accent-color:var(--accent)">
+          </label>
+        </div>
+        <div class="was-row flo-value-row" style="${has?'':'display:none'}">
+          <select class="flo-value" data-feed-id="${f.id}">
+            <option value="1" ${val?'selected':''}>Show location here</option>
+            <option value="0" ${!val?'selected':''}>Hide location here</option>
+          </select>
+        </div>
+      </div>`;
+    }).join('')}
+  `;
+  return `<div id="flo-accordion-wrap">${accordionSection({ id: 'flo', icon: '📍', label: 'Per-Feed Location', sub: 'this widget only', inner })}</div>`;
+}
+function wireFeedLocationOverrideSection(w) {
+  wireAccordion('flo-accordion-wrap');
+  document.querySelectorAll('.flo-toggle').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      const feedId = e.target.dataset.feedId;
+      const row = document.querySelector(`.flo-row[data-feed-id="${feedId}"]`);
+      const valRow = row ? row.querySelector('.flo-value-row') : null;
+      w.feedLocationOverride = w.feedLocationOverride || {};
+      if (e.target.checked) {
+        if (valRow) valRow.style.display = '';
+        const sel = row.querySelector('.flo-value');
+        w.feedLocationOverride[feedId] = sel.value === '1';
+      } else {
+        if (valRow) valRow.style.display = 'none';
+        delete w.feedLocationOverride[feedId];
+      }
+      rerenderSingleWidget(w.id);
+      scheduleLayoutSave();
+    });
+  });
+  document.querySelectorAll('.flo-value').forEach(sel => {
+    sel.addEventListener('change', (e) => {
+      const feedId = e.target.dataset.feedId;
+      const toggle = document.querySelector(`.flo-toggle[data-feed-id="${feedId}"]`);
+      if (!toggle || !toggle.checked) return;
+      w.feedLocationOverride = w.feedLocationOverride || {};
+      w.feedLocationOverride[feedId] = e.target.value === '1';
       rerenderSingleWidget(w.id);
       scheduleLayoutSave();
     });
@@ -6311,6 +6470,12 @@ function renderMiniCalGrid(widget) {
     // legible — and forcing it made "background vs dot" not actually a
     // real choice (background style always included a dot anyway).
     const fullDayColorStyle = (widget && widget.calFullDayColorStyle) || 'highlight';
+    // Location in a grid day-cell is opt-in (default OFF) — there's barely room
+    // for a title, so it's appended inline after the title and truncates with
+    // the rest of the line rather than adding a row. Agenda layout gets the
+    // full wrapped treatment.
+    const gridShowLoc = !!(widget && widget.calShowLocation);
+    const gridLoc = (e) => widgetShowsLocation(e, widget, gridShowLoc) ? ` <span class="mc-ev-loc">· ${escapeHtmlD(e.location)}</span>` : '';
     const evHtml = dayEvents.map(e => {
       if (e.start_time) {
         // Timed events: when the calendar has color-coding for timed events enabled
@@ -6328,7 +6493,7 @@ function renderMiniCalGrid(widget) {
         const timeStr = (widget && widget.calShowEndTime && e.end_time)
           ? `${fmtTime(e.start_time, widget && widget.calAmpmCase).replace(' ','')}–${fmtTime(e.end_time, widget && widget.calAmpmCase).replace(' ','')}`
           : fmtTime(e.start_time, widget && widget.calAmpmCase).replace(' ','');
-        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}">${marker}${timeStr} ${escapeHtmlD(e.title)}</div>`;
+        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}">${marker}${timeStr} ${escapeHtmlD(e.title)}${gridLoc(e)}</div>`;
       }
       // A 'dot' multi-day event has no start_time — reuses this exact same
       // colored-dot-plus-text row single-day events use, so it's visually
@@ -6337,11 +6502,11 @@ function renderMiniCalGrid(widget) {
       if (!colorCodingOn || fullDayColorStyle === 'none') {
         // Master switch off, OR this widget's Full-Day Event Style is
         // explicitly 'none': plain text, no dot, no pill background.
-        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}">${prefix}${escapeHtmlD(e.title)}</div>`;
+        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}">${prefix}${escapeHtmlD(e.title)}${gridLoc(e)}</div>`;
       }
       if (fullDayColorStyle === 'dot') {
         // 'dot' style: same row shape a timed event uses, no highlight.
-        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}"><span class="mc-ev-dot" style="background:${eventPillColor(e, widget)}"></span>${prefix}${escapeHtmlD(e.title)}</div>`;
+        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}"><span class="mc-ev-dot" style="background:${eventPillColor(e, widget)}"></span>${prefix}${escapeHtmlD(e.title)}${gridLoc(e)}</div>`;
       }
       // 'highlight' (default): colored pill background only — no inner dot
       // anymore, see this function's own opening comment for why. Chalkboard
@@ -6349,7 +6514,7 @@ function renderMiniCalGrid(widget) {
       // eventPillBackgroundStyle() (beta.11), and its title text now
       // correctly follows --pill-text (beta.12) instead of a hardcoded
       // color, so the pill alone carries enough contrast on its own.
-      return `<div class="mc-ev-pill" data-event-key="${eventDetailKey(e)}" style="${eventPillBackgroundStyle(e, widget)}">${prefix}${escapeHtmlD(e.title)}</div>`;
+      return `<div class="mc-ev-pill" data-event-key="${eventDetailKey(e)}" style="${eventPillBackgroundStyle(e, widget)}">${prefix}${escapeHtmlD(e.title)}${gridLoc(e)}</div>`;
     }).join('');
     const moreHtml = moreCount > 0 ? `<div class="mc-ev-more" data-base-more="${moreCount}">+${moreCount} more</div>` : `<div class="mc-ev-more" data-base-more="0" style="display:none"></div>`;
 
@@ -6440,6 +6605,7 @@ function renderMiniCalAgenda(widget) {
 
   const today = todayStr();
   const pastMode = (widget && widget.pastEvents) || 'show';
+  const showLocation = !widget || widget.calShowLocation !== false; // default ON
 
   // Swipe/tap navigation, same mechanism as the grid views above (local,
   // unsaved offset in units of "whole windows" — each nav step pages forward
@@ -6503,10 +6669,13 @@ function renderMiniCalAgenda(widget) {
       const titleHtml = wrapText
         ? `<span class="ag-title" style="white-space:normal">${escapeHtmlD(e.title)}</span>`
         : `<span class="ag-title">${escapeHtmlD(e.title)}</span>`;
+      const locHtml = widgetShowsLocation(e, widget, showLocation)
+        ? `<div class="ag-loc">📍 ${escapeHtmlD(e.location)}</div>` : '';
       return `<div class="ag-ev" data-event-key="${eventDetailKey(e)}">
         ${colorCodingOn ? `<div class="ag-dot" style="background:${eventPillColor(e, widget)}"></div>` : ''}
         <div class="ag-time">${timeLabel}</div>
         ${titleHtml}
+        ${locHtml}
       </div>`;
     }).join('');
     return `<div class="ag-group${dimClass}">
@@ -6579,7 +6748,7 @@ function renderMiniCalStrip(widget) {
 // is selected. Keeping this shared means List/Cards/Compact behave identically
 // for both widgets — same field visibility rules, same data, just different markup.
 function buildEventRow(e, opts) {
-  const { layoutMode, showTime, showSource, showNotes, todayStr: today, dateBadge, dateFormat, ampmCaseOverride, widget } = opts;
+  const { layoutMode, showTime, showSource, showNotes, showLocation, todayStr: today, dateBadge, dateFormat, ampmCaseOverride, widget } = opts;
   const feedLabel = (showSource && e.feed_name)
     ? `<span class="ev-source">${escapeHtmlD(e.feed_name)}</span>` : '';
   const isMultiDay = e.end_date && e.end_date > e.date;
@@ -6589,6 +6758,8 @@ function buildEventRow(e, opts) {
       : (e.start_time ? `${fmtTime(e.start_time, ampmCaseOverride)}${e.end_time?' – '+fmtTime(e.end_time, ampmCaseOverride):''}` : 'All day')
   ) : '';
   const notesLabel = (showNotes && e.notes) ? `<div class="ev-notes">${escapeHtmlD(e.notes)}</div>` : '';
+  const locLabel = widgetShowsLocation(e, widget, showLocation !== false)
+    ? `<div class="ev-loc">📍 ${escapeHtmlD(e.location)}</div>` : '';
   const dateBadgeHtml = dateBadge ? (() => {
     const d = new Date(e.date+'T00:00:00');
     return `<div class="ev-date"><div class="ev-mo">${MONTHS_S[d.getMonth()]}</div><div class="ev-d">${d.getDate()}</div></div>`;
@@ -6600,6 +6771,7 @@ function buildEventRow(e, opts) {
       <div class="ev-card-body">
         <div class="ev-title">${escapeHtmlD(e.title)}</div>
         ${(feedLabel || timeLabel) ? `<div class="ev-time">${timeLabel}${feedLabel?(timeLabel?' · ':'')+feedLabel:''}</div>` : ''}
+        ${locLabel}
         ${notesLabel}
       </div>
     </div>`;
@@ -6621,6 +6793,7 @@ function buildEventRow(e, opts) {
     <div class="ev-body">
       <div class="ev-title">${escapeHtmlD(e.title)}</div>
       ${(feedLabel || timeLabel) ? `<div class="ev-time">${feedLabel}${timeLabel}</div>` : ''}
+      ${locLabel}
       ${notesLabel}
     </div>
   </div>`;
@@ -6679,6 +6852,7 @@ function renderAgenda(widget) {
   const showSource = !widget || widget.agShowSource !== false;
   const showTime = !widget || widget.agShowTime !== false;
   const showNotes = !!(widget && widget.agShowNotes);
+  const showLocation = !widget || widget.agShowLocation !== false; // default ON
   const layoutMode = (widget && widget.agLayout) || 'list'; // 'list'|'cards'|'compact'
   const daysAhead = (widget && widget.agDays) || 7; // user-set cap, in days — not an event count
   const dateFormat = (widget && widget.agDateFormat) || globalDateFormat();
@@ -6740,7 +6914,7 @@ function renderAgenda(widget) {
         <span class="ag2-reminder-name">${escapeHtmlD(r.name)}</span>
       </div>`).join('');
     const rows = groups[d].map(e => buildEventRow(e, {
-      layoutMode, showTime, showSource, showNotes, todayStr: today, dateBadge: false, dateFormat,
+      layoutMode, showTime, showSource, showNotes, showLocation, todayStr: today, dateBadge: false, dateFormat,
       ampmCaseOverride: widget && widget.agAmpmCase, widget,
     })).join('');
     return `<div class="ag2-group">
@@ -6778,6 +6952,7 @@ function renderUpcoming(widget) {
   const showSource = !widget || widget.upShowSource !== false;
   const showTime = !widget || widget.upShowTime !== false;
   const showNotes = !!(widget && widget.upShowNotes);
+  const showLocation = !widget || widget.upShowLocation !== false; // default ON
   const layoutMode = (widget && widget.upLayout) || 'list'; // 'list'|'cards'|'compact'
   const dateFormat = (widget && widget.upDateFormat) || globalDateFormat();
 
@@ -6787,7 +6962,7 @@ function renderUpcoming(widget) {
   const future = filtered.filter(e=>e.date>today).slice(0,8);
   if(!future.length) return `<div class="w-upcoming"><div class="no-data">No upcoming events</div></div>`;
   const items = future.map(e => buildEventRow(e, {
-    layoutMode, showTime, showSource, showNotes, todayStr: today, dateBadge: true, dateFormat,
+    layoutMode, showTime, showSource, showNotes, showLocation, todayStr: today, dateBadge: true, dateFormat,
     ampmCaseOverride: widget && widget.upAmpmCase, widget,
   })).join('');
   return `<div class="w-upcoming w-upcoming-${layoutMode}" style="--up-font:calc(${fontPx}px * var(--ui-scale,1))">${items}</div>`;
@@ -6799,6 +6974,7 @@ function renderToday(widget) {
   const showSource = !widget || widget.tdShowSource !== false;
   const showTime = !widget || widget.tdShowTime !== false;
   const showNotes = !!(widget && widget.tdShowNotes);
+  const showLocation = !widget || widget.tdShowLocation !== false; // default ON
   const layoutMode = (widget && widget.tdLayout) || 'list'; // 'list'|'cards'|'compact'
   const dateFormat = (widget && widget.tdDateFormat) || globalDateFormat();
 
@@ -6807,7 +6983,7 @@ function renderToday(widget) {
   const evs = filtered.filter(e => e.date <= today && (e.end_date || e.date) >= today);
   if(!evs.length) return `<div class="w-today"><div class="td-label">Today</div><div class="no-data">Nothing scheduled</div></div>`;
   const items = evs.map(e => buildEventRow(e, {
-    layoutMode, showTime, showSource, showNotes, todayStr: today, dateBadge: false, dateFormat,
+    layoutMode, showTime, showSource, showNotes, showLocation, todayStr: today, dateBadge: false, dateFormat,
     ampmCaseOverride: widget && widget.tdAmpmCase, widget,
   })).join('');
   const ongoingHtml = (widget && widget.tdShowOngoing) ? buildOngoingStripHtml(filtered, today, 2, widget) : '';
@@ -9295,6 +9471,10 @@ function renderCalendarAdvancedSettings(w) {
         <span class="was-range-val" id="cal-agenda-days-val">${agendaDays}</span>
       </div>
     </div>
+    <div class="was-toggle-row" style="${calLayout==='strip'?'display:none':''}">
+      <label>Show Location ${infoBtn("Shows each event's location — for calendars that have location turned on in Settings → Calendars. In Agenda layout it gets its own wrapped line (on by default). In Grid layout it's appended after the title and shares the same cramped line (off by default) — turn on Wrap Event Text to give it its own line.")}</label>
+      <input type="checkbox" id="cal-show-location" ${(calLayout==='agenda' ? w.calShowLocation!==false : w.calShowLocation===true) ? 'checked' : ''}>
+    </div>
     <div class="was-row" style="${calLayout==='strip'?'':'display:none'}">
       <label>Days to Show</label>
       <div class="was-range-row">
@@ -9451,11 +9631,13 @@ function renderCalendarAdvancedSettings(w) {
       ${accordionSection({ id: 'stickers', icon: '⭐', label: 'Sticker Badges', sub: 'Show on calendar, position, size', inner: stickersInner, hidden: calLayout !== 'grid' }, _calSettingsOpenSection === 'stickers')}
     </div>
     ${renderFeedOpacityOverrideSection(w)}
+    ${renderFeedLocationOverrideSection(w)}
   `;
 }
 function wireCalendarAdvancedSettings(w) {
   wireAccordion('minical-settings-acc');
   wireFeedOpacityOverrideSection(w);
+  wireFeedLocationOverrideSection(w);
   const onLiveField = (id, evt, apply) => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -9562,6 +9744,7 @@ function wireCalendarAdvancedSettings(w) {
     document.getElementById('cal-strip-days-val').textContent = w.calStripDays;
   });
   onLiveField('cal-show-end-time-toggle', 'change', (el) => { w.calShowEndTime = el.checked; });
+  onLiveField('cal-show-location', 'change', (el) => { w.calShowLocation = el.checked; });
 }
 
 function renderWeatherAdvancedSettings(w, wxSettings) {
@@ -12225,15 +12408,18 @@ function renderUpcomingAdvancedSettings(w) {
         <div class="was-toggle-row" style="margin-bottom:0"><label>Time / date range</label><input type="checkbox" id="up-show-time" ${w.upShowTime!==false?'checked':''}></div>
         <div class="was-toggle-row" style="margin-bottom:0"><label>Calendar source label</label><input type="checkbox" id="up-show-source" ${w.upShowSource!==false?'checked':''}></div>
         <div class="was-toggle-row" style="margin-bottom:0"><label>Notes</label><input type="checkbox" id="up-show-notes" ${w.upShowNotes?'checked':''}></div>
+        <div class="was-toggle-row" style="margin-bottom:0"><label>Location <span style="color:var(--text2);font-size:0.85em">(for calendars that have it turned on)</span></label><input type="checkbox" id="up-show-location" ${w.upShowLocation!==false?'checked':''}></div>
       </div>
     </div>
     ${dateFormatOverrideRowHtml('up-date-format-select', w.upDateFormat)}
     ${ampmCaseOverrideRowHtml('up-ampm-case-select', w.upAmpmCase)}
     ${renderFeedOpacityOverrideSection(w)}
+    ${renderFeedLocationOverrideSection(w)}
   `;
 }
 function wireUpcomingAdvancedSettings(w) {
   wireFeedOpacityOverrideSection(w);
+  wireFeedLocationOverrideSection(w);
   const layoutSel = document.getElementById('up-layout-select');
   if (layoutSel) layoutSel.addEventListener('change', (e) => { w.upLayout = e.target.value; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
   const fontRange = document.getElementById('up-font-range');
@@ -12248,6 +12434,8 @@ function wireUpcomingAdvancedSettings(w) {
   if (showSource) showSource.addEventListener('change', (e) => { w.upShowSource = e.target.checked; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
   const showNotes = document.getElementById('up-show-notes');
   if (showNotes) showNotes.addEventListener('change', (e) => { w.upShowNotes = e.target.checked; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
+  const showLoc = document.getElementById('up-show-location');
+  if (showLoc) showLoc.addEventListener('change', (e) => { w.upShowLocation = e.target.checked; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
   const dateFormatSel = document.getElementById('up-date-format-select');
   if (dateFormatSel) dateFormatSel.addEventListener('change', (e) => { w.upDateFormat = e.target.value; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
   const ampmCaseSel = document.getElementById('up-ampm-case-select');
@@ -12280,6 +12468,7 @@ function renderTodayAdvancedSettings(w) {
         <div class="was-toggle-row" style="margin-bottom:0"><label>Time</label><input type="checkbox" id="td2-show-time" ${w.tdShowTime!==false?'checked':''}></div>
         <div class="was-toggle-row" style="margin-bottom:0"><label>Calendar source label</label><input type="checkbox" id="td2-show-source" ${w.tdShowSource!==false?'checked':''}></div>
         <div class="was-toggle-row" style="margin-bottom:0"><label>Notes</label><input type="checkbox" id="td2-show-notes" ${w.tdShowNotes?'checked':''}></div>
+        <div class="was-toggle-row" style="margin-bottom:0"><label>Location <span style="color:var(--text2);font-size:0.85em">(for calendars that have it turned on)</span></label><input type="checkbox" id="td2-show-location" ${w.tdShowLocation!==false?'checked':''}></div>
       </div>
     </div>
     <div class="was-toggle-row">
@@ -12289,10 +12478,12 @@ function renderTodayAdvancedSettings(w) {
     ${dateFormatOverrideRowHtml('td2-date-format-select', w.tdDateFormat)}
     ${ampmCaseOverrideRowHtml('td2-ampm-case-select', w.tdAmpmCase)}
     ${renderFeedOpacityOverrideSection(w)}
+    ${renderFeedLocationOverrideSection(w)}
   `;
 }
 function wireTodayAdvancedSettings(w) {
   wireFeedOpacityOverrideSection(w);
+  wireFeedLocationOverrideSection(w);
   // Prefixed td2- (not td-) so these element ids can never collide with the
   // To-Do List widget's own td- prefixed fields — both this Today panel and
   // that one only ever exist one-at-a-time in the shared #widget-advanced-panel
@@ -12313,6 +12504,8 @@ function wireTodayAdvancedSettings(w) {
   if (showSource) showSource.addEventListener('change', (e) => { w.tdShowSource = e.target.checked; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
   const showNotes = document.getElementById('td2-show-notes');
   if (showNotes) showNotes.addEventListener('change', (e) => { w.tdShowNotes = e.target.checked; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
+  const showLoc = document.getElementById('td2-show-location');
+  if (showLoc) showLoc.addEventListener('change', (e) => { w.tdShowLocation = e.target.checked; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
   const showOngoing = document.getElementById('td2-show-ongoing');
   if (showOngoing) showOngoing.addEventListener('change', (e) => { w.tdShowOngoing = e.target.checked; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
   const dateFormatSel = document.getElementById('td2-date-format-select');
@@ -12355,6 +12548,7 @@ function renderAgendaWidgetAdvancedSettings(w) {
         <div class="was-toggle-row" style="margin-bottom:0"><label>Time</label><input type="checkbox" id="ag2-show-time" ${w.agShowTime!==false?'checked':''}></div>
         <div class="was-toggle-row" style="margin-bottom:0"><label>Calendar source label</label><input type="checkbox" id="ag2-show-source" ${w.agShowSource!==false?'checked':''}></div>
         <div class="was-toggle-row" style="margin-bottom:0"><label>Notes</label><input type="checkbox" id="ag2-show-notes" ${w.agShowNotes?'checked':''}></div>
+        <div class="was-toggle-row" style="margin-bottom:0"><label>Location <span style="color:var(--text2);font-size:0.85em">(for calendars that have it turned on)</span></label><input type="checkbox" id="ag2-show-location" ${w.agShowLocation!==false?'checked':''}></div>
       </div>
     </div>
     <div class="was-toggle-row">
@@ -12368,10 +12562,12 @@ function renderAgendaWidgetAdvancedSettings(w) {
     ${dateFormatOverrideRowHtml('ag2-date-format-select', w.agDateFormat)}
     ${ampmCaseOverrideRowHtml('ag2-ampm-case-select', w.agAmpmCase)}
     ${renderFeedOpacityOverrideSection(w)}
+    ${renderFeedLocationOverrideSection(w)}
   `;
 }
 function wireAgendaWidgetAdvancedSettings(w) {
   wireFeedOpacityOverrideSection(w);
+  wireFeedLocationOverrideSection(w);
   // Prefixed ag2- (not ag-) for the same reason td2- avoids todo's td- prefix
   // — this Agenda WIDGET's settings live in the same shared panel as the
   // Calendar widget's own agenda LAYOUT MODE settings (a `calLayout: 'agenda'`
@@ -12398,6 +12594,8 @@ function wireAgendaWidgetAdvancedSettings(w) {
   if (showSource) showSource.addEventListener('change', (e) => { w.agShowSource = e.target.checked; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
   const showNotes = document.getElementById('ag2-show-notes');
   if (showNotes) showNotes.addEventListener('change', (e) => { w.agShowNotes = e.target.checked; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
+  const showLoc = document.getElementById('ag2-show-location');
+  if (showLoc) showLoc.addEventListener('change', (e) => { w.agShowLocation = e.target.checked; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
   const showOngoing = document.getElementById('ag2-show-ongoing');
   if (showOngoing) showOngoing.addEventListener('change', (e) => { w.agShowOngoing = e.target.checked; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
   const showReminders = document.getElementById('ag2-show-reminders');
@@ -14812,7 +15010,13 @@ function initDemoBanner(v) {
   if (_demoTimer) clearInterval(_demoTimer);
   _demoTimer = setInterval(tick, 1000);
   startDemoHeartbeat(v);
+  wireDemoCursorInput();
   maybeShowDemoTour();
+  // Repeat visitors (tour already dismissed) still get the one-time
+  // touch-vs-mouse hint; first-timers get the same point from the tour card.
+  let _tourSeen = false;
+  try { _tourSeen = localStorage.getItem('demoTourSeen') === '1'; } catch {}
+  if (_tourSeen) setTimeout(showDemoCursorHint, 2500);
   // If the tour was already dismissed in this browser, still nudge toward
   // the pencil once (its own localStorage flag stops it after the first).
   let _tourUp = false;
@@ -14834,6 +15038,7 @@ function maybeShowDemoTour() {
         '<li><span class="dt-ic">📅</span><span><b>Long-press a day</b> on the calendar to add an event.</span></li>' +
         '<li><span class="dt-ic">👆</span><span><b>Tap a widget</b> — check off a chore, tick a to-do, open an event.</span></li>' +
         '<li><span class="dt-ic">📱</span><span><b>Scan the code</b> (top-right) to drive this screen from your phone.</span></li>' +
+        '<li><span class="dt-ic">🖱️</span><span><b>On a computer?</b> This is built for a touch screen so the cursor is hidden — press <b>Space</b> (or just move your mouse) to use it.</span></li>' +
         '<li><span class="dt-ic">⏱️</span><span>Everything <b>resets automatically</b> for the next visitor.</span></li>' +
       '</ul>' +
       '<button class="dt-go" type="button">Start exploring</button>' +
@@ -14868,6 +15073,60 @@ function showDemoEditHint() {
   if (pencil) pencil.addEventListener('click', done, { once: true });
   setTimeout(done, 8000);
 }
+
+// ── Demo: touch-vs-mouse ──────────────────────────────────────────────────
+// The cursor is hidden on the display by design. In the public demo a visitor
+// might be on a plain monitor with a mouse, so give them their pointer back:
+// Space toggles it, and a real mouse move reveals it (a touch-only user never
+// fires one). Persisted for the session. Demo only — the real wall display
+// stays cursorless.
+let _demoCursorWired = false;
+function _demoSetCursor(on) {
+  document.documentElement.classList.toggle('demo-show-cursor', on);
+  try { sessionStorage.setItem('demoShowCursor', on ? '1' : '0'); } catch {}
+}
+function wireDemoCursorInput() {
+  if (_demoCursorWired || !window.__isDemo) return;
+  _demoCursorWired = true;
+  try { if (sessionStorage.getItem('demoShowCursor') === '1') _demoSetCursor(true); } catch {}
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space' && e.key !== ' ') return;
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
+    e.preventDefault();
+    _demoSetCursor(!document.documentElement.classList.contains('demo-show-cursor'));
+    _dismissDemoCursorHint();
+  });
+
+  let _moves = 0;
+  window.addEventListener('mousemove', () => {
+    if (++_moves < 3) return; // ignore one or two stray events
+    if (!document.documentElement.classList.contains('demo-show-cursor')) _demoSetCursor(true);
+    _dismissDemoCursorHint();
+  }, { passive: true });
+}
+function showDemoCursorHint() {
+  if (!window.__isDemo || editModeActive) return;
+  if (document.getElementById('demo-cursor-hint') || document.getElementById('demo-tour')) return;
+  try { if (sessionStorage.getItem('demoCursorHintSeen') === '1') return; } catch {}
+  if (document.documentElement.classList.contains('demo-show-cursor')) return; // already using a cursor
+  try { sessionStorage.setItem('demoCursorHintSeen', '1'); } catch {}
+  const el = document.createElement('div');
+  el.id = 'demo-cursor-hint';
+  el.innerHTML = '<span>Built for a touch screen — on a computer, <b>press Space</b> or move your mouse to use a cursor.</span>' +
+    '<button class="dch-x" type="button" aria-label="Dismiss">✕</button>';
+  el.querySelector('.dch-x').addEventListener('click', _dismissDemoCursorHint);
+  document.body.appendChild(el);
+  setTimeout(_dismissDemoCursorHint, 18000);
+}
+function _dismissDemoCursorHint() {
+  const el = document.getElementById('demo-cursor-hint');
+  if (!el) return;
+  el.style.opacity = '0';
+  setTimeout(() => el.remove(), 320);
+}
+
 // Hold the lease open while this tab is here: ping the broker every 45s.
 // When the tab goes away the pings stop and the broker frees the slot after
 // its idle window. credentials:'include' sends the .piazzahq.com lease cookie.
@@ -15682,6 +15941,23 @@ async function fetchReminders() {
     const r = await fetch('/api/reminders');
     state.reminders = await r.json();
   } catch { state.reminders = state.reminders || []; }
+}
+
+// Family member profiles — used here only to colour-code local events by
+// their owner (owner_profile_id). The wall has no "active profile"; this is
+// purely a lookup table. Empty on a household that hasn't set any up.
+let _profileColorById = new Map();
+async function fetchProfiles() {
+  try {
+    const r = await fetch('/api/profiles');
+    const list = await r.json();
+    state.profiles = Array.isArray(list) ? list : [];
+  } catch { state.profiles = state.profiles || []; }
+  _profileColorById = new Map((state.profiles || []).map(p => [Number(p.id), p.color]));
+}
+function profileNameByIdD(id) {
+  const p = (state.profiles || []).find(x => Number(x.id) === Number(id));
+  return p ? p.name : '';
 }
 
 // Does this reminder occur on the given date (a 'YYYY-MM-DD' string)? The
@@ -17230,6 +17506,14 @@ async function fetchLayout(orientation) {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
     const incoming = data.widgets || [];
+    // Remember the last layout that loaded cleanly, per orientation, so a
+    // reload mid-update can seed from it instead of showing a blank screen —
+    // see init()'s own comment. Keyed on orientation only (a device shows one
+    // display at a time; a stale cache from a since-reassigned profile is
+    // still better than blank and is corrected by this same fetch on success).
+    if (!IS_PREVIEW && incoming.length) {
+      try { localStorage.setItem('phq_layout_' + orientation, JSON.stringify(incoming)); } catch {}
+    }
     // Reconcile in place rather than replacing the array with brand-new
     // object literals — preserves object identity for any widget that
     // already existed, which matters because an open Live Editing "More
@@ -17264,9 +17548,17 @@ async function fetchDisplayConfig() {
       const r = await fetch(withDisplayParam('/api/display-config'));
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const cfg = await r.json();
+      const _newForce = cfg.force_orientation || 'auto';
+      const _newRotation = Number(cfg.rotation) || 0;
+      // Remember this device's real orientation so a reload that happens while
+      // the server is still restarting (self-update) can fall back to it
+      // instead of guessing — see the seed in init() for the full rationale.
+      if (!IS_PREVIEW) {
+        try { localStorage.setItem('phq_display_orient', JSON.stringify({ f: _newForce, r: _newRotation })); } catch {}
+      }
       displayConfig = {
-        force_orientation: cfg.force_orientation || 'auto',
-        rotation: Number(cfg.rotation) || 0,
+        force_orientation: _newForce,
+        rotation: _newRotation,
         theme: cfg.theme || '',
         fontFamily: cfg.fontFamily || '',
         screensaverTag: cfg.screensaverTag || '',
@@ -17750,6 +18042,9 @@ function connectLiveUpdates() {
       await fetchEvents();
       await fetchTasksForLayout(); // task widgets don't depend on events, but cheap to keep in sync
       renderLayout();
+    } else if (topic === 'profiles') {
+      await fetchProfiles();
+      renderLayout();
     } else if (topic === 'reminders') {
       await fetchReminders();
       renderLayout();
@@ -17759,10 +18054,19 @@ function connectLiveUpdates() {
       checkSetupOverlay();
       applyTextColor();
       applyFontFamily();
+      // Re-read this screen's own config (orientation, rotation, theme, ambient
+      // …). Also a self-heal path: if a boot-time fetchDisplayConfig() failed
+      // (e.g. reloaded mid-update) and left orientation on the seeded/last-known
+      // value, any settings broadcast now brings it fully back in sync.
+      await fetchDisplayConfig();
+      const _preOrient = currentOrientation;
       // The host can reassign this screen's display profile (it lands in settings as
       // assigned_display_slug_remote on a slave). Re-resolve so a reassignment from
       // the host's Displays tab switches the layout live, without a reboot.
       await resolveAssignedProfile();
+      // If the resolved orientation actually changed, switch layouts to match.
+      const _postOrient = getOrientation();
+      if (_postOrient !== _preOrient) { currentOrientation = _postOrient; applyRotation(); }
       await fetchWeather();
       await fetchStocks(); // stock_tickers may have changed
       await fetchNews();   // news source config may have changed
@@ -17917,6 +18221,27 @@ async function init() {
   } catch (e) { console.error('init: settings', e); state.settings = state.settings || {}; state.photoSettings = state.photoSettings || {}; }
   try { applyForceRealDisplayOverride(); } catch (e) { console.error('init: forceRealDisplay', e); }
 
+  // Seed orientation/rotation from the last successful config fetch. Without
+  // this, a display that reloads mid-update (server still restarting, so
+  // /api/display-config times out through fetchWithRetry's ~6s of retries)
+  // falls back to displayConfig's hardcoded { force_orientation:'auto',
+  // rotation:0 }. "auto" then derives orientation from the physical viewport —
+  // which is landscape on a portrait screen that's rotated in the browser — so
+  // the whole layout flips portrait->landscape and stays that way until
+  // something else forces a re-fetch (the reported bug). Seeding from the cache
+  // holds the device's real orientation through that window; a later successful
+  // fetchDisplayConfig() (retry / SSE 'settings' / periodic) still applies a
+  // genuine change.
+  if (!IS_PREVIEW) {
+    try {
+      const cached = JSON.parse(localStorage.getItem('phq_display_orient') || 'null');
+      if (cached && ['auto', 'landscape', 'portrait'].includes(cached.f)) {
+        displayConfig.force_orientation = cached.f;
+        displayConfig.rotation = Number(cached.r) || 0;
+      }
+    } catch {}
+  }
+
   try { await resolveAssignedProfile(); } catch (e) { console.error('init: resolveAssignedProfile', e); }
 
   try { checkTrialNotice(); } catch (e) { console.error('init: trialNotice', e); }
@@ -17929,12 +18254,42 @@ async function init() {
   try { wireDirectEditMode(); } catch (e) { console.error('init: directEditMode', e); }
 
   currentOrientation = getOrientation();
+  // Seed the layout from the last one that loaded cleanly for this
+  // orientation. Same reasoning as the orientation seed above: a reload that
+  // lands mid-update (server restarting, /api/layouts times out through
+  // fetchWithRetry) otherwise leaves state.layout empty and the screen blank
+  // until an SSE event or a manual display switch forces a re-fetch (the
+  // reported bug). fetchLayout() reconciles the real data over this by id, so
+  // a successful fetch a moment later converges cleanly.
+  if (!IS_PREVIEW && (!state.layout || !state.layout.length)) {
+    try {
+      const cachedLayout = JSON.parse(localStorage.getItem('phq_layout_' + currentOrientation) || 'null');
+      if (Array.isArray(cachedLayout) && cachedLayout.length) state.layout = cachedLayout;
+    } catch {}
+  }
   // Load the layout + data, each guarded. A failure in one doesn't blank the screen.
-  try { await fetchLayout(currentOrientation); } catch (e) { console.error('init: layout', e); state.layout = state.layout || []; }
-  await Promise.allSettled([fetchEvents(), fetchReminders(), fetchWeather(), fetchPhotos()]);
+  let _layoutBootOk = false;
+  try { await fetchLayout(currentOrientation); _layoutBootOk = true; } catch (e) { console.error('init: layout', e); state.layout = state.layout || []; }
+  await Promise.allSettled([fetchEvents(), fetchReminders(), fetchWeather(), fetchPhotos(), fetchProfiles()]);
   await Promise.allSettled([fetchTasksForLayout(), fetchTodoForLayout(), fetchShoppingListForLayout(), fetchNews(), fetchStocks(), fetchChoreChart(), fetchStickersForLayout(), fetchAirQuality(), fetchTravelTimes(), fetchOnThisDay(), fetchDailyQuote(), fetchSports(), fetchMetarTaf(), fetchHaEntities()]);
   fetchEventHistory().then(renderLayout).catch(()=>{}); // deep history in background
   try { renderLayout(); } catch (e) { console.error('init: render', e); }
+  // If the boot layout fetch failed outright (not just "no widgets"), keep
+  // retrying hard for a couple of minutes so the screen fills itself in,
+  // rather than waiting on the next SSE/settings event or a manual switch.
+  if (!_layoutBootOk) {
+    let _lTries = 0;
+    const _lRetry = setInterval(async () => {
+      _lTries++;
+      try {
+        await fetchLayout(currentOrientation);
+        clearInterval(_lRetry);
+        renderLayout(); applyBackground();
+        Promise.allSettled([fetchTasksForLayout(), fetchTodoForLayout(), fetchShoppingListForLayout(), fetchNews(), fetchStocks(), fetchChoreChart(), fetchStickersForLayout(), fetchAirQuality(), fetchTravelTimes(), fetchHaEntities()]).then(() => { try { renderLayout(); } catch {} }).catch(() => {});
+      } catch {}
+      if (_lTries >= 15) clearInterval(_lRetry);
+    }, 8000);
+  }
   try { applyBackground(); } catch {}
   startSlideshowTimer();
 

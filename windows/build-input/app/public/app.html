@@ -1373,6 +1373,14 @@ const RELEASE_NOTES = {
     'Fixed: a recurring "every N weeks" event, or a countdown widget, could be off by one day right around a Daylight Saving Time change.',
     'A round of hardening across the app — no other user-visible changes.',
   ],
+  '1.85.0': [
+    'Family profiles: give each person their own view of the app. Hide the tabs and features they don\'t use, pick a preset (Basic / Intermediate / Advanced), and switch profiles instantly from the avatar in the header. Optional per-profile PIN. With no profiles set up, nothing changes.',
+    'Tag an event "for" a family member (added on the wall display) and it colour-codes by that person everywhere; the event list gets a "just mine" filter.',
+    'Event locations: the venue or address from a calendar can now show under each event in the Agenda / Upcoming / Today views. Turn it on per calendar in Settings → Calendars, and fine-tune it per widget.',
+    'Home Assistant: search for an entity by name or id when picking one, edit an alert rule in place, and set each display\'s alert banner position, size and style independently. Active alerts now also show in the app.',
+    'Home Assistant buttons (lights, covers, scenes) respond as soon as the command is accepted instead of waiting for the device to finish moving.',
+    'Fixed: a display could switch from portrait to landscape after an update if it reloaded mid-restart.',
+  ],
 };
 
 // Beta-suffix-aware version compare — same scheme as the mothership server's
@@ -1929,6 +1937,7 @@ const SETTINGS_ICONS = {
   'Stocks':'📈', 'News':'📰', 'Daily Briefing':'✉️', 'Feedback & Ideas':'💬', 'Version & License':'⬆️', 'Security':'🔒', 'Multi-Device':'🖥️', 'Home Assistant':'🏠', 'App Preferences':'📱', 'Beta Checklist':'✅',
   'Support the Project':'☕',
   'Push to iCloud Calendar':'📅', 'Push to Google Calendar':'📅', 'Handwriting input':'✍️',
+  'Family profiles':'👥',
 };
 // Sections nested inside a named group's own mini-accordion, rather than
 // sitting as top-level accordion items — cuts the scanning distance for a
@@ -2327,11 +2336,17 @@ function wireSettingsSearch() {
 function transformSettingsToAccordion() {
   const content = $('content');
   if (!content) return;
-  if (window.__isDemo) {
-    // Strip the demo-irrelevant sections (header + every sibling up to the
-    // next header/save button) before they're folded into the accordion.
+  // Strip sections that shouldn't appear at all (header + every sibling up to
+  // the next header/save button) before they're folded into the accordion:
+  //  - demo mode hides every credential / integration / update section
+  //  - the active family profile can hide Home Assistant and/or the extra
+  //    integrations (Todoist, calendar push, daily briefing)
+  const stripSections = new Set();
+  if (window.__isDemo) DEMO_HIDDEN_SETTINGS_SECTIONS.forEach(s => stripSections.add(s));
+  if (typeof profileHiddenSettingsSections === 'function') profileHiddenSettingsSections().forEach(s => stripSections.add(s));
+  if (stripSections.size) {
     [...content.querySelectorAll('.section-header')].forEach(h => {
-      if (!DEMO_HIDDEN_SETTINGS_SECTIONS.has(h.textContent.trim())) return;
+      if (!stripSections.has(h.textContent.trim())) return;
       let n = h.nextElementSibling;
       while (n && !n.classList.contains('section-header') && !n.classList.contains('settings-save')) {
         const next = n.nextElementSibling; n.remove(); n = next;
@@ -3584,6 +3599,10 @@ async function renderFavoritesTab() {
   let cards = [];
   try { cards = await apiFetch('/api/favorite-cards'); } catch {}
   favoriteCards = Array.isArray(cards) ? cards : [];
+  // Active profile has Home Assistant hidden — don't render HA cards here.
+  if (typeof profileAllows === 'function' && !profileAllows('ha')) {
+    favoriteCards = favoriteCards.filter(c => (FAVORITE_CARD_DEFS[c.type] || {}).category !== 'Home Assistant');
+  }
 
   // Only fetch what this specific set of cards actually needs — a household
   // with just two quick-action cards shouldn't pay for a weather call it's
@@ -3737,6 +3756,8 @@ function openAddFavoriteCardPicker() {
   Object.entries(FAVORITE_CARD_DEFS).forEach(([type, def]) => {
     (categories[def.category] = categories[def.category] || []).push({ type, ...def });
   });
+  // Hide the whole Home Assistant category when the active profile has HA off.
+  if (typeof profileAllows === 'function' && !profileAllows('ha')) delete categories['Home Assistant'];
   const listHtml = Object.entries(categories).map(([cat, defs]) => `
     <div class="section-header" style="font-size:12px;margin-top:14px">${cat}</div>
     ${defs.map(d => `
@@ -4141,6 +4162,10 @@ async function renderEventsSubTab() {
         <label style="font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer">
           <input type="checkbox" id="events-show-past" style="width:18px;height:18px;accent-color:var(--accent)"> Show past
         </label>
+        ${(PROFILES.length && activeProfile) ? `
+        <label style="font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="events-mine-only" style="width:18px;height:18px;accent-color:var(--accent)"> ${escapeHtml(activeProfile.name)} only
+        </label>` : ''}
       </div>
     </div>
     <div id="events-list"><div style="color:var(--muted);font-size:13px;padding:8px">Loading events…</div></div>
@@ -4148,6 +4173,13 @@ async function renderEventsSubTab() {
   $('events-search').addEventListener('input', () => renderEventsList());
   $('events-show-hidden').addEventListener('change', () => renderEventsList());
   $('events-show-past').addEventListener('change', () => loadEventsManage());
+  if ($('events-mine-only')) {
+    try { $('events-mine-only').checked = localStorage.getItem('events_mine_only') === '1'; } catch {}
+    $('events-mine-only').addEventListener('change', () => {
+      try { localStorage.setItem('events_mine_only', $('events-mine-only').checked ? '1' : '0'); } catch {}
+      renderEventsList();
+    });
+  }
   await loadEventsManage();
 }
 
@@ -4176,8 +4208,10 @@ function renderEventsList() {
   if (!box) return;
   const q = ($('events-search')?.value || '').trim().toLowerCase();
   const showHidden = $('events-show-hidden')?.checked;
+  const mineOnly = $('events-mine-only')?.checked && activeProfile;
   let list = _eventsCache.slice();
   if (q) list = list.filter(e => (e.title || '').toLowerCase().includes(q) || (e.feed_name || '').toLowerCase().includes(q));
+  if (mineOnly) list = list.filter(e => Number(e.owner_profile_id) === Number(activeProfile.id));
 
   // Group by date for readability.
   const visible = list.filter(e => showHidden || !(e.hidden_series || e.hidden_occurrence));
@@ -4201,8 +4235,12 @@ function renderEventsList() {
     const rows = byDate[date].map(e => {
       const isHidden = e.hidden_series || e.hidden_occurrence;
       const time = e.start_time ? fmtTime(e.start_time) : 'All day';
-      const dot = e.color ? `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${e.color};flex-shrink:0"></span>` : '';
+      const owner = e.owner_profile_id != null ? profileById(e.owner_profile_id) : null;
+      const dotColor = owner ? owner.color : e.color;
+      const dot = dotColor ? `<span title="${owner ? escapeHtml(owner.name) : ''}" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${dotColor};flex-shrink:0"></span>` : '';
       const tags = [];
+      if (owner) tags.push(`<span style="font-size:10px;color:var(--muted)">${escapeHtml(owner.name)}</span>`);
+      if (e.location && (e.source === 'local' || e.show_location)) tags.push(`<span style="font-size:10px;color:var(--muted)">📍 ${escapeHtml(e.location)}</span>`);
       if (e.hidden_series) tags.push('<span style="font-size:10px;color:var(--danger,#ff5d5d)">hidden (all)</span>');
       else if (e.hidden_occurrence) tags.push('<span style="font-size:10px;color:var(--danger,#ff5d5d)">hidden</span>');
       if (e.feed_name) tags.push(`<span style="font-size:10px;color:var(--muted)">${e.feed_name}</span>`);
@@ -4295,6 +4333,7 @@ async function renderCalendarsSubTab() {
         ? 'Synced ' + new Date(f.last_synced + 'Z').toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
         : 'Never synced';
       const timedOn = f.color_timed === undefined ? true : f.color_timed !== 0;
+      const showLocOn = f.show_location ? true : false;
       html += `
         <div class="event-card">
           <div class="event-color-bar feed-color-bar" data-id="${f.id}" data-color="${f.color}" style="background:${f.color};cursor:pointer" title="Tap to edit"></div>
@@ -4348,6 +4387,11 @@ async function renderCalendarsSubTab() {
             <input type="checkbox" class="feed-edit-timed" data-id="${f.id}" ${timedOn?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
           </div>
           <p style="font-size:11px;color:var(--muted);margin-top:-4px">On: events with a specific time get a colored dot in this calendar's color. Off: only all-day events are color-coded.</p>
+          <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+            <label style="margin-bottom:0">Show location on the display</label>
+            <input type="checkbox" class="feed-edit-showloc" data-id="${f.id}" ${showLocOn?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
+          </div>
+          <p style="font-size:11px;color:var(--muted);margin-top:-4px">On: each event's location (e.g. the venue or address from the calendar) shows under its title in the agenda and event views. Leave off for calendars where the location would just be clutter.</p>
           <button class="btn btn-primary feed-edit-save" data-id="${f.id}" style="margin-top:8px">Save Changes</button>
         </div>`;
     });
@@ -4547,12 +4591,14 @@ async function renderCalendarsSubTab() {
       const useGlobalCb = document.querySelector(`.feed-edit-use-global[data-id="${id}"]`);
       const use_global_opacity = useGlobalCb ? useGlobalCb.checked : undefined;
       const color_timed = document.querySelector(`.feed-edit-timed[data-id="${id}"]`).checked;
+      const showLocCb = document.querySelector(`.feed-edit-showloc[data-id="${id}"]`);
+      const show_location = showLocCb ? showLocCb.checked : undefined;
       if (!name || !url) { showToast('Name and URL are required'); return; }
       url = url.replace(/^webcal:\/\//i, 'https://');
       btn.textContent = 'Saving…';
       btn.disabled = true;
       const r = await apiFetch(`/api/feeds/${id}`, {
-        method: 'PUT', body: JSON.stringify({ name, url, color, color_opacity, use_global_opacity, color_timed }),
+        method: 'PUT', body: JSON.stringify({ name, url, color, color_opacity, use_global_opacity, color_timed, show_location }),
       });
       cachedFeeds = null; // invalidate so widgets pick up changes
       if (r.error) {
@@ -7402,7 +7448,7 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
 
     <div class="section-header">Add Widget</div>
     <div class="widget-cats">
-      ${WIDGET_CATEGORIES.map(c=>{ const visibleTypes = c.types.filter(t => (t !== 'todo' || window._todoEnabled) && (t !== 'shoppinglist' || window._shoppingEnabled)); return `
+      ${WIDGET_CATEGORIES.filter(c => c.id !== 'smarthome' || typeof profileAllows !== 'function' || profileAllows('ha')).map(c=>{ const visibleTypes = c.types.filter(t => (t !== 'todo' || window._todoEnabled) && (t !== 'shoppinglist' || window._shoppingEnabled)); return `
         <div class="widget-cat" data-cat="${c.id}">
           <button class="cat-head" data-cat-toggle="${c.id}">
             <span class="cat-ic">${c.icon}</span>
@@ -10311,11 +10357,25 @@ async function drawWidgetSettingsPanel() {
         <label style="margin-bottom:0">Show Multi-day Events</label>
         <input type="checkbox" id="show-multiday-toggle" ${w.showMultiDay !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show Location ${infoBtn("Shows each event's location — for calendars that have location turned on in Settings → Calendars. Per-calendar exceptions for this widget live in 📍 Per-Feed Location below. In a Grid calendar it's appended to the title line (off by default); Agenda gives it its own wrapped line (on by default).")}</label>
+        <input type="checkbox" id="show-location-toggle" ${(() => { const k = { minical:'calShowLocation', agenda:'agShowLocation', upcoming:'upShowLocation', today:'tdShowLocation' }[w.type]; const v = w[k]; if (w.type === 'minical' && (w.calLayout || 'grid') !== 'agenda') return v === true ? 'checked' : ''; return v !== false ? 'checked' : ''; })()} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
       <div class="settings-row" id="fop-accordion-wrap">
         ${accordionSection({ id: 'fop', icon: '🎨', label: 'Per-Feed Opacity', sub: 'this display only',
           inner: `
             <p style="font-size:11px;color:var(--muted);margin:0 0 8px">Override a calendar's opacity for just this widget, without changing its global default in Calendar Feeds.</p>
             <div id="feed-opacity-override-list" style="display:flex;flex-direction:column;gap:10px">
+              <div style="font-size:12px;color:var(--muted)">Loading calendars…</div>
+            </div>
+          `
+        })}
+      </div>
+      <div class="settings-row" id="flo-accordion-wrap">
+        ${accordionSection({ id: 'flo', icon: '📍', label: 'Per-Feed Location', sub: 'this widget only',
+          inner: `
+            <p style="font-size:11px;color:var(--muted);margin:0 0 8px">Force a calendar's location on or off for just this widget, without changing its global "Show location" in Calendar Feeds. Needs this widget's own Show Location turned on.</p>
+            <div id="feed-location-override-list" style="display:flex;flex-direction:column;gap:10px">
               <div style="font-size:12px;color:var(--muted)">Loading calendars…</div>
             </div>
           `
@@ -11989,9 +12049,18 @@ async function drawWidgetSettingsPanel() {
   if (isCalendarWidget) {
     populateSourceFilterList(w);
     populateFeedOpacityOverrideList(w);
+    populateFeedLocationOverrideList(w);
     $('show-multiday-toggle').addEventListener('change', (e) => {
       w.showMultiDay = e.target.checked;
     });
+    if ($('show-location-toggle')) {
+      $('show-location-toggle').addEventListener('change', (e) => {
+        const k = { minical: 'calShowLocation', agenda: 'agShowLocation', upcoming: 'upShowLocation', today: 'tdShowLocation' }[w.type];
+        if (k) w[k] = e.target.checked;
+        autoSaveLayout();
+      });
+    }
+    wireAccordion('flo-accordion-wrap');
     // Per-Feed Opacity now uses the same shared accordion mechanism as
     // everything else (Displays/Settings, Mini Calendar's own settings
     // groups below) instead of a hand-rolled one-off toggle. It's the only
@@ -12246,6 +12315,77 @@ async function populateFeedOpacityOverrideList(w) {
       w.feedOpacityOverride[feedId] = val;
       const label = container.querySelector(`.fop-slider-val[data-feed-id="${feedId}"]`);
       if (label) label.textContent = val + '%';
+      autoSaveLayout();
+    });
+  });
+}
+
+// Per-widget-per-feed LOCATION override — the app-side twin of display.html's
+// renderFeedLocationOverrideSection()/wireFeedLocationOverrideSection(). Same
+// data shape (w.feedLocationOverride = {feedId: true|false}); the actual
+// show/hide resolution lives in display.html's widgetShowsLocation().
+async function populateFeedLocationOverrideList(w) {
+  if (!cachedFeeds) {
+    const result = await apiFetch('/api/feeds');
+    cachedFeeds = Array.isArray(result) ? result : [];
+  }
+  const container = $('feed-location-override-list');
+  if (!container) return;
+  if (!cachedFeeds.length) {
+    container.innerHTML = `<div style="font-size:12px;color:var(--muted)">No calendars subscribed yet.</div>`;
+    return;
+  }
+  const overrides = w.feedLocationOverride || {};
+  container.innerHTML = cachedFeeds.map(f => {
+    const has = typeof overrides[f.id] === 'boolean';
+    const globalOn = !!f.show_location;
+    const val = has ? overrides[f.id] : globalOn;
+    return `
+      <div class="flo-row" data-feed-id="${f.id}">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <label style="margin-bottom:0;display:flex;align-items:center;gap:8px;font-size:13px">
+            <span style="width:10px;height:10px;border-radius:50%;background:${f.color};display:inline-block;flex-shrink:0"></span>
+            ${escapeHtml(f.name)}
+            <span style="font-size:10px;color:var(--muted)">${globalOn ? 'on' : 'off'} globally</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);cursor:pointer">
+            Override
+            <input type="checkbox" class="flo-toggle" data-feed-id="${f.id}" ${has?'checked':''} style="width:16px;height:16px;accent-color:var(--accent)">
+          </label>
+        </div>
+        <div class="flo-value-row" style="${has?'':'display:none'}">
+          <select class="form-input flo-value" data-feed-id="${f.id}" style="font-size:13px">
+            <option value="1" ${val?'selected':''}>Show location here</option>
+            <option value="0" ${!val?'selected':''}>Hide location here</option>
+          </select>
+        </div>
+      </div>`;
+  }).join('');
+
+  container.querySelectorAll('.flo-toggle').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      const feedId = e.target.dataset.feedId;
+      const row = container.querySelector(`.flo-row[data-feed-id="${feedId}"]`);
+      const valRow = row ? row.querySelector('.flo-value-row') : null;
+      w.feedLocationOverride = w.feedLocationOverride || {};
+      if (e.target.checked) {
+        if (valRow) valRow.style.display = '';
+        const sel = row.querySelector('.flo-value');
+        w.feedLocationOverride[feedId] = sel.value === '1';
+      } else {
+        if (valRow) valRow.style.display = 'none';
+        delete w.feedLocationOverride[feedId];
+      }
+      autoSaveLayout();
+    });
+  });
+  container.querySelectorAll('.flo-value').forEach(sel => {
+    sel.addEventListener('change', (e) => {
+      const feedId = e.target.dataset.feedId;
+      const toggle = container.querySelector(`.flo-toggle[data-feed-id="${feedId}"]`);
+      if (!toggle || !toggle.checked) return;
+      w.feedLocationOverride = w.feedLocationOverride || {};
+      w.feedLocationOverride[feedId] = e.target.value === '1';
       autoSaveLayout();
     });
   });
@@ -15080,6 +15220,15 @@ async function renderSettings() {
       </div>
     </div>
 
+    <div class="section-header">Family profiles</div>
+    <div class="settings-card">
+      <div class="settings-row">
+        <label>Family profiles ${infoBtn("Give each person in the household their own view of this app — hide the tabs and features they don't use. It's a persona picker, not a login: switching profiles is instant, and an optional PIN is only a gentle gate, not a lock. With no profiles set up, the app works exactly as it always has.")}</label>
+        <p style="font-size:12px;color:var(--muted);margin:2px 0 10px">Personalize which tabs and features each household member sees. Managers can edit everyone; everyone can tailor their own view.</p>
+        <div id="profiles-settings-body"><div style="font-size:12px;color:var(--muted)">Loading…</div></div>
+      </div>
+    </div>
+
     <div class="section-header">Security</div>
     <div class="settings-card">
       <div class="settings-row">
@@ -15751,30 +15900,143 @@ async function renderSettings() {
       }
 
       box.style.display = '';
+      // Each thread is a tappable row that opens a full-screen, messaging-app
+      // style conversation view (openFeedbackThread) — replying inline in the
+      // long Settings page meant the on-screen keyboard shoved the original
+      // message off-screen and the page kept scrolling behind it.
       box.innerHTML = `<div style="font-weight:700;font-size:14px;margin-bottom:8px;color:var(--accent)">💬 ${showAll ? 'Your conversations' : 'Replies from the developer'}</div>` +
-        threads.map(t => `
-          <div style="border:1px solid var(--accent);border-radius:10px;padding:12px;margin-bottom:10px">
-            <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Your ${escapeHtml(t.kind||'feedback')} · ${escapeHtml((t.thread[0]&&t.thread[0].at)||'')}</div>
-            ${(t.thread||[]).map(m => `
-              <div style="margin-bottom:8px">
-                <span style="font-weight:700;font-size:12px;color:${m.from==='dev'?'var(--accent)':'var(--text)'}">${m.from==='dev'?'Developer':'You'}</span>
-                <div style="font-size:13px;white-space:pre-wrap;margin-top:1px">${escapeHtml(m.text||'')}</div>
-              </div>`).join('')}
-            <div style="margin-top:8px">
-              <textarea class="form-input fb-thread-reply" data-id="${t.id}" rows="2" placeholder="Write a reply…" style="width:100%;box-sizing:border-box;resize:vertical;margin:0 0 8px"></textarea>
-              <button class="fb-thread-send" data-id="${t.id}" style="width:100%;background:var(--accent);color:#fff;border:none;border-radius:9px;padding:11px;font-size:14px;font-weight:600;cursor:pointer">Send reply</button>
+        threads.map(t => {
+          const msgs = t.thread || [];
+          const last = msgs[msgs.length - 1] || {};
+          const preview = (last.text || '').replace(/\s+/g, ' ').slice(0, 90);
+          return `
+          <button class="fb-thread-open" data-id="${t.id}" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:1px solid var(--accent);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--card);color:var(--text);cursor:pointer">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:11px;color:var(--muted);margin-bottom:3px">Your ${escapeHtml(t.kind||'feedback')} · ${msgs.length} message${msgs.length===1?'':'s'}</div>
+              <div style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${last.text ? `<b>${last.from==='dev'?'Developer: ':'You: '}</b>${escapeHtml(preview)}` : '<span style="color:var(--muted)">Tap to open</span>'}</div>
             </div>
-          </div>`).join('') +
+            ${!showAll ? '<span style="width:8px;height:8px;border-radius:50%;background:var(--accent);flex:0 0 auto"></span>' : ''}
+            <span style="color:var(--muted);font-size:18px;flex:0 0 auto">›</span>
+          </button>`;
+        }).join('') +
         `<button class="fb-replies-toggle" data-mode="${showAll ? 'unread' : 'all'}" style="background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer;padding:0">${showAll ? 'Hide past replies' : 'Show past replies'}</button>`;
+
+      box.querySelectorAll('.fb-thread-open').forEach(btn => btn.addEventListener('click', () => {
+        const t = threads.find(x => String(x.id) === btn.dataset.id);
+        if (t) openFeedbackThread(t);
+      }));
 
       // Only mark seen when viewing the default (unread) view — viewing history shouldn't
       // clear the "new reply" state prematurely.
       if (!showAll) {
         threads.forEach(t => { apiFetch(`/api/feedback-replies/${t.id}/seen`, { method:'POST' }).catch(()=>{}); });
       }
-      wireThreadSends(box);
       wireRepliesToggle(box);
     }
+
+    function ensureFeedbackThreadCss() {
+      if (document.getElementById('fbt-css')) return;
+      const st = document.createElement('style');
+      st.id = 'fbt-css';
+      st.textContent = `
+        .fbt-overlay{position:fixed;left:0;top:0;width:100%;z-index:100000;background:var(--bg);display:flex;flex-direction:column;overscroll-behavior:contain}
+        .fbt-head{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:12px 12px;border-bottom:1px solid var(--border);background:var(--card)}
+        .fbt-back{background:none;border:none;color:var(--accent);font-size:30px;line-height:1;cursor:pointer;padding:0 6px}
+        .fbt-title{font-size:15px;font-weight:700}
+        .fbt-sub{font-size:11px;color:var(--muted)}
+        .fbt-body{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px;display:flex;flex-direction:column;gap:8px;overscroll-behavior:contain}
+        .fbt-msg{display:flex;flex-direction:column;max-width:82%}
+        .fbt-msg.me{align-self:flex-end;align-items:flex-end}
+        .fbt-msg.them{align-self:flex-start;align-items:flex-start}
+        .fbt-bubble{padding:9px 12px;border-radius:15px;font-size:14px;line-height:1.4;white-space:pre-wrap;word-break:break-word}
+        .fbt-msg.me .fbt-bubble{background:var(--accent);color:#fff;border-bottom-right-radius:4px}
+        .fbt-msg.them .fbt-bubble{background:var(--card);border:1px solid var(--border);border-bottom-left-radius:4px}
+        .fbt-time{font-size:10px;color:var(--muted);margin-top:2px}
+        .fbt-input{flex:0 0 auto;display:flex;gap:8px;align-items:flex-end;padding:10px 12px;padding-bottom:calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--border);background:var(--card)}
+        .fbt-input textarea{flex:1;resize:none;border:1px solid var(--border);border-radius:18px;padding:9px 14px;font:inherit;font-size:14px;background:var(--bg);color:var(--text);max-height:120px;line-height:1.4}
+        .fbt-input button{flex:0 0 auto;width:40px;height:40px;border-radius:50%;border:none;background:var(--accent);color:#fff;font-size:16px;cursor:pointer}
+        .fbt-input button:disabled{opacity:.5}
+      `;
+      document.head.appendChild(st);
+    }
+
+    function openFeedbackThread(t) {
+      if (!t) return;
+      ensureFeedbackThreadCss();
+      const ov = document.createElement('div');
+      ov.className = 'fbt-overlay';
+      ov.innerHTML = `
+        <div class="fbt-head">
+          <button class="fbt-back" aria-label="Back">‹</button>
+          <div><div class="fbt-title">Your ${escapeHtml(t.kind || 'feedback')}</div><div class="fbt-sub">Conversation with the developer</div></div>
+        </div>
+        <div class="fbt-body" id="fbt-body"></div>
+        <div class="fbt-input">
+          <textarea id="fbt-text" rows="1" placeholder="Message…" autocomplete="off"></textarea>
+          <button id="fbt-send" aria-label="Send">➤</button>
+        </div>`;
+      document.body.appendChild(ov);
+      const prevOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+
+      const bodyEl = ov.querySelector('#fbt-body');
+      const textEl = ov.querySelector('#fbt-text');
+      const sendBtn = ov.querySelector('#fbt-send');
+
+      const renderMsgs = () => {
+        bodyEl.innerHTML = (t.thread || []).map(m => `
+          <div class="fbt-msg ${m.from === 'dev' ? 'them' : 'me'}">
+            <div class="fbt-bubble">${escapeHtml(m.text || '')}</div>
+            ${m.at ? `<div class="fbt-time">${escapeHtml(m.at)}</div>` : ''}
+          </div>`).join('');
+      };
+      const toBottom = () => { bodyEl.scrollTop = bodyEl.scrollHeight; };
+      renderMsgs();
+      requestAnimationFrame(toBottom);
+
+      // Keep the whole view (and the input bar) sized to the space the
+      // on-screen keyboard leaves — the "messaging app" behaviour.
+      const vv = window.visualViewport;
+      const fit = () => {
+        ov.style.height = (vv ? vv.height : window.innerHeight) + 'px';
+        toBottom();
+      };
+      fit();
+      if (vv) { vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit); }
+
+      const autoGrow = () => { textEl.style.height = 'auto'; textEl.style.height = Math.min(textEl.scrollHeight, 120) + 'px'; };
+      textEl.addEventListener('input', autoGrow);
+
+      const close = () => {
+        if (vv) { vv.removeEventListener('resize', fit); vv.removeEventListener('scroll', fit); }
+        ov.remove();
+        document.body.style.overflow = prevOverflow;
+        loadFeedbackReplies();
+      };
+      ov.querySelector('.fbt-back').addEventListener('click', close);
+
+      const send = async () => {
+        const text = textEl.value.trim();
+        if (!text) return;
+        sendBtn.disabled = true;
+        t.thread = [...(t.thread || []), { from: 'user', text, at: '' }];
+        renderMsgs();
+        textEl.value = ''; autoGrow(); toBottom();
+        try {
+          await apiFetch(`/api/feedback-replies/${t.id}`, { method: 'POST', body: JSON.stringify({ text }) });
+        } catch { showToast('Could not send — check your connection'); }
+        sendBtn.disabled = false;
+        textEl.focus();
+      };
+      sendBtn.addEventListener('click', send);
+      textEl.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); send(); }
+      });
+      setTimeout(() => textEl.focus(), 80);
+    }
+    // Let the "developer replied" banner jump straight into a conversation.
+    window.__openFeedbackThread = openFeedbackThread;
+    window.__markFeedbackThreadSeen = (id) => { apiFetch(`/api/feedback-replies/${id}/seen`, { method: 'POST' }).catch(() => {}); };
 
     function renderShowPastLink(box) {
       // A subtle link so the user can always pull up history even with nothing unread.
@@ -15788,19 +16050,6 @@ async function renderSettings() {
       if (btn) btn.addEventListener('click', () => loadFeedbackReplies(btn.dataset.mode === 'all'));
     }
 
-    function wireThreadSends(box) {
-      box.querySelectorAll('.fb-thread-send').forEach(b => b.addEventListener('click', async () => {
-        const inp = box.querySelector(`.fb-thread-reply[data-id="${b.dataset.id}"]`);
-        const text = (inp && inp.value || '').trim();
-        if (!text) { if (inp) inp.focus(); return; }
-        b.disabled = true;
-        await apiFetch(`/api/feedback-replies/${b.dataset.id}`, { method:'POST', body: JSON.stringify({ text }) }).catch(()=>{});
-        if (inp) inp.value = '';
-        b.disabled = false;
-        showToast('Reply sent ✓');
-        loadFeedbackReplies();
-      }));
-    }
     loadFeedbackReplies();
 
     let fbImageFile = null;
@@ -15953,6 +16202,9 @@ async function renderSettings() {
   // Advanced group that can be shown/hidden). Done as a DOM pass so all the inputs
   // and their handlers below keep working by ID.
   transformSettingsToAccordion();
+  // Fill the "Family profiles" card (list + add/edit buttons) now that the
+  // accordion structure exists.
+  try { renderProfilesSettingsBody(); } catch (e) { console.error('profiles settings', e); }
   // The Daily Briefing's fields are themselves a nested accordion — wire it so its
   // sub-sections expand/collapse independently (like the Advanced group).
   wireAccordion('briefing-accordion');
@@ -18080,6 +18332,7 @@ async function init() {
 
   const authed = await checkAuth();
   if (authed) {
+    try { await initProfiles(); } catch (e) { console.error('profiles init', e); }
     loadEvents();
     // If this page load is the result of a pull-to-refresh, return to
     // whichever tab that was triggered from instead of always landing back
@@ -18478,7 +18731,17 @@ async function checkFeedbackReplyBanner() {
     textEl.textContent = newThreads.length === 1
       ? `💬 The developer replied to your feedback — tap to view.`
       : `💬 The developer replied to ${newThreads.length} of your feedback threads — tap to view.`;
-    textEl.onclick = openFeedbackSection;
+    // One new thread → open the conversation directly (and mark it seen);
+    // several → the Feedback section, where each is a tappable row.
+    if (newThreads.length === 1 && typeof window.__openFeedbackThread === 'function') {
+      textEl.onclick = () => {
+        banner.style.display = 'none';
+        try { window.__markFeedbackThreadSeen(newThreads[0].id); } catch {}
+        window.__openFeedbackThread(newThreads[0]);
+      };
+    } else {
+      textEl.onclick = openFeedbackSection;
+    }
     if (closeBtn) {
       closeBtn.onclick = (e) => {
         e.stopPropagation();
@@ -18500,6 +18763,8 @@ async function checkHaAlertBannerApp() {
   const textEl = document.getElementById('ha-alert-banner-app-text');
   const closeBtn = document.getElementById('ha-alert-banner-app-close');
   if (!banner || !textEl) return;
+  // The active profile has Home Assistant hidden — don't surface HA alerts here.
+  if (typeof profileAllows === 'function' && !profileAllows('ha')) { banner.style.display = 'none'; return; }
   try {
     const data = await apiFetch('/api/notifications/active');
     const alerts = ((data && data.notifications) || []).filter(n => n && n.kind === 'ha-alert');
@@ -18607,6 +18872,451 @@ function closeFeedbackPopup() {
     }
   });
 })();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Family member profiles — a per-person view configuration for THIS app.
+// Persona picker, NOT authentication: switching is instant, a per-profile PIN
+// is only a gentle gate into that profile and locks nothing else. Zero
+// profiles configured => the app behaves exactly as it did before. The active
+// profile is chosen per-device (localStorage) and never sent to the server.
+// Backend: `profiles` table + /api/profiles in server.js.
+// ═══════════════════════════════════════════════════════════════════════════
+let PROFILES = [];
+let activeProfile = null;
+const PROFILE_ACTIVE_KEY = 'piazzahq_profile_id';
+const PROFILE_ALWAYS_TABS = ['favorites', 'calendars', 'settings'];
+const PROFILE_HIDEABLE_TABS = [
+  { id: 'photos', label: 'Photos' },
+  { id: 'layout', label: 'Layout' },
+  { id: 'displays', label: 'Devices' },
+  { id: 'family', label: 'Family Hub' },
+];
+const PROFILE_FEATURES = [
+  { key: 'ha', label: 'Home Assistant', hint: 'smart-home cards, widgets & alerts' },
+  { key: 'integrations', label: 'Integrations & extras', hint: 'Todoist, calendar push, daily email' },
+];
+const PROFILE_PRESET_MAP = {
+  basic:        { hidden_tabs: ['photos', 'layout', 'displays'], features: { ha: false, integrations: false }, landing_tab: 'calendars' },
+  intermediate: { hidden_tabs: [],                               features: { ha: true,  integrations: false }, landing_tab: 'favorites' },
+  advanced:     { hidden_tabs: [],                               features: { ha: true,  integrations: true  }, landing_tab: 'favorites' },
+};
+const PROFILE_PRESET_LABELS = { basic: 'Basic', intermediate: 'Intermediate', advanced: 'Advanced', custom: 'Custom' };
+const PROFILE_COLORS = ['#4A90D9', '#E0655B', '#3FB27F', '#B87BD6', '#E0983B', '#4CB0C4', '#D96BA0', '#7C83E0'];
+const PROFILE_TAB_LABELS = { favorites: 'Favorites', calendars: 'Calendar', photos: 'Photos', layout: 'Layout', displays: 'Devices', family: 'Family Hub', settings: 'Settings' };
+
+function profileParseJson(v, fallback) {
+  try { const x = JSON.parse(v); return x == null ? fallback : x; } catch { return fallback; }
+}
+function profileById(id) { return PROFILES.find(p => Number(p.id) === Number(id)) || null; }
+function canManageProfiles() { return !activeProfile || !!activeProfile.is_manager; }
+function profileAllows(feature) {
+  if (!activeProfile) return true;
+  return profileParseJson(activeProfile.features, {})[feature] !== false;
+}
+function profileHiddenTabs() {
+  if (!activeProfile) return [];
+  const arr = profileParseJson(activeProfile.hidden_tabs, []);
+  return Array.isArray(arr) ? arr.filter(t => !PROFILE_ALWAYS_TABS.includes(t)) : [];
+}
+function profileHiddenSettingsSections() {
+  const out = new Set();
+  if (!profileAllows('ha')) out.add('Home Assistant');
+  if (!profileAllows('integrations')) ['Todoist', 'Push to iCloud Calendar', 'Push to Google Calendar', 'Daily Briefing'].forEach(s => out.add(s));
+  return out;
+}
+function profileInitials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+function profileAvatarHtml(p, size) {
+  const s = size || 26;
+  const face = (p.avatar && p.avatar.trim()) ? p.avatar.trim() : profileInitials(p.name);
+  return `<span class="profile-avatar" style="width:${s}px;height:${s}px;font-size:${Math.round(s * 0.5)}px;background:${escapeHtml(p.color || '#4A90D9')}">${escapeHtml(face)}</span>`;
+}
+
+function ensureProfileCss() {
+  if (document.getElementById('profiles-css')) return;
+  const st = document.createElement('style');
+  st.id = 'profiles-css';
+  st.textContent = `
+    .tab.profile-hidden-tab { display:none !important; }
+    body[data-profile-ha="off"] .needs-ha { display:none !important; }
+    body[data-profile-integrations="off"] .needs-integrations { display:none !important; }
+    #profile-chip { display:inline-flex; align-items:center; gap:7px; background:var(--card); border:1px solid var(--border); border-radius:999px; padding:3px 11px 3px 3px; cursor:pointer; color:var(--text); font-size:13px; font-weight:600; line-height:1; }
+    #profile-chip .pc-name { max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .profile-avatar { border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-weight:700; color:#fff; flex:0 0 auto; }
+    .pf-overlay { position:fixed; inset:0; z-index:100000; background:var(--bg); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:22px; padding:34px 24px; overflow-y:auto; }
+    .pf-overlay h2 { margin:0; font-size:20px; font-weight:700; }
+    .pf-grid { display:flex; flex-wrap:wrap; gap:16px; justify-content:center; max-width:540px; }
+    .pf-person { display:flex; flex-direction:column; align-items:center; gap:9px; background:none; border:none; cursor:pointer; color:var(--text); width:100px; padding:6px; border-radius:12px; }
+    .pf-person:hover { background:var(--card); }
+    .pf-person span.nm { font-size:13px; font-weight:600; text-align:center; word-break:break-word; }
+    .pf-sheet-back { position:fixed; inset:0; z-index:100001; background:rgba(0,0,0,0.55); display:flex; align-items:flex-end; justify-content:center; }
+    .pf-sheet { background:var(--card); width:100%; max-width:460px; border-radius:16px 16px 0 0; padding:18px; max-height:88vh; overflow-y:auto; }
+    .pf-sheet h3 { margin:0 0 12px; font-size:16px; }
+    .pf-row-btn { display:flex; align-items:center; gap:11px; width:100%; text-align:left; background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin-top:8px; cursor:pointer; color:var(--text); font-size:14px; }
+    .pf-field { margin-top:12px; }
+    .pf-field > label { display:block; font-size:12px; color:var(--muted); margin-bottom:5px; font-weight:600; }
+    .pf-check { display:flex; align-items:center; gap:9px; font-size:14px; margin-top:8px; cursor:pointer; }
+    .pf-check input { width:18px; height:18px; accent-color:var(--accent); flex:0 0 auto; }
+    .pf-swatches { display:flex; gap:7px; flex-wrap:wrap; }
+    .pf-swatch { width:26px; height:26px; border-radius:50%; cursor:pointer; border:2px solid transparent; }
+    .pf-swatch.sel { border-color:var(--text); }
+    .pf-actions { display:flex; gap:8px; margin-top:18px; }
+    .pf-btn { flex:1; border:none; border-radius:10px; padding:12px; font-size:14px; font-weight:600; cursor:pointer; }
+    .pf-btn.primary { background:var(--accent); color:#fff; }
+    .pf-btn.ghost { background:var(--bg); border:1px solid var(--border); color:var(--text); }
+    .pf-btn.danger { background:none; color:var(--danger,#ff5d5d); flex:0 0 auto; }
+  `;
+  document.head.appendChild(st);
+}
+
+function updateProfileChip() {
+  const nav = document.querySelector('#app-header-inner .nav');
+  if (!nav) return;
+  let chip = document.getElementById('profile-chip');
+  if (!PROFILES.length) { if (chip) chip.remove(); return; }
+  if (!chip) {
+    chip = document.createElement('button');
+    chip.id = 'profile-chip';
+    chip.type = 'button';
+    chip.addEventListener('click', openProfileSwitcher);
+    nav.appendChild(chip);
+  }
+  chip.innerHTML = activeProfile
+    ? profileAvatarHtml(activeProfile, 26) + `<span class="pc-name">${escapeHtml(activeProfile.name)}</span>`
+    : `<span class="profile-avatar" style="width:26px;height:26px;font-size:13px;background:var(--border);color:var(--text)">?</span><span class="pc-name">Choose</span>`;
+}
+
+function applyProfileView() {
+  ensureProfileCss();
+  const hidden = new Set(profileHiddenTabs());
+  document.querySelectorAll('.tabs .tab').forEach(t => t.classList.toggle('profile-hidden-tab', hidden.has(t.dataset.tab)));
+  document.body.dataset.profileHa = profileAllows('ha') ? 'on' : 'off';
+  document.body.dataset.profileIntegrations = profileAllows('integrations') ? 'on' : 'off';
+  updateProfileChip();
+  if (hidden.has(currentTab)) {
+    let target = activeProfile && activeProfile.landing_tab;
+    if (!target || hidden.has(target) || !document.querySelector(`.tab[data-tab="${target}"]`)) {
+      const firstVisible = document.querySelector('.tabs .tab:not(.profile-hidden-tab)');
+      target = firstVisible ? firstVisible.dataset.tab : 'favorites';
+    }
+    const btn = document.querySelector(`.tab[data-tab="${target}"]`);
+    if (btn) btn.click();
+  }
+}
+
+async function loadProfiles() {
+  const r = await apiFetch('/api/profiles');
+  PROFILES = Array.isArray(r) ? r : [];
+  return PROFILES;
+}
+
+async function initProfiles() {
+  await loadProfiles();
+  if (!PROFILES.length) { activeProfile = null; return; }
+  let savedId = null;
+  try { savedId = localStorage.getItem(PROFILE_ACTIVE_KEY); } catch {}
+  const found = savedId ? profileById(savedId) : null;
+  activeProfile = found || null;
+  applyProfileView();
+  if (!found) openProfilePicker();
+}
+
+function setActiveProfile(p) {
+  activeProfile = p || null;
+  try {
+    if (p) localStorage.setItem(PROFILE_ACTIVE_KEY, String(p.id));
+    else localStorage.removeItem(PROFILE_ACTIVE_KEY);
+  } catch {}
+  applyProfileView();
+  renderTab();
+}
+
+function closeProfileOverlays() {
+  document.querySelectorAll('.pf-overlay, .pf-sheet-back').forEach(e => e.remove());
+}
+
+function openProfilePicker() {
+  closeProfileOverlays();
+  ensureProfileCss();
+  const ov = document.createElement('div');
+  ov.className = 'pf-overlay';
+  ov.innerHTML = `
+    <h2>Who's using this?</h2>
+    <div class="pf-grid">${PROFILES.map(p =>
+      `<button class="pf-person" data-id="${p.id}">${profileAvatarHtml(p, 64)}<span class="nm">${escapeHtml(p.name)}${p.pin ? ' 🔒' : ''}</span></button>`).join('')}</div>
+    ${canManageProfiles() ? `<button class="pf-btn ghost" id="pf-picker-add" style="max-width:280px">＋ Add a profile</button>` : ''}
+  `;
+  document.body.appendChild(ov);
+  ov.querySelectorAll('.pf-person').forEach(btn => btn.addEventListener('click', () => {
+    const p = profileById(btn.dataset.id);
+    if (!p) return;
+    if (p.pin) promptProfilePin(p, () => { closeProfileOverlays(); setActiveProfile(p); });
+    else { closeProfileOverlays(); setActiveProfile(p); }
+  }));
+  const add = document.getElementById('pf-picker-add');
+  if (add) add.addEventListener('click', () => openProfileEditor(null));
+}
+
+function promptProfilePin(p, onOk) {
+  const back = document.createElement('div');
+  back.className = 'pf-sheet-back';
+  back.style.alignItems = 'center';
+  back.innerHTML = `
+    <div class="pf-sheet" style="border-radius:16px;max-width:320px;text-align:center">
+      <h3 style="margin-bottom:6px">${escapeHtml(p.name)}</h3>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Enter this profile's PIN</div>
+      <input id="pf-pin-input" type="password" inputmode="numeric" maxlength="8" style="width:150px;text-align:center;font-size:22px;letter-spacing:6px;padding:10px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
+      <div id="pf-pin-err" style="color:var(--danger,#ff5d5d);font-size:12px;min-height:16px;margin-top:8px"></div>
+      <div class="pf-actions">
+        <button class="pf-btn ghost" id="pf-pin-cancel">Cancel</button>
+        <button class="pf-btn primary" id="pf-pin-ok">Unlock</button>
+      </div>
+    </div>`;
+  document.body.appendChild(back);
+  const input = back.querySelector('#pf-pin-input');
+  input.focus();
+  const submit = () => {
+    if (input.value === String(p.pin)) { back.remove(); onOk(); }
+    else { back.querySelector('#pf-pin-err').textContent = 'Wrong PIN'; input.value = ''; input.focus(); }
+  };
+  back.querySelector('#pf-pin-ok').addEventListener('click', submit);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  back.querySelector('#pf-pin-cancel').addEventListener('click', () => back.remove());
+}
+
+function openProfileSwitcher() {
+  closeProfileOverlays();
+  ensureProfileCss();
+  const back = document.createElement('div');
+  back.className = 'pf-sheet-back';
+  back.innerHTML = `
+    <div class="pf-sheet">
+      <h3>Profiles</h3>
+      ${PROFILES.map(p => `
+        <button class="pf-row-btn" data-id="${p.id}">
+          ${profileAvatarHtml(p, 30)}
+          <span style="flex:1">${escapeHtml(p.name)}${p.pin ? ' 🔒' : ''}</span>
+          ${activeProfile && activeProfile.id === p.id ? '<span style="color:var(--accent)">✓</span>' : ''}
+        </button>`).join('')}
+      <div style="margin-top:14px;display:flex;flex-direction:column;gap:8px">
+        ${canManageProfiles()
+          ? `<button class="pf-btn ghost" id="pf-manage">Manage profiles</button>`
+          : (activeProfile ? `<button class="pf-btn ghost" id="pf-edit-self">Edit my profile</button>` : '')}
+      </div>
+    </div>`;
+  document.body.appendChild(back);
+  back.addEventListener('click', e => { if (e.target === back) back.remove(); });
+  back.querySelectorAll('.pf-row-btn').forEach(btn => btn.addEventListener('click', () => {
+    const p = profileById(btn.dataset.id);
+    if (!p) return;
+    back.remove();
+    if (activeProfile && activeProfile.id === p.id) { openProfileEditor(p); return; }
+    if (p.pin) promptProfilePin(p, () => setActiveProfile(p));
+    else setActiveProfile(p);
+  }));
+  const manage = back.querySelector('#pf-manage');
+  if (manage) manage.addEventListener('click', () => { back.remove(); openProfileManager(); });
+  const editSelf = back.querySelector('#pf-edit-self');
+  if (editSelf) editSelf.addEventListener('click', () => { back.remove(); openProfileEditor(activeProfile); });
+}
+
+function openProfileManager() {
+  closeProfileOverlays();
+  ensureProfileCss();
+  const back = document.createElement('div');
+  back.className = 'pf-sheet-back';
+  back.innerHTML = `
+    <div class="pf-sheet">
+      <h3>Family profiles</h3>
+      ${PROFILES.map(p => `
+        <button class="pf-row-btn" data-id="${p.id}">
+          ${profileAvatarHtml(p, 30)}
+          <span style="flex:1">${escapeHtml(p.name)}${p.is_manager ? ' <span style="font-size:10px;color:var(--muted)">manager</span>' : ''}${p.pin ? ' 🔒' : ''}</span>
+          <span style="color:var(--muted);font-size:12px">${PROFILE_PRESET_LABELS[p.preset] || 'Custom'}</span>
+        </button>`).join('') || '<div style="font-size:13px;color:var(--muted)">No profiles yet.</div>'}
+      <div class="pf-actions">
+        <button class="pf-btn primary" id="pf-add">＋ Add profile</button>
+        <button class="pf-btn ghost" id="pf-close">Done</button>
+      </div>
+    </div>`;
+  document.body.appendChild(back);
+  back.addEventListener('click', e => { if (e.target === back) back.remove(); });
+  back.querySelector('#pf-close').addEventListener('click', () => back.remove());
+  back.querySelector('#pf-add').addEventListener('click', () => { back.remove(); openProfileEditor(null); });
+  back.querySelectorAll('.pf-row-btn').forEach(btn => btn.addEventListener('click', () => { back.remove(); openProfileEditor(profileById(btn.dataset.id)); }));
+}
+
+function openProfileEditor(profile) {
+  closeProfileOverlays();
+  ensureProfileCss();
+  const isNew = !profile;
+  const firstEver = isNew && PROFILES.length === 0;
+  const p = profile || { name: '', color: PROFILE_COLORS[PROFILES.length % PROFILE_COLORS.length], avatar: '', is_manager: firstEver ? 1 : 0, landing_tab: 'favorites', hidden_tabs: '[]', features: '{}', pin: '', preset: firstEver ? 'advanced' : 'custom' };
+  const manager = canManageProfiles();
+  const editingSelf = activeProfile && profile && activeProfile.id === profile.id;
+  if (!isNew && !manager && !editingSelf) { showToast('You can only edit your own profile'); return; }
+
+  let hiddenTabs = new Set(profileParseJson(p.hidden_tabs, []));
+  let features = { ...profileParseJson(p.features, {}) };
+  let color = p.color || PROFILE_COLORS[0];
+  let landingPref = p.landing_tab || 'favorites';
+
+  const back = document.createElement('div');
+  back.className = 'pf-sheet-back';
+  back.innerHTML = `
+    <div class="pf-sheet">
+      <h3>${isNew ? 'New profile' : 'Edit profile'}</h3>
+      <div class="pf-field"><label>Name</label>
+        <input id="pf-name" class="form-input" maxlength="40" placeholder="e.g. Mom" value="${escapeHtml(p.name)}"></div>
+      <div class="pf-field"><label>Avatar — emoji or initials (optional)</label>
+        <input id="pf-avatar" class="form-input" maxlength="8" placeholder="Auto from name" value="${escapeHtml(p.avatar || '')}"></div>
+      <div class="pf-field"><label>Colour</label>
+        <div class="pf-swatches" id="pf-swatches">${PROFILE_COLORS.map(c => `<span class="pf-swatch${c === color ? ' sel' : ''}" data-c="${c}" style="background:${c}"></span>`).join('')}</div></div>
+      <div class="pf-field"><label>Preset</label>
+        <select id="pf-preset" class="form-input">${['basic', 'intermediate', 'advanced', 'custom'].map(k => `<option value="${k}"${k === (p.preset || 'custom') ? ' selected' : ''}>${PROFILE_PRESET_LABELS[k]}</option>`).join('')}</select></div>
+      <div class="pf-field"><label>Tabs this profile sees</label>
+        ${PROFILE_HIDEABLE_TABS.map(t => `<label class="pf-check"><input type="checkbox" class="pf-tab" data-tab="${t.id}"${hiddenTabs.has(t.id) ? '' : ' checked'}> ${t.label}</label>`).join('')}
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">Calendar, Favorites and Settings are always shown.</div></div>
+      <div class="pf-field"><label>Features</label>
+        ${PROFILE_FEATURES.map(f => `<label class="pf-check"><input type="checkbox" class="pf-feat" data-feat="${f.key}"${features[f.key] === false ? '' : ' checked'}> ${f.label} <span style="font-size:11px;color:var(--muted)">— ${f.hint}</span></label>`).join('')}</div>
+      <div class="pf-field"><label>Opens to</label><select id="pf-landing" class="form-input"></select></div>
+      <div class="pf-field"><label>Gateway PIN — optional, prompted only when switching in</label>
+        <input id="pf-pin" class="form-input" inputmode="numeric" maxlength="8" placeholder="${p.pin ? '•••• set — blank keeps it' : 'No PIN'}" value=""></div>
+      ${manager ? `<label class="pf-check" style="margin-top:14px"><input type="checkbox" id="pf-manager"${p.is_manager ? ' checked' : ''}> Manager — can edit everyone's profile</label>` : ''}
+      <div class="pf-actions">
+        <button class="pf-btn primary" id="pf-save">Save</button>
+        <button class="pf-btn ghost" id="pf-cancel">Cancel</button>
+        ${(!isNew && manager) ? `<button class="pf-btn danger" id="pf-delete">Delete</button>` : ''}
+      </div>
+      <div id="pf-err" style="color:var(--danger,#ff5d5d);font-size:12px;min-height:16px;margin-top:8px"></div>
+    </div>`;
+  document.body.appendChild(back);
+
+  const rebuildLanding = () => {
+    const visible = ['favorites', 'calendars', ...PROFILE_HIDEABLE_TABS.map(t => t.id).filter(id => !hiddenTabs.has(id)), 'settings'];
+    if (!visible.includes(landingPref)) landingPref = 'favorites';
+    back.querySelector('#pf-landing').innerHTML = visible.map(v => `<option value="${v}"${v === landingPref ? ' selected' : ''}>${PROFILE_TAB_LABELS[v]}</option>`).join('');
+  };
+  rebuildLanding();
+
+  back.querySelectorAll('.pf-swatch').forEach(sw => sw.addEventListener('click', () => {
+    color = sw.dataset.c;
+    back.querySelectorAll('.pf-swatch').forEach(s => s.classList.toggle('sel', s === sw));
+  }));
+  const markCustom = () => { back.querySelector('#pf-preset').value = 'custom'; };
+  back.querySelector('#pf-preset').addEventListener('change', e => {
+    const m = PROFILE_PRESET_MAP[e.target.value];
+    if (!m) return;
+    hiddenTabs = new Set(m.hidden_tabs);
+    features = { ...m.features };
+    landingPref = m.landing_tab;
+    back.querySelectorAll('.pf-tab').forEach(cb => { cb.checked = !hiddenTabs.has(cb.dataset.tab); });
+    back.querySelectorAll('.pf-feat').forEach(cb => { cb.checked = features[cb.dataset.feat] !== false; });
+    rebuildLanding();
+  });
+  back.querySelectorAll('.pf-tab').forEach(cb => cb.addEventListener('change', () => {
+    if (cb.checked) hiddenTabs.delete(cb.dataset.tab); else hiddenTabs.add(cb.dataset.tab);
+    markCustom(); rebuildLanding();
+  }));
+  back.querySelectorAll('.pf-feat').forEach(cb => cb.addEventListener('change', () => { features[cb.dataset.feat] = cb.checked; markCustom(); }));
+  back.querySelector('#pf-landing').addEventListener('change', e => { landingPref = e.target.value; });
+
+  back.querySelector('#pf-cancel').addEventListener('click', () => {
+    back.remove();
+    if (isNew && !activeProfile && PROFILES.length) openProfilePicker();
+  });
+
+  const del = back.querySelector('#pf-delete');
+  if (del) del.addEventListener('click', async () => {
+    if (!confirm(`Delete the profile "${p.name}"? Events they own lose their colour tag.`)) return;
+    const r = await apiFetch(`/api/profiles/${p.id}`, { method: 'DELETE' });
+    if (r && r.ok) {
+      back.remove();
+      if (activeProfile && activeProfile.id === p.id) { activeProfile = null; try { localStorage.removeItem(PROFILE_ACTIVE_KEY); } catch {} }
+      await loadProfiles();
+      applyProfileView();
+      if (PROFILES.length && !activeProfile) openProfilePicker();
+      renderTab();
+      showToast('Profile deleted');
+    } else {
+      back.querySelector('#pf-err').textContent = (r && r.error) || 'Could not delete';
+    }
+  });
+
+  back.querySelector('#pf-save').addEventListener('click', async () => {
+    const name = back.querySelector('#pf-name').value.trim();
+    if (!name) { back.querySelector('#pf-err').textContent = 'Name is required'; return; }
+    const body = {
+      name,
+      avatar: back.querySelector('#pf-avatar').value.trim(),
+      color,
+      preset: back.querySelector('#pf-preset').value,
+      hidden_tabs: [...hiddenTabs],
+      features,
+      landing_tab: landingPref,
+    };
+    const pinVal = back.querySelector('#pf-pin').value.replace(/\D/g, '');
+    if (isNew || pinVal) body.pin = pinVal;          // on edit, blank = keep existing
+    const mgr = back.querySelector('#pf-manager');
+    if (mgr) body.is_manager = mgr.checked;
+    else if (firstEver) body.is_manager = true;
+
+    const r = isNew
+      ? await apiFetch('/api/profiles', { method: 'POST', body: JSON.stringify(body) })
+      : await apiFetch(`/api/profiles/${p.id}`, { method: 'PUT', body: JSON.stringify(body) });
+    if (r && r.id) {
+      back.remove();
+      await loadProfiles();
+      if (isNew && !activeProfile) setActiveProfile(profileById(r.id));
+      else {
+        if (activeProfile) activeProfile = profileById(activeProfile.id) || activeProfile;
+        applyProfileView();
+        renderTab();
+      }
+      showToast(isNew ? 'Profile created' : 'Profile saved');
+    } else {
+      back.querySelector('#pf-err').textContent = (r && r.error) || 'Could not save';
+    }
+  });
+}
+
+function renderProfilesSettingsBody() {
+  const box = document.getElementById('profiles-settings-body');
+  if (!box) return;
+  if (!PROFILES.length) {
+    box.innerHTML = `<button class="settings-save" id="pf-settings-setup" style="margin:0">Set up family profiles</button>`;
+    box.querySelector('#pf-settings-setup').addEventListener('click', () => openProfileEditor(null));
+    return;
+  }
+  const canMgr = canManageProfiles();
+  const rowFor = (p, suffix) => `
+    <button class="pf-row-btn" data-id="${p.id}" style="margin-top:6px">
+      ${profileAvatarHtml(p, 26)}
+      <span style="flex:1">${escapeHtml(p.name)}${suffix || ''}</span>
+      <span style="color:var(--muted);font-size:12px">${PROFILE_PRESET_LABELS[p.preset] || 'Custom'}</span>
+    </button>`;
+  const list = canMgr
+    ? PROFILES.map(p => rowFor(p, (p.is_manager ? ' <span style="font-size:10px;color:var(--muted)">manager</span>' : '') + (p.pin ? ' 🔒' : ''))).join('')
+    : (activeProfile ? rowFor(activeProfile, ' <span style="font-size:10px;color:var(--muted)">you</span>') : '');
+  box.innerHTML = `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:2px">${activeProfile ? 'Active on this device: <b>' + escapeHtml(activeProfile.name) + '</b>' : 'No profile chosen on this device.'}</div>
+    ${list}
+    <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+      ${canMgr ? `<button class="settings-save" id="pf-settings-add" style="margin:0">＋ Add profile</button>` : ''}
+      <button class="settings-save" id="pf-settings-switch" style="margin:0;background:var(--card);border:1px solid var(--border);color:var(--text)">Switch / choose profile</button>
+    </div>`;
+  box.querySelectorAll('.pf-row-btn').forEach(btn => btn.addEventListener('click', () => {
+    const p = profileById(btn.dataset.id);
+    if (p) openProfileEditor(p);
+  }));
+  const add = box.querySelector('#pf-settings-add');
+  if (add) add.addEventListener('click', () => openProfileEditor(null));
+  box.querySelector('#pf-settings-switch').addEventListener('click', openProfilePicker);
+}
 
 init();
 </script>

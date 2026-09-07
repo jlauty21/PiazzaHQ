@@ -18,6 +18,10 @@ const DEFAULT_STATES = {
 function startFakeHA(seedStates) {
   const states = JSON.parse(JSON.stringify(seedStates || DEFAULT_STATES));
   const calls = []; // { domain, service, data }
+  // Real HA holds the REST service-call response until the action finishes
+  // (a cover's whole travel, say). Tests set this to simulate that lag so the
+  // fire-and-forget path (soft-ack -> {ok,pending:true}) can be exercised.
+  let serviceDelayMs = 0;
 
   const server = http.createServer((req, res) => {
     const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
@@ -52,7 +56,8 @@ function startFakeHA(seedStates) {
           else if (service === 'open_cover') states[id].state = 'open';
           else if (service === 'close_cover') states[id].state = 'closed';
         }
-        send(200, ids.map(id => states[id]).filter(Boolean));
+        const reply = () => send(200, ids.map(id => states[id]).filter(Boolean));
+        if (serviceDelayMs > 0) setTimeout(reply, serviceDelayMs); else reply();
       });
       return;
     }
@@ -68,6 +73,7 @@ function startFakeHA(seedStates) {
         calls,
         states,
         setState: (id, state, attrs) => { states[id] = { entity_id: id, state, attributes: { ...(states[id] && states[id].attributes), ...(attrs || {}) } }; },
+        setServiceDelay: (ms) => { serviceDelayMs = Number(ms) || 0; },
         stop: () => new Promise(r => server.close(r)),
       });
     });
