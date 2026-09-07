@@ -1,0 +1,29 @@
+# One service that runs the test layers. Invoked via test/run.sh (which the
+# npm `test*` scripts call). The repo root is bind-mounted read-write at
+# /work so tests see live source with no rebuild.
+name: piazzahq-tests
+
+services:
+  tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: piazzahq-tests
+    working_dir: /work
+    init: true          # reap zombie processes (Chromium spawns many)
+    ipc: host           # Chromium in Docker needs a large /dev/shm; host IPC gives it
+    volumes:
+      - ..:/work
+      # Linux-native node_modules for the API/UI layers (server.js does
+      # require('better-sqlite3'), a native module). This named volume
+      # OVERLAYS /work/node_modules so the install lands in the container
+      # only — the Windows repo checkout stays clean. run-tests.js runs
+      # `npm install --omit=dev` into it once, when it's empty.
+      - piazzahq-test-node-modules:/work/node_modules
+    environment:
+      - CI=1
+    # Default: run everything. test/run.sh overrides the command per layer.
+    command: ["node", "test/run-tests.js", "all"]
+
+volumes:
+  piazzahq-test-node-modules:

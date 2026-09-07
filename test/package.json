@@ -1,0 +1,9 @@
+{
+  "name": "piazzahq-tests",
+  "private": true,
+  "description": "Dev-only: Playwright for the UI smoke layer. Not shipped.",
+  "//": "@playwright/test MUST match the Dockerfile's playwright image tag so it uses the browsers already baked into the image.",
+  "devDependencies": {
+    "@playwright/test": "1.49.1"
+  }
+}
