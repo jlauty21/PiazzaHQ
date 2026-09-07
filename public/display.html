@@ -38,7 +38,11 @@
     :root, .widget { --muted: color-mix(in srgb, var(--text) 55%, transparent); }
 
     html, body { width:100%; height:100%; background:var(--bg); color:var(--text);
-      font-family:var(--global-font-family, var(--theme-font-family, 'DM Sans', sans-serif)); overflow:hidden; }
+      font-family:var(--global-font-family, var(--theme-font-family, 'DM Sans', sans-serif)); overflow:hidden;
+      /* A wall display never wants the browser's edge-swipe "back"/"forward"
+         gesture — on a laptop trackpad or a touchscreen it hijacks a
+         rightward widget drag as history navigation. */
+      overscroll-behavior:none; }
 
     /* Hide the mouse cursor on the actual wall display — this is OS/session-proof
        (works on Wayland/labwc where unclutter often fails). In PREVIEW (phone/desktop)
@@ -402,7 +406,92 @@
       font-size:14px; line-height:1.5; white-space:pre-wrap;
       border-top:1px solid var(--border); padding-top:14px;
     }
+    #event-detail-delete {
+      margin-top:16px; width:100%; padding:11px; border-radius:10px; border:none;
+      font-size:14px; font-weight:600; background:rgba(255,80,80,0.16); color:#ff9b9b;
+    }
+    #event-detail-delete:disabled { opacity:0.5; }
+    #event-detail-hide {
+      margin-top:16px; width:100%; padding:11px; border-radius:10px; border:none;
+      font-size:14px; font-weight:600; background:rgba(255,255,255,0.1); color:#e8edf5;
+    }
+    #event-detail-hide:disabled { opacity:0.5; }
+    #event-detail-hide-series {
+      margin-top:8px; width:100%; padding:8px; border-radius:10px; border:none;
+      font-size:13px; font-weight:500; background:transparent; color:var(--muted);
+      text-decoration:underline;
+    }
+    #event-detail-hide-series:disabled { opacity:0.5; }
     [data-event-key] { cursor:pointer; }
+    /* Long-press a day cell on a calendar widget to add an event (see
+       wireCalCellLongPress / openEventAddSheet). Card styling mirrors
+       #event-detail-card so the two calendar sheets feel like one thing. */
+    .mc-cell[data-date] { cursor:pointer; }
+    #event-add-overlay {
+      position:fixed; inset:0; z-index:91;
+      background:rgba(4,6,12,0.75); backdrop-filter:blur(2px);
+      display:flex; align-items:center; justify-content:center; padding:24px;
+    }
+    #event-add-card {
+      background:#12172a; color:#e8edf5; border-radius:16px; padding:24px;
+      max-width:440px; width:100%; max-height:85vh; overflow-y:auto;
+      position:relative; box-shadow:0 20px 60px -12px rgba(0,0,0,0.7);
+    }
+    #event-add-close {
+      position:absolute; top:14px; right:14px; background:rgba(255,255,255,0.1);
+      color:#e8edf5; border:none; width:32px; height:32px; border-radius:50%;
+      font-size:15px;
+    }
+    #event-add-heading { font-size:20px; font-weight:700; margin-bottom:16px; padding-right:36px; }
+    .ea-row { margin-bottom:14px; }
+    .ea-row > label { display:block; font-size:13px; color:#a8b2c4; margin-bottom:6px; }
+    .ea-row.ea-inline > label { display:flex; align-items:center; gap:8px; font-size:15px; color:#e8edf5; margin-bottom:0; }
+    .ea-row.ea-inline input[type="checkbox"] { width:20px; height:20px; }
+    #event-add-card input[type="text"],
+    #event-add-card input[type="date"],
+    #event-add-card input[type="time"],
+    #event-add-card select {
+      width:100%; box-sizing:border-box; padding:11px 12px; font-size:15px;
+      border-radius:10px; border:1px solid rgba(255,255,255,0.15);
+      background:rgba(255,255,255,0.05); color:#e8edf5;
+    }
+    #event-add-card select option { background:#12172a; color:#e8edf5; }
+    #ea-time-row .ea-time-fields { display:flex; align-items:center; gap:8px; }
+    #ea-time-row .ea-time-fields input { flex:1; }
+    #ea-time-row .ea-time-fields span { color:#a8b2c4; font-size:13px; }
+    .ea-hint { font-size:11px; color:#8892a4; margin-top:5px; }
+    .ea-title-wrap { display:flex; gap:8px; align-items:stretch; }
+    .ea-title-wrap input { flex:1; }
+    #ea-write-btn {
+      flex:0 0 auto; width:46px; border-radius:10px; border:1px solid rgba(255,255,255,0.15);
+      background:rgba(255,255,255,0.05); font-size:18px; line-height:1;
+    }
+    #ea-pad-row label { display:flex; align-items:center; justify-content:space-between; }
+    .ea-pad-mini {
+      font-size:11px; font-weight:600; padding:4px 10px; border-radius:7px;
+      border:1px solid rgba(255,255,255,0.15); background:rgba(255,255,255,0.06); color:#e8edf5;
+    }
+    #ea-pad {
+      width:100%; height:150px; display:block; border-radius:10px; touch-action:none;
+      border:1px dashed rgba(255,255,255,0.25); background:rgba(255,255,255,0.04); cursor:crosshair;
+    }
+    .ea-pad-actions { display:flex; gap:10px; margin-top:10px; }
+    .ea-pad-actions button {
+      flex:1; padding:10px; border-radius:9px; font-size:13px; font-weight:600; border:none;
+    }
+    #ea-pad-cancel { background:rgba(255,255,255,0.1); color:#e8edf5; }
+    #ea-pad-done { background:#4A90D9; color:#fff; }
+    .ea-error {
+      font-size:13px; color:#ff9b9b; background:rgba(255,80,80,0.12);
+      border-radius:8px; padding:8px 10px; margin-bottom:12px;
+    }
+    .ea-actions { display:flex; gap:10px; margin-top:18px; }
+    .ea-actions button {
+      flex:1; padding:12px; border-radius:10px; font-size:14px; font-weight:600; border:none;
+    }
+    #ea-cancel { background:rgba(255,255,255,0.1); color:#e8edf5; }
+    #ea-save { background:#4A90D9; color:#fff; }
+    #ea-save:disabled { opacity:0.5; }
     .wp-category {
       margin-bottom:8px; border-radius:10px; overflow:hidden;
       background:rgba(255,255,255,0.04);
@@ -451,7 +540,7 @@
        normal viewing — same spirit as a photo/video editor's own "you are
        now editing" chrome. */
     body.edit-mode-active #rotate-wrap { outline:3px solid #3ec97a; outline-offset:-3px; }
-    body.edit-mode-active .widget { cursor:grab; outline:1px dashed rgba(255,255,255,0.25); }
+    body.edit-mode-active .widget { cursor:grab; outline:1px dashed rgba(255,255,255,0.25); touch-action:none; }
     body.edit-mode-active .widget.dragging { cursor:grabbing; outline:2px solid #3ec97a; z-index:40; opacity:0.9; }
     /* Selected widget gets a solid outline — outline (not border) so it
        doesn't shift the widget's own box/content, and isn't clipped by the
@@ -2070,6 +2159,105 @@
       border-radius:999px; border:none; background:var(--accent); color:#fff; cursor:pointer; touch-action:manipulation; }
     .ha-trigger-btn:disabled { opacity:0.6; cursor:default; }
 
+    /* ── Home Assistant Tier 2: light brightness slider ── */
+    .ha-bright-slider { -webkit-appearance:none; appearance:none; width:calc(var(--ha-font) * 6);
+      max-width:80%; height:calc(var(--ha-font) * 0.5); border-radius:999px;
+      background:rgba(255,255,255,0.18); outline:none; margin:calc(var(--ha-font) * 0.35) 0; cursor:pointer; }
+    .ha-bright-slider::-webkit-slider-thumb { -webkit-appearance:none; appearance:none;
+      width:calc(var(--ha-font) * 1); height:calc(var(--ha-font) * 1); border-radius:50%;
+      background:var(--accent); border:2px solid #fff; cursor:pointer; }
+    .ha-bright-slider::-moz-range-thumb { width:calc(var(--ha-font) * 1); height:calc(var(--ha-font) * 1);
+      border-radius:50%; background:var(--accent); border:2px solid #fff; cursor:pointer; }
+    .ha-bright-slider:disabled { opacity:0.5; }
+    .ha-ct-slider { background:linear-gradient(90deg,#ffb46b,#fff,#bcd8ff); }
+    .ha-swatch-row { display:flex; gap:calc(var(--ha-font) * 0.3); justify-content:center;
+      margin:calc(var(--ha-font) * 0.3) 0; flex-wrap:wrap; }
+    .ha-swatch { width:calc(var(--ha-font) * 1.1); height:calc(var(--ha-font) * 1.1); border-radius:50%;
+      border:2px solid rgba(255,255,255,0.35); cursor:pointer; touch-action:manipulation; padding:0; }
+    .ha-swatch:disabled { opacity:0.4; }
+    /* ── Home Assistant: sensor sparkline ── */
+    .ha-sparkline { width:80%; max-width:calc(var(--ha-font) * 8); height:calc(var(--ha-font) * 1.5);
+      margin-top:calc(var(--ha-font) * 0.25); }
+    .ha-spark-svg { width:100%; height:100%; display:block; overflow:visible; }
+    .ha-spark-line { fill:none; stroke:var(--accent, #7ec8e3); stroke-width:1.5; vector-effect:non-scaling-stroke; }
+    .ha-spark-fill { fill:var(--accent, #7ec8e3); opacity:0.14; }
+    /* ── Home Assistant alert banner ── */
+    #ha-alert-banner { position:absolute; top:0; left:0; right:0; z-index:95;
+      display:flex; flex-direction:column; gap:2px; pointer-events:none; }
+    #ha-alert-banner .ha-alert-row { pointer-events:auto; display:flex; align-items:center;
+      justify-content:space-between; gap:12px; padding:10px 16px;
+      background:rgba(180,40,40,0.94); color:#fff; font-size:16px; font-weight:600;
+      box-shadow:0 2px 10px -2px rgba(0,0,0,0.5); }
+    #ha-alert-banner .ha-alert-msg { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    #ha-alert-banner .ha-alert-x { flex-shrink:0; background:rgba(255,255,255,0.2); color:#fff;
+      border:none; width:28px; height:28px; border-radius:50%; font-size:14px; cursor:pointer; }
+
+    /* ── Demo-mode corner pill + tour + expiry curtain ── */
+    #demo-banner { position:fixed; top:14px; right:14px; z-index:2147483000;
+      display:flex; flex-direction:column; align-items:flex-end; gap:8px;
+      padding:10px 12px; border-radius:14px;
+      background:rgba(20,22,26,0.9); color:#fff; border:1px solid rgba(255,255,255,0.12);
+      box-shadow:0 8px 24px -10px rgba(0,0,0,0.55); backdrop-filter:blur(6px);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+      font-size:12.5px; font-weight:600; max-width:160px; }
+    #demo-banner .demo-row { display:flex; align-items:center; gap:7px; align-self:stretch; }
+    #demo-banner .demo-dot { width:7px; height:7px; border-radius:50%; background:#4A90D9; flex:0 0 auto;
+      box-shadow:0 0 0 0 rgba(74,144,217,0.6); animation:demoPulse 2s ease-out infinite; }
+    #demo-banner .demo-count { font-variant-numeric:tabular-nums; opacity:0.9; }
+    #demo-banner .demo-qr { width:120px; height:120px; background:#fff; border-radius:8px; padding:8px; }
+    #demo-banner .demo-qr svg { width:100%; height:100%; display:block; }
+    #demo-banner .demo-qr-cap { font-size:11px; font-weight:600; opacity:0.75; text-align:center; align-self:stretch; }
+    /* Live Edit's own chrome (Done button, resize handles) lives in the same
+       corner — get the demo pill out of the way while editing. */
+    body.edit-mode-active #demo-banner { display:none !important; }
+    /* First-run nudge toward the edit pencil (demo only). */
+    #demo-edit-hint { position:fixed; right:14px; bottom:80px; z-index:2147483200;
+      max-width:210px; padding:10px 13px; border-radius:12px;
+      background:#4A90D9; color:#fff; font-size:13px; font-weight:600; line-height:1.35;
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+      box-shadow:0 10px 26px -8px rgba(0,0,0,0.5); animation:demoHintBob 1.4s ease-in-out infinite; }
+    #demo-edit-hint::after { content:""; position:absolute; right:22px; bottom:-7px;
+      border:7px solid transparent; border-top-color:#4A90D9; border-bottom:0; }
+    @keyframes demoHintBob { 0%,100%{ transform:translateY(0); } 50%{ transform:translateY(4px); } }
+    body.edit-mode-active #demo-edit-hint { display:none !important; }
+    #demo-banner a { color:#8ec3ff; text-decoration:none; font-weight:700; }
+    @keyframes demoPulse { 0%{box-shadow:0 0 0 0 rgba(74,144,217,0.5);} 70%{box-shadow:0 0 0 8px rgba(74,144,217,0);} 100%{box-shadow:0 0 0 0 rgba(74,144,217,0);} }
+    #demo-tour { position:fixed; inset:0; z-index:2147483500; display:flex; align-items:center; justify-content:center;
+      background:rgba(12,14,17,0.82); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+    #demo-tour .dt-card { background:#fff; color:#1b1d21; max-width:460px; margin:32px; padding:30px 32px;
+      border-radius:18px; box-shadow:0 24px 60px -18px rgba(0,0,0,0.6); }
+    #demo-tour h2 { margin:0 0 6px; font-size:22px; font-weight:800; }
+    #demo-tour p { margin:0 0 18px; font-size:14.5px; opacity:0.7; }
+    #demo-tour ul { margin:0 0 22px; padding:0; list-style:none; display:flex; flex-direction:column; gap:12px; }
+    #demo-tour li { display:flex; gap:12px; align-items:flex-start; font-size:14.5px; line-height:1.45; }
+    #demo-tour li .dt-ic { flex:0 0 auto; width:26px; height:26px; border-radius:8px; background:#eef2f7;
+      display:flex; align-items:center; justify-content:center; font-size:15px; }
+    #demo-tour .dt-go { display:inline-block; padding:11px 22px; border-radius:10px; border:none; cursor:pointer;
+      background:#4A90D9; color:#fff; font-weight:700; font-size:15px; font-family:inherit; }
+    #demo-ended { position:fixed; inset:0; z-index:2147483600; display:flex; flex-direction:column;
+      align-items:center; justify-content:center; gap:18px; text-align:center; padding:40px;
+      background:rgba(14,15,18,0.97); color:#fff;
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+    #demo-ended h2 { margin:0; font-size:30px; font-weight:800; letter-spacing:-0.01em; }
+    #demo-ended p { margin:0; font-size:17px; opacity:0.8; max-width:32ch; line-height:1.5; }
+    #demo-ended .demo-cta { margin-top:8px; display:inline-block; padding:12px 22px; border-radius:10px;
+      background:#4A90D9; color:#fff; font-weight:700; font-size:16px; text-decoration:none; }
+
+    /* ── Home Assistant Tier 2: media_player ── */
+    .ha-media-title { font-size:calc(var(--ha-font) * 0.5); opacity:0.75; max-width:90%;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:calc(var(--ha-font) * 0.2); }
+    .ha-media-row { display:flex; align-items:center; justify-content:center; gap:calc(var(--ha-font) * 0.5); }
+
+    /* ── Home Assistant Tier 2: covers (garage/blinds) + locks ── */
+    .ha-cover-row { display:flex; align-items:center; justify-content:center; gap:calc(var(--ha-font) * 0.5); }
+    .ha-action-btn { min-width:calc(var(--ha-font) * 1.9); height:calc(var(--ha-font) * 1.9);
+      padding:0 calc(var(--ha-font) * 0.5); border-radius:calc(var(--ha-font) * 0.4);
+      border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:inherit;
+      font-size:calc(var(--ha-font) * 0.85); font-weight:700; cursor:pointer; touch-action:manipulation; line-height:1; }
+    .ha-action-btn:disabled { opacity:0.4; cursor:default; }
+    .ha-lock-btn { min-width:auto; height:auto; padding:0.6em 1.2em; border-radius:999px;
+      border:none; background:var(--accent); color:#fff; font-size:calc(var(--ha-font) * 0.6); }
+
     /* ── Home Assistant Tier 4: multi-entity dashboard ──
        Reuses ha-toggle-switch/ha-temp-btn/ha-trigger-btn as-is (shared with
        Tier 2's Entity Status widget via renderHaEntityControl), but ha-label/
@@ -2473,6 +2661,64 @@
     <div id="event-detail-time"></div>
     <div id="event-detail-source"></div>
     <div id="event-detail-notes"></div>
+    <button id="event-detail-delete" type="button" hidden>Delete event</button>
+    <button id="event-detail-hide" type="button" hidden>Hide from display</button>
+    <button id="event-detail-hide-series" type="button" hidden></button>
+  </div>
+</div>
+<!-- Add-event sheet: opened by long-pressing a day cell on a calendar
+     widget (wireCalCellLongPress -> openEventAddSheet). Plain typed form;
+     saving POSTs /api/events, which on a slave display is proxied to the
+     host, which then pushes the new event out to iCloud/Google. -->
+<div id="event-add-overlay" style="display:none">
+  <div id="event-add-card">
+    <button id="event-add-close" aria-label="Close">✕</button>
+    <div id="event-add-heading">New event</div>
+    <div class="ea-row">
+      <label for="ea-title">Title</label>
+      <div class="ea-title-wrap">
+        <input type="text" id="ea-title" maxlength="200" placeholder="What's happening?" autocomplete="off">
+        <button type="button" id="ea-write-btn" title="Write it" hidden>✍️</button>
+      </div>
+    </div>
+    <div class="ea-row" id="ea-pad-row" hidden>
+      <label>Write the title <button type="button" id="ea-pad-clear" class="ea-pad-mini">Clear</button></label>
+      <canvas id="ea-pad"></canvas>
+      <div class="ea-pad-actions">
+        <button type="button" id="ea-pad-cancel">Back to typing</button>
+        <button type="button" id="ea-pad-done">Use this</button>
+      </div>
+      <div class="ea-hint" id="ea-pad-hint">Print a few words, then "Use this".</div>
+    </div>
+    <div class="ea-row">
+      <label for="ea-date">Date</label>
+      <input type="date" id="ea-date">
+    </div>
+    <div class="ea-row ea-inline">
+      <label><input type="checkbox" id="ea-allday" checked> All day</label>
+    </div>
+    <div class="ea-row" id="ea-time-row" style="display:none">
+      <label>Time</label>
+      <div class="ea-time-fields">
+        <input type="time" id="ea-start">
+        <span>to</span>
+        <input type="time" id="ea-end">
+      </div>
+    </div>
+    <div class="ea-row">
+      <label for="ea-enddate">Ends</label>
+      <input type="date" id="ea-enddate">
+      <div class="ea-hint">Leave blank for a single-day event.</div>
+    </div>
+    <div class="ea-row" id="ea-target-row" hidden>
+      <label for="ea-target">Add to</label>
+      <select id="ea-target"></select>
+    </div>
+    <div id="ea-error" class="ea-error" style="display:none"></div>
+    <div class="ea-actions">
+      <button id="ea-cancel" type="button">Cancel</button>
+      <button id="ea-save" type="button">Add event</button>
+    </div>
   </div>
 </div>
 <!-- Placement banner: shown after picking a type, replaces the normal Live
@@ -3522,7 +3768,19 @@ function radarFingerprint(w) {
     (w.radarOpacity !== undefined ? w.radarOpacity : 80),
   ]);
 }
+let _renderDeferredDuringDrag = false;
 function renderLayout() {
+  // Never blow away #canvas while a widget is being dragged or resized in
+  // Live Edit — it would replace the very element the pointer is captured on,
+  // silently ending the gesture ("moves a bit, then stops"). Any re-render
+  // that lands mid-drag is coalesced into one that runs on drag end.
+  // Guard against a WEDGED drag state: if the tracked element is gone from
+  // the DOM, the gesture is already dead (its pointerup/cancel can never
+  // fire), so clearing here is the only thing that lets renders resume —
+  // otherwise every widget freezes indefinitely on its last drawn state.
+  if (_dragState && !(_dragState.el && _dragState.el.isConnected)) _dragState = null;
+  if (_resizeState && !(_resizeState.el && _resizeState.el.isConnected)) _resizeState = null;
+  if (_dragState || _resizeState) { _renderDeferredDuringDrag = true; return; }
   const canvas = document.getElementById('canvas');
   const W = effectiveWidth(), H = effectiveHeight();
   // Radar widgets hold real, expensive-to-recreate state (a live Leaflet map
@@ -3690,6 +3948,7 @@ function renderLayout() {
   requestAnimationFrame(wireTasksWidgetTaps);
   requestAnimationFrame(wireMiniCalNav);
   requestAnimationFrame(wireEntityStatusTaps);
+  requestAnimationFrame(wireHaSparklines); // fill the sensor trend line — a full re-render recreates the empty placeholder
   requestAnimationFrame(wireLayoutSwitcherTaps);
   requestAnimationFrame(wireWeatherComboTabTaps);
   requestAnimationFrame(wireEventDetailTaps);
@@ -4588,7 +4847,7 @@ function renderWeather(widget) {
   const forecastDays = (widget && widget.wxForecastDays) || 5;
   const unit = effectiveWxUnit(widget);
   const forecast = weatherForecastDays(daily, forecastDays, unit);
-  const locationHtml = (showLoc && locationLabel) ? `<div class="wx-location">${locationLabel}</div>` : '';
+  const locationHtml = (showLoc && locationLabel) ? `<div class="wx-location">${escapeHtmlD(locationLabel)}</div>` : '';
   const curHtml = `<div class="cur">
       <div class="icon">${weatherSVG(code, cur.is_day)}</div>
       <div><div class="temp">${formatTemp(cur.temperature_2m, unit)}</div>
@@ -4622,7 +4881,7 @@ function renderWeatherCurrent(widget) {
   const strip = days > 0 ? `<div class="forecast">${weatherForecastDays(daily, days, unit)}</div>` : '';
   const hi = daily.temperature_2m_max ? formatTemp(daily.temperature_2m_max[0], unit) : null;
   const lo = daily.temperature_2m_min ? formatTemp(daily.temperature_2m_min[0], unit) : null;
-  const locationHtml = (showLoc && locationLabel) ? `<div class="wx-location">${locationLabel}</div>` : '';
+  const locationHtml = (showLoc && locationLabel) ? `<div class="wx-location">${escapeHtmlD(locationLabel)}</div>` : '';
   const curHtml = `<div class="cur">
       <div class="icon">${weatherSVG(code, cur.is_day)}</div>
       <div><div class="temp">${formatTemp(cur.temperature_2m, unit)}</div>
@@ -4651,7 +4910,7 @@ function renderWeatherForecast(widget) {
   const showLoc = !widget || widget.wxShowLocation !== false;
   const unit = effectiveWxUnit(widget);
   return `<div class="w-weather w-weather-forecast" style="${weatherWidgetStyle(widget)}">
-    ${(showLoc && locationLabel) ? `<div class="wx-location">${locationLabel}</div>` : ''}
+    ${(showLoc && locationLabel) ? `<div class="wx-location">${escapeHtmlD(locationLabel)}</div>` : ''}
     <div class="forecast forecast-only">${weatherForecastDays(daily, days, unit)}</div>
   </div>`;
 }
@@ -4734,7 +4993,7 @@ function renderWeatherHourly(widget) {
   }
 
   return `<div class="w-weather w-weather-hourly" style="${weatherWidgetStyle(widget)}">
-    ${(showLoc && locationLabel) ? `<div class="wx-location">${locationLabel}</div>` : ''}
+    ${(showLoc && locationLabel) ? `<div class="wx-location">${escapeHtmlD(locationLabel)}</div>` : ''}
     ${inner}
   </div>`;
 }
@@ -4815,7 +5074,7 @@ function weatherComboCurrentHtml(wx, unit, compact, locationLabel) {
   const code = cur.weather_code ?? cur.weathercode;
   const hi = daily && daily.temperature_2m_max ? formatTemp(daily.temperature_2m_max[0], unit) : null;
   const lo = daily && daily.temperature_2m_min ? formatTemp(daily.temperature_2m_min[0], unit) : null;
-  const locHtml = locationLabel ? `<div class="wx-location">${locationLabel}</div>` : '';
+  const locHtml = locationLabel ? `<div class="wx-location">${escapeHtmlD(locationLabel)}</div>` : '';
   if (compact) {
     return `<div class="wxc-cur-compact">
       <div class="wxc-cur-compact-icon">${weatherSVG(code, cur.is_day)}</div>
@@ -4856,7 +5115,7 @@ function renderWeatherComboForecast(widget) {
   // original standalone line instead of silently disappearing just
   // because an unrelated toggle is off.
   const curHtml = hasCur ? weatherComboCurrentHtml(wx, unit, style === 'columns', showLoc ? locationLabel : '') : '';
-  const standaloneLocationHtml = (!hasCur && showLoc && locationLabel) ? `<div class="wx-location">${locationLabel}</div>` : '';
+  const standaloneLocationHtml = (!hasCur && showLoc && locationLabel) ? `<div class="wx-location">${escapeHtmlD(locationLabel)}</div>` : '';
 
   const styleDefaults = {
     stacked:  { hours: 8, days: 5 },
@@ -5131,11 +5390,374 @@ function openEventDetail(key) {
   notesEl.textContent = e.notes || '';
   notesEl.style.display = e.notes ? '' : 'none';
 
+  // Delete is only offered for events created in Piazza HQ — deleting one
+  // that came from a subscribed feed would just have it re-sync on the next
+  // poll, which is confusing. `source` is 'local' vs 'ical'. Feed events get
+  // "Hide from display" instead: a local suppression (hidden_events table)
+  // that's reversible from the app's Manage events screen.
+  const canDelete = e.source === 'local' && e.id != null;
+  const delBtn = document.getElementById('event-detail-delete');
+  if (delBtn) {
+    delBtn.hidden = !canDelete;
+    delBtn.disabled = false;
+    delBtn.textContent = 'Delete event';
+    _eventDetailLocalId = canDelete ? e.id : null;
+  }
+
+  const hideBtn = document.getElementById('event-detail-hide');
+  const hideSeriesBtn = document.getElementById('event-detail-hide-series');
+  const canHide = !canDelete && e.id != null;
+  _eventDetailHideCtx = canHide
+    ? { key: (e.source === 'ical' ? `ical:${e.id}` : `local:${e.id}`), date: e.date, title: e.title || '' }
+    : null;
+  if (hideBtn) {
+    hideBtn.hidden = !canHide;
+    hideBtn.disabled = false;
+    hideBtn.textContent = 'Hide from display';
+  }
+  if (hideSeriesBtn) {
+    // ical events can recur; offer a one-tap "hide every occurrence" too.
+    const showSeries = canHide && e.source === 'ical';
+    hideSeriesBtn.hidden = !showSeries;
+    hideSeriesBtn.disabled = false;
+    if (showSeries) {
+      const t = (e.title || 'this event').slice(0, 40);
+      hideSeriesBtn.textContent = `Hide every "${t}"`;
+    }
+  }
+
   overlay.style.display = 'flex';
+}
+let _eventDetailLocalId = null;
+let _eventDetailHideCtx = null;
+async function hideEventFromDetail(scope) {
+  const ctx = _eventDetailHideCtx;
+  if (!ctx) return;
+  const isSeries = scope === 'series';
+  const msg = isSeries
+    ? `Hide every occurrence of "${ctx.title}" from all displays? You can restore it from the app's Manage events screen.`
+    : `Hide this event from all displays? You can restore it from the app's Manage events screen.`;
+  if (!confirm(msg)) return;
+  const btn = document.getElementById(isSeries ? 'event-detail-hide-series' : 'event-detail-hide');
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Hiding…'; }
+  try {
+    const body = isSeries
+      ? { event_key: ctx.key, scope: 'series', title: ctx.title }
+      : { event_key: ctx.key, scope: 'occurrence', date: ctx.date, title: ctx.title };
+    const r = await fetch('/api/hidden-events', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error('hide failed');
+    closeEventDetail();
+    try { await fetchEvents(); renderLayout(); } catch {}
+    showDisplayToast('Hidden — restore it from the app’s Manage events screen.');
+  } catch {
+    if (btn) { btn.disabled = false; btn.textContent = orig || (isSeries ? 'Hide every occurrence' : 'Hide from display'); }
+    showDisplayToast('❌ Could not hide — try again.');
+  }
+}
+async function deleteEventFromDetail() {
+  const id = _eventDetailLocalId;
+  if (id == null) return;
+  if (!confirm('Delete this event? If it was pushed to iCloud or Google, it will be removed there too.')) return;
+  const btn = document.getElementById('event-detail-delete');
+  if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
+  try {
+    const r = await fetch(`/api/events/${id}`, { method: 'DELETE' });
+    if (!r.ok) throw new Error('delete failed');
+    closeEventDetail();
+    try { await fetchEvents(); renderLayout(); } catch {}
+  } catch {
+    if (btn) { btn.disabled = false; btn.textContent = 'Delete failed — try again'; }
+  }
 }
 function closeEventDetail() {
   const overlay = document.getElementById('event-detail-overlay');
   if (overlay) overlay.style.display = 'none';
+}
+
+// ── Add event via touchscreen (long-press a calendar day cell) ──────────────
+// Plain typed form. Saving POSTs /api/events; on a slave display that write
+// is proxied to the host by slaveWriteGuard(), and the host's own CRUD
+// handler then fans the new event out to iCloud/Google if push is on.
+let _eaSaving = false;
+let _eaHandwritingReady = null; // null = not checked yet, then true/false; cached for the session
+async function eaCheckHandwriting() {
+  if (_eaHandwritingReady !== null) return _eaHandwritingReady;
+  try {
+    const r = await fetch('/api/handwriting-settings');
+    const j = await r.json();
+    _eaHandwritingReady = !!(j && j.handwriting_ready);
+  } catch { _eaHandwritingReady = false; }
+  return _eaHandwritingReady;
+}
+// Populate the "Add to" picker. Re-fetched each open so a calendar added in
+// settings shows up without reloading the display. Hidden entirely when the
+// only option is "This device only" (nothing else is configured).
+async function eaLoadTargets() {
+  const row = document.getElementById('ea-target-row');
+  const sel = document.getElementById('ea-target');
+  if (!row || !sel) return;
+  row.hidden = true;
+  sel.innerHTML = '';
+  try {
+    const j = await (await fetch('/api/event-targets')).json();
+    const targets = (j && Array.isArray(j.targets)) ? j.targets : [];
+    if (targets.length <= 1) return; // only "local" — nothing to choose
+    sel.innerHTML = targets.map(t =>
+      `<option value="${String(t.id).replace(/"/g,'&quot;')}"${t.id === j.default ? ' selected' : ''}>${escapeHtmlD(t.label)}</option>`
+    ).join('');
+    row.hidden = false;
+  } catch { /* leave hidden — event just saves locally + follows the global push toggles */ }
+}
+function openEventAddSheet(dateStr) {
+  const overlay = document.getElementById('event-add-overlay');
+  if (!overlay) return;
+  _eaSaving = false;
+  const today = todayStr();
+  document.getElementById('ea-title').value = '';
+  document.getElementById('ea-date').value = dateStr || today;
+  document.getElementById('ea-enddate').value = '';
+  document.getElementById('ea-allday').checked = true;
+  document.getElementById('ea-start').value = '';
+  document.getElementById('ea-end').value = '';
+  document.getElementById('ea-time-row').style.display = 'none';
+  eaClosePad(); // make sure the stroke pad is put away
+  const err = document.getElementById('ea-error');
+  err.style.display = 'none'; err.textContent = '';
+  const save = document.getElementById('ea-save');
+  save.disabled = false; save.textContent = 'Add event';
+  overlay.style.display = 'flex';
+  eaLoadTargets();
+  eaCheckHandwriting().then(ready => {
+    const b = document.getElementById('ea-write-btn');
+    if (b) b.hidden = !ready;
+  });
+  setTimeout(() => { try { document.getElementById('ea-title').focus(); } catch {} }, 50);
+}
+function closeEventAddSheet() {
+  const overlay = document.getElementById('event-add-overlay');
+  if (overlay) overlay.style.display = 'none';
+  eaClosePad();
+}
+
+// ── Stroke pad for the add-event sheet (optional handwriting-to-text) ───────
+let _eaStrokes = [];     // [[ {x,y,t}, ... ], ...]
+let _eaStrokeT0 = 0;
+let _eaPadCur = null;
+function eaOpenPad() {
+  document.getElementById('ea-pad-row').hidden = false;
+  const hint = document.getElementById('ea-pad-hint');
+  hint.textContent = 'Print a few words, then "Use this".'; hint.style.color = '';
+  eaPadClear();
+  eaFitPad();
+}
+function eaClosePad() {
+  const row = document.getElementById('ea-pad-row');
+  if (row) row.hidden = true;
+  _eaStrokes = []; _eaPadCur = null;
+}
+function eaFitPad() {
+  const pad = document.getElementById('ea-pad');
+  if (!pad || pad.hidden) return;
+  const r = pad.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  pad.width = r.width * dpr; pad.height = r.height * dpr;
+  const ctx = pad.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#e8edf5';
+  eaRedrawPad();
+}
+function eaRedrawPad() {
+  const pad = document.getElementById('ea-pad');
+  const ctx = pad.getContext('2d');
+  const r = pad.getBoundingClientRect();
+  ctx.clearRect(0, 0, r.width, r.height);
+  for (const s of _eaStrokes) {
+    ctx.beginPath();
+    s.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+    ctx.stroke();
+  }
+}
+function eaPadClear() {
+  _eaStrokes = []; _eaPadCur = null;
+  const pad = document.getElementById('ea-pad');
+  if (pad) { const ctx = pad.getContext('2d'); const r = pad.getBoundingClientRect(); ctx.clearRect(0, 0, r.width, r.height); }
+}
+async function eaRecognizePad() {
+  if (!_eaStrokes.length) return;
+  const hint = document.getElementById('ea-pad-hint');
+  const doneBtn = document.getElementById('ea-pad-done');
+  hint.style.color = ''; hint.textContent = 'Reading…';
+  doneBtn.disabled = true;
+  try {
+    let text = '';
+    // On-device first if the platform actually supports it (ChromeOS / some
+    // Windows builds). Raspberry Pi OS does not, so this quietly falls through.
+    if ('createHandwritingRecognizer' in navigator) {
+      try {
+        const sup = await navigator.queryHandwritingRecognizerSupport({ languages: ['en'] });
+        if (sup && sup.languages) {
+          const rec = await navigator.createHandwritingRecognizer({ languages: ['en'] });
+          const drawing = rec.startDrawing({ recognitionType: 'text', inputType: 'touch' });
+          for (const s of _eaStrokes) {
+            const hs = new HandwritingStroke();
+            for (const p of s) hs.addPoint({ x: p.x, y: p.y, t: p.t });
+            drawing.addStroke(hs);
+          }
+          const preds = await drawing.getPrediction();
+          text = preds && preds.length ? preds[0].text : '';
+          rec.finish && rec.finish();
+        }
+      } catch {}
+    }
+    if (!text) {
+      const r = await fetch('/api/handwriting/recognize', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ strokes: _eaStrokes }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || 'Could not read that.');
+      text = (j.text || '').trim();
+    }
+    if (!text) { hint.style.color = '#ff9b9b'; hint.textContent = 'Nothing recognized — try again, or type it.'; doneBtn.disabled = false; return; }
+    const title = document.getElementById('ea-title');
+    title.value = title.value ? (title.value.trim() + ' ' + text) : text;
+    eaClosePad();
+    try { title.focus(); } catch {}
+  } catch (e) {
+    hint.style.color = '#ff9b9b'; hint.textContent = e.message || 'Could not read that.';
+  } finally {
+    doneBtn.disabled = false;
+  }
+}
+async function submitEventAddSheet() {
+  if (_eaSaving) return;
+  const err = document.getElementById('ea-error');
+  const showErr = (m) => { err.textContent = m; err.style.display = 'block'; };
+  const title = document.getElementById('ea-title').value.trim();
+  const date = document.getElementById('ea-date').value;
+  const endDateRaw = document.getElementById('ea-enddate').value;
+  const allDay = document.getElementById('ea-allday').checked;
+  const start = document.getElementById('ea-start').value;
+  const end = document.getElementById('ea-end').value;
+  if (!title) return showErr('Give the event a title.');
+  if (!date) return showErr('Pick a date.');
+  if (endDateRaw && endDateRaw < date) return showErr('The end date is before the start date.');
+  if (!allDay && start && end && end < start) return showErr('The end time is before the start time.');
+  const targetRow = document.getElementById('ea-target-row');
+  const targetSel = document.getElementById('ea-target');
+  const payload = {
+    title,
+    date,
+    end_date: endDateRaw || null,
+    start_time: allDay ? null : (start || null),
+    end_time: allDay ? null : (end || null),
+  };
+  if (targetRow && !targetRow.hidden && targetSel && targetSel.value) payload.target_calendar = targetSel.value;
+  _eaSaving = true;
+  const saveBtn = document.getElementById('ea-save');
+  saveBtn.disabled = true; saveBtn.textContent = 'Adding…';
+  try {
+    const r = await fetch('/api/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      let msg = 'Could not save the event.';
+      try { const j = await r.json(); if (j && j.error) msg = j.error; } catch {}
+      throw new Error(msg);
+    }
+    closeEventAddSheet();
+    try { await fetchEvents(); renderLayout(); } catch {}
+  } catch (e) {
+    _eaSaving = false;
+    saveBtn.disabled = false; saveBtn.textContent = 'Add event';
+    showErr(e.message || 'Could not save the event.');
+  }
+}
+function wireEventAddSheet() {
+  const overlay = document.getElementById('event-add-overlay');
+  if (!overlay || overlay._wired) return;
+  overlay._wired = true;
+  document.getElementById('event-add-close').addEventListener('click', closeEventAddSheet);
+  document.getElementById('ea-cancel').addEventListener('click', closeEventAddSheet);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeEventAddSheet(); });
+  document.getElementById('ea-allday').addEventListener('change', (e) => {
+    document.getElementById('ea-time-row').style.display = e.target.checked ? 'none' : '';
+  });
+  document.getElementById('ea-save').addEventListener('click', submitEventAddSheet);
+  document.getElementById('ea-title').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submitEventAddSheet(); }
+  });
+
+  // Handwriting stroke pad
+  document.getElementById('ea-write-btn').addEventListener('click', eaOpenPad);
+  document.getElementById('ea-pad-clear').addEventListener('click', eaPadClear);
+  document.getElementById('ea-pad-cancel').addEventListener('click', () => {
+    eaClosePad();
+    try { document.getElementById('ea-title').focus(); } catch {}
+  });
+  document.getElementById('ea-pad-done').addEventListener('click', eaRecognizePad);
+  const pad = document.getElementById('ea-pad');
+  const padPt = (ev) => {
+    const r = pad.getBoundingClientRect();
+    return { x: ev.clientX - r.left, y: ev.clientY - r.top, t: Math.round(performance.now() - _eaStrokeT0) };
+  };
+  pad.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    try { pad.setPointerCapture(ev.pointerId); } catch {}
+    if (!_eaStrokes.length) _eaStrokeT0 = performance.now();
+    _eaPadCur = [padPt(ev)];
+    _eaStrokes.push(_eaPadCur);
+  });
+  pad.addEventListener('pointermove', (ev) => {
+    if (!_eaPadCur) return;
+    _eaPadCur.push(padPt(ev));
+    eaRedrawPad();
+  });
+  const eaEndStroke = () => { _eaPadCur = null; };
+  pad.addEventListener('pointerup', eaEndStroke);
+  pad.addEventListener('pointercancel', eaEndStroke);
+  pad.addEventListener('pointerleave', eaEndStroke);
+}
+
+// Long-press (~500ms, near-stationary) on a calendar widget's day cell opens
+// the add-event sheet for that date. Stationary by design so it never fights
+// the horizontal-swipe navigation on the same element (that needs >40px of
+// travel). Presses that land on an event pill are left alone — those open
+// the read-only detail on tap.
+function wireCalCellLongPress() {
+  if (typeof EMBEDDED_THUMBNAIL !== 'undefined' && EMBEDDED_THUMBNAIL) return;
+  document.querySelectorAll('.w-minical[data-widget-id]').forEach(cal => {
+    if (cal._addWired) return;
+    cal._addWired = true;
+    let timer = null, sx = 0, sy = 0, targetDate = null, fired = false;
+    const reset = () => { clearTimeout(timer); timer = null; targetDate = null; fired = false; };
+    cal.addEventListener('pointerdown', (e) => {
+      const cell = e.target.closest('.mc-cell[data-date]');
+      if (!cell || e.target.closest('[data-event-key]')) { reset(); return; }
+      sx = e.clientX; sy = e.clientY; targetDate = cell.dataset.date; fired = false;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        fired = true;
+        if (navigator.vibrate) { try { navigator.vibrate(15); } catch {} }
+        openEventAddSheet(targetDate);
+      }, 500);
+    });
+    cal.addEventListener('pointermove', (e) => {
+      if (timer && (Math.abs(e.clientX - sx) > 10 || Math.abs(e.clientY - sy) > 10)) reset();
+    });
+    cal.addEventListener('pointerup', (e) => {
+      if (fired) { e.stopPropagation(); e.preventDefault(); }
+      reset();
+    });
+    cal.addEventListener('pointercancel', reset);
+    cal.addEventListener('pointerleave', reset);
+  });
 }
 // Delegated, idempotent — same re-wire-on-every-render pattern as
 // wireChoreChartTaps() etc. elsewhere in this file. Listens on each
@@ -5146,6 +5768,9 @@ function wireEventDetailTaps() {
     if (el._eventTapWired) return;
     el._eventTapWired = true;
     el.addEventListener('click', (e) => {
+      // In Live Edit, a tap on an event is the person trying to grab the
+      // widget, not open the event — let it bubble to widget selection.
+      if (editModeActive) return;
       e.stopPropagation();
       openEventDetail(el.dataset.eventKey);
     });
@@ -5523,7 +6148,7 @@ function renderMiniCalGrid(widget) {
           grid-column: ${bar.startCol + 1} / span ${bar.span};
           margin-top: calc(var(--cal-font) * 2 + 5px + ${bar.lane} * (var(--cal-font) * 1.5 + 2px));
           ${eventPillBackgroundStyle(bar.event, widget)};
-        ">${bar.event.title}</div>
+        ">${escapeHtmlD(bar.event.title)}</div>
       `)
   ).join('');
 
@@ -5662,7 +6287,7 @@ function renderMiniCalGrid(widget) {
         const timeStr = (widget && widget.calShowEndTime && e.end_time)
           ? `${fmtTime(e.start_time, widget && widget.calAmpmCase).replace(' ','')}–${fmtTime(e.end_time, widget && widget.calAmpmCase).replace(' ','')}`
           : fmtTime(e.start_time, widget && widget.calAmpmCase).replace(' ','');
-        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}">${marker}${timeStr} ${e.title}</div>`;
+        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}">${marker}${timeStr} ${escapeHtmlD(e.title)}</div>`;
       }
       // A 'dot' multi-day event has no start_time — reuses this exact same
       // colored-dot-plus-text row single-day events use, so it's visually
@@ -5671,11 +6296,11 @@ function renderMiniCalGrid(widget) {
       if (!colorCodingOn || fullDayColorStyle === 'none') {
         // Master switch off, OR this widget's Full-Day Event Style is
         // explicitly 'none': plain text, no dot, no pill background.
-        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}">${prefix}${e.title}</div>`;
+        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}">${prefix}${escapeHtmlD(e.title)}</div>`;
       }
       if (fullDayColorStyle === 'dot') {
         // 'dot' style: same row shape a timed event uses, no highlight.
-        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}"><span class="mc-ev-dot" style="background:${eventPillColor(e, widget)}"></span>${prefix}${e.title}</div>`;
+        return `<div class="mc-ev-text" data-event-key="${eventDetailKey(e)}"><span class="mc-ev-dot" style="background:${eventPillColor(e, widget)}"></span>${prefix}${escapeHtmlD(e.title)}</div>`;
       }
       // 'highlight' (default): colored pill background only — no inner dot
       // anymore, see this function's own opening comment for why. Chalkboard
@@ -5683,7 +6308,7 @@ function renderMiniCalGrid(widget) {
       // eventPillBackgroundStyle() (beta.11), and its title text now
       // correctly follows --pill-text (beta.12) instead of a hardcoded
       // color, so the pill alone carries enough contrast on its own.
-      return `<div class="mc-ev-pill" data-event-key="${eventDetailKey(e)}" style="${eventPillBackgroundStyle(e, widget)}">${prefix}${e.title}</div>`;
+      return `<div class="mc-ev-pill" data-event-key="${eventDetailKey(e)}" style="${eventPillBackgroundStyle(e, widget)}">${prefix}${escapeHtmlD(e.title)}</div>`;
     }).join('');
     const moreHtml = moreCount > 0 ? `<div class="mc-ev-more" data-base-more="${moreCount}">+${moreCount} more</div>` : `<div class="mc-ev-more" data-base-more="0" style="display:none"></div>`;
 
@@ -5707,7 +6332,7 @@ function renderMiniCalGrid(widget) {
     // only showing the first event's color when multiple overlap.
     const stripeStartTouch = multiDayStyle === 'stripe' ? spanTouches.find(t => t.isStart) : null;
     const stripeLabelHtml = stripeStartTouch
-      ? `<div class="mc-stripe-label" style="color:${eventPillBorderColor(stripeStartTouch.event, widget)}">${stripeStartTouch.event.title}</div>`
+      ? `<div class="mc-stripe-label" style="color:${eventPillBorderColor(stripeStartTouch.event, widget)}">${escapeHtmlD(stripeStartTouch.event.title)}</div>`
       : '';
     // 'line': a thin colored underline for every day the event touches, with
     // the name printed only on its actual start day — keeps the "this is one
@@ -5717,20 +6342,20 @@ function renderMiniCalGrid(widget) {
     const lineHtml = multiDayStyle === 'line' ? spanTouches.map((t, idx) => `
       <div class="mc-multi-line" style="bottom:calc(2px + ${idx} * 5px);background:${eventPillBorderColor(t.event, widget)};
         ${t.isStart ? 'border-radius:2px 0 0 2px' : ''}${t.isEnd ? (t.isStart ? '' : 'border-radius:0 2px 2px 0') : ''}"></div>
-      ${t.isStart ? `<div class="mc-multi-line-label" style="bottom:calc(5px + ${idx} * 5px)">${t.event.title}</div>` : ''}
+      ${t.isStart ? `<div class="mc-multi-line-label" style="bottom:calc(5px + ${idx} * 5px)">${escapeHtmlD(t.event.title)}</div>` : ''}
     `).join('') : '';
 
     // postit — a day with events becomes a little sticky note listing them.
     if (isPostit) {
       const noteColor = ['#fff7a8','#bfe9ff','#ffd6e0','#caffbf','#ffd8a8'][i % 5];
       const noteItems = dayEvents.map(e =>
-        `<div class="mc-note-line">${e.start_time ? fmtTime(e.start_time, widget && widget.calAmpmCase).replace(' ','')+' ' : ''}${e.title}</div>`
+        `<div class="mc-note-line">${e.start_time ? fmtTime(e.start_time, widget && widget.calAmpmCase).replace(' ','')+' ' : ''}${escapeHtmlD(e.title)}</div>`
       ).join('');
       const moreNote = moreCount > 0 ? `<div class="mc-note-line mc-note-more">+${moreCount} more</div>` : '';
       const note = totalDayEvents > 0
         ? `<div class="mc-note" style="--note-bg:${noteColor}">${noteItems}${moreNote}</div>`
         : `<div class="mc-note mc-note-empty" style="--note-bg:${noteColor}"></div>`;
-      return `<div class="mc-cell mc-cell-postit${isPast?' past':''}${isToday?' today':''}">
+      return `<div class="mc-cell mc-cell-postit${isPast?' past':''}${isToday?' today':''}" data-date="${ds}">
         <div class="mc-daynum">${c.date.getDate()}</div>
         ${note}
         ${stickerBadgesHtml(ds)}
@@ -5738,7 +6363,7 @@ function renderMiniCalGrid(widget) {
       </div>`;
     }
 
-    return `<div class="mc-cell${isPast?' past':''}${isToday?' today':''}" style="${stripeStyle}">
+    return `<div class="mc-cell${isPast?' past':''}${isToday?' today':''}" style="${stripeStyle}" data-date="${ds}">
       <div class="mc-daynum">${c.date.getDate()}</div>
       ${stripeLabelHtml}
       <div class="mc-span-spacer" style="height:${reservedHeight}"></div>
@@ -5835,8 +6460,8 @@ function renderMiniCalAgenda(widget) {
             ? ((widget.calShowEndTime && e.end_time) ? `${fmtTime(e.start_time)} – ${fmtTime(e.end_time)}` : fmtTime(e.start_time))
             : 'All day');
       const titleHtml = wrapText
-        ? `<span class="ag-title" style="white-space:normal">${e.title}</span>`
-        : `<span class="ag-title">${e.title}</span>`;
+        ? `<span class="ag-title" style="white-space:normal">${escapeHtmlD(e.title)}</span>`
+        : `<span class="ag-title">${escapeHtmlD(e.title)}</span>`;
       return `<div class="ag-ev" data-event-key="${eventDetailKey(e)}">
         ${colorCodingOn ? `<div class="ag-dot" style="background:${eventPillColor(e, widget)}"></div>` : ''}
         <div class="ag-time">${timeLabel}</div>
@@ -5915,14 +6540,14 @@ function renderMiniCalStrip(widget) {
 function buildEventRow(e, opts) {
   const { layoutMode, showTime, showSource, showNotes, todayStr: today, dateBadge, dateFormat, ampmCaseOverride, widget } = opts;
   const feedLabel = (showSource && e.feed_name)
-    ? `<span class="ev-source">${e.feed_name}</span>` : '';
+    ? `<span class="ev-source">${escapeHtmlD(e.feed_name)}</span>` : '';
   const isMultiDay = e.end_date && e.end_date > e.date;
   const timeLabel = showTime ? (
     isMultiDay
       ? (dateBadge ? 'All day' : `through ${monthDayLabel(new Date(e.end_date+'T00:00:00'), dateFormat || globalDateFormat())}`)
       : (e.start_time ? `${fmtTime(e.start_time, ampmCaseOverride)}${e.end_time?' – '+fmtTime(e.end_time, ampmCaseOverride):''}` : 'All day')
   ) : '';
-  const notesLabel = (showNotes && e.notes) ? `<div class="ev-notes">${e.notes}</div>` : '';
+  const notesLabel = (showNotes && e.notes) ? `<div class="ev-notes">${escapeHtmlD(e.notes)}</div>` : '';
   const dateBadgeHtml = dateBadge ? (() => {
     const d = new Date(e.date+'T00:00:00');
     return `<div class="ev-date"><div class="ev-mo">${MONTHS_S[d.getMonth()]}</div><div class="ev-d">${d.getDate()}</div></div>`;
@@ -5932,7 +6557,7 @@ function buildEventRow(e, opts) {
     return `<div class="ev-card" data-event-key="${eventDetailKey(e)}" style="border-left-color:${eventPillColor(e, widget)}">
       ${dateBadgeHtml}
       <div class="ev-card-body">
-        <div class="ev-title">${e.title}</div>
+        <div class="ev-title">${escapeHtmlD(e.title)}</div>
         ${(feedLabel || timeLabel) ? `<div class="ev-time">${timeLabel}${feedLabel?(timeLabel?' · ':'')+feedLabel:''}</div>` : ''}
         ${notesLabel}
       </div>
@@ -5943,7 +6568,7 @@ function buildEventRow(e, opts) {
     return `<div class="ev-compact" data-event-key="${eventDetailKey(e)}">
       <div class="ev-compact-dot" style="background:${eventPillColor(e, widget)}"></div>
       ${timeLabel ? `<div class="ev-compact-time">${timeLabel}</div>` : ''}
-      <div class="ev-compact-title">${e.title}</div>
+      <div class="ev-compact-title">${escapeHtmlD(e.title)}</div>
       ${feedLabel}
     </div>`;
   }
@@ -5953,7 +6578,7 @@ function buildEventRow(e, opts) {
     ${dateBadgeHtml}
     <div class="ev-bar" style="background:${eventPillColor(e, widget)}"></div>
     <div class="ev-body">
-      <div class="ev-title">${e.title}</div>
+      <div class="ev-title">${escapeHtmlD(e.title)}</div>
       ${(feedLabel || timeLabel) ? `<div class="ev-time">${feedLabel}${timeLabel}</div>` : ''}
       ${notesLabel}
     </div>
@@ -5996,7 +6621,7 @@ function buildOngoingStripHtml(events, today, lookaheadDays, widget) {
     }
     return `<div class="ag-ongoing-row">
       <span class="ag-ongoing-dot" style="background:${eventPillColor(e, widget)}"></span>
-      <span class="ag-ongoing-title">${e.title}</span>
+      <span class="ag-ongoing-title">${escapeHtmlD(e.title)}</span>
       <span class="ag-ongoing-status">${statusText}</span>
     </div>`;
   }).join('');
@@ -6180,7 +6805,7 @@ function renderTasksCombined(widget) {
 
   if (!merged.length) {
     if (!allLoaded) return `<div class="w-tasks-combined"><div class="no-data">Loading…</div></div>`;
-    if (anyError) return `<div class="w-tasks-combined"><div class="no-data">${anyError}</div></div>`;
+    if (anyError) return `<div class="w-tasks-combined"><div class="no-data">${escapeHtmlD(anyError)}</div></div>`;
     return `<div class="w-tasks-combined"><div class="no-data">No tasks — nice!</div></div>`;
   }
 
@@ -6244,12 +6869,12 @@ function renderTasks(widget) {
 
   if (!tasks || !tasks.length) {
     if (error) {
-      return `<div class="w-tasks" style="${rootStyle}"><div class="tk-label">${label}</div><div class="no-data">${error}</div></div>`;
+      return `<div class="w-tasks" style="${rootStyle}"><div class="tk-label">${escapeHtmlD(label)}</div><div class="no-data">${escapeHtmlD(error)}</div></div>`;
     }
     if (!tasks) {
-      return `<div class="w-tasks" style="${rootStyle}"><div class="tk-label">${label}</div><div class="no-data">Loading…</div></div>`;
+      return `<div class="w-tasks" style="${rootStyle}"><div class="tk-label">${escapeHtmlD(label)}</div><div class="no-data">Loading…</div></div>`;
     }
-    return `<div class="w-tasks" style="${rootStyle}"><div class="tk-label">${label}</div><div class="no-data">No tasks — nice!</div></div>`;
+    return `<div class="w-tasks" style="${rootStyle}"><div class="tk-label">${escapeHtmlD(label)}</div><div class="no-data">No tasks — nice!</div></div>`;
   }
   // Sort: overdue/today first, then by due date, undated last
   const sorted = [...tasks].sort((a, b) => {
@@ -6276,7 +6901,7 @@ function renderTasks(widget) {
       </div>
     </div>`;
   }).join('');
-  return `<div class="w-tasks" style="${rootStyle}"><div class="tk-label">${label}</div><div class="tk-list">${items}</div></div>`;
+  return `<div class="w-tasks" style="${rootStyle}"><div class="tk-label">${escapeHtmlD(label)}</div><div class="tk-list">${items}</div></div>`;
 }
 
 function renderNews(widget) {
@@ -6306,8 +6931,8 @@ function renderNews(widget) {
     <div class="nw-item">
       <div class="nw-dot"></div>
       <div class="nw-body">
-        <div class="nw-title">${n.title}</div>
-        ${n.source ? `<div class="nw-source">${n.source}</div>` : ''}
+        <div class="nw-title">${escapeHtmlD(n.title)}</div>
+        ${n.source ? `<div class="nw-source">${escapeHtmlD(n.source)}</div>` : ''}
       </div>
     </div>`;
 
@@ -6332,7 +6957,7 @@ function renderStocks(widget) {
 
   if (!state.stocks || !state.stocks.length) {
     if (state.stocksError) {
-      return `<div class="w-stocks"><div class="sk-label">Markets</div><div class="no-data">${state.stocksError}</div></div>`;
+      return `<div class="w-stocks"><div class="sk-label">Markets</div><div class="no-data">${escapeHtmlD(state.stocksError)}</div></div>`;
     }
     return `<div class="w-stocks"><div class="sk-label">Markets</div><div class="no-data">Loading…</div></div>`;
   }
@@ -6373,7 +6998,7 @@ function renderStocks(widget) {
       : '';
     return `<div class="sk-item">
       <div>
-        <span class="sk-name">${s.label}</span>${s.isCrypto ? `<span class="sk-crypto-tag">crypto</span>` : (!s.isIndex ? `<span class="sk-symbol">${s.symbol}</span>` : '')}
+        <span class="sk-name">${escapeHtmlD(s.label)}</span>${s.isCrypto ? `<span class="sk-crypto-tag">crypto</span>` : (!s.isIndex ? `<span class="sk-symbol">${escapeHtmlD(s.symbol)}</span>` : '')}
       </div>
       <div class="sk-right">
         <div class="sk-price">${s.close.toLocaleString(undefined,{minimumFractionDigits:priceDecimals,maximumFractionDigits:priceDecimals})}</div>
@@ -6684,6 +7309,8 @@ function wireMiniCalNav() {
       }
     });
   });
+  wireEventAddSheet();
+  wireCalCellLongPress();
 }
 let editModeActive = false;
 let _editModeExitedAt = 0; // see exitEditMode()'s own comment and checkSchedules()'s grace-period check
@@ -6725,6 +7352,9 @@ function wireDirectEditMode() {
     document.getElementById('screen-settings-overlay').style.display = 'none';
   });
   document.getElementById('event-detail-close').addEventListener('click', closeEventDetail);
+  { const d = document.getElementById('event-detail-delete'); if (d) d.addEventListener('click', deleteEventFromDetail); }
+  { const h = document.getElementById('event-detail-hide'); if (h) h.addEventListener('click', () => hideEventFromDetail('occurrence')); }
+  { const h = document.getElementById('event-detail-hide-series'); if (h) h.addEventListener('click', () => hideEventFromDetail('series')); }
   document.getElementById('event-detail-overlay').addEventListener('click', (e) => {
     // Only the backdrop itself dismisses — a tap on the card (or anything
     // inside it) shouldn't close the modal out from under someone reading it.
@@ -6834,8 +7464,9 @@ function enterEditMode() {
   // nothing when Live Edit is opened on a layout without any.
   if (!_editModeHaPollTimer) {
     _editModeHaPollTimer = setInterval(async () => {
+      if (_dragState || _resizeState) return; // never re-render mid-drag — it drops the element you're holding
       if (await fetchHaEntities()) renderLayout();
-    }, 8_000);
+    }, 4_000);
   }
   // Same reasoning, same interval, for calendar events: feed opacity, source
   // filters, and other calendar-widget settings are edited from the app while
@@ -6848,6 +7479,7 @@ function enterEditMode() {
   // extra beyond one more request every 8s while Live Edit is open.
   if (!_editModeEventsPollTimer) {
     _editModeEventsPollTimer = setInterval(async () => {
+      if (_dragState || _resizeState) return; // never re-render mid-drag — it drops the element you're holding
       await fetchEvents();
       renderLayout();
     }, 8_000);
@@ -6963,6 +7595,11 @@ function startDrag(e, el) {
   el.addEventListener('pointermove', onDragMove);
   el.addEventListener('pointerup', onDragEnd);
   el.addEventListener('pointercancel', onDragEnd);
+  // Backstop: if the element-level listeners never fire (element detached
+  // mid-drag, capture lost), a window-level release still ends the drag so
+  // _dragState can't wedge and freeze every subsequent renderLayout().
+  window.addEventListener('pointerup', onDragEnd, { once: true });
+  window.addEventListener('pointercancel', onDragEnd, { once: true });
 }
 function onDragMove(e) {
   if (!_dragState || e.pointerId !== _dragState.pointerId) return;
@@ -7012,6 +7649,7 @@ async function onDragEnd(e) {
     if (String(selectedWidgetId) === String(widgetId)) syncEditOverlayToWidget(el);
     await saveLayoutNow();
   }
+  if (_renderDeferredDuringDrag) { _renderDeferredDuringDrag = false; renderLayout(); }
 }
 
 // ── Phase 4: selection, resize, delete, and basic on-device settings ────────
@@ -7165,6 +7803,8 @@ function startResize(e, el, corner) {
   el.addEventListener('pointermove', onResizeMove);
   el.addEventListener('pointerup', onResizeEnd);
   el.addEventListener('pointercancel', onResizeEnd);
+  window.addEventListener('pointerup', onResizeEnd, { once: true });
+  window.addEventListener('pointercancel', onResizeEnd, { once: true });
 }
 function onResizeMove(e) {
   if (!_resizeState || e.pointerId !== _resizeState.pointerId) return;
@@ -7254,6 +7894,7 @@ async function onResizeEnd(e) {
   // sit with stale overflow trimming until the next unrelated re-render.
   try { adaptCalendarEventFontSizes(); fitCalendarCells(); } catch {}
   await saveLayoutNow();
+  if (_renderDeferredDuringDrag) { _renderDeferredDuringDrag = false; renderLayout(); }
 }
 
 // Real bug this fixes: a Live Editing change (e.g. the Date widget's Date
@@ -7360,7 +8001,7 @@ function rerenderSingleWidget(id) {
   // replaced DOM. All idempotent (each checks its own _tapWired flag before
   // attaching), so calling them broadly here is safe and simpler than
   // scoping each one to just this element.
-  wireChoreChartTaps(); wireTodoWidgetTaps(); wireShoppingWidgetTaps(); wireTasksWidgetTaps(); wireMiniCalNav(); wireEntityStatusTaps(); wireLayoutSwitcherTaps(); wireWeatherComboTabTaps(); wireEventDetailTaps();
+  wireChoreChartTaps(); wireTodoWidgetTaps(); wireShoppingWidgetTaps(); wireTasksWidgetTaps(); wireMiniCalNav(); wireEntityStatusTaps(); wireHaSparklines(); wireLayoutSwitcherTaps(); wireWeatherComboTabTaps(); wireEventDetailTaps();
   // QR codes are generated into their container by a separate pass after
   // any render (renderQRCodes(), normally run after a full renderLayout())
   // — innerHTML alone only creates an empty .qr-container div, so without
@@ -12701,7 +13342,7 @@ function wireChoreChartTaps() {
   document.querySelectorAll('.w-chorechart .cc-item[data-instance-id]').forEach(el => {
     if (el._tapWired) return; // avoid attaching a duplicate listener on every re-render
     el._tapWired = true;
-    el.addEventListener('click', () => toggleChoreChartItem(el));
+    el.addEventListener('click', () => { if (editModeActive) return; toggleChoreChartItem(el); });
   });
 }
 function wireLayoutSwitcherTaps() {
@@ -13028,7 +13669,16 @@ function renderCountdown(widget) {
     const todayMid = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     while (target < todayMid) target.setFullYear(target.getFullYear() + 1);
   }
-  const diffMs = target - now;
+  // Real bug found here: plain `target - now` is raw elapsed milliseconds,
+  // not calendar days — if a DST transition falls between now and the
+  // target, the hour it adds or removes can flip the Math.ceil()/floor()
+  // below by a whole day. Confirmed live: at local midnight, a countdown to
+  // a date exactly 7 calendar days out showed "8 days to go" for the week
+  // leading into the November fall-back (the found hour nudges the ceil up).
+  // Standard correction: add back the difference between the two dates' own
+  // DST offsets, so the math reflects wall-clock calendar days the way a
+  // person would count them, not true physical elapsed time.
+  const diffMs = (target - now) + (now.getTimezoneOffset() - target.getTimezoneOffset()) * 60000;
   const dayMs = 86400000;
   let body;
   if (Math.abs(diffMs) < dayMs && target.toDateString() === now.toDateString()) {
@@ -13428,19 +14078,50 @@ function haDomainIcon(domain) { return HA_DOMAIN_ICONS[domain] || '🏠'; }
 // wires up dashboard tiles too, with zero new tap-handling code needed.
 // `label`/`showUnit` are passed in rather than read off a single widget, since
 // the dashboard has many entities (and many labels) per widget, not one.
-function renderHaEntityControl(entityId, data, label, showUnit, wAttrs) {
+function renderHaEntityControl(entityId, data, label, showUnit, wAttrs, sparkline) {
   if (!data) return `<div class="ha-label">${escapeHtmlD(label)}</div><div class="no-data">Loading…</div>`;
   if (data.error) return `<div class="ha-label">${escapeHtmlD(label)}</div><div class="no-data">${escapeHtmlD(data.error)}</div>`;
   const domain = haDomainOf(entityId);
 
   if (HA_TOGGLE_DOMAINS.has(domain)) {
     const isOn = data.state === 'on';
+    // A dimmable light, or a fan with a variable speed, that's currently on
+    // gets a slider under the switch. Light `brightness` is HA's 0-255; fan
+    // `percentage` is already 0-100. Both shown/sent as a percent.
+    let slider = null; // { pct, action, param, aria }
+    if (isOn && domain === 'light' && typeof data.brightness === 'number') {
+      slider = { pct: Math.max(1, Math.round(data.brightness / 255 * 100)),
+        action: 'set_brightness', param: 'brightness_pct', aria: 'Brightness' };
+    } else if (isOn && domain === 'fan' && typeof data.fanPercentage === 'number') {
+      slider = { pct: Math.max(1, Math.round(data.fanPercentage)),
+        action: 'set_fan_speed', param: 'fan_pct', aria: 'Speed' };
+    }
+    // Colour controls for an on light: a warm↔cool slider if it's a
+    // tunable-white light, and a strip of preset swatches if it does colour.
+    const modes = Array.isArray(data.colorModes) ? data.colorModes : [];
+    const extras = [];
+    if (isOn && domain === 'light' && typeof data.colorTempK === 'number' && modes.includes('color_temp')) {
+      const lo = data.minColorTempK || 2000, hi = data.maxColorTempK || 6500;
+      extras.push(`<input type="range" class="ha-bright-slider ha-ct-slider" min="${lo}" max="${hi}" value="${Math.round(data.colorTempK)}"
+        data-entity-id="${escapeHtmlD(entityId)}" data-ha-action="set_color_temp" data-ha-param="kelvin"
+        data-interactive="1"${wAttrs} aria-label="Colour temperature for ${escapeHtmlD(label)}">`);
+    }
+    if (isOn && domain === 'light' && (modes.includes('hs') || modes.includes('rgb') || modes.includes('xy') || modes.includes('rgbw') || modes.includes('rgbww'))) {
+      const SWATCHES = ['255,86,86', '255,170,60', '255,236,120', '120,220,120', '110,180,255', '190,130,255', '255,255,255'];
+      extras.push(`<div class="ha-swatch-row">` + SWATCHES.map(rgb =>
+        `<button type="button" class="ha-swatch" data-entity-id="${escapeHtmlD(entityId)}" data-ha-action="set_color" data-ha-rgb="${rgb}"
+          data-interactive="1"${wAttrs} aria-label="Set colour" style="background:rgb(${rgb})"></button>`).join('') + `</div>`);
+    }
     return `<div class="ha-label">${escapeHtmlD(label)}</div>
       <button type="button" class="ha-toggle-switch ${isOn ? 'on' : 'off'}" data-entity-id="${escapeHtmlD(entityId)}"
         data-interactive="1"${wAttrs} aria-label="Toggle ${escapeHtmlD(label)}">
         <span class="ha-toggle-knob"></span>
       </button>
-      <div class="ha-toggle-state">${isOn ? 'On' : 'Off'}</div>`;
+      ${slider ? `<input type="range" class="ha-bright-slider" min="1" max="100" value="${slider.pct}"
+        data-entity-id="${escapeHtmlD(entityId)}" data-ha-action="${slider.action}" data-ha-param="${slider.param}"
+        data-interactive="1"${wAttrs} aria-label="${slider.aria} for ${escapeHtmlD(label)}">` : ''}
+      ${extras.join('')}
+      <div class="ha-toggle-state">${isOn ? (slider ? slider.pct + '%' : 'On') : 'Off'}</div>`;
   }
 
   if (HA_CLIMATE_DOMAINS.has(domain)) {
@@ -13466,9 +14147,57 @@ function renderHaEntityControl(entityId, data, label, showUnit, wAttrs) {
         data-interactive="1"${wAttrs}>▶ ${domain === 'scene' ? 'Set Scene' : 'Run'}</button>`;
   }
 
-  // Tier 1 fallback: anything else stays read-only, exactly as before.
+  if (domain === 'cover') {
+    const st = (data.state || '').toLowerCase();
+    const stText = st === 'open' ? 'Open' : st === 'closed' ? 'Closed'
+      : st ? st.charAt(0).toUpperCase() + st.slice(1) : '—';
+    const b = (act, glyph, aria) => `<button type="button" class="ha-action-btn" data-entity-id="${escapeHtmlD(entityId)}"
+      data-ha-action="${act}" data-interactive="1"${wAttrs} aria-label="${aria} ${escapeHtmlD(label)}">${glyph}</button>`;
+    return `<div class="ha-label">${escapeHtmlD(label)}</div>
+      <div class="ha-cover-row">${b('open_cover', '▲', 'Open')}${b('stop_cover', '■', 'Stop')}${b('close_cover', '▼', 'Close')}</div>
+      <div class="ha-toggle-state">${escapeHtmlD(stText)}</div>`;
+  }
+
+  if (domain === 'lock') {
+    const locked = data.state === 'locked';
+    const st = data.state === 'unlocked' ? 'Unlocked' : locked ? 'Locked' : (data.state || '—');
+    return `<div class="ha-label">${escapeHtmlD(label)}</div>
+      <button type="button" class="ha-action-btn ha-lock-btn" data-entity-id="${escapeHtmlD(entityId)}"
+        data-ha-action="${locked ? 'unlock' : 'lock'}" data-interactive="1"${wAttrs}>${locked ? '🔓 Unlock' : '🔒 Lock'}</button>
+      <div class="ha-toggle-state">${escapeHtmlD(st)}</div>`;
+  }
+
+  if (domain === 'media_player') {
+    const st = (data.state || '').toLowerCase();
+    const playing = st === 'playing';
+    const active = playing || st === 'paused' || st === 'buffering';
+    const b = (act, glyph, aria) => `<button type="button" class="ha-action-btn" data-entity-id="${escapeHtmlD(entityId)}"
+      data-ha-action="${act}" data-interactive="1"${wAttrs} aria-label="${aria}">${glyph}</button>`;
+    const volPct = typeof data.volumeLevel === 'number' ? Math.round(data.volumeLevel * 100) : null;
+    const stText = active ? (playing ? 'Playing' : 'Paused')
+      : st ? st.charAt(0).toUpperCase() + st.slice(1) : '—';
+    return `<div class="ha-label">${escapeHtmlD(label)}</div>
+      ${data.mediaTitle ? `<div class="ha-media-title">${escapeHtmlD(data.mediaTitle)}</div>` : ''}
+      <div class="ha-media-row">
+        ${b('media_previous_track', '⏮', 'Previous track')}
+        ${b('media_play_pause', playing ? '⏸' : '▶', playing ? 'Pause' : 'Play')}
+        ${b('media_next_track', '⏭', 'Next track')}
+      </div>
+      ${volPct != null ? `<input type="range" class="ha-bright-slider" min="0" max="100" value="${volPct}"
+        data-entity-id="${escapeHtmlD(entityId)}" data-ha-action="volume_set" data-ha-param="volume_pct"
+        data-interactive="1"${wAttrs} aria-label="Volume for ${escapeHtmlD(label)}">` : ''}
+      <div class="ha-toggle-state">${escapeHtmlD(stText)}</div>`;
+  }
+
+  // Tier 1 fallback: anything else stays read-only, exactly as before —
+  // plus, for a numeric sensor in the Entity Status widget, a 24h sparkline
+  // (filled in after render by wireHaSparklines()).
+  const numeric = Number.isFinite(parseFloat(data.state));
+  const spark = (sparkline && domain === 'sensor' && numeric)
+    ? `<div class="ha-sparkline" data-entity-id="${escapeHtmlD(entityId)}"></div>` : '';
   return `<div class="ha-label">${escapeHtmlD(label)}</div>
-    <div class="ha-value">${escapeHtmlD(data.state)}${(showUnit && data.unit) ? `<span class="ha-unit">${escapeHtmlD(data.unit)}</span>` : ''}</div>`;
+    <div class="ha-value">${escapeHtmlD(data.state)}${(showUnit && data.unit) ? `<span class="ha-unit">${escapeHtmlD(data.unit)}</span>` : ''}</div>
+    ${spark}`;
 }
 
 function renderEntityStatus(widget) {
@@ -13484,8 +14213,11 @@ function renderEntityStatus(widget) {
   const wAttrs = w.id != null ? ` data-widget-id="${w.id}"` : '';
   const layoutClass = HA_TOGGLE_DOMAINS.has(domain) ? ' ha-toggle-layout'
     : HA_CLIMATE_DOMAINS.has(domain) ? ' ha-climate-layout'
-    : HA_TRIGGER_DOMAINS.has(domain) ? ' ha-trigger-layout' : '';
-  return `<div class="w-entitystatus${layoutClass}" style="${style}">${renderHaEntityControl(w.haEntityId, data, label, w.haShowUnit !== false, wAttrs)}</div>`;
+    : HA_TRIGGER_DOMAINS.has(domain) ? ' ha-trigger-layout'
+    : domain === 'cover' ? ' ha-climate-layout'
+    : domain === 'lock' ? ' ha-trigger-layout'
+    : domain === 'media_player' ? ' ha-climate-layout' : '';
+  return `<div class="w-entitystatus${layoutClass}" style="${style}">${renderHaEntityControl(w.haEntityId, data, label, w.haShowUnit !== false, wAttrs, true)}</div>`;
 }
 
 // ── Group Control widget ────────────────────────────────────────────────────
@@ -13758,45 +14490,133 @@ function nextHaSeq(entityId) {
   haEntityFetchSeq[entityId] = (haEntityFetchSeq[entityId] || 0) + 1;
   return haEntityFetchSeq[entityId];
 }
+// After an optimistic tap we "hold" the commanded state: HA's own entity
+// state lags the service call, sometimes by many seconds (Z-Wave/Zigbee
+// locks especially), so a read in that window still shows the OLD value and
+// would snap the control back. While the hold is active, ignore any read
+// that STILL reports the pre-tap value. Anything else — the new value, a
+// transient ('unlocking'), 'jammed', an error — clears the hold and
+// applies immediately. A generous cap stops a stuck hold from hiding
+// reality forever.
+const _haOptimisticHold = {}; // entityId -> { minUntil, until, want }
+// States that mean "stop holding and show this" even if it isn't the target —
+// a real problem the user needs to see, not a transient on the way there.
+const HA_TERMINAL_STATES = new Set(['jammed', 'unavailable', 'unknown']);
 function applyHaEntityState(entityId, mySeq, data) {
   if (haEntityFetchSeq[entityId] !== mySeq) return false; // superseded by a newer fetch already in flight/applied
+  const hold = _haOptimisticHold[entityId];
+  if (hold) {
+    const now = Date.now();
+    const st = data && data.state;
+    const errored = !data || data.error;
+    const terminal = st && HA_TERMINAL_STATES.has(st);
+    // Only accept HA's own value once it's had time to settle on the REAL
+    // state — a lock/cover often reports the target once (HA's optimistic
+    // guess), bounces back to the old value for a beat, THEN lands on the
+    // real one. Ignore everything (except a genuine error/jam) until minUntil,
+    // then release the moment it confirms the target; hard cap at `until`.
+    const settled = st === hold.want && now >= hold.minUntil;
+    if (!(errored || terminal || settled || now >= hold.until)) return false;
+    delete _haOptimisticHold[entityId];
+  }
   state.haEntities = state.haEntities || {};
   state.haEntities[entityId] = data;
   return true;
 }
 
-// Optimistic-update note: after a tap fires an action, we DON'T wait for the
-// next poll before showing the change — call-action's own response confirms
-// success, then a fresh state fetch for just that entity updates state.haEntities
-// and re-renders. This keeps the perceived delay to "however long the actual
-// HA round-trip takes" rather than "however long is left on the 60s poll
-// interval," without needing to fake a state locally that could end up wrong
-// if HA actually rejects the action for some reason.
+// Best-guess of an entity's state right after an action, so the control can
+// jump to the commanded position immediately and reconcile with the real
+// value when the confirm fetch (and the next poll) lands. Returns a merged
+// copy, or null when the outcome isn't predictable (e.g. a scene trigger).
+function predictHaState(cur, action, extra) {
+  const c = cur && !cur.error ? cur : {};
+  const e = extra || {};
+  const on = { ...c, state: 'on' };
+  switch (action) {
+    case 'toggle':     return { ...c, state: c.state === 'on' ? 'off' : 'on' };
+    case 'turn_on':    return on;
+    case 'turn_off':   return { ...c, state: 'off' };
+    case 'lock':       return { ...c, state: 'locked' };
+    case 'unlock':     return { ...c, state: 'unlocked' };
+    case 'open_cover': return { ...c, state: 'open' };
+    case 'close_cover':return { ...c, state: 'closed' };
+    case 'media_play_pause':
+      return { ...c, state: c.state === 'playing' ? 'paused' : 'playing' };
+    case 'set_brightness':
+      return { ...on, brightness: Math.round((Number(e.brightness_pct) || 0) / 100 * 255) };
+    case 'set_fan_speed':
+      return { ...on, fanPercentage: Number(e.fan_pct) || 0 };
+    case 'volume_set':
+      return { ...c, volumeLevel: (Number(e.volume_pct) || 0) / 100 };
+    case 'set_color_temp':
+      return { ...on, colorTempK: Number(e.kelvin) || c.colorTempK };
+    case 'set_color': {
+      const rgb = String(e.rgb || '').split(',').map(n => parseInt(n, 10));
+      return rgb.length === 3 && rgb.every(Number.isFinite) ? { ...on, rgbColor: rgb } : on;
+    }
+    case 'set_temperature':
+      return typeof e.temperature === 'number' ? { ...c, targetTemp: e.temperature } : null;
+    default: return null; // trigger, set_scene, stop_cover, media_next/prev — nothing safe to assume
+  }
+}
+// After a tap: jump the widget to the commanded state right away (seq-bumped
+// so an in-flight poll can't undo it), fire the action, then reconcile with
+// a fresh state fetch — on success OR failure, so a rejected action snaps
+// back to reality instead of leaving the optimistic guess showing.
 async function callHaAction(entityId, action, extra) {
+  const cur = (state.haEntities || {})[entityId];
+  const predicted = predictHaState(cur, action, extra);
+  if (predicted) {
+    // Hold the commanded state until HA reports something other than the
+    // pre-tap value. Cap generously — covers/locks can take many seconds.
+    const slowDomain = action === 'open_cover' || action === 'close_cover' || action === 'lock' || action === 'unlock';
+    const now = Date.now();
+    _haOptimisticHold[entityId] = {
+      minUntil: now + (slowDomain ? 5000 : 1200),
+      until:    now + (slowDomain ? 15000 : 6000),
+      want: predicted.state,
+    };
+    const optSeq = nextHaSeq(entityId);
+    if (applyHaEntityState(entityId, optSeq, predicted)) renderLayout();
+  }
+  const reconcile = async () => {
+    try {
+      const mySeq = nextHaSeq(entityId);
+      const stateRes = await fetch(`/api/ha/state/${encodeURIComponent(entityId)}`);
+      const fresh = await stateRes.json();
+      if (applyHaEntityState(entityId, mySeq,
+        (fresh && fresh.entity_id) ? fresh : { error: (fresh && fresh.error) || 'Unavailable' })) renderLayout();
+    } catch {}
+  };
   try {
     const body = { entityId, action, ...(extra || {}) };
     const r = await fetch('/api/ha/call-action', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok || data.error) { console.error('HA action failed:', data.error || r.status); return false; }
-    // Re-fetch just this one entity rather than the full fetchHaEntities()
-    // sweep — cheaper, and the server already busted its own cache for this
-    // entity specifically after a successful action (see call-action's own
-    // comment), so this is guaranteed to get the real fresh value, not a
-    // stale cached one. Sequence-stamped at issue time (see guard above) so
-    // a concurrent poll response for the same entity can't clobber this.
-    try {
-      const mySeq = nextHaSeq(entityId);
-      const stateRes = await fetch(`/api/ha/state/${encodeURIComponent(entityId)}`);
-      const fresh = await stateRes.json();
-      const applied = applyHaEntityState(entityId, mySeq,
-        (fresh && fresh.entity_id) ? fresh : { error: (fresh && fresh.error) || 'Unavailable' });
-      if (applied) renderLayout();
-    } catch {}
+    if (!r.ok || data.error) {
+      console.error('HA action failed:', data.error || r.status);
+      delete _haOptimisticHold[entityId]; // let the truth back in
+      try { if (typeof showDisplayToast === 'function') showDisplayToast('⚠ ' + (data.error || 'Home Assistant rejected that')); } catch {}
+      await reconcile(); // undo the optimistic guess
+      return false;
+    }
+    if (predicted) {
+      // Don't reconcile immediately — an early read still shows the pre-tap
+      // state and the hold above would just reject it anyway. Poll for the
+      // real value a few times; the hold ignores any read still showing the
+      // old state, so these are safe to fire early. Extra late reads for
+      // slow domains (locks/covers) so we don't wait on the ambient poll.
+      const slow = action === 'open_cover' || action === 'close_cover' || action === 'lock' || action === 'unlock';
+      (slow ? [5500, 8000, 11000, 14000] : [1400, 3500]).forEach(ms => setTimeout(reconcile, ms));
+    } else {
+      await reconcile(); // trigger/scene/stop — nothing predicted to protect
+    }
     return true;
   } catch (e) {
     console.error('HA action failed:', e);
+    delete _haOptimisticHold[entityId];
+    await reconcile();
     return false;
   }
 }
@@ -13816,29 +14636,252 @@ async function callHaGroupAction(entityIds) {
   const haEntities = state.haEntities || {};
   const anyOn = entityIds.some(id => haEntities[id] && haEntities[id].state === 'on');
   const action = anyOn ? 'turn_off' : 'turn_on';
+  // Optimistic: flip every member to the target now, seq-bumped.
+  const want = anyOn ? 'off' : 'on';
+  let optChanged = false;
+  entityIds.forEach(id => {
+    const p = predictHaState(haEntities[id], action);
+    if (!p) return;
+    _haOptimisticHold[id] = { minUntil: Date.now() + 1200, until: Date.now() + 6000, want };
+    if (applyHaEntityState(id, nextHaSeq(id), { ...p, state: want })) optChanged = true;
+  });
+  if (optChanged) renderLayout();
+  const reconcileAll = () => Promise.all(entityIds.map(async (id) => {
+    try {
+      const mySeq = nextHaSeq(id);
+      const stateRes = await fetch(`/api/ha/state/${encodeURIComponent(id)}`);
+      const fresh = await stateRes.json();
+      applyHaEntityState(id, mySeq, (fresh && fresh.entity_id) ? fresh : { error: (fresh && fresh.error) || 'Unavailable' });
+    } catch {}
+  })).then(renderLayout);
   try {
     const r = await fetch('/api/ha/call-group-action', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ entityIds, action }),
     });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok || data.error) { console.error('HA group action failed:', data.error || r.status); return false; }
-    await Promise.all(entityIds.map(async (id) => {
-      try {
-        const mySeq = nextHaSeq(id);
-        const stateRes = await fetch(`/api/ha/state/${encodeURIComponent(id)}`);
-        const fresh = await stateRes.json();
-        applyHaEntityState(id, mySeq, (fresh && fresh.entity_id) ? fresh : { error: (fresh && fresh.error) || 'Unavailable' });
-      } catch {}
-    }));
-    renderLayout();
+    if (!r.ok || data.error) {
+      console.error('HA group action failed:', data.error || r.status);
+      entityIds.forEach(id => delete _haOptimisticHold[id]);
+      reconcileAll();
+      return false;
+    }
+    setTimeout(reconcileAll, 1200);
+    setTimeout(reconcileAll, 3500);
     return true;
   } catch (e) {
     console.error('HA group action failed:', e);
+    entityIds.forEach(id => delete _haOptimisticHold[id]);
+    reconcileAll();
     return false;
   }
 }
 
+// Fills the empty .ha-sparkline placeholders (rendered by renderHaEntityControl
+// for numeric sensors in Entity Status widgets) with a small inline SVG of the
+// last 24h. History is fetched once per entity and cached ~10 min so re-renders
+// don't re-hit the server; the periodic layout refresh picks up new data.
+const _haSparkCache = new Map(); // entityId -> { svg, fetchedAt }
+const HA_SPARK_TTL = 10 * 60 * 1000;
+
+// ── Notification banner (HA alerts today, other kinds later) ──
+async function pollHaAlerts() {
+  let items = [];
+  try {
+    const j = await (await fetch('/api/notifications/active')).json();
+    items = (j && Array.isArray(j.notifications)) ? j.notifications : [];
+  } catch { return; } // server mid-restart etc. — keep whatever's shown
+  let bar = document.getElementById('ha-alert-banner');
+  if (!items.length) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'ha-alert-banner';
+    // Inside #rotate-wrap so the banner spins + resizes with the content
+    // when the display has an in-browser rotation set (a body-level fixed
+    // element would stay glued to the physical viewport instead).
+    (document.getElementById('rotate-wrap') || document.body).appendChild(bar);
+  }
+  bar.innerHTML = items.map(n => `
+    <div class="ha-alert-row" data-notif-key="${escapeHtmlD(n.key)}">
+      <span class="ha-alert-msg">⚠ ${escapeHtmlD(n.body || n.title || 'Alert')}</span>
+      <button type="button" class="ha-alert-x" data-interactive="1" aria-label="Dismiss">✕</button>
+    </div>`).join('');
+  bar.querySelectorAll('.ha-alert-x').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const row = btn.closest('.ha-alert-row');
+      const key = row && row.dataset.notifKey;
+      row && row.remove();
+      if (!bar.querySelector('.ha-alert-row')) bar.remove();
+      if (key) { try { await fetch('/api/notifications/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) }); } catch {} }
+    });
+  });
+}
+// ── Demo mode: countdown strip + "demo ended" curtain ──
+// Driven entirely by /api/version's `demo` / `demoLeaseEndsAt` (epoch ms).
+// On a normal (non-demo) build this is a no-op and nothing renders.
+let _demoTimer = null;
+function initDemoBanner(v) {
+  if (!v || !v.demo) return;
+  window.__isDemo = true;
+  window.__demoLeaseEndsAt = Number(v.demoLeaseEndsAt) || 0;
+  let bar = document.getElementById('demo-banner');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'demo-banner';
+    // The scan-to-control QR: a static per-instance asset
+    // (demo-qr-<n>.svg → https://d<n>.piazzahq.com/app?scan=1). Only shown
+    // when this instance is broker-wired and we know its number.
+    const qr = (v.demoBrokerUrl && v.demoInstance)
+      ? `<img class="demo-qr" src="/demo-qr-${encodeURIComponent(v.demoInstance)}.svg" alt="Scan to control from your phone">
+         <span class="demo-qr-cap">Scan to control from your phone</span>`
+      : '';
+    bar.innerHTML =
+      '<div class="demo-row"><span class="demo-dot"></span>' +
+      '<span class="demo-count">Demo</span></div>' +
+      '<div class="demo-row"><a href="https://piazzahq.com" target="_blank" rel="noopener">Get your own →</a></div>' +
+      qr;
+    document.body.appendChild(bar);
+  }
+  const countEl = bar.querySelector('.demo-count');
+  const tick = () => {
+    const endsAt = Number(window.__demoLeaseEndsAt) || 0;
+    if (!endsAt) { countEl.textContent = 'Demo'; return; }
+    const ms = endsAt - Date.now();
+    if (ms <= 0) { showDemoEnded(); return; }
+    const s = Math.floor(ms / 1000);
+    const mm = Math.floor(s / 60), ss = s % 60;
+    countEl.textContent = `resets in ${mm}:${String(ss).padStart(2, '0')}`;
+  };
+  tick();
+  if (_demoTimer) clearInterval(_demoTimer);
+  _demoTimer = setInterval(tick, 1000);
+  startDemoHeartbeat(v);
+  maybeShowDemoTour();
+  // If the tour was already dismissed in this browser, still nudge toward
+  // the pencil once (its own localStorage flag stops it after the first).
+  let _tourUp = false;
+  try { _tourUp = localStorage.getItem('demoTourSeen') !== '1'; } catch {}
+  if (!_tourUp) setTimeout(showDemoEditHint, 1500);
+}
+// One-time (per browser) walkthrough of how to poke at the demo.
+function maybeShowDemoTour() {
+  try { if (localStorage.getItem('demoTourSeen') === '1') return; } catch {}
+  if (document.getElementById('demo-tour')) return;
+  const el = document.createElement('div');
+  el.id = 'demo-tour';
+  el.innerHTML =
+    '<div class="dt-card">' +
+      '<h2>You’re in the live demo</h2>' +
+      '<p>A real, private copy of Piazza HQ. Have a poke around — it wipes itself in a few minutes.</p>' +
+      '<ul>' +
+        '<li><span class="dt-ic">✏️</span><span><b>Tap the pencil</b> (bottom-right) to rearrange the layout.</span></li>' +
+        '<li><span class="dt-ic">📅</span><span><b>Long-press a day</b> on the calendar to add an event.</span></li>' +
+        '<li><span class="dt-ic">👆</span><span><b>Tap a widget</b> — check off a chore, tick a to-do, open an event.</span></li>' +
+        '<li><span class="dt-ic">📱</span><span><b>Scan the code</b> (top-right) to drive this screen from your phone.</span></li>' +
+        '<li><span class="dt-ic">⏱️</span><span>Everything <b>resets automatically</b> for the next visitor.</span></li>' +
+      '</ul>' +
+      '<button class="dt-go" type="button">Start exploring</button>' +
+    '</div>';
+  el.querySelector('.dt-go').addEventListener('click', () => {
+    try { localStorage.setItem('demoTourSeen', '1'); } catch {}
+    el.remove();
+    setTimeout(showDemoEditHint, 400);
+  });
+  document.body.appendChild(el);
+}
+// A one-time bubble pointing at the edit pencil (which itself is hidden
+// until the first screen tap) — reveals the pencil and nudges toward it.
+function showDemoEditHint() {
+  if (!window.__isDemo || editModeActive) return;
+  try { if (localStorage.getItem('demoEditHintSeen') === '1') return; } catch {}
+  if (document.getElementById('demo-edit-hint')) return;
+  const pencil = document.getElementById('edit-mode-trigger');
+  if (pencil) { pencil.classList.add('shown'); clearTimeout(_editIconHideTimer); }
+  const hint = document.createElement('div');
+  hint.id = 'demo-edit-hint';
+  hint.textContent = 'Tap the pencil to move widgets around';
+  document.body.appendChild(hint);
+  const done = () => {
+    try { localStorage.setItem('demoEditHintSeen', '1'); } catch {}
+    hint.remove();
+    // Let the pencil resume its normal auto-hide.
+    if (pencil && pencil.classList.contains('shown')) {
+      _editIconHideTimer = setTimeout(() => pencil.classList.remove('shown'), 4000);
+    }
+  };
+  if (pencil) pencil.addEventListener('click', done, { once: true });
+  setTimeout(done, 8000);
+}
+// Hold the lease open while this tab is here: ping the broker every 45s.
+// When the tab goes away the pings stop and the broker frees the slot after
+// its idle window. credentials:'include' sends the .piazzahq.com lease cookie.
+let _demoBeat = null;
+function startDemoHeartbeat(v) {
+  if (!v || !v.demo || !v.demoBrokerUrl || _demoBeat) return;
+  const beat = () => {
+    fetch(v.demoBrokerUrl + '/demo/heartbeat', { method: 'POST', credentials: 'include', keepalive: true })
+      .then(r => r.json()).then(j => {
+        if (j && j.endsAt) { window.__demoLeaseEndsAt = j.endsAt; }
+        if (j && j.ok === false) { showDemoEnded(); }
+      }).catch(() => {});
+  };
+  beat();
+  _demoBeat = setInterval(beat, 45000);
+}
+function showDemoEnded() {
+  if (_demoTimer) { clearInterval(_demoTimer); _demoTimer = null; }
+  if (_demoBeat) { clearInterval(_demoBeat); _demoBeat = null; }
+  if (document.getElementById('demo-ended')) return;
+  const home = 'https://piazzahq.com/';
+  const el = document.createElement('div');
+  el.id = 'demo-ended';
+  el.innerHTML = '<h2>That’s the demo</h2>' +
+    '<p>Everything you changed has been wiped for the next visitor. Taking you back…</p>' +
+    '<a class="demo-cta" href="' + home + '">Set up your own Piazza HQ</a>';
+  document.body.appendChild(el);
+  // Return to the marketing site after a beat so the wall (or phone) doesn't
+  // just sit on a dead instance.
+  setTimeout(() => { try { location.href = home; } catch {} }, 4500);
+}
+function buildSparklineSVG(points) {
+  if (!points || points.length < 2) return '';
+  const vs = points.map(p => p.v);
+  let min = Math.min(...vs), max = Math.max(...vs);
+  if (min === max) { min -= 1; max += 1; }
+  const W = 100, H = 26, pad = 2;
+  const t0 = points[0].t, t1 = points[points.length - 1].t;
+  const span = (t1 - t0) || 1;
+  const xy = points.map(p => {
+    const x = pad + (p.t - t0) / span * (W - 2 * pad);
+    const y = H - pad - (p.v - min) / (max - min) * (H - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const line = xy.join(' ');
+  const area = `${pad},${H - pad} ${line} ${(W - pad)},${H - pad}`;
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="ha-spark-svg">
+    <polygon points="${area}" class="ha-spark-fill"/>
+    <polyline points="${line}" class="ha-spark-line"/>
+  </svg>`;
+}
+async function wireHaSparklines() {
+  const els = document.querySelectorAll('.ha-sparkline[data-entity-id]:not([data-spark-done])');
+  for (const el of els) {
+    el.setAttribute('data-spark-done', '1');
+    const id = el.dataset.entityId;
+    const cached = _haSparkCache.get(id);
+    if (cached && (Date.now() - cached.fetchedAt) < HA_SPARK_TTL) { el.innerHTML = cached.svg; continue; }
+    try {
+      const r = await fetch(`/api/ha/history/${encodeURIComponent(id)}?hours=24`);
+      const j = await r.json();
+      const svg = (j && Array.isArray(j.points)) ? buildSparklineSVG(j.points) : '';
+      _haSparkCache.set(id, { svg, fetchedAt: Date.now() });
+      // The element may have been replaced by a re-render since the fetch
+      // started — re-select by entity id and fill whatever's current.
+      document.querySelectorAll(`.ha-sparkline[data-entity-id="${CSS.escape(id)}"]`).forEach(cur => { cur.innerHTML = svg; cur.setAttribute('data-spark-done', '1'); });
+    } catch { /* leave the placeholder empty */ }
+  }
+}
 function wireEntityStatusTaps() {
   // Shared click handler for anything that's a simple on/off toggle target —
   // the original .ha-toggle-switch pill, plus the two new dashboard-view
@@ -13893,6 +14936,40 @@ function wireEntityStatusTaps() {
       callHaAction(btn.dataset.entityId, 'trigger').finally(() => {
         setTimeout(() => { btn.disabled = false; btn.textContent = original; }, 1500);
       });
+    });
+  });
+  // Buttons that carry their own action: cover (open/stop/close), lock
+  // (lock/unlock), media transport, and light colour swatches. Any extra
+  // params (a swatch's rgb) ride along in data-ha-* attrs.
+  document.querySelectorAll('.ha-action-btn[data-ha-action][data-interactive], .ha-swatch[data-ha-action][data-interactive]').forEach(btn => {
+    if (btn._tapWired) return; btn._tapWired = true;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (btn.disabled) return;
+      const action = btn.dataset.haAction;
+      if (!action) return;
+      const extra = btn.dataset.haRgb ? { rgb: btn.dataset.haRgb } : undefined;
+      btn.disabled = true;
+      callHaAction(btn.dataset.entityId, action, extra).finally(() => {
+        setTimeout(() => { btn.disabled = false; }, 800);
+      });
+    });
+  });
+  // Sliders (light brightness, media_player volume) — fire on release
+  // (change), not while dragging, so it's one HA call per adjustment. The
+  // action + the param name it wants are spelled out on the element.
+  document.querySelectorAll('.ha-bright-slider[data-ha-action][data-interactive]').forEach(sl => {
+    if (sl._tapWired) return; sl._tapWired = true;
+    sl.addEventListener('click', (e) => e.stopPropagation());
+    sl.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const val = Math.round(Number(sl.value));
+      if (!Number.isFinite(val)) return;
+      const action = sl.dataset.haAction;
+      const param = sl.dataset.haParam || 'value';
+      sl.disabled = true;
+      callHaAction(sl.dataset.entityId, action, { [param]: val })
+        .finally(() => { setTimeout(() => { sl.disabled = false; }, 400); });
     });
   });
 }
@@ -16806,7 +17883,7 @@ async function init() {
   // code automatically — no manual reboot needed. This is what makes pushed updates
   // actually take effect on the wall display.
   let _bootVersion = null;
-  try { const v = await (await fetch('/api/version')).json(); _bootVersion = v.version; } catch {}
+  try { const v = await (await fetch('/api/version')).json(); _bootVersion = v.version; initDemoBanner(v); } catch {}
   setInterval(async () => {
     try {
       const v = await (await fetch('/api/version')).json();
@@ -16816,6 +17893,11 @@ async function init() {
       }
     } catch { /* server mid-restart; try again next tick */ }
   }, 60_000);
+
+  // Home Assistant condition alerts — poll the (host-evaluated) active list
+  // and show a dismissible banner. Cheap; no SSE plumbing needed.
+  pollHaAlerts();
+  setInterval(pollHaAlerts, 60_000);
 
   // Live push handles instant updates; these polls are just a safety net in case
   // the SSE connection drops silently (e.g. through a flaky tunnel) without erroring.
@@ -16840,19 +17922,16 @@ async function init() {
   setInterval(async ()=>{ await fetchTasksForLayout(); await fetchTodoForLayout(); await fetchShoppingListForLayout(); renderLayout(); }, 300_000); // 5min
   setInterval(async ()=>{ await fetchNews(); renderLayout(); }, 900_000);         // 15min — matches server cache
   setInterval(async ()=>{ await fetchStocks(); renderLayout(); }, 300_000);       // 5min — matches server cache
-  // Home Assistant entities: 60s is a reasonable default for sensor data — fast
-  // enough to feel live, slow enough that the server's own 10s cache absorbs
-  // most of the actual load against someone's home server even with several
-  // widgets/displays polling independently.
-  // Was 60s — real report that entity status updates felt slow. Server-side
-  // caches each entity's state for 10s (see HA_STATE_CACHE_MS in
-  // server.js), so anything faster than that wouldn't actually get fresher
-  // data anyway; 15s keeps this comfortably above that floor while cutting
-  // worst-case staleness by 4x. Still well short of hammering a household
-  // HA instance — Live Edit's own dedicated 8s poll (see
-  // _editModeHaPollTimer) stays faster still, since that's the moment
-  // someone's actually staring at a toggle deciding if it's accurate.
-  setInterval(async ()=>{ if (await fetchHaEntities()) renderLayout(); }, 15_000);
+  // Home Assistant entities — 8s ambient poll. History: 60s felt slow →
+  // 15s (matched to the old 10s server cache floor) → now 8s, paired with
+  // the server cache dropping to 4s (HA_STATE_CACHE_MS), so a change made
+  // in the HA app or by an automation shows on the wall within a few
+  // seconds. A tap on a control doesn't wait for this at all — it updates
+  // optimistically and does its own confirm read (see callHaAction). The
+  // per-entity fetch is cheap and the server cache absorbs multi-display
+  // overlap, so this stays well short of hammering a household HA. Live
+  // Edit's own poll (_editModeHaPollTimer) is faster still at 4s.
+  setInterval(async ()=>{ if (await fetchHaEntities()) renderLayout(); }, 8_000);
   setInterval(async ()=>{ await fetchAirQuality(); renderLayout(); }, 1_800_000); // 30min — AQI/pollen/UV change slowly
   setInterval(async ()=>{ await fetchTravelTimes(); renderLayout(); }, 300_000);  // 5min — traffic conditions change fast
   setInterval(async ()=>{ await fetchOnThisDay(); renderLayout(); }, 3_600_000);  // hourly — server caches per-day anyway, this just catches midnight rollover
