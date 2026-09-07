@@ -1,15 +1,37 @@
 # Piazza HQ
 
-A self-hosted always-on calendar display for Raspberry Pi, controlled from any browser or iPhone.
+A self-hosted, always-on family calendar & smart-home display — runs on a
+Raspberry Pi, a Windows PC, or a Docker container (including a Proxmox LXC),
+and is controlled from any browser or phone.
 
 ## What you get
 
-- **Display** (`/`) — fullscreen clock, mini calendar, upcoming events, and weather. Runs in Chromium kiosk mode on your Pi's monitor.
-- **Control app** (`/app`) — mobile-first web app for adding/editing events. Bookmark to iPhone home screen for a native-app feel.
+- **Display** (`/`) — a fullscreen wall dashboard: clock, calendar, upcoming
+  events, weather, photos, chore charts, and live Home Assistant tiles, laid
+  out however you want in the drag-and-drop editor. Runs in a browser in kiosk
+  mode on whatever screen you point at it.
+- **Control app** (`/app`) — a mobile-first web app for adding events, arranging
+  the display, and managing the household. Add it to your phone's home screen
+  for a native-app feel.
+
+Everything runs locally on your own hardware. The optional central server is
+only used to check for updates and relay feedback — your calendars, photos and
+settings never leave your device.
+
+## Ways to run it
+
+| Platform | How | Notes |
+|----------|-----|-------|
+| **Raspberry Pi** | the one-liner below, or `install.sh` | Full kiosk setup — the rest of this README |
+| **Windows** | download the installer from [piazzahq.com](https://piazzahq.com) | Runs as a background service; open the display in any browser or on a second monitor |
+| **Docker / Proxmox** | `docker run` the published image — steps on [piazzahq.com](https://piazzahq.com) | Point any browser or spare screen at it; no Pi required |
+
+The app itself is identical on all three — same display, same control app, same
+data format. Pick whichever hardware you already have.
 
 ---
 
-## Quick install (recommended)
+## Quick install on a Raspberry Pi (recommended for Pi)
 
 On a fresh Raspberry Pi, connected to the internet, run this one line:
 

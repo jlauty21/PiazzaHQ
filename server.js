@@ -44,6 +44,26 @@ const DEPLOYMENT = IS_CONTAINER ? 'container' : (IS_WIN ? 'windows' : 'pi');
 // port — before it spawns the replacement process.
 let httpServer = null;
 
+// ── Fatal-error handling + crash marker (all platforms) ──────────────────────
+// One place that enforces "an uncaught error exits the process" — systemd
+// Restart, the Windows supervisor, and autoRollbackGuard all depend on that.
+// It also drops a `.last-crash` file (read + cleared on the next boot, then
+// reported on the following fleet check-in) so a crash that happened while
+// the device was offline still gets seen centrally.
+function fatalCrash(err, kind) {
+  const msg = (err && (err.stack || err.message)) || String(err);
+  try { console.error(`FATAL (${kind}):`, msg); } catch {}
+  try {
+    const dir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
+    fs.writeFileSync(path.join(dir, '.last-crash'),
+      Date.now() + '\t' + String(msg).replace(/\s+/g, ' ').trim().slice(0, 300));
+  } catch {}
+  process.exit(1);
+}
+process.on('uncaughtException', (e) => fatalCrash(e, 'uncaughtException'));
+process.on('unhandledRejection', (r) => fatalCrash(
+  r instanceof Error ? r : new Error('Unhandled rejection: ' + require('util').format(r)), 'unhandledRejection'));
+
 // ── Windows: log to a file, and make crashes visible ─────────────────────────
 // On the Pi, `journalctl -u piazzahq` captures stdout/stderr and an uncaught
 // error prints there before the process exits. On Windows the server runs via
@@ -86,15 +106,10 @@ if (IS_WIN) {
       const orig = console[name].bind(console);
       console[name] = (...args) => { writeLine(level, args); orig(...args); };
     }
-    process.on('uncaughtException', (e) => {
-      console.error('UNCAUGHT EXCEPTION:', (e && e.stack) || e);
-      process.exit(1); // preserve "a crash exits" — supervisedWindowsRestart / autoRollbackGuard depend on it
-    });
-    process.on('unhandledRejection', (reason) => {
-      // Re-throw so it becomes an uncaughtException handled above — keeps
-      // Node's default "unhandled rejection is fatal" while making it visible.
-      throw (reason instanceof Error ? reason : new Error('Unhandled rejection: ' + nodeUtil.format(reason)));
-    });
+    // uncaughtException / unhandledRejection are handled once, globally, by
+    // fatalCrash() above (registered before this block) — which console.error's
+    // through this same tee and then exits. Nothing platform-specific needed
+    // here any more.
     console.log(`File logging active -> ${LOG_FILE}`);
   } catch (e) {
     // Never let logging setup stop the server from starting.
@@ -253,6 +268,24 @@ if (DATA_DIR) { try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {} }
 function dataPath(name) { return path.join(DATA_DIR || __dirname, name); }
 const DB_PATH = dataPath('calendar.db');
 
+// If the previous run crashed, fatalCrash() left a `.last-crash` marker.
+// Read it once here, delete it, and stash it so the next fleet check-in
+// (fetchUpdateInfo) can report it — then it's cleared. So a crash that
+// happened while the device was offline is still reported once it's back.
+let _lastCrash = null; // { at: epochMs, reason: string } | null
+try {
+  const cf = dataPath('.last-crash');
+  if (fs.existsSync(cf)) {
+    const raw = fs.readFileSync(cf, 'utf8').trim();
+    fs.unlinkSync(cf);
+    const tab = raw.indexOf('\t');
+    if (tab > 0) {
+      _lastCrash = { at: Number(raw.slice(0, tab)) || Date.now(), reason: raw.slice(tab + 1).slice(0, 300) };
+      console.log(`Recovered from a crash at ${new Date(_lastCrash.at).toISOString()}: ${_lastCrash.reason}`);
+    }
+  }
+} catch {}
+
 // ── Database setup ──────────────────────────────────────────────────────────
 const db = new Database(DB_PATH);
 // Actually enables WAL mode — a real, pre-existing gap found while
@@ -301,6 +334,7 @@ db.exec(`
     end_time  TEXT,              -- HH:MM
     color     TEXT    DEFAULT '#4A90D9',
     notes     TEXT    DEFAULT '',
+    location  TEXT    DEFAULT '',
     created_at TEXT   DEFAULT (datetime('now'))
   );
 
@@ -315,6 +349,7 @@ db.exec(`
     url        TEXT    NOT NULL UNIQUE,
     color      TEXT    DEFAULT '#a78bfa',
     color_timed INTEGER DEFAULT 1,   -- 1 = also color-code timed (non-all-day) events with this calendar's color
+    show_location INTEGER DEFAULT 0, -- 1 = show each event's LOCATION under its title on the displays
     last_synced TEXT,
     enabled    INTEGER DEFAULT 1
   );
@@ -328,6 +363,7 @@ db.exec(`
     start_time TEXT,
     end_time   TEXT,
     notes      TEXT    DEFAULT '',
+    location   TEXT    DEFAULT '',
     PRIMARY KEY (uid, feed_id, date),
     FOREIGN KEY (feed_id) REFERENCES ical_feeds(id) ON DELETE CASCADE
   );
@@ -538,6 +574,13 @@ db.exec(`
     -- reuses that exact mechanism rather than a new one, same tap, same
     -- 4-second window, one thing to keep consistent instead of two.
     floating_switcher_reveal   TEXT DEFAULT 'always',   -- 'always'|'tap'
+    -- HA condition-alert banner, per screen (rendered by pollHaAlerts() in
+    -- display.html). Position is the LOGICAL edge — it rotates with the
+    -- layout, so 'top' is the top of the content regardless of screen
+    -- rotation. Size scales text + padding + the dismiss button together.
+    alert_banner_position TEXT DEFAULT 'top',    -- 'top'|'bottom'|'center'
+    alert_banner_size     TEXT DEFAULT 'm',      -- 's'|'m'|'l'|'xl'|'xxl' (screen-relative)
+    alert_banner_style    TEXT DEFAULT 'solid',  -- see BANNER_STYLES in display.html
     last_seen             INTEGER DEFAULT 0,   -- epoch ms of last registration/heartbeat
     created_at            TEXT DEFAULT (datetime('now'))
   );
@@ -805,6 +848,35 @@ db.exec(`
     token      TEXT PRIMARY KEY,
     expires_at INTEGER NOT NULL
   );
+
+  -- Family member profiles: a per-person view configuration for the companion
+  -- app (app.html). This is a persona picker, NOT authentication — no passwords,
+  -- no account creation. It sits alongside the single household App PIN
+  -- (app_pin setting), which still gates getting into the app at all; a profile
+  -- only personalizes what you see once you're in. Zero rows here = the app
+  -- behaves exactly as it did before this table existed. The active profile is
+  -- chosen per-device in localStorage and is never stored server-side.
+  --   hidden_tabs: JSON array of tab ids the profile doesn't see
+  --                (favorites/calendars/settings are never hideable)
+  --   features:    JSON object, e.g. {"ha":false,"integrations":false};
+  --                an absent key means "allowed"
+  --   pin:         optional gateway PIN — prompted only when switching INTO this
+  --                profile; gates nothing else and makes no privacy promise
+  --   preset:      cosmetic label only (basic|intermediate|advanced|custom)
+  CREATE TABLE IF NOT EXISTS profiles (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,
+    color        TEXT DEFAULT '#4A90D9',
+    avatar       TEXT DEFAULT '',
+    is_manager   INTEGER DEFAULT 0,
+    landing_tab  TEXT DEFAULT 'favorites',
+    hidden_tabs  TEXT DEFAULT '[]',
+    features     TEXT DEFAULT '{}',
+    pin          TEXT DEFAULT '',
+    preset       TEXT DEFAULT 'advanced',
+    sort         INTEGER DEFAULT 0,
+    created_at   TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 // ── Migrations for databases created before end_date support was added ───────
@@ -832,6 +904,16 @@ if (!columnExists('events', 'google_push_error')){ db.exec(`ALTER TABLE events A
 // + Google if enabled). 'local' = don't push anywhere. 'google' = Google
 // only. 'caldav:<calendarUrl>' = that one iCloud calendar only.
 if (!columnExists('events', 'target_calendar')) { db.exec(`ALTER TABLE events ADD COLUMN target_calendar TEXT`); console.log('Migrated: added target_calendar column to events'); }
+// Family member profiles: which profile "owns" a locally-created event. NULL =
+// unassigned (the pre-profiles default, and what an event falls back to if its
+// owning profile is later deleted). Used for per-person colour-coding on the
+// wall display and the "Mine only" filter in the app.
+if (!columnExists('events', 'owner_profile_id')) { db.exec(`ALTER TABLE events ADD COLUMN owner_profile_id INTEGER`); console.log('Migrated: added owner_profile_id column to events'); }
+// Event location (venue/address). For local events it's whatever was typed on
+// the add-event sheet; for feed events it's the iCal LOCATION field. Shown on
+// the displays only when the feed opts in (ical_feeds.show_location) — see the
+// migration for that flag below, after the ical_events table rebuild.
+if (!columnExists('events', 'location')) { db.exec(`ALTER TABLE events ADD COLUMN location TEXT DEFAULT ''`); console.log('Migrated: added location column to events'); }
 if (!columnExists('ical_events', 'end_date')) {
   db.exec(`ALTER TABLE ical_events ADD COLUMN end_date TEXT`);
   console.log('Migrated: added end_date column to ical_events');
@@ -1016,6 +1098,18 @@ if (!columnExists('screens', 'floating_switcher_reveal')) {
   db.exec(`ALTER TABLE screens ADD COLUMN floating_switcher_reveal TEXT DEFAULT 'always'`);
   console.log('Migrated: added floating_switcher_reveal column to screens');
 }
+if (!columnExists('screens', 'alert_banner_position')) {
+  db.exec(`ALTER TABLE screens ADD COLUMN alert_banner_position TEXT DEFAULT 'top'`);
+  console.log('Migrated: added alert_banner_position column to screens');
+}
+if (!columnExists('screens', 'alert_banner_size')) {
+  db.exec(`ALTER TABLE screens ADD COLUMN alert_banner_size TEXT DEFAULT 'm'`);
+  console.log('Migrated: added alert_banner_size column to screens');
+}
+if (!columnExists('screens', 'alert_banner_style')) {
+  db.exec(`ALTER TABLE screens ADD COLUMN alert_banner_style TEXT DEFAULT 'solid'`);
+  console.log('Migrated: added alert_banner_style column to screens');
+}
 if (!columnExists('photos', 'tags')) {
   db.exec(`ALTER TABLE photos ADD COLUMN tags TEXT DEFAULT ''`);
   console.log('Migrated: added tags column to photos');
@@ -1161,21 +1255,30 @@ db.exec(`
         start_time TEXT,
         end_time   TEXT,
         notes      TEXT    DEFAULT '',
+        location   TEXT    DEFAULT '',
         PRIMARY KEY (uid, feed_id, date),
         FOREIGN KEY (feed_id) REFERENCES ical_feeds(id) ON DELETE CASCADE
       );
     `);
     const reinsert = db.prepare(`
-      INSERT OR REPLACE INTO ical_events (uid, feed_id, title, date, end_date, start_time, end_time, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO ical_events (uid, feed_id, title, date, end_date, start_time, end_time, notes, location)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const r of oldRows) {
-      reinsert.run(r.uid, r.feed_id, r.title, r.date, r.end_date, r.start_time, r.end_time, r.notes);
+      reinsert.run(r.uid, r.feed_id, r.title, r.date, r.end_date, r.start_time, r.end_time, r.notes, r.location || '');
     }
     db.exec(`DROP TABLE ical_events_old`);
     console.log(`Migrated: ical_events now supports multiple occurrences per event (${oldRows.length} existing row(s) preserved)`);
   }
 })();
+
+// Calendar event locations (feature request: show the venue on the calendar,
+// e.g. which rink a kids' game is at). Added here, after any ical_events table
+// rebuild above, so the column survives that rebuild. show_location is a
+// per-feed opt-in (default off) so upgrading doesn't suddenly add a line of
+// text under every event on every display.
+if (!columnExists('ical_events', 'location')) { db.exec(`ALTER TABLE ical_events ADD COLUMN location TEXT DEFAULT ''`); console.log('Migrated: added location column to ical_events'); }
+if (!columnExists('ical_feeds', 'show_location')) { db.exec(`ALTER TABLE ical_feeds ADD COLUMN show_location INTEGER DEFAULT 0`); console.log('Migrated: added show_location column to ical_feeds'); }
 
 // Migrate the old single-recipient briefing_recipient setting (pre-multi-recipient
 // support) into the new briefing_recipients table, then remove the stale key.
@@ -1902,7 +2005,7 @@ function markHostEditing(ms = 8000) { HOST_EDITING_UNTIL = Date.now() + ms; }
 // 'screens' is included so that assigning a profile to a remote slave bumps the
 // version — the slave's watcher then re-syncs (and re-registers, learning its new
 // assigned profile) within seconds instead of waiting for the slow timer.
-const SHARED_TOPICS = new Set(['events', 'photos', 'settings', 'photo-settings', 'feeds', 'displays', 'layout', 'screens', 'chores', 'todos', 'favorites', 'reminders']);
+const SHARED_TOPICS = new Set(['events', 'photos', 'settings', 'photo-settings', 'feeds', 'displays', 'layout', 'screens', 'chores', 'todos', 'favorites', 'reminders', 'profiles']);
 
 function broadcastUpdate(topic, displayId) {
   if (SHARED_TOPICS.has(topic)) HOST_DATA_VERSION = Date.now();
@@ -3612,9 +3715,13 @@ app.get('/api/events', (req, res) => {
   query += ` ORDER BY date ASC, start_time ASC`;
   const localEvents = db.prepare(query).all(...params);
 
-  // iCal events (join with feed for color + enabled flag)
+  // iCal events (join with feed for color + enabled flag). The raw location and
+  // the feed's show_location flag both go out; the display resolves visibility
+  // (feed default -> per-widget master toggle -> per-widget-per-feed override),
+  // exactly like the per-feed opacity override already works.
   let icalQuery = `
     SELECT ie.uid as id, ie.title, ie.date, ie.end_date, ie.start_time, ie.end_time, ie.notes,
+           ie.location as location, f.show_location as show_location,
            f.id as feed_id, f.color, f.color_opacity, f.use_global_opacity, f.color_timed, f.name as feed_name, 'ical' as source
     FROM ical_events ie
     JOIN ical_feeds f ON f.id = ie.feed_id
@@ -3837,6 +3944,7 @@ app.get('/api/events-manage', (req, res) => {
   ).all(to, from);
   const icalEvents = db.prepare(`
     SELECT ie.uid as id, ie.title, ie.date, ie.end_date, ie.start_time, ie.end_time, ie.notes,
+           ie.location as location, f.show_location as show_location,
            f.id as feed_id, f.color, f.color_opacity, f.use_global_opacity, f.name as feed_name, 'ical' as source
     FROM ical_events ie JOIN ical_feeds f ON f.id = ie.feed_id
     WHERE f.enabled = 1 AND ie.date <= ? AND COALESCE(ie.end_date, ie.date) >= ?
@@ -3865,23 +3973,34 @@ app.get('/api/events-manage', (req, res) => {
 });
 
 // POST /api/events
+// Coerce a client-supplied owner_profile_id to a positive integer or null. Any
+// junk (0, negative, non-numeric, absent) becomes null = unassigned — we don't
+// verify the profile row exists here; a stale id just renders with the default
+// colour, same as null, and a real orphan is cleaned up on profile delete.
+function coerceOwnerProfileId(v) {
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 app.post('/api/events', (req, res) => {
-  let { title, date, end_date, start_time, end_time, color, notes, target_calendar } = req.body;
+  let { title, date, end_date, start_time, end_time, color, notes, location, target_calendar, owner_profile_id } = req.body;
   if (!title || !date) {
     return res.status(400).json({ error: 'title and date are required' });
   }
   title = demoCleanText(title, 120);
   notes = demoCleanText(notes, 500);
+  location = demoCleanText(location, 300);
   // Normalize: an end_date equal to or before the start date just means "single day"
   const normalizedEndDate = (end_date && end_date > date) ? end_date : null;
   // 'local' | 'google' | 'caldav:<url>' — where this one event should be
   // pushed. Anything unrecognized (or absent) is stored as NULL = the
   // legacy "push to whatever's enabled" default.
   const tc = (typeof target_calendar === 'string' && /^(local|google|caldav:.+)$/.test(target_calendar)) ? target_calendar : null;
+  const ownerId = coerceOwnerProfileId(owner_profile_id);
   const result = db.prepare(`
-    INSERT INTO events (title, date, end_date, start_time, end_time, color, notes, target_calendar)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(title, date, normalizedEndDate, start_time || null, end_time || null, color || '#4A90D9', notes || '', tc);
+    INSERT INTO events (title, date, end_date, start_time, end_time, color, notes, location, target_calendar, owner_profile_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(title, date, normalizedEndDate, start_time || null, end_time || null, color || '#4A90D9', notes || '', location || '', tc, ownerId);
   const event = db.prepare(`SELECT * FROM events WHERE id = ?`).get(result.lastInsertRowid);
   broadcastUpdate('events');
   res.status(201).json(event);
@@ -3891,18 +4010,19 @@ app.post('/api/events', (req, res) => {
 
 // PUT /api/events/:id
 app.put('/api/events/:id', (req, res) => {
-  let { title, date, end_date, start_time, end_time, color, notes } = req.body;
+  let { title, date, end_date, start_time, end_time, color, notes, location, owner_profile_id } = req.body;
   const existing = db.prepare(`SELECT * FROM events WHERE id = ?`).get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Event not found' });
   if (title !== undefined) title = demoCleanText(title, 120);
   if (notes !== undefined) notes = demoCleanText(notes, 500);
+  if (location !== undefined) location = demoCleanText(location, 300);
 
   const finalDate = date ?? existing.date;
   let finalEndDate = end_date !== undefined ? end_date : existing.end_date;
   if (finalEndDate && finalEndDate <= finalDate) finalEndDate = null;
 
   db.prepare(`
-    UPDATE events SET title=?, date=?, end_date=?, start_time=?, end_time=?, color=?, notes=?
+    UPDATE events SET title=?, date=?, end_date=?, start_time=?, end_time=?, color=?, notes=?, location=?, owner_profile_id=?
     WHERE id=?
   `).run(
     title ?? existing.title,
@@ -3912,6 +4032,8 @@ app.put('/api/events/:id', (req, res) => {
     end_time   !== undefined ? end_time   : existing.end_time,
     color ?? existing.color,
     notes ?? existing.notes,
+    location !== undefined ? location : existing.location,
+    owner_profile_id !== undefined ? coerceOwnerProfileId(owner_profile_id) : existing.owner_profile_id,
     req.params.id
   );
   broadcastUpdate('events');
@@ -3929,6 +4051,134 @@ app.delete('/api/events/:id', (req, res) => {
   broadcastUpdate('events');
   res.json({ ok: true });
   if (existing) { deleteEventFromCalDAV(existing); deleteEventFromGoogle(existing); } // fire-and-forget; each no-ops if this event was never pushed there
+});
+
+// ── Family member profiles ───────────────────────────────────────────────────
+// Persona picker for the companion app — NOT authentication. See the profiles
+// table comment in the schema block. Zero rows = the app is unchanged. On a
+// slave these mutating routes proxy to the host automatically (slaveWriteGuard
+// doesn't allowlist /api/profiles as local-only).
+
+// Only these tabs can be hidden — calendars/favorites/settings always stay.
+const HIDEABLE_TABS = new Set(['photos', 'layout', 'displays', 'family']);
+const PROFILE_FEATURE_KEYS = new Set(['ha', 'integrations']);
+const PROFILE_PRESETS = new Set(['basic', 'intermediate', 'advanced', 'custom']);
+
+// Normalise a client-supplied hidden_tabs value to a JSON string of a clean
+// array (unknown / non-hideable ids dropped, deduped).
+function cleanHiddenTabs(v) {
+  let arr = v;
+  if (typeof v === 'string') { try { arr = JSON.parse(v); } catch { arr = []; } }
+  if (!Array.isArray(arr)) arr = [];
+  return JSON.stringify([...new Set(arr.filter(t => HIDEABLE_TABS.has(t)))]);
+}
+// Normalise features to a JSON string of an object with only known boolean keys.
+function cleanFeatures(v) {
+  let obj = v;
+  if (typeof v === 'string') { try { obj = JSON.parse(v); } catch { obj = {}; } }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) obj = {};
+  const out = {};
+  for (const k of PROFILE_FEATURE_KEYS) { if (k in obj) out[k] = !!obj[k]; }
+  return JSON.stringify(out);
+}
+function countManagers(exceptId) {
+  const row = exceptId != null
+    ? db.prepare(`SELECT COUNT(*) n FROM profiles WHERE is_manager = 1 AND id != ?`).get(exceptId)
+    : db.prepare(`SELECT COUNT(*) n FROM profiles WHERE is_manager = 1`).get();
+  return row.n;
+}
+
+// GET /api/profiles — rows verbatim; the client parses hidden_tabs / features.
+app.get('/api/profiles', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(db.prepare(`SELECT * FROM profiles ORDER BY sort, id`).all());
+});
+
+// POST /api/profiles — the very first profile in a household is forced to be a
+// manager, so a household can never lock itself out of profile management.
+app.post('/api/profiles', (req, res) => {
+  const b = req.body || {};
+  const name = (b.name || '').toString().trim().slice(0, 40);
+  if (!name) return res.status(400).json({ error: 'name is required' });
+  const isFirst = db.prepare(`SELECT COUNT(*) n FROM profiles`).get().n === 0;
+  const landing = HIDEABLE_TABS.has(b.landing_tab) || ['favorites', 'calendars', 'settings'].includes(b.landing_tab)
+    ? b.landing_tab : 'favorites';
+  const preset = PROFILE_PRESETS.has(b.preset) ? b.preset : 'custom';
+  const result = db.prepare(`
+    INSERT INTO profiles (name, color, avatar, is_manager, landing_tab, hidden_tabs, features, pin, preset, sort)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    name,
+    /^#[0-9a-fA-F]{3,8}$/.test(b.color || '') ? b.color : '#4A90D9',
+    (b.avatar || '').toString().slice(0, 8),
+    isFirst || b.is_manager ? 1 : 0,
+    landing,
+    cleanHiddenTabs(b.hidden_tabs),
+    cleanFeatures(b.features),
+    (b.pin || '').toString().replace(/\D/g, '').slice(0, 8),
+    preset,
+    Number.isInteger(b.sort) ? b.sort : 0
+  );
+  broadcastUpdate('profiles');
+  res.status(201).json(db.prepare(`SELECT * FROM profiles WHERE id = ?`).get(result.lastInsertRowid));
+});
+
+// PUT /api/profiles/:id — partial: only the keys present in the body change.
+// pin: send "" to clear, omit to keep.
+app.put('/api/profiles/:id', (req, res) => {
+  const existing = db.prepare(`SELECT * FROM profiles WHERE id = ?`).get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Profile not found' });
+  const b = req.body || {};
+  const sets = [];
+  const vals = [];
+  const put = (col, val) => { sets.push(`${col}=?`); vals.push(val); };
+
+  if (b.name !== undefined) {
+    const n = (b.name || '').toString().trim().slice(0, 40);
+    if (!n) return res.status(400).json({ error: 'name cannot be empty' });
+    put('name', n);
+  }
+  if (b.color !== undefined && /^#[0-9a-fA-F]{3,8}$/.test(b.color || '')) put('color', b.color);
+  if (b.avatar !== undefined) put('avatar', (b.avatar || '').toString().slice(0, 8));
+  if (b.is_manager !== undefined) {
+    const next = b.is_manager ? 1 : 0;
+    // Never let the last manager demote themselves — the household would lose
+    // all profile-management access.
+    if (!next && existing.is_manager && countManagers(existing.id) === 0) {
+      return res.status(400).json({ error: 'At least one profile must stay a manager.' });
+    }
+    put('is_manager', next);
+  }
+  if (b.landing_tab !== undefined) {
+    const ok = HIDEABLE_TABS.has(b.landing_tab) || ['favorites', 'calendars', 'settings'].includes(b.landing_tab);
+    put('landing_tab', ok ? b.landing_tab : 'favorites');
+  }
+  if (b.hidden_tabs !== undefined) put('hidden_tabs', cleanHiddenTabs(b.hidden_tabs));
+  if (b.features !== undefined) put('features', cleanFeatures(b.features));
+  if (b.pin !== undefined) put('pin', (b.pin || '').toString().replace(/\D/g, '').slice(0, 8));
+  if (b.preset !== undefined) put('preset', PROFILE_PRESETS.has(b.preset) ? b.preset : 'custom');
+  if (b.sort !== undefined && Number.isInteger(b.sort)) put('sort', b.sort);
+
+  if (!sets.length) return res.json(existing);
+  vals.push(existing.id);
+  db.prepare(`UPDATE profiles SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  broadcastUpdate('profiles');
+  res.json(db.prepare(`SELECT * FROM profiles WHERE id = ?`).get(existing.id));
+});
+
+// DELETE /api/profiles/:id — refuses to remove the last manager; orphaned
+// events fall back to owner_profile_id = NULL (default colour).
+app.delete('/api/profiles/:id', (req, res) => {
+  const existing = db.prepare(`SELECT * FROM profiles WHERE id = ?`).get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Profile not found' });
+  if (existing.is_manager && countManagers(existing.id) === 0) {
+    return res.status(400).json({ error: 'This is the only manager profile — make another profile a manager first.' });
+  }
+  db.prepare(`UPDATE events SET owner_profile_id = NULL WHERE owner_profile_id = ?`).run(existing.id);
+  db.prepare(`DELETE FROM profiles WHERE id = ?`).run(existing.id);
+  broadcastUpdate('profiles');
+  broadcastUpdate('events');
+  res.json({ ok: true });
 });
 
 // ── Settings API ─────────────────────────────────────────────────────────────
@@ -4255,6 +4505,9 @@ function buildSyncSnapshot() {
       stickers: tableRows('stickers'),
       rewards: tableRows('rewards'),
       sticker_redemptions: tableRows('sticker_redemptions'),
+      // Family member profiles — a mirror needs these to colour-code local
+      // events by owner (owner_profile_id rides along in `events` above).
+      profiles: tableRows('profiles'),
     },
   };
 }
@@ -4396,6 +4649,7 @@ const applySyncSnapshot = db.transaction((snap) => {
   if (T.stickers) replaceTable('stickers', T.stickers);
   if (T.rewards) replaceTable('rewards', T.rewards);
   if (T.sticker_redemptions) replaceTable('sticker_redemptions', T.sticker_redemptions);
+  if (T.profiles) replaceTable('profiles', T.profiles);
 });
 
 // Pull any photo image files this slave is missing, so cached photos actually
@@ -6053,7 +6307,7 @@ app.post('/api/feeds', async (req, res) => {
 
 // PUT /api/feeds/:id
 app.put('/api/feeds/:id', async (req, res) => {
-  const { name, url, color, color_timed, color_opacity, use_global_opacity, enabled } = req.body;
+  const { name, url, color, color_timed, show_location, color_opacity, use_global_opacity, enabled } = req.body;
   const feed = db.prepare(`SELECT * FROM ical_feeds WHERE id = ?`).get(req.params.id);
   if (!feed) return res.status(404).json({ error: 'Feed not found' });
 
@@ -6071,12 +6325,13 @@ app.put('/api/feeds/:id', async (req, res) => {
   }
 
   try {
-    db.prepare(`UPDATE ical_feeds SET name=?, url=?, color=?, color_timed=?, color_opacity=?, use_global_opacity=?, enabled=? WHERE id=?`)
+    db.prepare(`UPDATE ical_feeds SET name=?, url=?, color=?, color_timed=?, show_location=?, color_opacity=?, use_global_opacity=?, enabled=? WHERE id=?`)
       .run(
         name ?? feed.name,
         newUrl,
         color ?? feed.color,
         color_timed !== undefined ? (color_timed ? 1 : 0) : feed.color_timed,
+        show_location !== undefined ? (show_location ? 1 : 0) : feed.show_location,
         newOpacity,
         use_global_opacity !== undefined ? (use_global_opacity ? 1 : 0) : feed.use_global_opacity,
         enabled !== undefined ? enabled : feed.enabled,
@@ -6240,6 +6495,9 @@ function parseICS(icsText, feedId, feedColor, timeZone) {
 
     // Description
     if (key.startsWith('DESCRIPTION')) current.notes = decodeICSText(value).slice(0, 500);
+
+    // Location (venue / address) — may carry params like LOCATION;LANGUAGE=en:...
+    if (key.startsWith('LOCATION')) current.location = decodeICSText(value).slice(0, 300);
 
     // DTSTART — handles date-only (VALUE=DATE) and datetime
     if (key.startsWith('DTSTART')) {
@@ -6667,12 +6925,12 @@ async function syncFeed(feed) {
   const replace = db.transaction(() => {
     db.prepare(`DELETE FROM ical_events WHERE feed_id = ?`).run(feed.id);
     const insert = db.prepare(
-      `INSERT OR REPLACE INTO ical_events (uid, feed_id, title, date, end_date, start_time, end_time, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT OR REPLACE INTO ical_events (uid, feed_id, title, date, end_date, start_time, end_time, notes, location)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const e of occurrences) {
       const endDate = (e.end_date && e.end_date > e.date) ? e.end_date : null;
-      insert.run(e.uid, feed.id, e.title, e.date, endDate, e.start_time || null, e.end_time || null, e.notes || '');
+      insert.run(e.uid, feed.id, e.title, e.date, endDate, e.start_time || null, e.end_time || null, e.notes || '', e.location || '');
     }
     db.prepare(`UPDATE ical_feeds SET last_synced = datetime('now') WHERE id = ?`).run(feed.id);
   });
@@ -6919,6 +7177,7 @@ function buildEventICS(row) {
 
   lines.push(foldICSLine(`SUMMARY:${escapeICSText(row.title)}`));
   if (row.notes) lines.push(foldICSLine(`DESCRIPTION:${escapeICSText(row.notes)}`));
+  if (row.location) lines.push(foldICSLine(`LOCATION:${escapeICSText(row.location)}`));
   lines.push('END:VEVENT', 'END:VCALENDAR');
   return lines.join('\r\n') + '\r\n';
 }
@@ -7108,6 +7367,7 @@ async function googleGetAccountEmail(token) {
 function googleEventBody(row) {
   const b = { id: `phqlocal${row.id}`, summary: row.title || '(no title)' };
   if (row.notes) b.description = row.notes;
+  if (row.location) b.location = row.location;
   if (!row.start_time) {
     const endExclusive = new Date((row.end_date || row.date) + 'T00:00:00');
     endExclusive.setDate(endExclusive.getDate() + 1);
@@ -8318,6 +8578,9 @@ app.get('/api/screens', (req, res) => {
       floating_switcher_style: s.floating_switcher_style || 'circles',
       floating_switcher_bar_mode: s.floating_switcher_bar_mode || 'icons',
       floating_switcher_reveal: s.floating_switcher_reveal || 'always',
+      alert_banner_position: s.alert_banner_position || 'top',
+      alert_banner_size: s.alert_banner_size || 'm',
+      alert_banner_style: s.alert_banner_style || 'solid',
       online: (now - (s.last_seen || 0)) < SCREEN_ONLINE_MS,
       last_seen: s.last_seen || 0,
       is_remote: !!s.is_remote,
@@ -8328,7 +8591,7 @@ app.get('/api/screens', (req, res) => {
 
 // Rename a screen (also used to set its name the first time).
 app.put('/api/screens/:deviceId', (req, res) => {
-  const { name, info_corner, screen_orientation, screen_rotation, screensaver_tag, screensaver_photo_id, ambient_mode, ambient_clock_corner, ambient_photo_fit, ambient_fade_transition, ambient_fade_duration, ambient_photo_interval, ambient_blur_bg, fx_scale, fx_density, tv_control_type, tv_ip, floating_switcher_enabled, floating_switcher_presets, floating_switcher_schedule, floating_switcher_edge, floating_switcher_icon, floating_switcher_color, floating_switcher_style, floating_switcher_bar_mode, floating_switcher_reveal } = req.body;
+  const { name, info_corner, screen_orientation, screen_rotation, screensaver_tag, screensaver_photo_id, ambient_mode, ambient_clock_corner, ambient_photo_fit, ambient_fade_transition, ambient_fade_duration, ambient_photo_interval, ambient_blur_bg, fx_scale, fx_density, tv_control_type, tv_ip, floating_switcher_enabled, floating_switcher_presets, floating_switcher_schedule, floating_switcher_edge, floating_switcher_icon, floating_switcher_color, floating_switcher_style, floating_switcher_bar_mode, floating_switcher_reveal, alert_banner_position, alert_banner_size, alert_banner_style } = req.body;
   const existing = db.prepare(`SELECT device_id FROM screens WHERE device_id = ?`).get(req.params.deviceId);
   if (!existing) return res.status(404).json({ error: 'Screen not found' });
   if (name !== undefined) {
@@ -8584,6 +8847,21 @@ app.put('/api/screens/:deviceId', (req, res) => {
     // toggled casually from the app while looking at the screen.
     sendScreenCommand(req.params.deviceId, 'refresh-floating-switcher', {});
   }
+  if (alert_banner_position !== undefined) {
+    const v = ['top', 'bottom', 'center'].includes(alert_banner_position) ? alert_banner_position : 'top';
+    db.prepare(`UPDATE screens SET alert_banner_position = ? WHERE device_id = ?`).run(v, req.params.deviceId);
+  }
+  if (alert_banner_size !== undefined) {
+    const v = ['s', 'm', 'l', 'xl', 'xxl'].includes(alert_banner_size) ? alert_banner_size : 'm';
+    db.prepare(`UPDATE screens SET alert_banner_size = ? WHERE device_id = ?`).run(v, req.params.deviceId);
+  }
+  if (alert_banner_style !== undefined) {
+    const v = ['solid', 'bar', 'toast', 'outline', 'amber', 'strong'].includes(alert_banner_style) ? alert_banner_style : 'solid';
+    db.prepare(`UPDATE screens SET alert_banner_style = ? WHERE device_id = ?`).run(v, req.params.deviceId);
+  }
+  if (alert_banner_position !== undefined || alert_banner_size !== undefined || alert_banner_style !== undefined) {
+    sendScreenCommand(req.params.deviceId, 'refresh-alert-banner', {});
+  }
   broadcastUpdate('screens');
   res.json({ ok: true });
 });
@@ -8833,6 +9111,7 @@ app.get('/api/screen-config', (req, res) => {
       floating_switcher_edge: existing.floating_switcher_edge || 'bottom', floating_switcher_icon: existing.floating_switcher_icon || '🔀', floating_switcher_color: existing.floating_switcher_color || '#0a0e1a',
       floating_switcher_style: existing.floating_switcher_style || 'circles', floating_switcher_bar_mode: existing.floating_switcher_bar_mode || 'icons',
       floating_switcher_reveal: existing.floating_switcher_reveal || 'always',
+      alert_banner_position: existing.alert_banner_position || 'top', alert_banner_size: existing.alert_banner_size || 'm', alert_banner_style: existing.alert_banner_style || 'solid',
       ...(demoSwitcherOverride() || {}) });
   } else {
     db.prepare(`INSERT INTO screens (device_id, name, last_seen) VALUES (?, ?, ?)`).run(screenId, previewScreenName(screenId), now);
@@ -8844,6 +9123,7 @@ app.get('/api/screen-config', (req, res) => {
       floating_switcher_enabled: false, floating_switcher_presets: [], floating_switcher_schedule: [],
       floating_switcher_edge: 'bottom', floating_switcher_icon: '🔀', floating_switcher_color: '#0a0e1a',
       floating_switcher_style: 'circles', floating_switcher_bar_mode: 'icons', floating_switcher_reveal: 'always',
+      alert_banner_position: 'top', alert_banner_size: 'm', alert_banner_style: 'solid',
       ...(demoSwitcherOverride() || {}) });
   }
 });
@@ -9048,8 +9328,14 @@ app.get('/api/todoist/projects', async (req, res) => {
 function haRequest(pathAndQuery) {
   return haRequestWith(getSetting('ha_base_url'), getSetting('ha_token'), pathAndQuery);
 }
-function haRequestWith(baseUrl, token, pathAndQuery, method = 'GET', body = null) {
-  return new Promise((resolve, reject) => {
+// Last outcome of a real HA REST interaction — powers the `ha` field in the
+// fleet check-in (fetchUpdateInfo). null = this device has never talked to
+// HA (either not configured, or configured but nothing's polled yet).
+let _haHealth = null; // { ok: boolean, at: epochMs } | null
+function haRequestWith(baseUrl, token, pathAndQuery, method = 'GET', body = null, opts = {}) {
+  const configured = !!(baseUrl && token);
+  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 8000;
+  const p = new Promise((resolve, reject) => {
     if (!baseUrl || !token) return reject({ status: 400, message: 'Home Assistant isn\'t configured yet — add a URL and token in Settings' });
     let target;
     try { target = new URL(baseUrl.replace(/\/+$/, '') + pathAndQuery); } catch { return reject({ status: 400, message: 'Invalid Home Assistant URL' }); }
@@ -9085,10 +9371,18 @@ function haRequestWith(baseUrl, token, pathAndQuery, method = 'GET', body = null
       });
     });
     r.on('error', (err) => reject({ status: 502, message: `Could not reach Home Assistant: ${err.message}` }));
-    r.setTimeout(8000, () => r.destroy(new Error('Home Assistant request timed out')));
+    r.setTimeout(timeoutMs, () => r.destroy(new Error('Home Assistant request timed out')));
     if (bodyStr) r.write(bodyStr);
     r.end();
   });
+  // Only "HA is configured but we couldn't reach/authenticate it" is a health
+  // signal — the not-configured reject above isn't. A token/permission error
+  // (status 401) counts as unhealthy; so does any transport failure.
+  if (!configured) return p;
+  return p.then(
+    (v) => { _haHealth = { ok: true, at: Date.now() }; return v; },
+    (e) => { _haHealth = { ok: false, at: Date.now() }; throw e; }
+  );
 }
 
 // GET /api/ha/discover — best-effort auto-detection of a Home Assistant
@@ -9526,6 +9820,49 @@ const DOMAIN_LOCKED_ACTIONS = {
   set_fan_speed: 'fan',
   set_color_temp: 'light', set_color: 'light',
 };
+// Read-only domains: no actionable service exists, so an on/off/toggle/trigger
+// aimed at one means a mis-picked entity (a sensor dropped into a switch
+// widget slot, say). HA silently no-ops the call and returns ok, which looks
+// like it worked — reject it here so the mistake is visible instead.
+const HA_READ_ONLY_DOMAINS = new Set(['sensor', 'binary_sensor', 'weather', 'sun', 'air_quality', 'zone']);
+const HA_UNTARGETED_ACTIONS = new Set(['turn_on', 'turn_off', 'toggle', 'trigger']);
+
+// Fire an HA service call without making the client wait for its full
+// completion. HA's REST /api/services endpoint holds the HTTP response until
+// the service action AND everything listening for the resulting state change
+// have finished — for a cover that's the whole travel time, several seconds.
+// HA's own UI doesn't feel this because it calls services over the websocket
+// API, which returns as soon as the call is scheduled. This mirrors that: we
+// wait a short window for a *fast* failure (bad token, unknown entity, HA
+// unreachable — all resolve well under it), then answer the client
+// optimistically and let the request finish in the background, logging only a
+// genuine late failure. A generous ceiling still bounds the background request
+// (covers the old 8s timeout being too short for a slow cover, without
+// letting it hang forever).
+const HA_ACTION_SOFT_ACK_MS = 1500;
+const HA_ACTION_HARD_TIMEOUT_MS = 35000;
+async function fireHaServiceCall(servicePath, body, onSettle) {
+  const call = haRequestWith(
+    getSetting('ha_base_url'), getSetting('ha_token'),
+    servicePath, 'POST', body, { timeoutMs: HA_ACTION_HARD_TIMEOUT_MS },
+  );
+  let settled = null; // null = still running, 'ok' = done, Error-ish = failed
+  call.then(
+    () => { settled = 'ok'; try { onSettle(); } catch {} },
+    (e) => { settled = e || new Error('failed'); console.warn(`HA ${servicePath} did not complete cleanly: ${(e && e.message) || e}`); },
+  );
+  await new Promise(r => setTimeout(r, HA_ACTION_SOFT_ACK_MS));
+  if (settled && settled !== 'ok') {
+    const err = new Error(settled.message || 'Home Assistant rejected the command');
+    err.status = settled.status || 502;
+    throw err;
+  }
+  // Drop the cached state now too, so the client's follow-up poll (~700ms
+  // later) reads fresh rather than the stale pre-action value.
+  try { onSettle(); } catch {}
+  return { ok: true, pending: settled !== 'ok' };
+}
+
 app.post('/api/ha/call-action', async (req, res) => {
   const { entityId, action, temperature } = req.body || {};
   if (!entityId || typeof entityId !== 'string' || !entityId.includes('.')) {
@@ -9537,6 +9874,9 @@ app.post('/api/ha/call-action', async (req, res) => {
   const domain = entityId.split('.')[0];
   if (DOMAIN_LOCKED_ACTIONS[action] && domain !== DOMAIN_LOCKED_ACTIONS[action]) {
     return res.status(400).json({ error: `"${action}" is only valid for ${DOMAIN_LOCKED_ACTIONS[action]} entities.` });
+  }
+  if (HA_UNTARGETED_ACTIONS.has(action) && HA_READ_ONLY_DOMAINS.has(domain)) {
+    return res.status(400).json({ error: `${domain} entities are read-only — no on/off/toggle control.` });
   }
   const { domain: svcDomain, service } = HA_ACTIONS[action](domain);
   const data = { entity_id: entityId };
@@ -9573,14 +9913,12 @@ app.post('/api/ha/call-action', async (req, res) => {
     data.rgb_color = parts;
   }
   try {
-    await haRequestWith(getSetting('ha_base_url'), getSetting('ha_token'), `/api/services/${svcDomain}/${service}`, 'POST', data);
-    // The entity's state almost certainly just changed — drop any cached
-    // value for it so the next /api/ha/state/:entityId poll (within a few
-    // seconds, not the full 10s window) reflects the real new state instead
-    // of serving back the stale pre-action one for however long was left on
-    // the cache's clock.
-    haStateCache.delete(entityId);
-    res.json({ ok: true });
+    // Fire-and-forget: reply as soon as HA accepts the call (or a fast error
+    // comes back), not after the cover/lock/etc. physically finishes. The
+    // cache drop lets the next /api/ha/state/:entityId poll (a few seconds
+    // out, not the full 10s window) reflect the real new state.
+    const out = await fireHaServiceCall(`/api/services/${svcDomain}/${service}`, data, () => haStateCache.delete(entityId));
+    res.json(out);
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
@@ -9613,13 +9951,10 @@ app.post('/api/ha/call-group-action', async (req, res) => {
     return res.status(400).json({ error: `Unsupported group action "${action}" — only turn_on/turn_off are allowed here.` });
   }
   try {
-    await haRequestWith(getSetting('ha_base_url'), getSetting('ha_token'), `/api/services/homeassistant/${action}`, 'POST', { entity_id: entityIds });
-    // Same reasoning as call-action above — drop every member's cached
-    // state so the next poll reflects reality instead of serving back
-    // stale pre-action values for however long was left on each one's
-    // cache clock.
-    entityIds.forEach(id => haStateCache.delete(id));
-    res.json({ ok: true });
+    // Same fire-and-forget treatment as call-action — a group turn_on/off
+    // spanning several entities can take HA a moment to fully settle.
+    const out = await fireHaServiceCall(`/api/services/homeassistant/${action}`, { entity_id: entityIds }, () => entityIds.forEach(id => haStateCache.delete(id)));
+    res.json(out);
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
@@ -11760,12 +12095,31 @@ function fetchUpdateInfo() {
     u.searchParams.set('device', deviceId);
     u.searchParams.set('role', role);
     if (deviceName) u.searchParams.set('name', deviceName);
+    // ── Fleet-health telemetry (see FLEET-OBSERVABILITY-SPEC.md) ──
+    // Generic device-health fields, deliberately not phrased around
+    // "update-check" — a future faster health-ping sends the same set.
+    u.searchParams.set('deployment', DEPLOYMENT);            // pi | windows | container
+    u.searchParams.set('uptime', String(Math.round(process.uptime()))); // seconds; resets each check-in => crash-looping
+    if (_haHealth) u.searchParams.set('ha', _haHealth.ok ? '1' : '0');   // omitted = never talked to HA
+    try {
+      const st = fs.statfsSync(DATA_DIR || __dirname);
+      u.searchParams.set('disk', String(Math.round(st.bfree * st.bsize / 1048576))); // free MB on the data volume
+    } catch { /* statfsSync unsupported here — skip */ }
+    if (_lastCrash) {
+      u.searchParams.set('crash', `${Math.round(_lastCrash.at / 1000)}:${_lastCrash.reason}`.slice(0, 320));
+    }
     const mod = u.protocol === 'https:' ? https : http;
     const reqOpts = { timeout: 10000, headers: licenseKey ? { 'x-license-key': licenseKey } : {} };
     const req = mod.get(u.toString(), reqOpts, (r) => {
       let data = '';
       r.on('data', c => data += c);
-      r.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('Bad response from update server.')); } });
+      r.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          _lastCrash = null; // reported — don't repeat it on the next check-in
+          resolve(parsed);
+        } catch (e) { reject(new Error('Bad response from update server.')); }
+      });
     });
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('Update server timed out.')); });
