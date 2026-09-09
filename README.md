@@ -7,9 +7,10 @@ and is controlled from any browser or phone.
 ## What you get
 
 - **Display** (`/`) — a fullscreen wall dashboard: clock, calendar, upcoming
-  events, weather, photos, chore charts, and live Home Assistant tiles, laid
-  out however you want in the drag-and-drop editor. Runs in a browser in kiosk
-  mode on whatever screen you point at it.
+  events, weather, photos, chore charts, a family message board, live Home
+  Assistant tiles, and live camera feeds, laid out however you want in the
+  drag-and-drop editor. Runs in a browser in kiosk mode on whatever screen you
+  point at it.
 - **Control app** (`/app`) — a mobile-first web app for adding events, arranging
   the display, and managing the household. Add it to your phone's home screen
   for a native-app feel.

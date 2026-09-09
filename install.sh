@@ -192,6 +192,48 @@ npm install --no-fund --no-audit
 ok "Dependencies ready"
 echo
 
+# ── 3b. go2rtc (camera streaming) ────────────────────────────────────────────
+# The Camera widget needs a local go2rtc binary to ingest RTSP/ONVIF and hand
+# it to the browser. Single static binary, pinned + sha256-verified. Optional:
+# a failure here just means the Camera widget shows "unavailable" until the
+# next install re-run — everything else works. Skipped if already at the pin.
+say "Checking go2rtc (camera streaming)"
+GO2RTC_DEST="$PROJECT_DIR/bin/go2rtc"
+if [[ -f "$PROJECT_DIR/scripts/go2rtc-version.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "$PROJECT_DIR/scripts/go2rtc-version.sh"
+  arch="$(uname -m)"
+  asset="$(go2rtc_linux_asset_for_arch "$arch")"
+  want_sha="${GO2RTC_SHA256[$asset]:-}"
+  installed_sha=""
+  [[ -f "$GO2RTC_DEST" ]] && installed_sha="$(sha256sum "$GO2RTC_DEST" 2>/dev/null | cut -d' ' -f1)"
+  if [[ -z "$asset" || -z "$want_sha" ]]; then
+    warn "No pinned go2rtc build for '$arch' — the Camera widget will be unavailable on this device."
+  elif [[ "$installed_sha" == "$want_sha" ]]; then
+    skip "go2rtc ${GO2RTC_VERSION} (${asset})"
+  else
+    mkdir -p "$PROJECT_DIR/bin"
+    tmp="$(mktemp)"
+    if curl -fsSL -o "$tmp" "${GO2RTC_BASE_URL}/${asset}"; then
+      got_sha="$(sha256sum "$tmp" | cut -d' ' -f1)"
+      if [[ "$got_sha" == "$want_sha" ]]; then
+        mv "$tmp" "$GO2RTC_DEST"
+        chmod +x "$GO2RTC_DEST"
+        ok "go2rtc ${GO2RTC_VERSION} installed (${asset})"
+      else
+        rm -f "$tmp"
+        warn "go2rtc download sha256 mismatch — skipped (Camera widget unavailable). Expected $want_sha, got $got_sha"
+      fi
+    else
+      rm -f "$tmp"
+      warn "Could not download go2rtc (offline?) — the Camera widget will be unavailable until the next install re-run."
+    fi
+  fi
+else
+  warn "scripts/go2rtc-version.sh missing — skipping go2rtc (Camera widget unavailable)."
+fi
+echo
+
 # ── 4. Data safety check ──────────────────────────────────────────────────────
 # This script never deletes or overwrites these. We just report what we found so
 # the user knows their data is intact across a re-run/update.

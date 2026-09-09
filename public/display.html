@@ -23,6 +23,9 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" defer></script>
+  <!-- go2rtc's <video-stream> web component, vendored locally (see the file
+       header). Powers the Camera widget: WebRTC with MSE/MJPEG fallback. -->
+  <script src="/vendor/video-rtc.js" defer></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -237,6 +240,11 @@
       opacity:1; transition:opacity 0.4s;
     }
     .cc-toast-out { opacity:0; }
+    .cc-toast-undo {
+      margin-left:14px; background:rgba(255,255,255,0.14); color:#e8edf5;
+      border:1px solid rgba(255,255,255,0.25); border-radius:8px;
+      padding:5px 12px; font-size:14px; font-weight:600; cursor:pointer;
+    }
     /* Direct-editing UI (Phase 3) — deliberately understated: this should
        read as "available if you go looking for it," not as a permanent
        fixture cluttering the display the other 99% of the time it's just
@@ -494,6 +502,31 @@
     #ea-cancel { background:rgba(255,255,255,0.1); color:#e8edf5; }
     #ea-save { background:#4A90D9; color:#fff; }
     #ea-save:disabled { opacity:0.5; }
+    /* Family Message Board — add-a-note sheet (mirrors #event-add-overlay). */
+    #mb-add-overlay {
+      position:fixed; inset:0; z-index:91;
+      background:rgba(4,6,12,0.75); backdrop-filter:blur(2px);
+      display:none; align-items:center; justify-content:center; padding:24px;
+    }
+    #mb-add-card {
+      background:#12172a; color:#e8edf5; border-radius:16px; padding:24px;
+      max-width:440px; width:100%; position:relative;
+      box-shadow:0 20px 60px -12px rgba(0,0,0,0.7);
+    }
+    #mb-add-close {
+      position:absolute; top:14px; right:14px; background:rgba(255,255,255,0.1);
+      color:#e8edf5; border:none; width:32px; height:32px; border-radius:50%; font-size:15px;
+    }
+    #mb-add-heading { font-size:20px; font-weight:700; margin-bottom:16px; padding-right:36px; }
+    #mb-add-text {
+      width:100%; box-sizing:border-box; padding:11px 12px; font-size:16px;
+      border-radius:10px; border:1px solid rgba(255,255,255,0.15);
+      background:rgba(255,255,255,0.05); color:#e8edf5; resize:none;
+      font-family:inherit; line-height:1.4;
+    }
+    #mb-add-cancel { background:rgba(255,255,255,0.1); color:#e8edf5; }
+    #mb-add-save { background:#4A90D9; color:#fff; }
+    #mb-add-save:disabled { opacity:0.5; }
     .wp-category {
       margin-bottom:8px; border-radius:10px; overflow:hidden;
       background:rgba(255,255,255,0.04);
@@ -718,6 +751,11 @@
     .was-box {
       border:1px solid rgba(255,255,255,0.15); border-radius:10px; padding:14px;
       background:rgba(255,255,255,0.03); margin-bottom:16px;
+    }
+    .was-mini-btn {
+      padding:7px 12px; border-radius:8px; font-size:13px; font-weight:600;
+      border:1px solid rgba(255,255,255,0.15); background:rgba(255,255,255,0.06);
+      color:#e8edf5; cursor:pointer;
     }
     /* Info button + popup — same pattern as the app's own settings panels
        (app.html), restyled for this panel's dark, no-CSS-variable palette
@@ -1560,15 +1598,15 @@
     .w-reminders-hero { display:flex; flex-direction:column; }
     .rem-hero-main {
       display:flex; align-items:center; gap:calc(var(--rem-font) * 0.5);
-      background:linear-gradient(135deg, rgba(74,144,217,0.18), rgba(126,200,227,0.06));
-      border:1px solid rgba(74,144,217,0.35); border-radius:12px;
+      background:linear-gradient(135deg, color-mix(in srgb, var(--accent) 20%, transparent), color-mix(in srgb, var(--accent2, var(--accent)) 7%, transparent));
+      border:1px solid color-mix(in srgb, var(--accent) 35%, transparent); border-radius:12px;
       padding:calc(var(--rem-font) * 0.5) calc(var(--rem-font) * 0.6); margin-bottom:calc(var(--rem-font) * 0.35);
     }
     .rem-hero-icon { font-size:calc(var(--rem-font) * 1.3); line-height:1; }
     .rem-hero-title { font-size:calc(var(--rem-font) * 0.7); font-weight:700; color:var(--text); }
     .rem-hero-when { font-size:calc(var(--rem-font) * 0.5); color:var(--accent, #7ec8e3); font-weight:600; margin-top:2px; }
     .rem-hero-rest { display:flex; gap:calc(var(--rem-font) * 0.3); }
-    .rem-chip { flex:1; text-align:center; padding:calc(var(--rem-font) * 0.3) calc(var(--rem-font) * 0.2); border-radius:9px; background:rgba(255,255,255,0.04); border:1px solid var(--border, rgba(255,255,255,0.08)); }
+    .rem-chip { flex:1; text-align:center; padding:calc(var(--rem-font) * 0.3) calc(var(--rem-font) * 0.2); border-radius:9px; background:color-mix(in srgb, var(--text) 5%, transparent); border:1px solid var(--border, rgba(255,255,255,0.08)); }
     .rem-chip-icon { font-size:calc(var(--rem-font) * 0.55); margin-bottom:3px; }
     .rem-chip-name { font-size:calc(var(--rem-font) * 0.36); color:var(--text2); font-weight:600; }
     .rem-chip-when { font-size:calc(var(--rem-font) * 0.32); color:var(--text2); opacity:0.8; margin-top:1px; }
@@ -1579,11 +1617,177 @@
     .rem-week-title-icon { font-size:calc(var(--rem-font) * 0.55); }
     .rem-week-title-text { font-size:calc(var(--rem-font) * 0.48); font-weight:600; color:var(--text); }
     .rem-week-strip { display:flex; gap:calc(var(--rem-font) * 0.18); }
-    .rem-week-day { flex:1; text-align:center; padding:calc(var(--rem-font) * 0.28) 2px calc(var(--rem-font) * 0.24); border-radius:8px; background:rgba(255,255,255,0.04); border:1px solid transparent; }
-    .rem-week-day-active { background:rgba(74,144,217,0.18); border-color:rgba(74,144,217,0.4); }
+    .rem-week-day { flex:1; text-align:center; padding:calc(var(--rem-font) * 0.28) 2px calc(var(--rem-font) * 0.24); border-radius:8px; background:color-mix(in srgb, var(--text) 5%, transparent); border:1px solid transparent; }
+    .rem-week-day-active { background:color-mix(in srgb, var(--accent) 18%, transparent); border-color:color-mix(in srgb, var(--accent) 40%, transparent); }
     .rem-week-day-today { border-color:var(--accent, #4A90D9); }
     .rem-week-dow { font-size:calc(var(--rem-font) * 0.32); color:var(--text2); font-weight:700; text-transform:uppercase; letter-spacing:0.4px; }
     .rem-week-icon { font-size:calc(var(--rem-font) * 0.52); margin-top:4px; min-height:1em; }
+
+    /* ── Family Message Board widget ──
+       A scrollable column of short note cards. Sizes scale off --mb-font
+       (default 14) so one "Font Size" control grows the whole thing, same
+       pattern as .w-reminders / .w-agenda. Each card's left rail + dot take
+       the author's colour (profile colour when linked, else the stored
+       msg.color). */
+    .w-messageboard {
+      --mb-font: 14px; width:100%; height:100%;
+      display:flex; flex-direction:column; overflow:hidden;
+      font-family:var(--per-widget-font, var(--global-font-family, var(--theme-font-family, 'Inter', sans-serif)));
+    }
+    .mb-head {
+      display:flex; align-items:center; justify-content:space-between;
+      gap:8px; margin-bottom:calc(var(--mb-font) * 0.5); flex-shrink:0;
+    }
+    .mb-head-title {
+      font-size:calc(var(--mb-font) * 0.85); font-weight:700; color:var(--text2);
+      text-transform:uppercase; letter-spacing:0.6px;
+    }
+    .mb-add-btn {
+      flex-shrink:0; width:calc(var(--mb-font) * 1.7); height:calc(var(--mb-font) * 1.7);
+      border-radius:50%; border:1px solid var(--border, rgba(255,255,255,0.18));
+      /* surfaces derive from --text so they flip on light themes (postit,
+         corkboard) instead of staying an invisible white tint */
+      background:color-mix(in srgb, var(--text) 8%, transparent); color:var(--text);
+      font-size:calc(var(--mb-font) * 1.05); line-height:1; cursor:pointer;
+      display:flex; align-items:center; justify-content:center;
+    }
+    .mb-list { flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:calc(var(--mb-font) * 0.4); }
+    .mb-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--text2); opacity:0.5; font-size:calc(var(--mb-font) * 0.85); }
+    .mb-card {
+      position:relative; border-radius:10px; padding:calc(var(--mb-font) * 0.55) calc(var(--mb-font) * 0.7);
+      padding-left:calc(var(--mb-font) * 0.9);
+      background:color-mix(in srgb, var(--text) 5%, transparent); border:1px solid var(--border, rgba(255,255,255,0.08));
+    }
+    .mb-card::before {
+      content:''; position:absolute; left:0; top:0; bottom:0; width:calc(var(--mb-font) * 0.28);
+      border-radius:10px 0 0 10px; background:var(--mb-color, var(--accent));
+    }
+    .mb-card-pinned { background:color-mix(in srgb, #e8b84a 14%, transparent); border-color:color-mix(in srgb, #e8b84a 34%, transparent); }
+    .mb-card-head { display:flex; align-items:center; gap:calc(var(--mb-font) * 0.4); margin-bottom:calc(var(--mb-font) * 0.3); }
+    .mb-dot { width:calc(var(--mb-font) * 0.5); height:calc(var(--mb-font) * 0.5); border-radius:50%; background:var(--mb-color, var(--accent)); flex-shrink:0; }
+    .mb-author { font-size:calc(var(--mb-font) * 0.72); font-weight:700; color:var(--text); }
+    .profile-avatar-d { border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-weight:700; color:#fff; flex:0 0 auto; line-height:1; }
+    .mb-time { font-size:calc(var(--mb-font) * 0.62); color:var(--text2); opacity:0.85; }
+    .mb-card-head-spacer { flex:1; }
+    .mb-x, .mb-pin {
+      flex-shrink:0; background:none; border:none; cursor:pointer; padding:2px;
+      font-size:calc(var(--mb-font) * 0.8); line-height:1; color:var(--text2); opacity:0.7;
+    }
+    .mb-pin-on { opacity:1; }
+    .mb-text { font-size:calc(var(--mb-font) * 0.9); color:var(--text); line-height:1.35; white-space:pre-wrap; word-break:break-word; }
+
+    /* ── Meal Plan widget ──
+       The week's dinners, one row per upcoming day. Sizes scale off --mp-font
+       (default 15), same pattern as .w-reminders. */
+    .w-mealplan {
+      --mp-font: 15px; width:100%; height:100%;
+      display:flex; flex-direction:column; overflow:hidden;
+      font-family:var(--per-widget-font, var(--global-font-family, var(--theme-font-family, 'Inter', sans-serif)));
+    }
+    .mp-head {
+      font-size:calc(var(--mp-font) * 0.8); font-weight:700; color:var(--text2);
+      text-transform:uppercase; letter-spacing:0.6px; margin-bottom:calc(var(--mp-font) * 0.5); flex-shrink:0;
+    }
+    .mp-list { flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; }
+    .mp-row {
+      display:flex; align-items:baseline; gap:calc(var(--mp-font) * 0.5);
+      padding:calc(var(--mp-font) * 0.42) 2px;
+      border-bottom:1px solid var(--border, rgba(255,255,255,0.08));
+    }
+    .mp-row:last-child { border-bottom:none; }
+    /* today tint + slot chips derive from the theme's accent / text so they
+       track a custom theme instead of a hardcoded blue */
+    .mp-today { background:color-mix(in srgb, var(--accent) 14%, transparent); border-radius:6px; padding-left:calc(var(--mp-font) * 0.35); padding-right:calc(var(--mp-font) * 0.35); }
+    .mp-day { font-size:calc(var(--mp-font) * 0.66); font-weight:700; color:var(--text2); min-width:calc(var(--mp-font) * 3); flex-shrink:0; }
+    .mp-today .mp-day { color:var(--accent); }
+    .mp-dom { font-size:calc(var(--mp-font) * 0.55); color:var(--text2); opacity:0.6; min-width:calc(var(--mp-font) * 1.1); flex-shrink:0; }
+    .mp-title { flex:1; font-size:calc(var(--mp-font) * 0.82); color:var(--text); font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .mp-empty { flex:1; font-size:calc(var(--mp-font) * 0.82); color:var(--text2); opacity:0.35; }
+    .mp-hint { text-align:center; color:var(--text2); opacity:0.5; font-size:calc(var(--mp-font) * 0.75); margin-top:calc(var(--mp-font) * 0.6); }
+    /* multi-slot layout: a day header then a line per slot */
+    .mp-list.mp-multi { gap:calc(var(--mp-font) * 0.5); }
+    .mp-daygroup { padding:calc(var(--mp-font) * 0.3) 2px; border-bottom:1px solid var(--border, rgba(255,255,255,0.08)); }
+    .mp-daygroup:last-child { border-bottom:none; }
+    .mp-daygroup.mp-today { background:color-mix(in srgb, var(--accent) 14%, transparent); border-radius:6px; padding-left:calc(var(--mp-font) * 0.35); padding-right:calc(var(--mp-font) * 0.35); }
+    .mp-dayhdr { display:flex; align-items:baseline; gap:calc(var(--mp-font) * 0.4); margin-bottom:calc(var(--mp-font) * 0.2); }
+    .mp-daygroup.mp-today .mp-day { color:var(--accent); }
+    .mp-slotline { display:flex; align-items:baseline; gap:calc(var(--mp-font) * 0.45); padding:calc(var(--mp-font) * 0.18) 0 calc(var(--mp-font) * 0.18) calc(var(--mp-font) * 0.4); }
+    .mp-slot {
+      font-size:calc(var(--mp-font) * 0.5); font-weight:800; color:var(--text2);
+      background:color-mix(in srgb, var(--text) 9%, transparent); border-radius:4px; padding:1px calc(var(--mp-font) * 0.28);
+      flex-shrink:0; letter-spacing:0.5px;
+    }
+
+    #mp-edit-overlay {
+      position:fixed; inset:0; z-index:91; display:none;
+      align-items:center; justify-content:center; padding:24px;
+      background:rgba(4,6,12,0.75); backdrop-filter:blur(2px);
+    }
+    #mp-edit-card {
+      background:#12172a; color:#e8edf5; border-radius:16px; padding:24px;
+      max-width:440px; width:100%; position:relative; box-shadow:0 20px 60px -12px rgba(0,0,0,0.7);
+    }
+    #mp-edit-close {
+      position:absolute; top:14px; right:14px; background:rgba(255,255,255,0.1);
+      color:#e8edf5; border:none; width:32px; height:32px; border-radius:50%; font-size:15px;
+    }
+    #mp-edit-heading { font-size:20px; font-weight:700; margin-bottom:16px; padding-right:36px; }
+    #mp-edit-title, #mp-edit-notes {
+      width:100%; box-sizing:border-box; padding:11px 12px; font-size:16px;
+      border-radius:10px; border:1px solid rgba(255,255,255,0.15);
+      background:rgba(255,255,255,0.05); color:#e8edf5; font-family:inherit;
+    }
+    #mp-edit-notes { margin-top:10px; resize:none; line-height:1.4; }
+    #mp-edit-clear { background:rgba(255,255,255,0.1); color:#e8edf5; }
+    #mp-edit-save { background:#4A90D9; color:#fff; }
+    #mp-edit-save:disabled, #mp-edit-clear:disabled { opacity:0.5; }
+
+    /* ── Camera widget ──
+       A live camera via the vendored go2rtc <video-stream>. The frame is a
+       black box the video fills; --cam-fit switches contain/cover. */
+    .w-camera { display:flex; flex-direction:column; width:100%; height:100%; }
+    .cam-title {
+      flex-shrink:0; font-size:12px; font-weight:700; color:var(--text2);
+      text-transform:uppercase; letter-spacing:0.6px; margin-bottom:6px;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    .cam-frame {
+      flex:1; min-height:0; position:relative; background:#000;
+      border-radius:8px; overflow:hidden;
+    }
+    .cam-frame video-stream { display:block; width:100%; height:100%; }
+    .cam-frame video-stream video {
+      width:100% !important; height:100% !important;
+      object-fit:var(--cam-fit, contain); background:#000; pointer-events:none;
+    }
+    .cam-frame video-stream .info { font-size:11px; opacity:0.6; }
+    .cam-frame video::-webkit-media-controls { display:none !important; }
+    .cam-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:14px; text-align:center; }
+    .cam-emoji { font-size:2.4em; opacity:0.4; }
+    .cam-hint { font-size:13px; color:var(--text2); opacity:0.8; max-width:34ch; line-height:1.4; }
+
+    #camera-overlay {
+      position:fixed; inset:0; z-index:95; display:none;
+      align-items:center; justify-content:center; padding:3vmin;
+      background:rgba(2,4,10,0.92); backdrop-filter:blur(3px);
+    }
+    #camera-overlay-frame {
+      width:100%; height:100%; max-width:96vw; max-height:92vh;
+      background:#000; border-radius:12px; overflow:hidden;
+      display:flex; align-items:center; justify-content:center;
+    }
+    #camera-overlay-frame video-stream { display:block; width:100%; height:100%; }
+    #camera-overlay-frame video-stream video { width:100% !important; height:100% !important; object-fit:contain; background:#000; }
+    #camera-overlay-title {
+      position:absolute; top:3vmin; left:3vmin; color:#e8edf5;
+      font-size:16px; font-weight:700; text-shadow:0 1px 4px rgba(0,0,0,0.8);
+      pointer-events:none;
+    }
+    #camera-overlay-close {
+      position:absolute; top:3vmin; right:3vmin; z-index:1;
+      width:40px; height:40px; border-radius:50%; border:none;
+      background:rgba(255,255,255,0.14); color:#e8edf5; font-size:17px; cursor:pointer;
+    }
 
     /* ── Weather widget ──
        All inner sizes scale off --wx-scale (default 1) so a single "Content Size"
@@ -1648,7 +1852,7 @@
     .mc-cell {
       border:1px solid var(--border); border-radius:6px;
       padding:3px 4px; display:flex; flex-direction:column;
-      overflow:hidden; min-height:0; min-width:0; background:rgba(255,255,255,0.02);
+      overflow:hidden; min-height:0; min-width:0; background:color-mix(in srgb, var(--text) 3%, transparent);
       position:relative; /* anchors .mc-multi-line/.mc-multi-line-label for the 'line' multi-day style */
     }
     /* Cells from the previous/next month used to dim to 0.35 opacity here via
@@ -1856,11 +2060,11 @@
     .w-minical-strip .st-header { margin-bottom:4px; }
     .st-row { display:flex; gap:4px; flex:1; min-height:0; align-items:stretch; }
     .st-cell { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
-      border:1px solid var(--border); border-radius:8px; padding:6px 2px; min-width:0; background:rgba(255,255,255,0.02); }
-    .st-cell.today { background:rgba(210,58,58,0.15); border-color:#d23a3a; }
+      border:1px solid var(--border); border-radius:8px; padding:6px 2px; min-width:0; background:color-mix(in srgb, var(--text) 3%, transparent); }
+    .st-cell.today { background:color-mix(in srgb, var(--today-color, #d23a3a) 16%, transparent); border-color:var(--today-color, #d23a3a); }
     .st-dayname { font-size:calc(var(--cal-font) * 0.8); color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; }
     .st-daynum { font-size:calc(var(--cal-font) * 1.6); font-weight:500; margin:2px 0; }
-    .st-cell.today .st-daynum { color:#ff6b6b; }
+    .st-cell.today .st-daynum { color:var(--today-color, #d23a3a); }
     .st-dots { display:flex; gap:3px; flex-wrap:wrap; justify-content:center; min-height:calc(var(--cal-font) * 0.4); }
     .st-dot { width:calc(var(--cal-font) * 0.4); height:calc(var(--cal-font) * 0.4); border-radius:50%; flex-shrink:0; }
 
@@ -1884,7 +2088,7 @@
        regular per-day event rows. Shared by both widgets, so one set of
        rules covers it regardless of which widget it's rendered inside. */
     .ag-ongoing-strip {
-      flex-shrink:0; background:rgba(255,255,255,0.04); border:1px solid var(--border, rgba(255,255,255,0.08));
+      flex-shrink:0; background:color-mix(in srgb, var(--text) 5%, transparent); border:1px solid var(--border, rgba(255,255,255,0.08));
       border-radius:8px; padding:calc(6px * var(--ui-scale,1)) calc(10px * var(--ui-scale,1));
       margin-bottom:calc(10px * var(--ui-scale,1)); display:flex; flex-direction:column;
       gap:calc(4px * var(--ui-scale,1));
@@ -1946,7 +2150,7 @@
     .w-upcoming-cards, .w-today-cards { display:flex; flex-direction:column; gap:calc(8px * var(--ui-scale,1)); overflow:hidden; }
     .ev-card {
       display:flex; gap:calc(10px * var(--ui-scale,1)); align-items:flex-start;
-      background:rgba(255,255,255,0.04); border:1px solid var(--border);
+      background:color-mix(in srgb, var(--text) 5%, transparent); border:1px solid var(--border);
       border-left:calc(3px * var(--ui-scale,1)) solid var(--accent); border-radius:8px;
       padding:calc(10px * var(--ui-scale,1)) calc(12px * var(--ui-scale,1));
     }
@@ -1982,7 +2186,7 @@
     }
     .w-tasks .tk-check.p1 { border-color:#f87171; }
     .w-tasks .tk-check.p2 { border-color:#fbbf24; }
-    .w-tasks .tk-check.p3 { border-color:#4A90D9; }
+    .w-tasks .tk-check.p3 { border-color:var(--accent); }
     .w-tasks .tk-body { flex:1; min-width:0; }
     .w-tasks .tk-title { font-size:calc(clamp(11px,1.3vw,15px) * var(--tk-scale,1)); font-weight:500;
       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -2009,7 +2213,7 @@
     }
     .w-tasks-combined .tk-check.p1 { border-color:#f87171; }
     .w-tasks-combined .tk-check.p2 { border-color:#fbbf24; }
-    .w-tasks-combined .tk-check.p3 { border-color:#4A90D9; }
+    .w-tasks-combined .tk-check.p3 { border-color:var(--accent); }
     .w-tasks-combined .tk-body { flex:1; min-width:0; }
     .w-tasks-combined .tk-title { font-size:var(--tc-font); font-weight:500;
       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -2149,7 +2353,7 @@
     /* ── Home Assistant Tier 2: toggle (light/switch/fan) ── */
     .ha-toggle-switch { width:calc(var(--ha-font) * 3.2); height:calc(var(--ha-font) * 1.7);
       border-radius:999px; border:none; padding:4px; cursor:pointer; position:relative;
-      background:rgba(255,255,255,0.15); transition:background .2s; touch-action:manipulation; }
+      background:color-mix(in srgb, var(--text) 18%, transparent); transition:background .2s; touch-action:manipulation; }
     .ha-toggle-switch.on { background:var(--accent); }
     .ha-toggle-knob { display:block; width:calc(var(--ha-font) * 1.3); height:calc(var(--ha-font) * 1.3);
       border-radius:50%; background:#fff; transition:transform .2s; box-shadow:0 1px 4px rgba(0,0,0,0.3); }
@@ -2159,7 +2363,7 @@
     /* ── Home Assistant Tier 2: climate ── */
     .ha-climate-layout .ha-climate-row { display:flex; align-items:center; justify-content:center; gap:calc(var(--ha-font) * 0.6); }
     .ha-temp-btn { width:calc(var(--ha-font) * 1.6); height:calc(var(--ha-font) * 1.6); border-radius:50%;
-      border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:inherit;
+      border:1px solid color-mix(in srgb, var(--text) 28%, transparent); background:color-mix(in srgb, var(--text) 10%, transparent); color:inherit;
       font-size:calc(var(--ha-font) * 1); cursor:pointer; touch-action:manipulation; line-height:1; }
     .ha-temp-btn:disabled { opacity:0.3; cursor:default; }
     .ha-climate-readout { min-width:calc(var(--ha-font) * 2.2); }
@@ -2174,7 +2378,7 @@
     /* ── Home Assistant Tier 2: light brightness slider ── */
     .ha-bright-slider { -webkit-appearance:none; appearance:none; width:calc(var(--ha-font) * 6);
       max-width:80%; height:calc(var(--ha-font) * 0.5); border-radius:999px;
-      background:rgba(255,255,255,0.18); outline:none; margin:calc(var(--ha-font) * 0.35) 0; cursor:pointer; }
+      background:color-mix(in srgb, var(--text) 20%, transparent); outline:none; margin:calc(var(--ha-font) * 0.35) 0; cursor:pointer; }
     .ha-bright-slider::-webkit-slider-thumb { -webkit-appearance:none; appearance:none;
       width:calc(var(--ha-font) * 1); height:calc(var(--ha-font) * 1); border-radius:50%;
       background:var(--accent); border:2px solid #fff; cursor:pointer; }
@@ -2185,7 +2389,7 @@
     .ha-swatch-row { display:flex; gap:calc(var(--ha-font) * 0.3); justify-content:center;
       margin:calc(var(--ha-font) * 0.3) 0; flex-wrap:wrap; }
     .ha-swatch { width:calc(var(--ha-font) * 1.1); height:calc(var(--ha-font) * 1.1); border-radius:50%;
-      border:2px solid rgba(255,255,255,0.35); cursor:pointer; touch-action:manipulation; padding:0; }
+      border:2px solid color-mix(in srgb, var(--text) 38%, transparent); cursor:pointer; touch-action:manipulation; padding:0; }
     .ha-swatch:disabled { opacity:0.4; }
     /* ── Home Assistant: sensor sparkline ── */
     .ha-sparkline { width:80%; max-width:calc(var(--ha-font) * 8); height:calc(var(--ha-font) * 1.5);
@@ -2275,6 +2479,22 @@
     body.edit-mode-active #demo-edit-hint { display:none !important; }
     #demo-banner a { color:#8ec3ff; text-decoration:none; font-weight:700; }
     @keyframes demoPulse { 0%{box-shadow:0 0 0 0 rgba(74,144,217,0.5);} 70%{box-shadow:0 0 0 8px rgba(74,144,217,0);} 100%{box-shadow:0 0 0 0 rgba(74,144,217,0);} }
+    /* Demo only: the cursor is hidden everywhere (top-of-file rule), but a
+       visitor on a regular computer needs their mouse pointer back. This
+       overrides that rule when <html> gets .demo-show-cursor (same
+       specificity, wins on source order). */
+    html.demo-show-cursor, html.demo-show-cursor * { cursor: auto !important; }
+    #demo-cursor-hint { position:fixed; left:50%; bottom:16px; transform:translateX(-50%);
+      z-index:2147483200; max-width:min(92vw,470px); padding:9px 10px 9px 15px; border-radius:999px;
+      background:rgba(20,22,26,0.92); color:#fff; border:1px solid rgba(255,255,255,0.12);
+      box-shadow:0 8px 24px -10px rgba(0,0,0,0.55); backdrop-filter:blur(6px);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+      font-size:12.5px; font-weight:600; line-height:1.3; text-align:center;
+      display:flex; align-items:center; gap:8px; transition:opacity .3s ease; }
+    #demo-cursor-hint b { color:#8ec3ff; font-weight:700; }
+    #demo-cursor-hint .dch-x { background:none; border:none; color:#fff; opacity:0.5;
+      font-size:15px; line-height:1; padding:0 4px; flex:0 0 auto; cursor:pointer; }
+    body.edit-mode-active #demo-cursor-hint { display:none !important; }
     #demo-tour { position:fixed; inset:0; z-index:2147483500; display:flex; align-items:center; justify-content:center;
       background:rgba(12,14,17,0.82); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
     #demo-tour .dt-card { background:#fff; color:#1b1d21; max-width:460px; margin:32px; padding:30px 32px;
@@ -2305,7 +2525,7 @@
     .ha-cover-row { display:flex; align-items:center; justify-content:center; gap:calc(var(--ha-font) * 0.5); }
     .ha-action-btn { min-width:calc(var(--ha-font) * 1.9); height:calc(var(--ha-font) * 1.9);
       padding:0 calc(var(--ha-font) * 0.5); border-radius:calc(var(--ha-font) * 0.4);
-      border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:inherit;
+      border:1px solid color-mix(in srgb, var(--text) 28%, transparent); background:color-mix(in srgb, var(--text) 10%, transparent); color:inherit;
       font-size:calc(var(--ha-font) * 0.85); font-weight:700; cursor:pointer; touch-action:manipulation; line-height:1; }
     .ha-action-btn:disabled { opacity:0.4; cursor:default; }
     .ha-lock-btn { min-width:auto; height:auto; padding:0.6em 1.2em; border-radius:999px;
@@ -2324,7 +2544,7 @@
       text-transform:uppercase; color:var(--accent); margin:0 0 calc(var(--ha-font) * 0.4); }
     .ha-dash-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(calc(var(--ha-font) * 6), 1fr));
       gap:calc(var(--ha-font) * 0.6); }
-    .ha-dash-item { background:rgba(255,255,255,0.06); border-radius:calc(var(--ha-font) * 0.5);
+    .ha-dash-item { background:color-mix(in srgb, var(--text) 7%, transparent); border-radius:calc(var(--ha-font) * 0.5);
       padding:calc(var(--ha-font) * 0.55); text-align:center; display:flex; flex-direction:column;
       align-items:center; justify-content:center; }
     .ha-dash-item .ha-label { font-size:calc(var(--ha-font) * 0.5); font-weight:600; letter-spacing:0.3px;
@@ -2354,14 +2574,14 @@
     .ha-dash-icon-item { display:flex; flex-direction:column; align-items:center; gap:calc(var(--ha-font) * 0.25); }
     .ha-dash-icon-circle { width:calc(var(--ha-font) * 2.3); height:calc(var(--ha-font) * 2.3); border-radius:50%;
       display:flex; align-items:center; justify-content:center; font-size:calc(var(--ha-font) * 1);
-      background:rgba(255,255,255,0.08); border:2px solid transparent; flex-shrink:0; }
-    .ha-dash-icon-circle.on { background:rgba(74,144,217,0.18); border-color:var(--accent); }
+      background:color-mix(in srgb, var(--text) 10%, transparent); border:2px solid transparent; flex-shrink:0; }
+    .ha-dash-icon-circle.on { background:color-mix(in srgb, var(--accent) 20%, transparent); border-color:var(--accent); }
     .ha-dash-icon-item .ha-dash-icon-label { font-size:calc(var(--ha-font) * 0.4); opacity:0.75;
       text-align:center; line-height:1.2; max-width:calc(var(--ha-font) * 4); overflow:hidden;
       text-overflow:ellipsis; white-space:nowrap; }
 
     .ha-dash-card-row { display:flex; align-items:center; gap:calc(var(--ha-font) * 0.7);
-      background:rgba(255,255,255,0.06); border-radius:calc(var(--ha-font) * 0.45);
+      background:color-mix(in srgb, var(--text) 7%, transparent); border-radius:calc(var(--ha-font) * 0.45);
       padding:calc(var(--ha-font) * 0.5) calc(var(--ha-font) * 0.7); margin-bottom:calc(var(--ha-font) * 0.4); }
     .ha-dash-card-row:last-child { margin-bottom:0; }
     .ha-dash-card-icon { font-size:calc(var(--ha-font) * 1.1); width:calc(var(--ha-font) * 1.6);
@@ -2376,13 +2596,13 @@
        card's own background/border communicate on/off, same visual
        language as .ha-dash-icon-circle.on above but at card scale. */
     .ha-dash-tapcard { display:flex; align-items:center; gap:calc(var(--ha-font) * 0.7);
-      background:rgba(255,255,255,0.06); border-radius:calc(var(--ha-font) * 0.45);
+      background:color-mix(in srgb, var(--text) 7%, transparent); border-radius:calc(var(--ha-font) * 0.45);
       padding:calc(var(--ha-font) * 0.5) calc(var(--ha-font) * 0.7); margin-bottom:calc(var(--ha-font) * 0.4);
       border:2px solid transparent; cursor:pointer; touch-action:manipulation;
       transition:background .15s, border-color .15s; width:100%; text-align:left;
       font:inherit; color:inherit; }
     .ha-dash-tapcard:last-child { margin-bottom:0; }
-    .ha-dash-tapcard.on { background:rgba(74,144,217,0.16); border-color:var(--accent); }
+    .ha-dash-tapcard.on { background:color-mix(in srgb, var(--accent) 18%, transparent); border-color:var(--accent); }
     .ha-dash-tapcard .ha-dash-card-state { font-size:calc(var(--ha-font) * 0.45); font-weight:700;
       text-transform:uppercase; letter-spacing:0.4px; opacity:0.6; flex-shrink:0; }
     .ha-dash-tapcard.on .ha-dash-card-state { opacity:1; color:var(--accent); }
@@ -2420,11 +2640,11 @@
     .w-layoutswitcher .ls-buttons { display:flex; flex-wrap:wrap; gap:calc(var(--ls-font) * 0.5); justify-content:center; align-items:center; width:100%; }
     .w-layoutswitcher .ls-btn {
       font-size:var(--ls-font); font-weight:600; font-family:inherit; color:var(--text);
-      background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15);
+      background:color-mix(in srgb, var(--text) 10%, transparent); border:1px solid color-mix(in srgb, var(--text) 16%, transparent);
       border-radius:calc(var(--ls-font) * 0.6); padding:calc(var(--ls-font) * 0.5) calc(var(--ls-font) * 0.9);
       cursor:pointer; transition:background 0.15s ease, transform 0.1s ease;
     }
-    .w-layoutswitcher .ls-btn:active { background:rgba(255,255,255,0.2); transform:scale(0.96); }
+    .w-layoutswitcher .ls-btn:active { background:color-mix(in srgb, var(--text) 22%, transparent); transform:scale(0.96); }
 
     /* ── On This Day widget ── */
     .w-onthisday { align-items:stretch; justify-content:flex-start; overflow:hidden; --otd-font: 15px; }
@@ -2561,7 +2781,7 @@
     .wxh-hr { font-size:calc(13px * var(--wx-scale,1)); color:var(--text2); white-space:nowrap; }
     .wxh-icon svg { width:calc(34px * var(--wx-scale,1)); height:calc(34px * var(--wx-scale,1)); }
     .wxh-temp { font-size:calc(18px * var(--wx-scale,1)); font-weight:500; }
-    .wxh-pop { font-size:calc(11px * var(--wx-scale,1)); color:#4A90D9; min-height:calc(13px * var(--wx-scale,1)); }
+    .wxh-pop { font-size:calc(11px * var(--wx-scale,1)); color:var(--accent); min-height:calc(13px * var(--wx-scale,1)); }
     .wxh-parts { display:flex; gap:calc(10px * var(--wx-scale,1)); justify-content:space-around; }
     .wxh-part { display:flex; flex-direction:column; align-items:center; gap:calc(4px * var(--wx-scale,1)); flex:1; min-width:0; }
     .wxh-part-label { font-size:calc(12px * var(--wx-scale,1)); letter-spacing:1px; text-transform:uppercase; color:var(--text2);
@@ -2576,7 +2796,7 @@
     .wxc-hr-label { font-size:calc(11px * var(--wx-scale,1)); color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; white-space:nowrap; }
     .wxc-hr-icon svg { width:calc(28px * var(--wx-scale,1)); height:calc(28px * var(--wx-scale,1)); }
     .wxc-hr-temp { font-size:calc(15px * var(--wx-scale,1)); font-weight:500; }
-    .wxc-hr-pop { font-size:calc(10px * var(--wx-scale,1)); color:#4A90D9; min-height:calc(12px * var(--wx-scale,1)); }
+    .wxc-hr-pop { font-size:calc(10px * var(--wx-scale,1)); color:var(--accent); min-height:calc(12px * var(--wx-scale,1)); }
     .wxc-divider { height:1px; background:var(--border); margin:calc(12px * var(--wx-scale,1)) 0; }
     .wxc-daily { display:flex; flex-direction:column; gap:calc(7px * var(--wx-scale,1)); }
     .wxc-day-row { display:flex; align-items:center; gap:calc(10px * var(--wx-scale,1)); }
@@ -2590,7 +2810,7 @@
 
     .wxc-timeline { display:flex; align-items:flex-end; gap:calc(4px * var(--wx-scale,1)); overflow-x:auto; padding-bottom:2px; }
     .wxc-tl-cell { display:flex; flex-direction:column; align-items:center; gap:calc(4px * var(--wx-scale,1)); min-width:calc(44px * var(--wx-scale,1)); flex-shrink:0; padding:calc(6px * var(--wx-scale,1)) calc(3px * var(--wx-scale,1)); border-radius:8px; }
-    .wxc-tl-cell.now { background:rgba(74,144,217,0.16); }
+    .wxc-tl-cell.now { background:color-mix(in srgb, var(--accent) 16%, transparent); }
     .wxc-tl-cell.day-boundary { border-left:1px dashed var(--border); padding-left:calc(9px * var(--wx-scale,1)); margin-left:calc(5px * var(--wx-scale,1)); }
     .wxc-tl-label { font-size:calc(10px * var(--wx-scale,1)); color:var(--text2); text-transform:uppercase; letter-spacing:0.4px; white-space:nowrap; }
     .wxc-tl-icon svg { width:calc(24px * var(--wx-scale,1)); height:calc(24px * var(--wx-scale,1)); }
@@ -2599,7 +2819,7 @@
 
     .wxc-columns { display:flex; gap:calc(16px * var(--wx-scale,1)); }
     .wxc-col { flex:1; min-width:0; }
-    .wxc-col-title { font-size:calc(10px * var(--wx-scale,1)); text-transform:uppercase; letter-spacing:1px; color:#7ec8e3; margin-bottom:calc(8px * var(--wx-scale,1)); }
+    .wxc-col-title { font-size:calc(10px * var(--wx-scale,1)); text-transform:uppercase; letter-spacing:1px; color:var(--accent2, var(--accent)); margin-bottom:calc(8px * var(--wx-scale,1)); }
     .wxc-col-row { display:flex; align-items:center; gap:calc(7px * var(--wx-scale,1)); padding:calc(5px * var(--wx-scale,1)) 0; border-bottom:1px solid var(--border); }
     .wxc-col-row:last-child { border-bottom:none; }
     .wxc-col-label { font-size:calc(12px * var(--wx-scale,1)); width:calc(36px * var(--wx-scale,1)); flex-shrink:0; }
@@ -2608,9 +2828,9 @@
     .wxc-col-lo { font-size:calc(11px * var(--wx-scale,1)); color:var(--text2); margin-left:calc(5px * var(--wx-scale,1)); font-weight:400; }
     .wxc-col-divider { width:1px; background:var(--border); flex-shrink:0; }
 
-    .wxc-tabs { display:flex; gap:4px; margin-bottom:calc(10px * var(--wx-scale,1)); background:rgba(255,255,255,0.06); border-radius:8px; padding:3px; width:fit-content; cursor:pointer; }
+    .wxc-tabs { display:flex; gap:4px; margin-bottom:calc(10px * var(--wx-scale,1)); background:color-mix(in srgb, var(--text) 8%, transparent); border-radius:8px; padding:3px; width:fit-content; cursor:pointer; }
     .wxc-tab-btn { font-size:calc(11px * var(--wx-scale,1)); font-weight:600; padding:calc(5px * var(--wx-scale,1)) calc(13px * var(--wx-scale,1)); border-radius:6px; color:var(--text2); }
-    .wxc-tab-btn.active { background:#4A90D9; color:#fff; }
+    .wxc-tab-btn.active { background:var(--accent); color:#fff; }
     .wxc-tab-content-hourly { display:flex; gap:calc(9px * var(--wx-scale,1)); overflow-x:auto; }
     .wxc-tab-hour { display:flex; flex-direction:column; align-items:center; gap:calc(3px * var(--wx-scale,1)); min-width:calc(34px * var(--wx-scale,1)); flex-shrink:0; }
     .wxc-tab-hour-label { font-size:calc(10px * var(--wx-scale,1)); color:var(--text2); white-space:nowrap; }
@@ -3005,7 +3225,7 @@ function dayIndexForWeekStart(date, override){ return (date.getDay() - weekStart
 function fmtTime(t, ampmOverride){ if(!t) return 'All day'; const [h,m]=t.split(':').map(Number); if (use24Hour()) return `${pad(h)}:${pad(m)}`; const meridiem = h>=12?'pm':'am'; return `${h%12||12}:${pad(m)} ${ampmCase(ampmOverride)==='upper' ? meridiem.toUpperCase() : meridiem}`; }
 
 // ── State ────────────────────────────────────────────────────────────────────
-let state = { events:[], reminders:[], weather:null, settings:{}, photoSettings:{}, photos:[], layout:[], tasksByProject:{}, tasksErrorByProject:{}, news:[], newsError:null, stocks:[], stocksError:null, choreChart:null, stickers:[] };
+let state = { events:[], reminders:[], messages:[], cameras:[], meals:{}, weather:null, settings:{}, photoSettings:{}, photos:[], layout:[], tasksByProject:{}, tasksErrorByProject:{}, news:[], newsError:null, stocks:[], stocksError:null, choreChart:null, stickers:[] };
 // Set during startup identity resolution (see the /api/screen-config call
 // below) and left as the single source of truth for "is this device
 // currently a slave" everywhere else in the file — enterEditMode() in
@@ -4005,6 +4225,10 @@ function renderLayout() {
   requestAnimationFrame(renderQRCodes);
   requestAnimationFrame(initRadarWidgets);
   requestAnimationFrame(wireChoreChartTaps);
+  requestAnimationFrame(wireMessageBoardTaps);
+  requestAnimationFrame(wireMealPlanTaps);
+  requestAnimationFrame(wireCameraStreams);
+  requestAnimationFrame(wireCameraTaps);
   requestAnimationFrame(wireTodoWidgetTaps);
   requestAnimationFrame(wireShoppingWidgetTaps);
   requestAnimationFrame(wireTasksWidgetTaps);
@@ -4179,6 +4403,9 @@ function renderWidget(w) {
     case 'chorechart': return renderChoreChart(w);
     case 'chorelb': return renderChoreLeaderboard(w);
     case 'shoppinglist': return renderShoppingListWidget(w);
+    case 'messageboard': return renderMessageBoard(w);
+    case 'mealplan': return renderMealPlan(w);
+    case 'camera': return renderCamera(w);
     case 'countdown': return renderCountdown(w);
     case 'moonphase': return renderMoonPhase(w);
     case 'airquality': return renderAirQuality(w);
@@ -4649,6 +4876,456 @@ function renderReminders(widget) {
     </div>
     <div class="rem-banner-badge">${escapeHtmlD(badge)}</div>
   </div>`;
+}
+
+// ── Family Message Board widget ───────────────────────────────────────────
+// A whiteboard corner, not a chat: short notes household members leave for
+// each other, newest first, pinned ones on top. Data lives in state.messages
+// (fetchMessages(), kept live via the 'messages' SSE topic). Colour-coded by
+// author the same way events are colour-coded by owner — profile colour when
+// author_profile_id links to a live profile, else the note's stored color.
+function mbNoteColor(msg) {
+  if (msg && msg.author_profile_id != null) {
+    const c = _profileColorById.get(Number(msg.author_profile_id));
+    if (c) return c;
+  }
+  return (msg && msg.color) || '#4A90D9';
+}
+// created_at comes from SQLite datetime('now') — 'YYYY-MM-DD HH:MM:SS' in UTC,
+// no zone marker — so normalise to ISO-with-Z before parsing.
+function mbFmtAgo(createdAt) {
+  if (!createdAt) return '';
+  const t = Date.parse(String(createdAt).replace(' ', 'T') + 'Z');
+  if (!Number.isFinite(t)) return '';
+  const mins = Math.round((Date.now() - t) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  const wks = Math.round(days / 7);
+  return `${wks}w ago`;
+}
+function renderMessageBoard(widget) {
+  const w = widget || {};
+  const fontPx = w.mbFontPx || 14;
+  const showAuthor = w.mbShowAuthor !== false;
+  const showTime = w.mbShowTime !== false;
+  const maxShown = Number.isFinite(w.mbMaxNotes) && w.mbMaxNotes > 0 ? w.mbMaxNotes : 8;
+  const style = ` style="--mb-font:calc(${fontPx}px * var(--ui-scale,1))"`;
+  // Server already orders pinned DESC, created_at DESC — keep that order.
+  const notes = (state.messages || []).slice(0, maxShown);
+
+  const head = `<div class="mb-head">
+      <div class="mb-head-title">Message Board</div>
+      <button class="mb-add-btn" data-interactive="1" aria-label="Add a note">＋</button>
+    </div>`;
+
+  if (!notes.length) {
+    const empty = editModeActive ? `<div class="mb-empty">No messages yet</div>` : `<div class="mb-list"></div>`;
+    return `<div class="w-messageboard"${style}>${head}${empty}</div>`;
+  }
+
+  const cards = notes.map(m => {
+    const color = mbNoteColor(m);
+    const p = m.author_profile_id != null ? profileByIdD(m.author_profile_id) : null;
+    let author = '';
+    if (showAuthor) {
+      if (p) author = `${profileAvatarHtmlD(p, Math.round((w.mbFontPx || 14) * 1.05))}<span class="mb-author">${escapeHtmlD(p.name)}</span>`;
+      else if (m.author) author = `<span class="mb-author">${escapeHtmlD(m.author)}</span>`;
+    }
+    const time = showTime ? `<span class="mb-time">${escapeHtmlD(mbFmtAgo(m.created_at))}</span>` : '';
+    return `<div class="mb-card${m.pinned ? ' mb-card-pinned' : ''}" style="--mb-color:${escapeHtmlD(color)}">
+      <div class="mb-card-head">
+        ${author || `<span class="mb-dot"></span>`}
+        ${time}
+        <span class="mb-card-head-spacer"></span>
+        <button class="mb-pin${m.pinned ? ' mb-pin-on' : ''}" data-interactive="1" data-mb-pin="${m.id}" aria-label="${m.pinned ? 'Unpin' : 'Pin'} note">📌</button>
+        <button class="mb-x" data-interactive="1" data-mb-x="${m.id}" aria-label="Remove note">✕</button>
+      </div>
+      <div class="mb-text">${escapeHtmlD(m.text)}</div>
+    </div>`;
+  }).join('');
+
+  return `<div class="w-messageboard"${style}>${head}<div class="mb-list">${cards}</div></div>`;
+}
+function wireMessageBoardTaps() {
+  document.querySelectorAll('.w-messageboard .mb-add-btn').forEach(el => {
+    if (el._tapWired) return; el._tapWired = true;
+    el.addEventListener('click', (e) => { e.stopPropagation(); if (editModeActive) return; openMessageAddSheet(); });
+  });
+  document.querySelectorAll('.w-messageboard [data-mb-x]').forEach(el => {
+    if (el._tapWired) return; el._tapWired = true;
+    el.addEventListener('click', (e) => { e.stopPropagation(); if (editModeActive) return; mbDeleteNote(el.dataset.mbX); });
+  });
+  document.querySelectorAll('.w-messageboard [data-mb-pin]').forEach(el => {
+    if (el._tapWired) return; el._tapWired = true;
+    el.addEventListener('click', (e) => { e.stopPropagation(); if (editModeActive) return; mbTogglePin(el.dataset.mbPin); });
+  });
+}
+async function mbDeleteNote(id) {
+  const note = (state.messages || []).find(m => String(m.id) === String(id));
+  if (!note) return;
+  state.messages = (state.messages || []).filter(m => String(m.id) !== String(id));
+  renderLayout();
+  try {
+    const res = await fetch(`/api/messages/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('delete failed');
+  } catch {
+    await fetchMessages(); renderLayout();
+    showDisplayToast('❌ Could not remove — try again.');
+    return;
+  }
+  showDisplayToast('Removed', { undo: async () => {
+    try {
+      await fetch('/api/messages', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: note.text, author: note.author || '', author_profile_id: note.author_profile_id || null, color: note.color || undefined }),
+      });
+    } catch {}
+    await fetchMessages(); renderLayout();
+  } });
+}
+async function mbTogglePin(id) {
+  const note = (state.messages || []).find(m => String(m.id) === String(id));
+  if (!note) return;
+  const next = note.pinned ? 0 : 1;
+  try {
+    const res = await fetch(`/api/messages/${id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinned: next }),
+    });
+    if (!res.ok) throw new Error('pin failed');
+  } catch {
+    showDisplayToast('❌ Could not update — try again.');
+    return;
+  }
+  await fetchMessages(); renderLayout();
+}
+// Lightweight add-a-note sheet for someone standing at the wall — a trimmed
+// clone of the event-add sheet (just a textarea + Post/Cancel). Wall-posted
+// notes carry no author (see the spec §7): a visitor jotting "dentist moved
+// to 3pm" doesn't need a name on it. Built on demand so it costs nothing on
+// screens that never use it.
+function openMessageAddSheet() {
+  let overlay = document.getElementById('mb-add-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'mb-add-overlay';
+    overlay.innerHTML = `
+      <div id="mb-add-card" role="dialog" aria-modal="true" aria-label="Add a note">
+        <button id="mb-add-close" aria-label="Close">✕</button>
+        <div id="mb-add-heading">Add a note</div>
+        <textarea id="mb-add-text" maxlength="280" rows="3" placeholder="Leave a note for the family…"></textarea>
+        <div id="mb-add-error" class="ea-error" style="display:none"></div>
+        <div class="ea-actions">
+          <button id="mb-add-cancel">Cancel</button>
+          <button id="mb-add-save">Post</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = () => { overlay.style.display = 'none'; };
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.getElementById('mb-add-close').addEventListener('click', close);
+    document.getElementById('mb-add-cancel').addEventListener('click', close);
+    document.getElementById('mb-add-save').addEventListener('click', async () => {
+      const ta = document.getElementById('mb-add-text');
+      const err = document.getElementById('mb-add-error');
+      const save = document.getElementById('mb-add-save');
+      const text = (ta.value || '').trim();
+      if (!text) { err.textContent = 'Type a note first.'; err.style.display = 'block'; return; }
+      save.disabled = true; save.textContent = 'Posting…';
+      try {
+        const res = await fetch('/api/messages', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+        if (!res.ok) throw new Error('post failed');
+        close();
+        await fetchMessages(); renderLayout();
+      } catch {
+        err.textContent = 'Could not post — try again.'; err.style.display = 'block';
+      } finally {
+        save.disabled = false; save.textContent = 'Post';
+      }
+    });
+  }
+  document.getElementById('mb-add-text').value = '';
+  document.getElementById('mb-add-error').style.display = 'none';
+  const save = document.getElementById('mb-add-save');
+  save.disabled = false; save.textContent = 'Post';
+  overlay.style.display = 'flex';
+  setTimeout(() => { try { document.getElementById('mb-add-text').focus(); } catch {} }, 50);
+}
+
+// ── Meal Plan widget ──────────────────────────────────────────────────────
+// Today + the next mpDays. state.meals is keyed 'YYYY-MM-DD' -> { [slot]: row }.
+// Which slots show is w.mpSlots (per-widget) falling back to the household's
+// settings.mealplan_slots (default just 'dinner'). Tapping a slot opens a
+// small editor. An unplanned slot shows a faint dash — that's the point, it
+// prompts planning.
+const MP_SLOT_ORDER = ['breakfast', 'lunch', 'dinner'];
+const MP_SLOT_ABBR = { breakfast: 'B', lunch: 'L', dinner: 'D' };
+const MP_SLOT_NAME = { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Dinner' };
+function mpAddDays(str, n) {
+  const [y, m, d] = str.split('-').map(Number);
+  const dt = new Date(y, m - 1, d + n);
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+}
+function mpActiveSlots(w) {
+  let list = Array.isArray(w && w.mpSlots) && w.mpSlots.length
+    ? w.mpSlots
+    : String((state.settings && state.settings.mealplan_slots) || 'dinner').split(',');
+  list = list.map(s => String(s).trim().toLowerCase()).filter(s => MP_SLOT_ORDER.includes(s));
+  if (!list.length) list = ['dinner'];
+  return MP_SLOT_ORDER.filter(s => list.includes(s));
+}
+function renderMealPlan(widget) {
+  const w = widget || {};
+  const fontPx = w.mpFontPx || 15;
+  const days = Math.max(3, Math.min(14, Number(w.mpDays) || 7));
+  const style = ` style="--mp-font:calc(${fontPx}px * var(--ui-scale,1))"`;
+  const meals = state.meals || {};
+  const today = todayStr();
+  const slots = mpActiveSlots(w);
+  const single = slots.length === 1;
+  const slot0 = slots[0];
+  // Optional filter: drop days / slot lines that have no meal against them, so
+  // the widget only lists what's actually planned. Off by default. Applies in
+  // Live Edit too (add meals from the app's Meals tab, or toggle this off).
+  const hideEmpty = !!w.mpHideEmpty;
+
+  const rows = [];
+  let anyPlanned = false;
+  for (let i = 0; i < days; i++) {
+    const date = mpAddDays(today, i);
+    const [yy, mm, dd] = date.split('-').map(Number);
+    const dow = new Date(yy, mm - 1, dd).getDay();
+    const dayLabel = i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : DAYS_S[dow];
+    const dayMeals = meals[date] || {};
+
+    if (single) {
+      const m = dayMeals[slot0];
+      if (m) anyPlanned = true;
+      if (hideEmpty && !m) continue;
+      rows.push(`<div class="mp-row${i === 0 ? ' mp-today' : ''}" data-interactive="1" data-mp-date="${date}" data-mp-slot="${slot0}">
+        <span class="mp-day">${escapeHtmlD(dayLabel)}</span>
+        <span class="mp-dom">${i > 1 ? dd : ''}</span>
+        ${m ? `<span class="mp-title">${escapeHtmlD(m.title)}</span>` : `<span class="mp-empty">—</span>`}
+      </div>`);
+    } else {
+      const visSlots = hideEmpty ? slots.filter(s => dayMeals[s]) : slots;
+      slots.forEach(s => { if (dayMeals[s]) anyPlanned = true; });
+      if (hideEmpty && !visSlots.length) continue;
+      const slotLines = visSlots.map(s => {
+        const m = dayMeals[s];
+        return `<div class="mp-slotline" data-interactive="1" data-mp-date="${date}" data-mp-slot="${s}">
+          <span class="mp-slot">${MP_SLOT_ABBR[s]}</span>
+          ${m ? `<span class="mp-title">${escapeHtmlD(m.title)}</span>` : `<span class="mp-empty">—</span>`}
+        </div>`;
+      }).join('');
+      rows.push(`<div class="mp-daygroup${i === 0 ? ' mp-today' : ''}">
+        <div class="mp-dayhdr"><span class="mp-day">${escapeHtmlD(dayLabel)}</span><span class="mp-dom">${i > 1 ? dd : ''}</span></div>
+        ${slotLines}
+      </div>`);
+    }
+  }
+
+  // With hideEmpty off the list always has `days` rows, so it's never blank;
+  // with hideEmpty on and nothing planned it would be, so show a line.
+  const empty = (!rows.length && w.mpHideEmpty)
+    ? `<div class="mp-hint">Nothing planned yet</div>` : '';
+  const heading = single
+    ? (slot0 === 'dinner' ? "This Week's Dinners" : `This Week's ${MP_SLOT_NAME[slot0]}`)
+    : "This Week's Meals";
+
+  return `<div class="w-mealplan"${style}>
+    <div class="mp-head">${heading}</div>
+    <div class="mp-list${single ? '' : ' mp-multi'}">${rows.join('')}</div>
+    ${empty}
+  </div>`;
+}
+function wireMealPlanTaps() {
+  document.querySelectorAll('.w-mealplan [data-mp-date][data-mp-slot]').forEach(el => {
+    if (el._tapWired) return;
+    el._tapWired = true;
+    el.addEventListener('click', (e) => { e.stopPropagation(); if (editModeActive) return; openMealEditSheet(el.dataset.mpDate, el.dataset.mpSlot); });
+  });
+}
+function openMealEditSheet(date, slot) {
+  slot = MP_SLOT_ORDER.includes(slot) ? slot : 'dinner';
+  let overlay = document.getElementById('mp-edit-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'mp-edit-overlay';
+    overlay.innerHTML = `
+      <div id="mp-edit-card" role="dialog" aria-modal="true" aria-label="Plan a meal">
+        <button id="mp-edit-close" aria-label="Close">✕</button>
+        <div id="mp-edit-heading">Dinner</div>
+        <input type="text" id="mp-edit-title" maxlength="80" placeholder="Tacos, leftovers, Grandma's…">
+        <textarea id="mp-edit-notes" maxlength="300" rows="2" placeholder="Notes (optional)"></textarea>
+        <div id="mp-edit-error" class="ea-error" style="display:none"></div>
+        <div class="ea-actions">
+          <button id="mp-edit-clear">Clear</button>
+          <button id="mp-edit-save">Save</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = () => { overlay.style.display = 'none'; };
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.getElementById('mp-edit-close').addEventListener('click', close);
+    const submit = async (title) => {
+      const err = document.getElementById('mp-edit-error');
+      const save = document.getElementById('mp-edit-save');
+      const clr = document.getElementById('mp-edit-clear');
+      save.disabled = clr.disabled = true;
+      try {
+        const res = await fetch(`/api/meals/${overlay.dataset.date}/${overlay.dataset.slot}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, notes: document.getElementById('mp-edit-notes').value || '' }),
+        });
+        if (!res.ok) throw new Error('save failed');
+        close();
+        await fetchMeals(); renderLayout();
+      } catch {
+        err.textContent = 'Could not save — try again.'; err.style.display = 'block';
+        save.disabled = clr.disabled = false;
+      }
+    };
+    document.getElementById('mp-edit-save').addEventListener('click', () => {
+      const t = (document.getElementById('mp-edit-title').value || '').trim();
+      if (!t) { const err = document.getElementById('mp-edit-error'); err.textContent = 'Enter a meal, or tap Clear.'; err.style.display = 'block'; return; }
+      submit(t);
+    });
+    document.getElementById('mp-edit-clear').addEventListener('click', () => submit(''));
+  }
+  overlay.dataset.date = date;
+  overlay.dataset.slot = slot;
+  const m = ((state.meals || {})[date] || {})[slot] || {};
+  const [yy, mm, dd] = date.split('-').map(Number);
+  const dow = new Date(yy, mm - 1, dd).getDay();
+  document.getElementById('mp-edit-heading').textContent = `${MP_SLOT_NAME[slot]} · ${DAYS_S[dow]} ${MONTHS_S[mm - 1]} ${dd}`;
+  document.getElementById('mp-edit-title').value = m.title || '';
+  document.getElementById('mp-edit-notes').value = m.notes || '';
+  document.getElementById('mp-edit-error').style.display = 'none';
+  const save = document.getElementById('mp-edit-save');
+  const clr = document.getElementById('mp-edit-clear');
+  save.disabled = clr.disabled = false;
+  overlay.style.display = 'flex';
+  setTimeout(() => { try { document.getElementById('mp-edit-title').focus(); } catch {} }, 50);
+}
+
+// ── Camera widget ─────────────────────────────────────────────────────────
+// A live RTSP / ONVIF / Home Assistant camera on the wall. The server runs a
+// local go2rtc that ingests the stream and repackages it; this widget is just
+// a <video-stream> (the vendored go2rtc component) pointed at the WebSocket
+// reverse-proxy /api/camera/<id>/ws. state.cameras carries no URLs — only the
+// id/name we need. Tap → openCameraOverlay() for a fullscreen look.
+function renderCamera(widget) {
+  const w = widget || {};
+  const showTitle = w.camShowTitle !== false;
+  const fit = w.camFit === 'cover' ? 'cover' : 'contain';
+  const cam = (state.cameras || []).find(c => String(c.id) === String(w.camId));
+  const titleTxt = w.camTitle || (cam && cam.name) || 'Camera';
+  const head = showTitle ? `<div class="cam-title">${escapeHtmlD(titleTxt)}</div>` : '';
+
+  if (!w.camId || !cam) {
+    const hint = editModeActive
+      ? `<div class="cam-hint">Choose a camera in this widget's settings</div>`
+      : '';
+    return `<div class="w-camera">${head}<div class="cam-frame cam-empty"><div class="cam-emoji">📹</div>${hint}</div></div>`;
+  }
+  if (_cameraServiceState === 'downloading') {
+    return `<div class="w-camera">${head}<div class="cam-frame cam-empty"><div class="cam-emoji">📹</div><div class="cam-hint">Setting up the camera service…</div></div></div>`;
+  }
+  if (_cameraServiceState === 'unavailable') {
+    return `<div class="w-camera">${head}<div class="cam-frame cam-empty"><div class="cam-hint">Camera support needs the current installer on this display — or run the server on Docker / Windows.</div></div></div>`;
+  }
+  // The <video-stream> gets its src wired in wireCameraStreams() (it's a JS
+  // property setter, not an attribute) so we can also set background/media/
+  // muted first and kill the built-in controls.
+  return `<div class="w-camera" style="--cam-fit:${fit}">
+    ${head}
+    <div class="cam-frame" data-interactive="1" data-cam-id="${cam.id}">
+      <video-stream data-cam-src="/api/camera/${cam.id}/ws" data-cam-poster="/api/camera/${cam.id}/frame.jpeg"></video-stream>
+    </div>
+  </div>`;
+}
+function wireCameraStreams() {
+  document.querySelectorAll('.w-camera video-stream[data-cam-src]').forEach(el => {
+    if (el._camWired) return;
+    el._camWired = true;
+    try {
+      el.background = true;          // keep streaming even if the tab hides (kiosk never hides; a phone preview benefits)
+      el.media = 'video';           // no audio negotiation — it's a wall display
+      el.mode = 'webrtc,mse,mjpeg'; // WebRTC first (co-located go2rtc), fall back through MSE to MJPEG
+      if (el.video) { el.video.controls = false; el.video.muted = true; if (el.dataset.camPoster) el.video.poster = el.dataset.camPoster; }
+      el.src = el.dataset.camSrc;   // setter -> connects
+      // oninit() may run a tick later on first paint; make sure controls stay off.
+      setTimeout(() => { if (el.video) { el.video.controls = false; el.video.muted = true; if (el.dataset.camPoster && !el.video.poster) el.video.poster = el.dataset.camPoster; } }, 0);
+    } catch (e) { console.warn('camera wire failed', e); }
+  });
+}
+function wireCameraTaps() {
+  document.querySelectorAll('.w-camera .cam-frame[data-cam-id]').forEach(el => {
+    if (el._tapWired) return;
+    el._tapWired = true;
+    el.addEventListener('click', () => {
+      if (editModeActive) return;
+      openCameraOverlay(el.dataset.camId);
+    });
+  });
+  maybePollCameraService();
+}
+// While the media service is coming up (first-run binary download, or go2rtc
+// still starting), re-check its state every few seconds so the widget swaps
+// from "Setting up…" to the live view on its own. Stops once it settles.
+let _camServicePollTID = null;
+function maybePollCameraService() {
+  const hasCam = (state.layout || []).some(w => w && w.type === 'camera' && w.camId);
+  const transient = _cameraServiceState === 'downloading' || _cameraServiceState === 'starting' || _cameraServiceState === 'unknown';
+  if (!hasCam || !transient) { if (_camServicePollTID) { clearInterval(_camServicePollTID); _camServicePollTID = null; } return; }
+  if (_camServicePollTID) return;
+  _camServicePollTID = setInterval(async () => {
+    let s = '';
+    try { s = (await (await fetch('/api/camera/service')).json()).state; } catch {}
+    if (s && s !== _cameraServiceState) { _cameraServiceState = s; renderLayout(); }
+    if (s && s !== 'downloading' && s !== 'starting') { clearInterval(_camServicePollTID); _camServicePollTID = null; }
+  }, 4000);
+}
+function openCameraOverlay(camId) {
+  const cam = (state.cameras || []).find(c => String(c.id) === String(camId));
+  if (!cam) return;
+  let overlay = document.getElementById('camera-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'camera-overlay';
+    overlay.innerHTML = `
+      <button id="camera-overlay-close" aria-label="Close">✕</button>
+      <div id="camera-overlay-title"></div>
+      <div id="camera-overlay-frame"></div>`;
+    document.body.appendChild(overlay);
+    const close = () => {
+      overlay.style.display = 'none';
+      const f = document.getElementById('camera-overlay-frame');
+      if (f) f.innerHTML = ''; // drop the extra go2rtc consumer
+    };
+    document.getElementById('camera-overlay-close').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && overlay.style.display === 'flex') close(); });
+  }
+  document.getElementById('camera-overlay-title').textContent = cam.name || 'Camera';
+  const frame = document.getElementById('camera-overlay-frame');
+  frame.innerHTML = '';
+  const vs = document.createElement('video-stream');
+  vs.background = true;
+  vs.media = 'video';
+  vs.mode = 'webrtc,mse,mjpeg';
+  frame.appendChild(vs);
+  vs.src = `/api/camera/${cam.id}/ws`;
+  setTimeout(() => { if (vs.video) { vs.video.controls = false; vs.video.muted = true; vs.video.poster = `/api/camera/${cam.id}/frame.jpeg`; } }, 0);
+  overlay.style.display = 'flex';
 }
 
 // Shared: builds the location label + scale style for any weather widget variant.
@@ -5425,7 +6102,7 @@ function eventPillColor(e, widget) {
 function eventDetailKey(e) {
   return `${e.source}:${e.id}:${e.date}`;
 }
-function openEventDetail(key) {
+function openEventDetail(key, openerWidget) {
   const e = (state.events || []).find(ev => eventDetailKey(ev) === key);
   if (!e) return;
   const overlay = document.getElementById('event-detail-overlay');
@@ -5457,9 +6134,12 @@ function openEventDetail(key) {
 
   const locEl = document.getElementById('event-detail-location');
   if (locEl) {
-    // The detail popup isn't a widget, so no per-widget override here — just
-    // the feed's own setting (local events always show theirs).
-    const showLoc = e.location && (e.source === 'local' || e.show_location === 1 || e.show_location === true);
+    // Match whatever the widget this was opened from would show, so the popup
+    // and the widget agree — the per-feed override (if any) and the feed's
+    // own "Show location" both apply. Treat the widget master as "on" here:
+    // you tapped in for the details, so the only thing that should still
+    // suppress a location is an explicit force-off override for this feed.
+    const showLoc = widgetShowsLocation(e, openerWidget || null, true);
     locEl.textContent = showLoc ? e.location : '';
     locEl.style.display = showLoc ? '' : 'none';
   }
@@ -5870,7 +6550,11 @@ function wireEventDetailTaps() {
       // widget, not open the event — let it bubble to widget selection.
       if (editModeActive) return;
       e.stopPropagation();
-      openEventDetail(el.dataset.eventKey);
+      // Which widget was this opened from — so the detail popup's location
+      // line matches that widget's own Show Location / per-feed override.
+      const host = el.closest('[data-widget-id]');
+      const openerWidget = host ? (state.layout || []).find(x => String(x.id) === String(host.dataset.widgetId)) : null;
+      openEventDetail(el.dataset.eventKey, openerWidget);
     });
   });
 }
@@ -5962,15 +6646,18 @@ function distinctFeedsFromEvents() {
 // Should this event's LOCATION show, in this widget? Three layers, resolved
 // here so every render path (agenda rows, grid cells, standalone Agenda/
 // Upcoming/Today) agrees:
-//   1. feed default  — ical_feeds.show_location (arrives as e.show_location);
-//                      local events have no feed and always count as "on"
+//   1. per-widget-per-feed override — widget.feedLocationOverride[feedId] is
+//      true/false and is the MOST specific instruction: it wins over both the
+//      feed default and this widget's own master toggle (matching how the
+//      per-feed opacity override behaves — a deliberate "force on/off here").
 //   2. widget master — the widget's own "Show Location" toggle (masterOn)
-//   3. per-widget-per-feed override — widget.feedLocationOverride[feedId] is
-//      true/false and wins over the feed default (but the master must be on)
+//   3. feed default  — ical_feeds.show_location (arrives as e.show_location);
+//                      local events have no feed and always count as "on"
 function widgetShowsLocation(e, widget, masterOn) {
-  if (!e || !e.location || !masterOn) return false;
+  if (!e || !e.location) return false;
   const ov = widget && widget.feedLocationOverride;
   if (ov && e.feed_id != null && typeof ov[e.feed_id] === 'boolean') return ov[e.feed_id];
+  if (!masterOn) return false;
   return e.source === 'local' ? true : (e.show_location === 1 || e.show_location === true);
 }
 
@@ -6061,7 +6748,7 @@ function renderFeedLocationOverrideSection(w) {
   if (!feeds.length) return '';
   const overrides = w.feedLocationOverride || {};
   const inner = `
-    <p style="font-size:11px;color:rgba(255,255,255,0.5);margin:0 0 10px">Force a calendar's location on or off for just this widget, without changing its global "Show location" in Calendar Feeds. Needs this widget's own Show Location turned on.</p>
+    <p style="font-size:11px;color:rgba(255,255,255,0.5);margin:0 0 10px">Force a calendar's location on or off for just this widget — wins over both its global "Show location" in Calendar Feeds and this widget's own Show Location toggle.</p>
     ${feeds.map(f => {
       const has = typeof overrides[f.id] === 'boolean';
       const val = has ? overrides[f.id] : f.show_location;
@@ -6454,11 +7141,13 @@ function renderMiniCalGrid(widget) {
     // legible — and forcing it made "background vs dot" not actually a
     // real choice (background style always included a dot anyway).
     const fullDayColorStyle = (widget && widget.calFullDayColorStyle) || 'highlight';
-    // Location in a grid day-cell is opt-in (default OFF) — there's barely room
-    // for a title, so it's appended inline after the title and truncates with
-    // the rest of the line rather than adding a row. Agenda layout gets the
-    // full wrapped treatment.
-    const gridShowLoc = !!(widget && widget.calShowLocation);
+    // Location in a grid day-cell follows the feed's own "Show location" by
+    // default (same as Agenda) — turning it on for a calendar in Settings
+    // should surface it everywhere, not just the wrapped Agenda view. It's
+    // appended inline after the title and truncates with the rest of the line;
+    // "Wrap Event Text" gives it its own line. Turn the widget's Show Location
+    // off to suppress it here without touching the feed.
+    const gridShowLoc = !widget || widget.calShowLocation !== false;
     const gridLoc = (e) => widgetShowsLocation(e, widget, gridShowLoc) ? ` <span class="mc-ev-loc">· ${escapeHtmlD(e.location)}</span>` : '';
     const evHtml = dayEvents.map(e => {
       if (e.start_time) {
@@ -7886,6 +8575,8 @@ const WIDGET_BASIC_SETTINGS = {
   shoppinglist:  { fontField: 'shoppingFontPx', fontDefault: 15, fontMin: 8,  fontMax: 80, fontStep: 1, titleField: 'shoppingTitle', titlePlaceholder: 'Shopping List' },
   chorechart:    { fontField: 'choreFontPx',    fontDefault: 15, fontMin: 8,  fontMax: 80, fontStep: 1, titleField: 'choreTitle', titlePlaceholder: 'Daily Chore Chart' },
   chorelb:       { fontField: 'lbFontPx',       fontDefault: 15, fontMin: 8,  fontMax: 80, fontStep: 1, titleField: 'lbTitle', titlePlaceholder: 'Chore Leaderboard' },
+  messageboard:  { fontField: 'mbFontPx',       fontDefault: 14, fontMin: 10, fontMax: 40, fontStep: 1 },
+  mealplan:      { fontField: 'mpFontPx',       fontDefault: 15, fontMin: 10, fontMax: 36, fontStep: 1 },
   countdown:     { fontField: 'cdFontPx',       fontDefault: 22, fontMin: 8,  fontMax: 100, fontStep: 1, titleField: 'cdTitle', titlePlaceholder: 'Countdown' },
   moonphase:     { fontField: 'mpFontPx',       fontDefault: 20, fontMin: 8,  fontMax: 80,  fontStep: 1 },
   airquality:    { fontField: 'aqFontPx',       fontDefault: 18, fontMin: 8,  fontMax: 72,  fontStep: 1 },
@@ -8202,7 +8893,7 @@ function rerenderSingleWidget(id) {
   // replaced DOM. All idempotent (each checks its own _tapWired flag before
   // attaching), so calling them broadly here is safe and simpler than
   // scoping each one to just this element.
-  wireChoreChartTaps(); wireTodoWidgetTaps(); wireShoppingWidgetTaps(); wireTasksWidgetTaps(); wireMiniCalNav(); wireEntityStatusTaps(); wireHaSparklines(); wireLayoutSwitcherTaps(); wireWeatherComboTabTaps(); wireEventDetailTaps();
+  wireChoreChartTaps(); wireMessageBoardTaps(); wireMealPlanTaps(); wireCameraStreams(); wireCameraTaps(); wireTodoWidgetTaps(); wireShoppingWidgetTaps(); wireTasksWidgetTaps(); wireMiniCalNav(); wireEntityStatusTaps(); wireHaSparklines(); wireLayoutSwitcherTaps(); wireWeatherComboTabTaps(); wireEventDetailTaps();
   // QR codes are generated into their container by a separate pass after
   // any render (renderQRCodes(), normally run after a full renderLayout())
   // — innerHTML alone only creates an empty .qr-container div, so without
@@ -8273,7 +8964,7 @@ async function deleteWidget(id) {
 // separately-built settings UI ported field-for-field from app.html's own
 // drawWidgetSettingsPanel(), not a generic renderer. Add to this list only
 // alongside actually building that type's render/wire functions.
-const WIDGET_ADVANCED_TYPES = ['minical', 'weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast', 'todo', 'shoppinglist', 'chorechart', 'chorelb', 'countdown', 'radar', 'qrcode', 'timer', 'moonphase', 'airquality', 'onthisday', 'dailyquote', 'metar', 'clock', 'date', 'news', 'stocks', 'travel', 'sports', 'text', 'decoration', 'upcoming', 'today', 'agenda', 'photo', 'tasks', 'tasksCombined', 'entitystatus', 'smarthomeDashboard', 'groupcontrol'];
+const WIDGET_ADVANCED_TYPES = ['minical', 'weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast', 'todo', 'shoppinglist', 'chorechart', 'chorelb', 'countdown', 'radar', 'qrcode', 'timer', 'moonphase', 'airquality', 'onthisday', 'dailyquote', 'metar', 'clock', 'date', 'news', 'stocks', 'travel', 'sports', 'text', 'decoration', 'upcoming', 'today', 'agenda', 'photo', 'tasks', 'tasksCombined', 'entitystatus', 'smarthomeDashboard', 'groupcontrol', 'messageboard', 'mealplan', 'camera'];
 
 function openWidgetSettingsPanel(id) {
   const w = state.layout.find(x => String(x.id) === String(id));
@@ -8708,6 +9399,19 @@ async function openWidgetAdvancedPanel(id) {
     title.textContent = 'Reminders Settings';
     body.innerHTML = renderRemindersAdvancedSettings(w);
     wireRemindersAdvancedSettings(w);
+  } else if (w.type === 'messageboard') {
+    title.textContent = 'Message Board Settings';
+    body.innerHTML = renderMessageBoardAdvancedSettings(w);
+    wireMessageBoardAdvancedSettings(w);
+  } else if (w.type === 'mealplan') {
+    title.textContent = 'Meal Plan Settings';
+    body.innerHTML = renderMealPlanAdvancedSettings(w);
+    wireMealPlanAdvancedSettings(w);
+  } else if (w.type === 'camera') {
+    title.textContent = 'Camera Settings';
+    if (_camPanelWidgetId !== w.id) { _camFormOpen = false; _camFormEditId = null; _camPanelWidgetId = w.id; }
+    body.innerHTML = renderCameraAdvancedSettings(w);
+    wireCameraAdvancedSettings(w);
   } else if (w.type === 'news') {
     title.textContent = 'News Settings';
     body.innerHTML = renderNewsAdvancedSettings(w);
@@ -9456,8 +10160,8 @@ function renderCalendarAdvancedSettings(w) {
       </div>
     </div>
     <div class="was-toggle-row" style="${calLayout==='strip'?'display:none':''}">
-      <label>Show Location ${infoBtn("Shows each event's location — for calendars that have location turned on in Settings → Calendars. In Agenda layout it gets its own wrapped line (on by default). In Grid layout it's appended after the title and shares the same cramped line (off by default) — turn on Wrap Event Text to give it its own line.")}</label>
-      <input type="checkbox" id="cal-show-location" ${(calLayout==='agenda' ? w.calShowLocation!==false : w.calShowLocation===true) ? 'checked' : ''}>
+      <label>Show Location ${infoBtn("Shows each event's location — for calendars that have location turned on in Settings → Calendars (or forced on below in Per-Feed Location). On by default. In Agenda layout it gets its own wrapped line; in Grid layout it's appended after the title on the same line — turn on Wrap Event Text to give it its own line.")}</label>
+      <input type="checkbox" id="cal-show-location" ${w.calShowLocation!==false ? 'checked' : ''}>
     </div>
     <div class="was-row" style="${calLayout==='strip'?'':'display:none'}">
       <label>Days to Show</label>
@@ -11419,6 +12123,306 @@ function wireRemindersAdvancedSettings(w) {
   if (manageBtn) manageBtn.addEventListener('click', openManageRemindersPanel);
 }
 
+function renderMessageBoardAdvancedSettings(w) {
+  const fontPx = w.mbFontPx || 14;
+  const maxNotes = Number.isFinite(w.mbMaxNotes) && w.mbMaxNotes > 0 ? w.mbMaxNotes : 8;
+  return `
+    <div class="was-row">
+      <label>Font Size (px)</label>
+      <div class="was-range-row">
+        <input type="range" id="mb-font-range" min="10" max="40" step="1" value="${fontPx}">
+        <span class="was-range-val" id="mb-font-val">${fontPx}px</span>
+      </div>
+    </div>
+    <div class="was-row">
+      <label>Max notes shown ${infoBtn("How many of the most recent notes this widget displays. Pinned notes always show first.")}</label>
+      <div class="was-range-row">
+        <input type="range" id="mb-max-range" min="1" max="20" step="1" value="${maxNotes}">
+        <span class="was-range-val" id="mb-max-val">${maxNotes}</span>
+      </div>
+    </div>
+    <div class="was-toggle-row">
+      <label>Show author</label>
+      <input type="checkbox" id="mb-show-author" ${w.mbShowAuthor!==false?'checked':''}>
+    </div>
+    <div class="was-toggle-row">
+      <label>Show time</label>
+      <input type="checkbox" id="mb-show-time" ${w.mbShowTime!==false?'checked':''}>
+    </div>
+    <p class="was-hint">Notes are shared across every Message Board widget and the app's Board tab — post or clear one anywhere, it updates everywhere.</p>
+  `;
+}
+function wireMessageBoardAdvancedSettings(w) {
+  const fontRange = document.getElementById('mb-font-range');
+  if (fontRange) fontRange.addEventListener('input', (e) => {
+    w.mbFontPx = parseInt(e.target.value, 10);
+    document.getElementById('mb-font-val').textContent = w.mbFontPx + 'px';
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  });
+  const maxRange = document.getElementById('mb-max-range');
+  if (maxRange) maxRange.addEventListener('input', (e) => {
+    w.mbMaxNotes = parseInt(e.target.value, 10);
+    document.getElementById('mb-max-val').textContent = String(w.mbMaxNotes);
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  });
+  const showAuthor = document.getElementById('mb-show-author');
+  if (showAuthor) showAuthor.addEventListener('change', (e) => {
+    w.mbShowAuthor = e.target.checked;
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  });
+  const showTime = document.getElementById('mb-show-time');
+  if (showTime) showTime.addEventListener('change', (e) => {
+    w.mbShowTime = e.target.checked;
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  });
+}
+
+function renderMealPlanAdvancedSettings(w) {
+  const days = Math.max(3, Math.min(14, Number(w.mpDays) || 7));
+  const fontPx = w.mpFontPx || 15;
+  const active = mpActiveSlots(w);
+  const householdSlots = mpActiveSlots({});
+  const slotRow = MP_SLOT_ORDER.map(s =>
+    `<label style="display:inline-flex;align-items:center;gap:6px;margin-right:14px;cursor:pointer">
+      <input type="checkbox" class="mp-slot-cb" value="${s}" ${active.includes(s) ? 'checked' : ''} style="width:16px;height:16px;accent-color:var(--accent)">
+      ${MP_SLOT_NAME[s]}
+    </label>`).join('');
+  return `
+    <div class="was-row">
+      <label>Meals shown</label>
+      <div style="display:flex;flex-wrap:wrap">${slotRow}</div>
+      <p class="was-hint" style="margin-top:6px">Leave these matching the household default (${householdSlots.map(s => MP_SLOT_NAME[s]).join(', ')}) to follow it, or pick a different set just for this widget. Change which meals the household plans in the app's Meals tab.</p>
+    </div>
+    <div class="was-row">
+      <label>Days shown</label>
+      <div class="was-range-row">
+        <input type="range" id="mp-days-range" min="3" max="14" step="1" value="${days}">
+        <span class="was-range-val" id="mp-days-val">${days}</span>
+      </div>
+    </div>
+    <div class="was-row">
+      <label>Font Size (px)</label>
+      <div class="was-range-row">
+        <input type="range" id="mp-font-range" min="10" max="36" step="1" value="${fontPx}">
+        <span class="was-range-val" id="mp-font-val">${fontPx}px</span>
+      </div>
+    </div>
+    <div class="was-toggle-row">
+      <label>Hide unplanned meals ${infoBtn("Only list days/meals that actually have something planned — drop the ones showing a dash.")}</label>
+      <input type="checkbox" id="mp-hide-empty" ${w.mpHideEmpty ? 'checked' : ''}>
+    </div>
+    <p class="was-hint">Meals are shared across every Meal Plan widget and the Family Hub Meals tab — set one anywhere, it shows everywhere. Tap a meal on the display to plan it.</p>
+  `;
+}
+function wireMealPlanAdvancedSettings(w) {
+  const daysRange = document.getElementById('mp-days-range');
+  if (daysRange) daysRange.addEventListener('input', (e) => {
+    w.mpDays = parseInt(e.target.value, 10);
+    document.getElementById('mp-days-val').textContent = String(w.mpDays);
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  });
+  const fontRange = document.getElementById('mp-font-range');
+  if (fontRange) fontRange.addEventListener('input', (e) => {
+    w.mpFontPx = parseInt(e.target.value, 10);
+    document.getElementById('mp-font-val').textContent = w.mpFontPx + 'px';
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  });
+  const hideEmpty = document.getElementById('mp-hide-empty');
+  if (hideEmpty) hideEmpty.addEventListener('change', (e) => {
+    w.mpHideEmpty = e.target.checked;
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  });
+  document.querySelectorAll('.mp-slot-cb').forEach(cb => cb.addEventListener('change', () => {
+    let picked = [...document.querySelectorAll('.mp-slot-cb:checked')].map(x => x.value);
+    if (!picked.length) { cb.checked = true; picked = [cb.value]; } // never zero
+    picked = MP_SLOT_ORDER.filter(s => picked.includes(s));
+    const household = mpActiveSlots({});
+    // Matches the household set exactly -> follow it (drop the override).
+    if (picked.length === household.length && picked.every(s => household.includes(s))) delete w.mpSlots;
+    else w.mpSlots = picked;
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  }));
+}
+
+// ── Camera widget advanced settings ───────────────────────────────────────
+// Cameras are a global managed list (state.cameras, URLs redacted). The panel
+// lets you pick one, add/edit/remove one inline, set fit + title, and test.
+let _camFormOpen = false;      // is the add/edit form showing
+let _camFormEditId = null;     // null = adding; an id = editing that camera
+let _camFormSource = 'url';    // 'url' | 'ha'
+let _camPanelWidgetId = null;  // which widget's camera panel is open (reset the form when it changes)
+function renderCameraAdvancedSettings(w) {
+  const cams = state.cameras || [];
+  const fit = w.camFit === 'cover' ? 'cover' : 'contain';
+  const opts = cams.map(c => `<option value="${c.id}" ${String(c.id) === String(w.camId) ? 'selected' : ''}>${escapeHtmlD(c.name)}${c.kind === 'ha' ? ' (HA)' : ''}</option>`).join('');
+  const editing = _camFormEditId != null ? cams.find(c => String(c.id) === String(_camFormEditId)) : null;
+
+  const form = _camFormOpen ? `
+    <div class="was-box" style="padding:10px;margin-top:8px">
+      <div class="was-row">
+        <label>Name</label>
+        <input type="text" id="cam-f-name" value="${escapeHtmlD(editing ? editing.name : '')}" placeholder="Driveway">
+      </div>
+      <div class="was-row">
+        <label>Source</label>
+        <select id="cam-f-source">
+          <option value="url" ${_camFormSource === 'url' ? 'selected' : ''}>Direct URL (RTSP / ONVIF / MJPEG)</option>
+          <option value="ha" ${_camFormSource === 'ha' ? 'selected' : ''}>Home Assistant camera</option>
+        </select>
+      </div>
+      <div class="was-row" id="cam-f-url-row" style="${_camFormSource === 'url' ? '' : 'display:none'}">
+        <label>Stream URL</label>
+        <input type="text" id="cam-f-url" placeholder="rtsp://user:pass@192.168.1.9:554/stream1" value="">
+        <p class="was-hint" style="margin-top:6px">${editing ? 'Leave blank to keep the saved URL. ' : ''}Needs RTSP/ONVIF/MJPEG — not a browser page. Credentials in the URL are fine; they stay on the server.</p>
+      </div>
+      <div class="was-row" id="cam-f-ha-row" style="${_camFormSource === 'ha' ? '' : 'display:none'}">
+        <label>Camera entity</label>
+        <select id="cam-f-ha-entity"><option value="">Loading Home Assistant cameras…</option></select>
+      </div>
+      <div id="cam-f-error" class="was-hint" style="color:#ff9b9b;display:none"></div>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <button id="cam-f-save" type="button" style="flex:1;padding:10px;border-radius:9px;border:none;background:var(--accent,#4A90D9);color:#fff;font-weight:700">${editing ? 'Save changes' : 'Add camera'}</button>
+        <button id="cam-f-cancel" type="button" style="flex:0 0 auto;padding:10px 14px;border-radius:9px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#fff">Cancel</button>
+      </div>
+    </div>` : '';
+
+  return `
+    <div class="was-row">
+      <label>Camera</label>
+      ${cams.length ? `<select id="cam-select"><option value="">— none —</option>${opts}</select>` : `<p class="was-hint" style="margin-top:0">No cameras yet — add one below.</p>`}
+    </div>
+    ${cams.length && w.camId && !_camFormOpen ? `
+    <div class="was-row" style="display:flex;gap:8px">
+      <button id="cam-edit-btn" type="button" class="was-mini-btn">✏️ Edit</button>
+      <button id="cam-del-btn" type="button" class="was-mini-btn">🗑️ Remove</button>
+      <button id="cam-test-btn" type="button" class="was-mini-btn">📶 Test</button>
+      <span id="cam-test-result" class="was-hint" style="align-self:center"></span>
+    </div>` : ''}
+    ${!_camFormOpen ? `<div class="was-row"><button id="cam-add-btn" type="button" style="width:100%;padding:10px;border-radius:9px;border:1px dashed rgba(255,255,255,0.25);background:transparent;color:var(--text)">＋ Add a camera</button></div>` : ''}
+    ${form}
+    <div class="was-row">
+      <label>Fit</label>
+      <select id="cam-fit">
+        <option value="contain" ${fit === 'contain' ? 'selected' : ''}>Contain (show the whole frame)</option>
+        <option value="cover" ${fit === 'cover' ? 'selected' : ''}>Cover (fill, may crop)</option>
+      </select>
+    </div>
+    <div class="was-toggle-row">
+      <label>Show title</label>
+      <input type="checkbox" id="cam-show-title" ${w.camShowTitle !== false ? 'checked' : ''}>
+    </div>
+    <p class="was-hint">Live H.264/H.265 needs some CPU — a Pi 4 or 5 handles one or two streams; on an older Pi, run the server on Docker or Windows instead.</p>
+  `;
+}
+function wireCameraAdvancedSettings(w) {
+  const sel = document.getElementById('cam-select');
+  if (sel) sel.addEventListener('change', (e) => {
+    w.camId = e.target.value ? parseInt(e.target.value, 10) : null;
+    if (!w.camTitle) { /* title follows the camera name via renderCamera's fallback */ }
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+    openWidgetAdvancedPanel(w.id); // refresh Edit/Remove/Test row visibility
+  });
+  const fit = document.getElementById('cam-fit');
+  if (fit) fit.addEventListener('change', (e) => { w.camFit = e.target.value; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
+  const showTitle = document.getElementById('cam-show-title');
+  if (showTitle) showTitle.addEventListener('change', (e) => { w.camShowTitle = e.target.checked; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
+
+  const addBtn = document.getElementById('cam-add-btn');
+  if (addBtn) addBtn.addEventListener('click', () => { _camFormOpen = true; _camFormEditId = null; _camFormSource = 'url'; openWidgetAdvancedPanel(w.id); });
+  const editBtn = document.getElementById('cam-edit-btn');
+  if (editBtn) editBtn.addEventListener('click', () => {
+    const cam = (state.cameras || []).find(c => String(c.id) === String(w.camId));
+    _camFormOpen = true; _camFormEditId = w.camId; _camFormSource = cam && cam.kind === 'ha' ? 'ha' : 'url';
+    openWidgetAdvancedPanel(w.id);
+  });
+  const delBtn = document.getElementById('cam-del-btn');
+  if (delBtn) delBtn.addEventListener('click', async () => {
+    if (!w.camId) return;
+    if (!confirm('Remove this camera? Any widget using it will go blank.')) return;
+    try { await fetch(`/api/cameras/${w.camId}`, { method: 'DELETE' }); } catch {}
+    w.camId = null; scheduleLayoutSave();
+    await fetchCameras(); rerenderSingleWidget(w.id); openWidgetAdvancedPanel(w.id);
+  });
+  const testBtn = document.getElementById('cam-test-btn');
+  if (testBtn) testBtn.addEventListener('click', async () => {
+    const out = document.getElementById('cam-test-result');
+    if (out) out.textContent = 'testing…';
+    try {
+      const r = await (await fetch(`/api/cameras/${w.camId}/test`)).json();
+      if (out) { out.textContent = r.ok ? '✓ streaming' : ('✗ ' + (r.error || 'no signal')); out.style.color = r.ok ? '#3ec97a' : '#ff9b9b'; }
+    } catch { if (out) { out.textContent = '✗ could not test'; out.style.color = '#ff9b9b'; } }
+  });
+
+  // The add/edit form
+  const src = document.getElementById('cam-f-source');
+  if (src) src.addEventListener('change', (e) => {
+    _camFormSource = e.target.value;
+    document.getElementById('cam-f-url-row').style.display = _camFormSource === 'url' ? '' : 'none';
+    document.getElementById('cam-f-ha-row').style.display = _camFormSource === 'ha' ? '' : 'none';
+    if (_camFormSource === 'ha') loadCamHaEntities();
+  });
+  if (_camFormOpen && _camFormSource === 'ha') loadCamHaEntities();
+  const cancel = document.getElementById('cam-f-cancel');
+  if (cancel) cancel.addEventListener('click', () => { _camFormOpen = false; _camFormEditId = null; openWidgetAdvancedPanel(w.id); });
+  const save = document.getElementById('cam-f-save');
+  if (save) save.addEventListener('click', async () => {
+    const err = document.getElementById('cam-f-error');
+    const showErr = (m) => { if (err) { err.textContent = m; err.style.display = 'block'; } };
+    const name = document.getElementById('cam-f-name').value.trim();
+    if (!name) return showErr('Give the camera a name.');
+    const kind = _camFormSource === 'ha' ? 'ha' : 'url';
+    let url = '';
+    if (kind === 'ha') {
+      url = document.getElementById('cam-f-ha-entity').value;
+      if (!url) return showErr('Pick a Home Assistant camera entity.');
+      url = 'ha:' + url;
+    } else {
+      url = document.getElementById('cam-f-url').value.trim();
+      if (!_camFormEditId && !url) return showErr('Enter the stream URL.');
+    }
+    save.disabled = true; save.textContent = 'Saving…';
+    try {
+      const body = { name, kind };
+      if (url) body.url = url;
+      let res;
+      if (_camFormEditId) res = await fetch(`/api/cameras/${_camFormEditId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      else res = await fetch('/api/cameras', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const j = await res.json();
+      if (!res.ok) { save.disabled = false; save.textContent = _camFormEditId ? 'Save changes' : 'Add camera'; return showErr(j.error || 'Could not save.'); }
+      if (!_camFormEditId && j && j.id) { w.camId = j.id; scheduleLayoutSave(); }
+      _camFormOpen = false; _camFormEditId = null;
+      await fetchCameras();
+      rerenderSingleWidget(w.id);
+      openWidgetAdvancedPanel(w.id);
+    } catch {
+      save.disabled = false; save.textContent = _camFormEditId ? 'Save changes' : 'Add camera';
+      showErr('Could not save — try again.');
+    }
+  });
+}
+async function loadCamHaEntities() {
+  const sel = document.getElementById('cam-f-ha-entity');
+  if (!sel) return;
+  try {
+    if (!cachedHaEntitiesD) { const r = await fetch('/api/ha/entities'); const d = await r.json(); cachedHaEntitiesD = Array.isArray(d) ? d : []; }
+  } catch { cachedHaEntitiesD = cachedHaEntitiesD || []; }
+  const cams = (cachedHaEntitiesD || []).filter(e => e.entity_id.startsWith('camera.'));
+  const editing = _camFormEditId != null ? (state.cameras || []).find(c => String(c.id) === String(_camFormEditId)) : null;
+  const cur = editing && editing.kind === 'ha' ? editing.host_hint : '';
+  sel.innerHTML = cams.length
+    ? `<option value="">— choose —</option>` + cams.map(e => `<option value="${escapeHtmlD(e.entity_id)}" ${e.entity_id === cur ? 'selected' : ''}>${escapeHtmlD(e.friendly_name)}</option>`).join('')
+    : `<option value="">No camera.* entities found — is Home Assistant connected?</option>`;
+}
+
 // ── Manage Reminders panel ──────────────────────────────────────────────
 // Wired exactly once, below, NOT from inside wireRemindersAdvancedSettings()
 // above — see the CSS comment on #manage-reminders-panel for why. Two
@@ -12840,6 +13844,9 @@ const WIDGET_DEFS = [
   { type:'chorechart', label:'Chore Chart', icon:'🧹' },
   { type:'chorelb', label:'Chore Leaderboard', icon:'🏆' },
   { type:'shoppinglist', label:'Shopping List', icon:'🛒' },
+  { type:'messageboard', label:'Message Board', icon:'📝' },
+  { type:'mealplan', label:'Meal Plan', icon:'🍽️' },
+  { type:'camera', label:'Camera', icon:'📹' },
   { type:'countdown', label:'Countdown', icon:'⏳' },
   { type:'moonphase', label:'Moon Phase', icon:'🌙' },
   { type:'airquality', label:'Air Quality', icon:'🌬️' },
@@ -12863,10 +13870,10 @@ const WIDGET_CATEGORIES = [
   { id:'tasks',    label:'Tasks',    icon:'✅', types:['tasks','tasksCombined','todo'] },
   { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel'] },
   { id:'photos',   label:'Photos',   icon:'🖼️', types:['photo'] },
-  { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders'] },
+  { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan'] },
   { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode'] },
   { id:'decor',    label:'Decor',    icon:'🌿', types:['decoration'] },
-  { id:'smarthome', label:'Smart Home', icon:'🏠', types:['entitystatus','smarthomeDashboard','groupcontrol'] },
+  { id:'smarthome', label:'Smart Home', icon:'🏠', types:['entitystatus','smarthomeDashboard','groupcontrol','camera'] },
 ];
 // Collision-safe without needing to track/sync a counter against whatever
 // IDs the server or the app's own editor have already handed out — app.html
@@ -12887,6 +13894,9 @@ function buildNewWidgetDefaults(type) {
   if (type === 'minical') { w.w = 60; w.h = 50; w.calView = 'month'; }
   else if (type === 'datetime') { w.w = 34; w.h = 30; w.dtStyle = 'classic'; w.dtFontPx = 70; w.dtShowSeconds = true; w.dtShowDate = true; w.dtShowTemp = true; }
   else if (type === 'reminders') { w.w = 30; w.h = 20; w.remStyle = 'banner'; w.remFontPx = 22; }
+  else if (type === 'messageboard') { w.w = 34; w.h = 26; w.mbFontPx = 14; }
+  else if (type === 'mealplan') { w.w = 30; w.h = 34; w.mpDays = 7; w.mpFontPx = 15; }
+  else if (type === 'camera') { w.w = 44; w.h = 32; w.camFit = 'contain'; w.camShowTitle = true; }
   else if (type === 'tasks') { w.w = 30; w.h = 40; w.projectId = null; w.projectName = 'Tasks'; }
   else if (type === 'news') { w.w = 32; w.h = 45; }
   else if (type === 'stocks') { w.w = 28; w.h = 30; w.stockTickers = []; }
@@ -13579,13 +14589,25 @@ function wireLayoutSwitcherTaps() {
     });
   });
 }
-function showDisplayToast(message) {
+function showDisplayToast(message, opts) {
+  const o = opts || {};
   const el = document.createElement('div');
   el.className = 'cc-toast';
   el.textContent = message;
+  // Optional inline "Undo" action (Family Message Board delete): keeps the
+  // toast up a beat longer and self-dismisses once tapped or on timeout.
+  let outAt = 2200, gone = 2600;
+  if (typeof o.undo === 'function') {
+    outAt = 3800; gone = 4200;
+    const b = document.createElement('button');
+    b.className = 'cc-toast-undo';
+    b.textContent = 'Undo';
+    b.addEventListener('click', () => { try { o.undo(); } finally { el.remove(); } });
+    el.appendChild(b);
+  }
   document.body.appendChild(el);
-  setTimeout(() => el.classList.add('cc-toast-out'), 2200);
-  setTimeout(() => el.remove(), 2600);
+  setTimeout(() => el.classList.add('cc-toast-out'), outAt);
+  setTimeout(() => el.remove(), gone);
 }
 async function toggleChoreChartItem(el) {
   const instId = el.dataset.instanceId;
@@ -14994,7 +16016,13 @@ function initDemoBanner(v) {
   if (_demoTimer) clearInterval(_demoTimer);
   _demoTimer = setInterval(tick, 1000);
   startDemoHeartbeat(v);
+  wireDemoCursorInput();
   maybeShowDemoTour();
+  // Repeat visitors (tour already dismissed) still get the one-time
+  // touch-vs-mouse hint; first-timers get the same point from the tour card.
+  let _tourSeen = false;
+  try { _tourSeen = localStorage.getItem('demoTourSeen') === '1'; } catch {}
+  if (_tourSeen) setTimeout(showDemoCursorHint, 2500);
   // If the tour was already dismissed in this browser, still nudge toward
   // the pencil once (its own localStorage flag stops it after the first).
   let _tourUp = false;
@@ -15016,6 +16044,7 @@ function maybeShowDemoTour() {
         '<li><span class="dt-ic">📅</span><span><b>Long-press a day</b> on the calendar to add an event.</span></li>' +
         '<li><span class="dt-ic">👆</span><span><b>Tap a widget</b> — check off a chore, tick a to-do, open an event.</span></li>' +
         '<li><span class="dt-ic">📱</span><span><b>Scan the code</b> (top-right) to drive this screen from your phone.</span></li>' +
+        '<li><span class="dt-ic">🖱️</span><span><b>On a computer?</b> This is built for a touch screen so the cursor is hidden — press <b>Space</b> (or just move your mouse) to use it.</span></li>' +
         '<li><span class="dt-ic">⏱️</span><span>Everything <b>resets automatically</b> for the next visitor.</span></li>' +
       '</ul>' +
       '<button class="dt-go" type="button">Start exploring</button>' +
@@ -15050,6 +16079,60 @@ function showDemoEditHint() {
   if (pencil) pencil.addEventListener('click', done, { once: true });
   setTimeout(done, 8000);
 }
+
+// ── Demo: touch-vs-mouse ──────────────────────────────────────────────────
+// The cursor is hidden on the display by design. In the public demo a visitor
+// might be on a plain monitor with a mouse, so give them their pointer back:
+// Space toggles it, and a real mouse move reveals it (a touch-only user never
+// fires one). Persisted for the session. Demo only — the real wall display
+// stays cursorless.
+let _demoCursorWired = false;
+function _demoSetCursor(on) {
+  document.documentElement.classList.toggle('demo-show-cursor', on);
+  try { sessionStorage.setItem('demoShowCursor', on ? '1' : '0'); } catch {}
+}
+function wireDemoCursorInput() {
+  if (_demoCursorWired || !window.__isDemo) return;
+  _demoCursorWired = true;
+  try { if (sessionStorage.getItem('demoShowCursor') === '1') _demoSetCursor(true); } catch {}
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space' && e.key !== ' ') return;
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
+    e.preventDefault();
+    _demoSetCursor(!document.documentElement.classList.contains('demo-show-cursor'));
+    _dismissDemoCursorHint();
+  });
+
+  let _moves = 0;
+  window.addEventListener('mousemove', () => {
+    if (++_moves < 3) return; // ignore one or two stray events
+    if (!document.documentElement.classList.contains('demo-show-cursor')) _demoSetCursor(true);
+    _dismissDemoCursorHint();
+  }, { passive: true });
+}
+function showDemoCursorHint() {
+  if (!window.__isDemo || editModeActive) return;
+  if (document.getElementById('demo-cursor-hint') || document.getElementById('demo-tour')) return;
+  try { if (sessionStorage.getItem('demoCursorHintSeen') === '1') return; } catch {}
+  if (document.documentElement.classList.contains('demo-show-cursor')) return; // already using a cursor
+  try { sessionStorage.setItem('demoCursorHintSeen', '1'); } catch {}
+  const el = document.createElement('div');
+  el.id = 'demo-cursor-hint';
+  el.innerHTML = '<span>Built for a touch screen — on a computer, <b>press Space</b> or move your mouse to use a cursor.</span>' +
+    '<button class="dch-x" type="button" aria-label="Dismiss">✕</button>';
+  el.querySelector('.dch-x').addEventListener('click', _dismissDemoCursorHint);
+  document.body.appendChild(el);
+  setTimeout(_dismissDemoCursorHint, 18000);
+}
+function _dismissDemoCursorHint() {
+  const el = document.getElementById('demo-cursor-hint');
+  if (!el) return;
+  el.style.opacity = '0';
+  setTimeout(() => el.remove(), 320);
+}
+
 // Hold the lease open while this tab is here: ping the broker every 45s.
 // When the tab goes away the pings stop and the broker frees the slot after
 // its idle window. credentials:'include' sends the .piazzahq.com lease cookie.
@@ -15866,6 +16949,49 @@ async function fetchReminders() {
   } catch { state.reminders = state.reminders || []; }
 }
 
+// Family Message Board notes. Like reminders, not date-windowed — the server
+// caps the table at 60 rows and auto-clears old ones, so this pulls the whole
+// list. Kept live via the 'messages' SSE topic; this is just the initial load
+// and a daily safety-net refresh.
+async function fetchMessages() {
+  try {
+    const r = await fetch('/api/messages');
+    state.messages = await r.json();
+  } catch { state.messages = state.messages || []; }
+}
+
+// Weekly meal plan (the "mealplan" widget). Stored as an object keyed by
+// 'YYYY-MM-DD' -> { [slot]: row } for O(1) lookup. Kept live via the 'meals'
+// SSE topic; this is the initial load + a daily refresh.
+async function fetchMeals() {
+  try {
+    const from = todayStr();
+    const to = (() => { const d = new Date(); d.setDate(d.getDate() + 45); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; })();
+    const rows = await (await fetch(`/api/meals?from=${from}&to=${to}`)).json();
+    const byDate = {};
+    (Array.isArray(rows) ? rows : []).forEach(m => {
+      (byDate[m.date] = byDate[m.date] || {})[m.slot || 'dinner'] = m;
+    });
+    state.meals = byDate;
+  } catch { state.meals = state.meals || {}; }
+}
+
+// Cameras for the Camera widget. The list carries no stream URLs (the server
+// redacts them) — just id/name/kind so the widget knows which /api/camera/<id>
+// endpoints to hit. _cameraServiceState tracks whether this display's local
+// go2rtc media process is available; 'unknown' until we've asked once.
+let _cameraServiceState = 'unknown';
+async function fetchCameras() {
+  try {
+    const r = await fetch('/api/cameras');
+    state.cameras = await r.json();
+  } catch { state.cameras = state.cameras || []; }
+  try {
+    const s = await (await fetch('/api/camera/service')).json();
+    if (s && s.state) _cameraServiceState = s.state;
+  } catch {}
+}
+
 // Family member profiles — used here only to colour-code local events by
 // their owner (owner_profile_id). The wall has no "active profile"; this is
 // purely a lookup table. Empty on a household that hasn't set any up.
@@ -15881,6 +17007,17 @@ async function fetchProfiles() {
 function profileNameByIdD(id) {
   const p = (state.profiles || []).find(x => Number(x.id) === Number(id));
   return p ? p.name : '';
+}
+function profileByIdD(id) {
+  return (state.profiles || []).find(x => Number(x.id) === Number(id)) || null;
+}
+// Small round avatar chip (emoji on the profile's colour) — the wall version
+// of app.html's profileAvatarHtml.
+function profileAvatarHtmlD(p, px) {
+  if (!p) return '';
+  const s = px || 16;
+  const face = (p.avatar || '').trim() || (p.name || '?').trim().charAt(0).toUpperCase() || '?';
+  return `<span class="profile-avatar-d" style="width:${s}px;height:${s}px;font-size:${Math.round(s * 0.55)}px;background:${escapeHtmlD(p.color || '#4A90D9')}">${escapeHtmlD(face)}</span>`;
 }
 
 // Does this reminder occur on the given date (a 'YYYY-MM-DD' string)? The
@@ -17429,6 +18566,14 @@ async function fetchLayout(orientation) {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
     const incoming = data.widgets || [];
+    // Remember the last layout that loaded cleanly, per orientation, so a
+    // reload mid-update can seed from it instead of showing a blank screen —
+    // see init()'s own comment. Keyed on orientation only (a device shows one
+    // display at a time; a stale cache from a since-reassigned profile is
+    // still better than blank and is corrected by this same fetch on success).
+    if (!IS_PREVIEW && incoming.length) {
+      try { localStorage.setItem('phq_layout_' + orientation, JSON.stringify(incoming)); } catch {}
+    }
     // Reconcile in place rather than replacing the array with brand-new
     // object literals — preserves object identity for any widget that
     // already existed, which matters because an open Live Editing "More
@@ -17963,6 +19108,15 @@ function connectLiveUpdates() {
     } else if (topic === 'reminders') {
       await fetchReminders();
       renderLayout();
+    } else if (topic === 'messages') {
+      await fetchMessages();
+      renderLayout();
+    } else if (topic === 'cameras') {
+      await fetchCameras();
+      renderLayout();
+    } else if (topic === 'meals') {
+      await fetchMeals();
+      renderLayout();
     } else if (topic === 'settings') {
       const sRes = await fetch('/api/settings');
       state.settings = await sRes.json();
@@ -18169,12 +19323,42 @@ async function init() {
   try { wireDirectEditMode(); } catch (e) { console.error('init: directEditMode', e); }
 
   currentOrientation = getOrientation();
+  // Seed the layout from the last one that loaded cleanly for this
+  // orientation. Same reasoning as the orientation seed above: a reload that
+  // lands mid-update (server restarting, /api/layouts times out through
+  // fetchWithRetry) otherwise leaves state.layout empty and the screen blank
+  // until an SSE event or a manual display switch forces a re-fetch (the
+  // reported bug). fetchLayout() reconciles the real data over this by id, so
+  // a successful fetch a moment later converges cleanly.
+  if (!IS_PREVIEW && (!state.layout || !state.layout.length)) {
+    try {
+      const cachedLayout = JSON.parse(localStorage.getItem('phq_layout_' + currentOrientation) || 'null');
+      if (Array.isArray(cachedLayout) && cachedLayout.length) state.layout = cachedLayout;
+    } catch {}
+  }
   // Load the layout + data, each guarded. A failure in one doesn't blank the screen.
-  try { await fetchLayout(currentOrientation); } catch (e) { console.error('init: layout', e); state.layout = state.layout || []; }
-  await Promise.allSettled([fetchEvents(), fetchReminders(), fetchWeather(), fetchPhotos(), fetchProfiles()]);
+  let _layoutBootOk = false;
+  try { await fetchLayout(currentOrientation); _layoutBootOk = true; } catch (e) { console.error('init: layout', e); state.layout = state.layout || []; }
+  await Promise.allSettled([fetchEvents(), fetchReminders(), fetchMessages(), fetchCameras(), fetchMeals(), fetchWeather(), fetchPhotos(), fetchProfiles()]);
   await Promise.allSettled([fetchTasksForLayout(), fetchTodoForLayout(), fetchShoppingListForLayout(), fetchNews(), fetchStocks(), fetchChoreChart(), fetchStickersForLayout(), fetchAirQuality(), fetchTravelTimes(), fetchOnThisDay(), fetchDailyQuote(), fetchSports(), fetchMetarTaf(), fetchHaEntities()]);
   fetchEventHistory().then(renderLayout).catch(()=>{}); // deep history in background
   try { renderLayout(); } catch (e) { console.error('init: render', e); }
+  // If the boot layout fetch failed outright (not just "no widgets"), keep
+  // retrying hard for a couple of minutes so the screen fills itself in,
+  // rather than waiting on the next SSE/settings event or a manual switch.
+  if (!_layoutBootOk) {
+    let _lTries = 0;
+    const _lRetry = setInterval(async () => {
+      _lTries++;
+      try {
+        await fetchLayout(currentOrientation);
+        clearInterval(_lRetry);
+        renderLayout(); applyBackground();
+        Promise.allSettled([fetchTasksForLayout(), fetchTodoForLayout(), fetchShoppingListForLayout(), fetchNews(), fetchStocks(), fetchChoreChart(), fetchStickersForLayout(), fetchAirQuality(), fetchTravelTimes(), fetchHaEntities()]).then(() => { try { renderLayout(); } catch {} }).catch(() => {});
+      } catch {}
+      if (_lTries >= 15) clearInterval(_lRetry);
+    }, 8000);
+  }
   try { applyBackground(); } catch {}
   startSlideshowTimer();
 
@@ -18208,6 +19392,9 @@ async function init() {
   setInterval(async ()=>{ await fetchEvents(); renderLayout(); }, 300_000);       // 5min (recent events)
   setInterval(async ()=>{ await fetchEventHistory(); renderLayout(); }, 86_400_000); // once/day (deep history)
   setInterval(async ()=>{ await fetchReminders(); renderLayout(); }, 86_400_000); // once/day safety-net refresh — SSE ('reminders' topic) is the primary path, this just covers a missed broadcast
+  setInterval(async ()=>{ await fetchMessages(); renderLayout(); }, 86_400_000); // once/day safety-net refresh — SSE ('messages' topic) is the primary path
+  setInterval(async ()=>{ await fetchCameras(); renderLayout(); }, 3_600_000); // hourly — also re-checks the go2rtc service state so a fixed install recovers on its own
+  setInterval(async ()=>{ await fetchMeals(); renderLayout(); }, 86_400_000); // once/day safety-net — SSE ('meals' topic) is the primary path; a daily refresh also rolls the window forward
 
   // Re-check trial status hourly — the underlying cache this reads only refreshes
   // every 6 hours server-side, but re-checking more often on the client catches a

@@ -1381,6 +1381,15 @@ const RELEASE_NOTES = {
     'Home Assistant buttons (lights, covers, scenes) respond as soon as the command is accepted instead of waiting for the device to finish moving.',
     'Fixed: a display could switch from portrait to landscape after an update if it reloaded mid-restart.',
   ],
+  '1.86.0': [
+    'New: a Family Message Board — short notes household members leave for each other, shown on the wall and cleared by anyone. A widget for the display and a Board tab in Family Hub. When family profiles are set up, notes show the poster\'s avatar and name. Off by default (Settings → Features & Family Hub).',
+    'New: a weekly Meal Plan — plan breakfast, lunch and/or dinner from the Meals tab in Family Hub, shown as a widget on the wall. "Copy last week" fills the empty slots, and a widget can hide days that aren\'t planned yet. Off by default.',
+    'New: a Camera widget — a live RTSP / ONVIF / Home Assistant camera on the wall (Layout → Smart Home), with tap-to-enlarge. Needs some CPU: a Raspberry Pi 4 or 5, or run the server on Docker or Windows. Camera stream URLs stay on the server, never sent to a display.',
+    'Fixed: calendar event locations weren\'t showing on the Grid calendar or where the per-calendar / per-widget overrides should have applied. Turning "Show location" on for a calendar now surfaces it everywhere, and the per-widget override wins over everything.',
+    'Every widget now follows the display theme properly — several had a fixed dark tint and a fixed blue accent that looked wrong on the lighter themes (Post-it, Cork Board) and any custom theme.',
+    'The Message Board, Meal Plan and Camera widgets can now be configured right on the screen in Live Editing, not just from the app.',
+    'Feedback replies now open in a full-screen conversation view, and a display no longer comes back blank after an update.',
+  ],
 };
 
 // Beta-suffix-aware version compare — same scheme as the mothership server's
@@ -3962,9 +3971,11 @@ async function renderFamilyHubTab() {
     todo: !!window._todoEnabled,
     shopping: !!window._shoppingEnabled,
     reminders: window._remindersEnabled !== false,
+    board: !!window._messageboardEnabled,
+    meals: !!window._mealplanEnabled,
   };
   if (!enabled[familySubtab]) {
-    familySubtab = ['chores', 'todo', 'shopping', 'reminders'].find(t => enabled[t]) || 'chores';
+    familySubtab = ['chores', 'todo', 'shopping', 'reminders', 'board', 'meals'].find(t => enabled[t]) || 'chores';
   }
   await renderFamilySubtab(familySubtab, enabled);
 }
@@ -3974,6 +3985,8 @@ async function renderFamilySubtab(subtab, enabled) {
   if (subtab === 'todo') await renderTodoTab();
   else if (subtab === 'shopping') await renderShoppingTab();
   else if (subtab === 'reminders') await renderRemindersFamilyTab();
+  else if (subtab === 'board') await renderBoardFamilyTab();
+  else if (subtab === 'meals') await renderMealsFamilyTab();
   else await renderChoresTab();
 
   enabled = enabled || {
@@ -3981,6 +3994,8 @@ async function renderFamilySubtab(subtab, enabled) {
     todo: !!window._todoEnabled,
     shopping: !!window._shoppingEnabled,
     reminders: window._remindersEnabled !== false,
+    board: !!window._messageboardEnabled,
+    meals: !!window._mealplanEnabled,
   };
   const content = $('content');
   content.insertAdjacentHTML('afterbegin', `
@@ -3989,6 +4004,8 @@ async function renderFamilySubtab(subtab, enabled) {
       <button class="family-subtab ${subtab === 'todo' ? 'active' : ''}" data-subtab="todo" style="display:${enabled.todo ? '' : 'none'}">✅ To-Do</button>
       <button class="family-subtab ${subtab === 'shopping' ? 'active' : ''}" data-subtab="shopping" style="display:${enabled.shopping ? '' : 'none'}">🛒 Shopping</button>
       <button class="family-subtab ${subtab === 'reminders' ? 'active' : ''}" data-subtab="reminders" style="display:${enabled.reminders ? '' : 'none'}">🗑️ Reminders</button>
+      <button class="family-subtab ${subtab === 'board' ? 'active' : ''}" data-subtab="board" style="display:${enabled.board ? '' : 'none'}">📝 Board</button>
+      <button class="family-subtab ${subtab === 'meals' ? 'active' : ''}" data-subtab="meals" style="display:${enabled.meals ? '' : 'none'}">🍽️ Meals</button>
     </div>`);
   content.querySelectorAll('.family-subtab').forEach(btn => {
     btn.addEventListener('click', () => renderFamilySubtab(btn.dataset.subtab, enabled));
@@ -4007,8 +4024,10 @@ function updateFamilyHubVisibility(s) {
   window._todoEnabled = s.todo_enabled === '1';
   window._shoppingEnabled = s.shopping_enabled === '1';
   window._remindersEnabled = s.reminders_enabled !== '0';
-  const enabled = { chores: window._choresEnabled, todo: window._todoEnabled, shopping: window._shoppingEnabled, reminders: window._remindersEnabled };
-  const anyEnabled = enabled.chores || enabled.todo || enabled.shopping || enabled.reminders;
+  window._messageboardEnabled = s.messageboard_enabled === '1';
+  window._mealplanEnabled = s.mealplan_enabled === '1';
+  const enabled = { chores: window._choresEnabled, todo: window._todoEnabled, shopping: window._shoppingEnabled, reminders: window._remindersEnabled, board: window._messageboardEnabled, meals: window._mealplanEnabled };
+  const anyEnabled = enabled.chores || enabled.todo || enabled.shopping || enabled.reminders || enabled.board || enabled.meals;
   const familyTabEl = document.getElementById('tab-family');
   if (familyTabEl) {
     familyTabEl.style.display = anyEnabled ? '' : 'none';
@@ -4016,7 +4035,7 @@ function updateFamilyHubVisibility(s) {
       const calTab = document.querySelector('.tab[data-tab="calendars"]');
       if (calTab) calTab.click();
     } else if (familyTabEl.classList.contains('active') && !enabled[familySubtab]) {
-      renderFamilySubtab(['chores', 'todo', 'shopping', 'reminders'].find(t => enabled[t]), enabled);
+      renderFamilySubtab(['chores', 'todo', 'shopping', 'reminders', 'board', 'meals'].find(t => enabled[t]), enabled);
     }
   }
 }
@@ -7006,6 +7025,9 @@ const WIDGET_DEFS = [
   { type:'chorechart', label:'Chore Chart', icon:'🧹' },
   { type:'chorelb', label:'Chore Leaderboard', icon:'🏆' },
   { type:'shoppinglist', label:'Shopping List', icon:'🛒' },
+  { type:'messageboard', label:'Message Board', icon:'📝' },
+  { type:'mealplan', label:'Meal Plan', icon:'🍽️' },
+  { type:'camera', label:'Camera', icon:'📹' },
   { type:'countdown', label:'Countdown', icon:'⏳' },
   { type:'moonphase', label:'Moon Phase', icon:'🌙' },
   { type:'airquality', label:'Air Quality', icon:'🌬️' },
@@ -7033,10 +7055,10 @@ const WIDGET_CATEGORIES = [
   { id:'tasks',    label:'Tasks',    icon:'✅', types:['tasks','tasksCombined','todo'] },
   { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel'] },
   { id:'photos',   label:'Photos',   icon:'🖼️', types:['photo'] },
-  { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders'] },
+  { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan'] },
   { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode','layoutswitcher'] },
   { id:'decor',    label:'Decor',    icon:'🌿', types:['decoration'] },
-  { id:'smarthome', label:'Smart Home', icon:'🏠', types:['entitystatus','smarthomeDashboard','groupcontrol'] },
+  { id:'smarthome', label:'Smart Home', icon:'🏠', types:['entitystatus','smarthomeDashboard','groupcontrol','camera'] },
 ];
 const widgetDefByType = (t) => WIDGET_DEFS.find(d => d.type === t);
 let openWidgetCategory = null; // which palette category is expanded
@@ -7271,6 +7293,9 @@ async function renderLayoutEditorSubTab() {
   try {
     const s = await apiFetch('/api/settings');
     window._todoEnabled = s.todo_enabled === '1';
+    window._shoppingEnabled = s.shopping_enabled === '1';
+    window._messageboardEnabled = s.messageboard_enabled === '1';
+    window._mealplanEnabled = s.mealplan_enabled === '1';
   } catch { window._todoEnabled = window._todoEnabled || false; }
 
   // Load current display+orientation's layout
@@ -7448,7 +7473,7 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
 
     <div class="section-header">Add Widget</div>
     <div class="widget-cats">
-      ${WIDGET_CATEGORIES.filter(c => c.id !== 'smarthome' || typeof profileAllows !== 'function' || profileAllows('ha')).map(c=>{ const visibleTypes = c.types.filter(t => (t !== 'todo' || window._todoEnabled) && (t !== 'shoppinglist' || window._shoppingEnabled)); return `
+      ${WIDGET_CATEGORIES.filter(c => c.id !== 'smarthome' || typeof profileAllows !== 'function' || profileAllows('ha')).map(c=>{ const visibleTypes = c.types.filter(t => (t !== 'todo' || window._todoEnabled) && (t !== 'shoppinglist' || window._shoppingEnabled) && (t !== 'messageboard' || window._messageboardEnabled) && (t !== 'mealplan' || window._mealplanEnabled)); return `
         <div class="widget-cat" data-cat="${c.id}">
           <button class="cat-head" data-cat-toggle="${c.id}">
             <span class="cat-ic">${c.icon}</span>
@@ -7577,6 +7602,15 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
       }
       if (def.type === 'reminders') {
         newWidget.w = 30; newWidget.h = 20; newWidget.remStyle = 'banner'; newWidget.remFontPx = 22;
+      }
+      if (def.type === 'messageboard') {
+        newWidget.w = 34; newWidget.h = 26; newWidget.mbFontPx = 14;
+      }
+      if (def.type === 'mealplan') {
+        newWidget.w = 30; newWidget.h = 34; newWidget.mpDays = 7; newWidget.mpFontPx = 15;
+      }
+      if (def.type === 'camera') {
+        newWidget.w = 44; newWidget.h = 32; newWidget.camFit = 'contain'; newWidget.camShowTitle = true;
       }
       if (def.type === 'tasks') {
         newWidget.w = 30; newWidget.h = 40; newWidget.projectId = null; newWidget.projectName = 'Tasks';
@@ -8255,6 +8289,291 @@ async function renderRemindersFamilyTab() {
   await renderManageRemindersListView();
 }
 
+// ── Family Hub · Board sub-tab ────────────────────────────────────────────
+// The companion-app side of the Family Message Board widget. A compose box +
+// the current list of notes, ✕ to clear and 📌 to pin — same data and
+// endpoints (/api/messages) the wall widget uses; the display picks up every
+// change over the 'messages' SSE topic. Gated by messageboard_enabled.
+const MESSAGEBOARD_NAME_KEY = 'messageboard_name';
+function mbBoardTimeAgo(createdAt) {
+  if (!createdAt) return '';
+  const t = Date.parse(String(createdAt).replace(' ', 'T') + 'Z');
+  if (!Number.isFinite(t)) return '';
+  const mins = Math.round((Date.now() - t) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return `${Math.round(days / 7)}w ago`;
+}
+function mbBoardNoteColor(m) {
+  if (m && m.author_profile_id != null) {
+    const p = (PROFILES || []).find(x => Number(x.id) === Number(m.author_profile_id));
+    if (p && p.color) return p.color;
+  }
+  return (m && m.color) || '#4A90D9';
+}
+const MESSAGEBOARD_PROFILE_KEY = 'messageboard_profile_id';
+function mbSavedProfileChoice() {
+  try { return localStorage.getItem(MESSAGEBOARD_PROFILE_KEY) || ''; } catch { return ''; }
+}
+async function renderBoardFamilyTab() {
+  const content = $('content');
+  let notes = [];
+  try { notes = await apiFetch('/api/messages'); } catch {}
+  if (!Array.isArray(notes)) notes = [];
+  const cards = notes.map(m => {
+    const color = mbBoardNoteColor(m);
+    const p = m.author_profile_id != null ? (PROFILES || []).find(x => Number(x.id) === Number(m.author_profile_id)) : null;
+    const who = p
+      ? `${profileAvatarHtml(p, 16)}<span style="font-weight:700;color:var(--text)">${escapeHtml(p.name)}</span>`
+      : (m.author ? `<span style="font-weight:700;color:var(--text)">${escapeHtml(m.author)}</span>` : '');
+    return `
+      <div class="settings-card" style="display:flex;gap:10px;padding:10px 12px;border-left:4px solid ${color}${m.pinned ? ';background:rgba(232,184,74,0.08)' : ''}" data-msg-id="${m.id}" data-pinned="${m.pinned ? 1 : 0}">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;font-size:11px;color:var(--muted)">
+            ${who}
+            <span>${escapeHtml(mbBoardTimeAgo(m.created_at))}</span>
+          </div>
+          <div style="font-size:14px;color:var(--text);white-space:pre-wrap;word-break:break-word">${escapeHtml(m.text)}</div>
+        </div>
+        <button type="button" class="icon-btn small mb-pin-btn" data-msg-id="${m.id}" title="${m.pinned ? 'Unpin' : 'Pin'}" style="opacity:${m.pinned ? '1' : '0.5'}">📌</button>
+        <button type="button" class="icon-btn del small mb-del-btn" data-msg-id="${m.id}" title="Remove">✕</button>
+      </div>`;
+  }).join('');
+  // When profiles exist, let the poster say who it's from — defaults to the
+  // active profile, else the last choice on this device, else the first.
+  let posterRow = '';
+  if ((PROFILES || []).length) {
+    const def = (activeProfile && String(activeProfile.id)) || mbSavedProfileChoice() || String(PROFILES[0].id);
+    posterRow = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="font-size:12px;color:var(--muted);flex-shrink:0">Posting as</span>
+        <select class="form-input" id="mb-poster" style="width:auto;padding:6px 8px;font-size:13px">
+          ${PROFILES.map(p => `<option value="${p.id}" ${String(p.id) === def ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
+          <option value="__other__">Someone else…</option>
+        </select>
+      </div>`;
+  }
+  content.innerHTML = `
+    <div style="padding:14px">
+      ${posterRow}
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        <textarea class="form-input" id="mb-compose" rows="2" maxlength="280" placeholder="Leave a note for the family…" style="flex:1;resize:none;font-family:inherit"></textarea>
+        <button type="button" id="mb-post-btn" style="background:var(--accent);border:none;border-radius:10px;padding:0 16px;color:#fff;font-size:14px;font-weight:600;cursor:pointer;flex-shrink:0">Post</button>
+      </div>
+      <div id="mb-notes" style="display:flex;flex-direction:column;gap:6px">
+        ${cards || '<div class="empty-state"><div class="emoji">📝</div><p>No messages yet.</p></div>'}
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:14px">Notes show on any wall display with a Message Board widget, and clear for everyone. Pinned notes stay put and skip the auto-clear.</p>
+    </div>
+  `;
+  wireBoardFamilyTab();
+}
+function wireBoardFamilyTab() {
+  const post = async () => {
+    const ta = $('mb-compose');
+    const btn = $('mb-post-btn');
+    const text = (ta.value || '').trim();
+    if (!text) return;
+    // Author: from the "Posting as" picker when profiles exist (remembered
+    // per device), else the active profile, else a one-time name prompt.
+    let author = '', authorProfileId = null, color;
+    const poster = $('mb-poster');
+    if (poster && poster.value && poster.value !== '__other__') {
+      const p = profileById(poster.value);
+      if (p) { author = p.name || ''; authorProfileId = p.id; color = p.color || undefined; }
+      try { localStorage.setItem(MESSAGEBOARD_PROFILE_KEY, String(poster.value)); } catch {}
+    } else if (poster && poster.value === '__other__') {
+      let saved = (prompt('Name for this note:') || '').trim();
+      author = saved;
+    } else if (activeProfile) {
+      author = activeProfile.name || '';
+      authorProfileId = activeProfile.id;
+      color = activeProfile.color || undefined;
+    } else {
+      let saved = '';
+      try { saved = localStorage.getItem(MESSAGEBOARD_NAME_KEY) || ''; } catch {}
+      if (!saved) {
+        saved = (prompt('Your name (shown on notes you post):') || '').trim();
+        if (saved) { try { localStorage.setItem(MESSAGEBOARD_NAME_KEY, saved); } catch {} }
+      }
+      author = saved;
+    }
+    btn.disabled = true; btn.textContent = 'Posting…';
+    try {
+      const r = await apiFetch('/api/messages', { method: 'POST', body: JSON.stringify({ text, author, author_profile_id: authorProfileId, color }) });
+      if (r && r.error) { showToast('❌ ' + r.error); return; }
+      ta.value = '';
+      renderBoardFamilyTab();
+    } catch {
+      showToast('❌ Could not post — try again');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Post';
+    }
+  };
+  if ($('mb-post-btn')) $('mb-post-btn').addEventListener('click', post);
+  if ($('mb-compose')) $('mb-compose').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); post(); }
+  });
+  document.querySelectorAll('.mb-del-btn').forEach(btn => btn.addEventListener('click', async () => {
+    await apiFetch(`/api/messages/${btn.dataset.msgId}`, { method: 'DELETE' });
+    renderBoardFamilyTab();
+  }));
+  document.querySelectorAll('.mb-pin-btn').forEach(btn => btn.addEventListener('click', async () => {
+    const card = document.querySelector(`[data-msg-id="${btn.dataset.msgId}"]`);
+    const isPinned = card && card.dataset.pinned === '1';
+    await apiFetch(`/api/messages/${btn.dataset.msgId}`, { method: 'PUT', body: JSON.stringify({ pinned: isPinned ? 0 : 1 }) });
+    renderBoardFamilyTab();
+  }));
+}
+
+// ── Family Hub · Meals sub-tab ───────────────────────────────────────────────
+// A 14-day plan. Which slots (breakfast / lunch / dinner) the household plans
+// is settings.mealplan_slots — toggled at the top of this tab. Tap a slot on a
+// day to plan/edit/clear it. Same /api/meals endpoints the wall widget uses.
+const MP_DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MP_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MP_SLOTS = ['breakfast', 'lunch', 'dinner'];
+const MP_SLOT_NAME = { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Dinner' };
+function mpIso(offset) {
+  const d = new Date(); d.setDate(d.getDate() + offset);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function mpParseSlots(raw) {
+  const list = String(raw || 'dinner').split(',').map(s => s.trim().toLowerCase()).filter(s => MP_SLOTS.includes(s));
+  return MP_SLOTS.filter(s => list.includes(s)).length ? MP_SLOTS.filter(s => list.includes(s)) : ['dinner'];
+}
+let _mpEdit = null; // { date, slot } of the open inline editor, or null
+async function renderMealsFamilyTab() {
+  const content = $('content');
+  const from = mpIso(0), to = mpIso(13);
+  let rows = [], settings = {};
+  try { [rows, settings] = await Promise.all([apiFetch(`/api/meals?from=${from}&to=${to}`), apiFetch('/api/settings')]); } catch {}
+  const activeSlots = mpParseSlots(settings && settings.mealplan_slots);
+  const byKey = {};
+  (Array.isArray(rows) ? rows : []).forEach(m => { byKey[m.date + '|' + (m.slot || 'dinner')] = m; });
+
+  const slotToggles = MP_SLOTS.map(s =>
+    `<button type="button" class="mp-slot-toggle ${activeSlots.includes(s) ? 'on' : ''}" data-slot="${s}"
+      style="border:1px solid var(--border);border-radius:999px;padding:5px 12px;font-size:12.5px;cursor:pointer;background:${activeSlots.includes(s) ? 'var(--accent)' : 'transparent'};color:${activeSlots.includes(s) ? '#fff' : 'var(--text)'}">${MP_SLOT_NAME[s]}</button>`
+  ).join('');
+
+  const dayCards = [];
+  for (let i = 0; i < 14; i++) {
+    const date = mpIso(i);
+    const [y, mo, d] = date.split('-').map(Number);
+    const dow = new Date(y, mo - 1, d).getDay();
+    const label = i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : `${MP_DOW[dow]} ${MP_MON[mo - 1]} ${d}`;
+    const slotRows = activeSlots.map(slot => {
+      const m = byKey[date + '|' + slot];
+      if (_mpEdit && _mpEdit.date === date && _mpEdit.slot === slot) {
+        return `
+          <div class="mp-editrow" data-mp-date="${date}" data-mp-slot="${slot}" style="padding:8px 0 4px">
+            <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:6px">${activeSlots.length > 1 ? MP_SLOT_NAME[slot] + ' · ' : ''}${label}</div>
+            <input class="form-input mp-f-title" maxlength="80" placeholder="Tacos, leftovers, Grandma's…" value="${escapeHtml(m ? m.title : '')}">
+            <textarea class="form-input mp-f-notes" rows="2" maxlength="300" placeholder="Notes (optional)" style="margin-top:8px;resize:none">${escapeHtml(m ? m.notes : '')}</textarea>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button type="button" class="mp-f-save" style="flex:1;background:var(--accent);border:none;border-radius:10px;padding:9px;color:#fff;font-weight:700;cursor:pointer">Save</button>
+              <button type="button" class="mp-f-clear ghost small">Clear</button>
+              <button type="button" class="mp-f-cancel ghost small">Cancel</button>
+            </div>
+          </div>`;
+      }
+      return `
+        <div class="mp-slot-row" data-mp-date="${date}" data-mp-slot="${slot}" style="display:flex;align-items:center;gap:10px;padding:7px 0;cursor:pointer">
+          ${activeSlots.length > 1 ? `<span style="font-size:11px;font-weight:700;color:var(--muted);min-width:64px">${MP_SLOT_NAME[slot]}</span>` : ''}
+          <span style="flex:1;font-size:14px;${m ? 'color:var(--text)' : 'color:var(--muted);opacity:0.7'}">${m ? escapeHtml(m.title) : '+ Add'}</span>
+        </div>`;
+    }).join('');
+    dayCards.push(`
+      <div class="settings-card" style="padding:10px 14px${i === 0 ? ';border-left:3px solid var(--accent)' : ''}">
+        <div style="font-size:12.5px;font-weight:${i === 0 ? '700' : '600'};color:${i === 0 ? 'var(--accent)' : 'var(--muted)'};margin-bottom:2px">${label}</div>
+        ${slotRows}
+      </div>`);
+  }
+
+  content.innerHTML = `
+    <div style="padding:14px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        <span style="font-size:12px;color:var(--muted)">Plan</span>
+        ${slotToggles}
+        <div class="spacer" style="flex:1"></div>
+        <button type="button" id="mp-copy-week" class="ghost small">📋 Copy last week</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px">${dayCards.join('')}</div>
+      <p style="font-size:11px;color:var(--muted);margin-top:14px">Also shows as a wall-display widget (Layout → Meal Plan). Tap a meal to plan it.</p>
+    </div>
+  `;
+  wireMealsFamilyTab(activeSlots);
+}
+function wireMealsFamilyTab(activeSlots) {
+  document.querySelectorAll('.mp-slot-toggle').forEach(btn => btn.addEventListener('click', async () => {
+    const s = btn.dataset.slot;
+    let next = activeSlots.includes(s) ? activeSlots.filter(x => x !== s) : [...activeSlots, s];
+    next = MP_SLOTS.filter(x => next.includes(x));
+    if (!next.length) { showToast('Keep at least one meal'); return; }
+    try { await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify({ mealplan_slots: next.join(',') }) }); } catch {}
+    _mpEdit = null;
+    renderMealsFamilyTab();
+  }));
+  document.querySelectorAll('.mp-slot-row').forEach(row => row.addEventListener('click', () => {
+    _mpEdit = { date: row.dataset.mpDate, slot: row.dataset.mpSlot };
+    renderMealsFamilyTab();
+  }));
+  const openRow = _mpEdit ? document.querySelector(`.mp-editrow[data-mp-date="${_mpEdit.date}"][data-mp-slot="${_mpEdit.slot}"]`) : null;
+  if (openRow) {
+    const titleEl = openRow.querySelector('.mp-f-title');
+    if (titleEl) setTimeout(() => titleEl.focus(), 30);
+    const submit = async (title) => {
+      const notes = openRow.querySelector('.mp-f-notes').value || '';
+      try {
+        const r = await apiFetch(`/api/meals/${_mpEdit.date}/${_mpEdit.slot}`, { method: 'PUT', body: JSON.stringify({ title, notes }) });
+        if (r && r.error) { showToast('❌ ' + r.error); return; }
+        _mpEdit = null;
+        renderMealsFamilyTab();
+      } catch { showToast('❌ Could not save — try again'); }
+    };
+    openRow.querySelector('.mp-f-save').addEventListener('click', () => {
+      const t = (openRow.querySelector('.mp-f-title').value || '').trim();
+      if (!t) { showToast('Enter a meal, or tap Clear'); return; }
+      submit(t);
+    });
+    openRow.querySelector('.mp-f-clear').addEventListener('click', () => submit(''));
+    openRow.querySelector('.mp-f-cancel').addEventListener('click', () => { _mpEdit = null; renderMealsFamilyTab(); });
+  }
+  const copyBtn = $('mp-copy-week');
+  if (copyBtn) copyBtn.addEventListener('click', async () => {
+    copyBtn.disabled = true;
+    try {
+      const prev = await apiFetch(`/api/meals?from=${mpIso(-7)}&to=${mpIso(-1)}`);
+      const cur = await apiFetch(`/api/meals?from=${mpIso(0)}&to=${mpIso(6)}`);
+      const prevByKey = {};
+      (Array.isArray(prev) ? prev : []).forEach(m => {
+        const off = Math.round((new Date(m.date + 'T00:00:00') - new Date(mpIso(-7) + 'T00:00:00')) / 86400000);
+        prevByKey[off + '|' + (m.slot || 'dinner')] = m; // off 0..6
+      });
+      const curKeys = new Set((Array.isArray(cur) ? cur : []).map(m => (m.date) + '|' + (m.slot || 'dinner')));
+      let copied = 0;
+      for (let i = 0; i < 7; i++) {
+        for (const slot of activeSlots) {
+          const src = prevByKey[i + '|' + slot];
+          const dstKey = mpIso(i) + '|' + slot;
+          if (src && src.title && !curKeys.has(dstKey)) {
+            await apiFetch(`/api/meals/${mpIso(i)}/${slot}`, { method: 'PUT', body: JSON.stringify({ title: src.title, notes: src.notes || '' }) });
+            copied++;
+          }
+        }
+      }
+      showToast(copied ? `Copied ${copied} meal${copied === 1 ? '' : 's'}` : 'Nothing to copy (last week empty, or this week already planned)');
+      renderMealsFamilyTab();
+    } catch { showToast('❌ Could not copy'); }
+    finally { copyBtn.disabled = false; }
+  });
+}
+
 async function saveReminderFromModal() {
   const name = $('mr-f-name').value.trim();
   const activeTypeBtn = document.querySelector('.mr-icontype-btn.active');
@@ -8477,6 +8796,10 @@ async function persistLayoutNow() {
 // so the wall updates in near-real-time without tapping Save. A short delay coalesces
 // rapid drags/resizes into a single write.
 let _autoSaveTimer = null;
+// Camera widget settings-panel state (app-side mirror of display.html's own).
+let _appCamForm = { open: false, editId: null, source: 'url' };
+let _appCamPanelWidgetId = null;
+let _appCamList = [];
 let _autoSaveEnabled = false; // turned on once the Layout tab is fully loaded
 function autoSaveLayout() {
   if (!_autoSaveEnabled) return;
@@ -8819,6 +9142,144 @@ async function drawWidgetSettingsPanel() {
       </div>
       <button class="btn" id="rem-manage-btn" type="button" style="width:100%;background:rgba(74,144,217,0.15);border:1px solid var(--border);color:var(--text);margin-top:4px">🗑️ Manage Reminders</button>
       <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">Reminders are shared across every Reminders widget and the calendar — add or edit one here, it updates everywhere.</p>
+    `;
+  } else if (w.type === 'messageboard') {
+    const mbFontPx = w.mbFontPx || 14;
+    const mbMaxNotes = Number.isFinite(w.mbMaxNotes) && w.mbMaxNotes > 0 ? w.mbMaxNotes : 8;
+    typeSpecificHtml = `
+      <div class="settings-row">
+        <label>Font Size (px)</label>
+        <div class="range-row">
+          <input type="range" id="mb-font-range" min="10" max="40" step="1" value="${mbFontPx}">
+          <span class="range-val" id="mb-font-val">${mbFontPx}px</span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label>Max notes shown</label>
+        <div class="range-row">
+          <input type="range" id="mb-max-range" min="1" max="20" step="1" value="${mbMaxNotes}">
+          <span class="range-val" id="mb-max-val">${mbMaxNotes}</span>
+        </div>
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show author</label>
+        <input type="checkbox" id="mb-show-author" ${w.mbShowAuthor!==false?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show time</label>
+        <input type="checkbox" id="mb-show-time" ${w.mbShowTime!==false?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">Notes are shared across every Message Board widget and the Family Hub Board tab — post or clear one anywhere, it updates everywhere.</p>
+    `;
+  } else if (w.type === 'mealplan') {
+    const mpDays = Math.max(3, Math.min(14, Number(w.mpDays) || 7));
+    const mpFontPx = w.mpFontPx || 15;
+    let mpSettings = {};
+    try { mpSettings = await apiFetch('/api/settings'); } catch {}
+    const householdSlots = mpParseSlots(mpSettings && mpSettings.mealplan_slots);
+    const activeSlots = (Array.isArray(w.mpSlots) && w.mpSlots.length)
+      ? MP_SLOTS.filter(s => w.mpSlots.includes(s))
+      : householdSlots;
+    const slotChecks = MP_SLOTS.map(s =>
+      `<label style="display:inline-flex;align-items:center;gap:6px;margin-right:14px;cursor:pointer">
+        <input type="checkbox" class="mp-slot-cb" value="${s}" ${activeSlots.includes(s) ? 'checked' : ''} style="width:16px;height:16px;accent-color:var(--accent)">
+        ${MP_SLOT_NAME[s]}
+      </label>`).join('');
+    typeSpecificHtml = `
+      <div class="settings-row">
+        <label>Meals shown</label>
+        <div style="display:flex;flex-wrap:wrap">${slotChecks}</div>
+        <p style="font-size:11px;color:var(--muted);margin:6px 0 0">Leave matching the household default (${householdSlots.map(s => MP_SLOT_NAME[s]).join(', ')}) to follow it. Change which meals the household plans in the Family Hub → Meals tab.</p>
+      </div>
+      <div class="settings-row">
+        <label>Days shown</label>
+        <div class="range-row">
+          <input type="range" id="mp-days-range" min="3" max="14" step="1" value="${mpDays}">
+          <span class="range-val" id="mp-days-val">${mpDays}</span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label>Font Size (px)</label>
+        <div class="range-row">
+          <input type="range" id="mp-font-range" min="10" max="36" step="1" value="${mpFontPx}">
+          <span class="range-val" id="mp-font-val">${mpFontPx}px</span>
+        </div>
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Hide unplanned meals ${infoBtn("Only list days/meals that actually have something planned — drop the ones showing a dash.")}</label>
+        <input type="checkbox" id="mp-hide-empty" ${w.mpHideEmpty ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">Meals are shared across every Meal Plan widget and the Family Hub Meals tab — set one anywhere, it shows everywhere.</p>
+    `;
+  } else if (w.type === 'camera') {
+    if (_appCamPanelWidgetId !== w.id) { _appCamForm.open = false; _appCamForm.editId = null; _appCamPanelWidgetId = w.id; }
+    let cams = [];
+    try { cams = await apiFetch('/api/cameras'); } catch {}
+    if (!Array.isArray(cams)) cams = [];
+    _appCamList = cams;
+    const fit = w.camFit === 'cover' ? 'cover' : 'contain';
+    const opts = cams.map(c => `<option value="${c.id}" ${String(c.id) === String(w.camId) ? 'selected' : ''}>${escapeHtml(c.name)}${c.kind === 'ha' ? ' (HA)' : ''}</option>`).join('');
+    const editing = _appCamForm.editId != null ? cams.find(c => String(c.id) === String(_appCamForm.editId)) : null;
+    let haOpts = '';
+    if (_appCamForm.open && _appCamForm.source === 'ha') {
+      let ents = [];
+      try { ents = await apiFetch('/api/ha/entities'); } catch {}
+      const cur = editing && editing.kind === 'ha' ? editing.host_hint : '';
+      const cameraEnts = (Array.isArray(ents) ? ents : []).filter(e => e.entity_id.startsWith('camera.'));
+      haOpts = cameraEnts.length
+        ? `<option value="">— choose —</option>` + cameraEnts.map(e => `<option value="${escapeHtml(e.entity_id)}" ${e.entity_id === cur ? 'selected' : ''}>${escapeHtml(e.friendly_name)}</option>`).join('')
+        : `<option value="">No camera.* entities — is Home Assistant connected?</option>`;
+    }
+    const form = _appCamForm.open ? `
+      <div class="settings-card" style="padding:12px;margin-top:8px">
+        <div class="settings-row"><label>Name</label><input class="form-input" id="cam-f-name" value="${escapeHtml(editing ? editing.name : '')}" placeholder="Driveway"></div>
+        <div class="settings-row"><label>Source</label>
+          <select class="form-input" id="cam-f-source">
+            <option value="url" ${_appCamForm.source === 'url' ? 'selected' : ''}>Direct URL (RTSP / ONVIF / MJPEG)</option>
+            <option value="ha" ${_appCamForm.source === 'ha' ? 'selected' : ''}>Home Assistant camera</option>
+          </select>
+        </div>
+        <div class="settings-row" id="cam-f-url-row" style="${_appCamForm.source === 'url' ? '' : 'display:none'}">
+          <label>Stream URL</label>
+          <input class="form-input" id="cam-f-url" placeholder="rtsp://user:pass@192.168.1.9:554/stream1" value="">
+          <p style="font-size:11px;color:var(--muted);margin-top:6px">${editing ? 'Leave blank to keep the saved URL. ' : ''}RTSP / ONVIF / MJPEG — not a browser page. Credentials in the URL stay on the server, never sent to a display.</p>
+        </div>
+        <div class="settings-row" id="cam-f-ha-row" style="${_appCamForm.source === 'ha' ? '' : 'display:none'}">
+          <label>Camera entity</label>
+          <select class="form-input" id="cam-f-ha-entity">${haOpts || '<option value="">Loading…</option>'}</select>
+        </div>
+        <div id="cam-f-error" style="font-size:12px;color:#e5484d;display:none;margin-bottom:8px"></div>
+        <div style="display:flex;gap:8px">
+          <button type="button" id="cam-f-save" style="flex:1;background:var(--accent);border:none;border-radius:10px;padding:10px;color:#fff;font-weight:700;cursor:pointer">${editing ? 'Save changes' : 'Add camera'}</button>
+          <button type="button" id="cam-f-cancel" class="ghost small">Cancel</button>
+        </div>
+      </div>` : '';
+    typeSpecificHtml = `
+      <div class="settings-row">
+        <label>Camera</label>
+        ${cams.length ? `<select class="form-input" id="cam-select"><option value="">— none —</option>${opts}</select>` : `<p style="font-size:12px;color:var(--muted);margin:0">No cameras yet — add one below.</p>`}
+      </div>
+      ${cams.length && w.camId && !_appCamForm.open ? `
+      <div class="settings-row" style="display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" id="cam-edit-btn" class="ghost small">✏️ Edit</button>
+        <button type="button" id="cam-del-btn" class="ghost small">🗑️ Remove</button>
+        <button type="button" id="cam-test-btn" class="ghost small">📶 Test</button>
+        <span id="cam-test-result" style="font-size:12px;color:var(--muted);align-self:center"></span>
+      </div>` : ''}
+      ${!_appCamForm.open ? `<div class="settings-row"><button type="button" id="cam-add-btn" style="width:100%;padding:10px;border-radius:10px;border:1px dashed var(--border);background:transparent;color:var(--text);cursor:pointer">＋ Add a camera</button></div>` : ''}
+      ${form}
+      <div class="settings-row">
+        <label>Fit</label>
+        <select class="form-input" id="cam-fit">
+          <option value="contain" ${fit === 'contain' ? 'selected' : ''}>Contain (whole frame)</option>
+          <option value="cover" ${fit === 'cover' ? 'selected' : ''}>Cover (fill, may crop)</option>
+        </select>
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show title</label>
+        <input type="checkbox" id="cam-show-title" ${w.camShowTitle !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">Live H.264/H.265 needs some CPU — a Pi 4 or 5 handles one or two streams; on an older Pi, run the server on Docker or Windows.</p>
     `;
   } else if (w.type === 'weather' || w.type === 'weatherCurrent' || w.type === 'weatherForecast' || w.type === 'weatherHourly' || w.type === 'weatherComboForecast') {
     const locationFontPx = w.wxLocationFontPx || 14;
@@ -10358,8 +10819,8 @@ async function drawWidgetSettingsPanel() {
         <input type="checkbox" id="show-multiday-toggle" ${w.showMultiDay !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
       <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
-        <label style="margin-bottom:0">Show Location ${infoBtn("Shows each event's location — for calendars that have location turned on in Settings → Calendars. Per-calendar exceptions for this widget live in 📍 Per-Feed Location below. In a Grid calendar it's appended to the title line (off by default); Agenda gives it its own wrapped line (on by default).")}</label>
-        <input type="checkbox" id="show-location-toggle" ${(() => { const k = { minical:'calShowLocation', agenda:'agShowLocation', upcoming:'upShowLocation', today:'tdShowLocation' }[w.type]; const v = w[k]; if (w.type === 'minical' && (w.calLayout || 'grid') !== 'agenda') return v === true ? 'checked' : ''; return v !== false ? 'checked' : ''; })()} style="width:20px;height:20px;accent-color:var(--accent)">
+        <label style="margin-bottom:0">Show Location ${infoBtn("Shows each event's location — for calendars that have location turned on in Settings → Calendars (or forced on in 📍 Per-Feed Location below). On by default. In a Grid calendar it's appended to the title line; Agenda gives it its own wrapped line.")}</label>
+        <input type="checkbox" id="show-location-toggle" ${(() => { const k = { minical:'calShowLocation', agenda:'agShowLocation', upcoming:'upShowLocation', today:'tdShowLocation' }[w.type]; return w[k] !== false ? 'checked' : ''; })()} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
       <div class="settings-row" id="fop-accordion-wrap">
         ${accordionSection({ id: 'fop', icon: '🎨', label: 'Per-Feed Opacity', sub: 'this display only',
@@ -10374,7 +10835,7 @@ async function drawWidgetSettingsPanel() {
       <div class="settings-row" id="flo-accordion-wrap">
         ${accordionSection({ id: 'flo', icon: '📍', label: 'Per-Feed Location', sub: 'this widget only',
           inner: `
-            <p style="font-size:11px;color:var(--muted);margin:0 0 8px">Force a calendar's location on or off for just this widget, without changing its global "Show location" in Calendar Feeds. Needs this widget's own Show Location turned on.</p>
+            <p style="font-size:11px;color:var(--muted);margin:0 0 8px">Force a calendar's location on or off for just this widget — wins over both its global "Show location" in Calendar Feeds and this widget's own Show Location toggle.</p>
             <div id="feed-location-override-list" style="display:flex;flex-direction:column;gap:10px">
               <div style="font-size:12px;color:var(--muted)">Loading calendars…</div>
             </div>
@@ -10683,6 +11144,98 @@ async function drawWidgetSettingsPanel() {
     // settings-panel open, or every rerun stacks another duplicate listener
     // onto the same never-recreated DOM nodes.
     if ($('rem-manage-btn')) $('rem-manage-btn').addEventListener('click', openManageRemindersModal);
+  } else if (w.type === 'messageboard') {
+    $('mb-font-range').addEventListener('input', (e) => {
+      w.mbFontPx = parseInt(e.target.value);
+      $('mb-font-val').textContent = w.mbFontPx + 'px';
+    });
+    $('mb-max-range').addEventListener('input', (e) => {
+      w.mbMaxNotes = parseInt(e.target.value);
+      $('mb-max-val').textContent = String(w.mbMaxNotes);
+    });
+    $('mb-show-author').addEventListener('change', (e) => { w.mbShowAuthor = e.target.checked; });
+    $('mb-show-time').addEventListener('change', (e) => { w.mbShowTime = e.target.checked; });
+  } else if (w.type === 'mealplan') {
+    $('mp-days-range').addEventListener('input', (e) => {
+      w.mpDays = parseInt(e.target.value);
+      $('mp-days-val').textContent = String(w.mpDays);
+    });
+    $('mp-font-range').addEventListener('input', (e) => {
+      w.mpFontPx = parseInt(e.target.value);
+      $('mp-font-val').textContent = w.mpFontPx + 'px';
+    });
+    if ($('mp-hide-empty')) $('mp-hide-empty').addEventListener('change', (e) => { w.mpHideEmpty = e.target.checked; });
+    document.querySelectorAll('.mp-slot-cb').forEach(cb => cb.addEventListener('change', async () => {
+      let picked = [...document.querySelectorAll('.mp-slot-cb:checked')].map(x => x.value);
+      if (!picked.length) { cb.checked = true; picked = [cb.value]; }
+      picked = MP_SLOTS.filter(s => picked.includes(s));
+      let s = {};
+      try { s = await apiFetch('/api/settings'); } catch {}
+      const household = mpParseSlots(s && s.mealplan_slots);
+      if (picked.length === household.length && picked.every(x => household.includes(x))) delete w.mpSlots;
+      else w.mpSlots = picked;
+      rebuildCanvas();
+    }));
+  } else if (w.type === 'camera') {
+    if ($('cam-select')) $('cam-select').addEventListener('change', (e) => {
+      w.camId = e.target.value ? parseInt(e.target.value, 10) : null;
+      rebuildCanvas(); drawWidgetSettingsPanel();
+    });
+    if ($('cam-fit')) $('cam-fit').addEventListener('change', (e) => { w.camFit = e.target.value; });
+    if ($('cam-show-title')) $('cam-show-title').addEventListener('change', (e) => { w.camShowTitle = e.target.checked; });
+    if ($('cam-add-btn')) $('cam-add-btn').addEventListener('click', () => { _appCamForm = { open: true, editId: null, source: 'url' }; drawWidgetSettingsPanel(); });
+    if ($('cam-edit-btn')) $('cam-edit-btn').addEventListener('click', () => {
+      const cam = _appCamList.find(c => String(c.id) === String(w.camId));
+      _appCamForm = { open: true, editId: w.camId, source: cam && cam.kind === 'ha' ? 'ha' : 'url' };
+      drawWidgetSettingsPanel();
+    });
+    if ($('cam-del-btn')) $('cam-del-btn').addEventListener('click', async () => {
+      if (!w.camId || !confirm('Remove this camera? Any widget using it will go blank.')) return;
+      try { await apiFetch(`/api/cameras/${w.camId}`, { method: 'DELETE' }); } catch {}
+      w.camId = null; rebuildCanvas(); drawWidgetSettingsPanel();
+    });
+    if ($('cam-test-btn')) $('cam-test-btn').addEventListener('click', async () => {
+      const out = $('cam-test-result');
+      if (out) out.textContent = 'testing…';
+      try {
+        const r = await apiFetch(`/api/cameras/${w.camId}/test`);
+        if (out) { out.textContent = r && r.ok ? '✓ streaming' : ('✗ ' + ((r && r.error) || 'no signal')); out.style.color = r && r.ok ? '#30a46c' : '#e5484d'; }
+      } catch { if (out) { out.textContent = '✗ could not test'; out.style.color = '#e5484d'; } }
+    });
+    if ($('cam-f-source')) $('cam-f-source').addEventListener('change', (e) => { _appCamForm.source = e.target.value; drawWidgetSettingsPanel(); });
+    if ($('cam-f-cancel')) $('cam-f-cancel').addEventListener('click', () => { _appCamForm = { open: false, editId: null, source: 'url' }; drawWidgetSettingsPanel(); });
+    if ($('cam-f-save')) $('cam-f-save').addEventListener('click', async () => {
+      const err = $('cam-f-error');
+      const showErr = (m) => { if (err) { err.textContent = m; err.style.display = 'block'; } };
+      const name = ($('cam-f-name').value || '').trim();
+      if (!name) return showErr('Give the camera a name.');
+      const kind = _appCamForm.source === 'ha' ? 'ha' : 'url';
+      let url = '';
+      if (kind === 'ha') {
+        url = $('cam-f-ha-entity').value;
+        if (!url) return showErr('Pick a Home Assistant camera entity.');
+        url = 'ha:' + url;
+      } else {
+        url = ($('cam-f-url').value || '').trim();
+        if (!_appCamForm.editId && !url) return showErr('Enter the stream URL.');
+      }
+      const save = $('cam-f-save');
+      save.disabled = true; save.textContent = 'Saving…';
+      try {
+        const body = { name, kind };
+        if (url) body.url = url;
+        let r;
+        if (_appCamForm.editId) r = await apiFetch(`/api/cameras/${_appCamForm.editId}`, { method: 'PUT', body: JSON.stringify(body) });
+        else r = await apiFetch('/api/cameras', { method: 'POST', body: JSON.stringify(body) });
+        if (r && r.error) { save.disabled = false; save.textContent = _appCamForm.editId ? 'Save changes' : 'Add camera'; return showErr(r.error); }
+        if (!_appCamForm.editId && r && r.id) w.camId = r.id;
+        _appCamForm = { open: false, editId: null, source: 'url' };
+        rebuildCanvas(); drawWidgetSettingsPanel();
+      } catch {
+        save.disabled = false; save.textContent = _appCamForm.editId ? 'Save changes' : 'Add camera';
+        showErr('Could not save — try again.');
+      }
+    });
   } else if (w.type === 'weather' || w.type === 'weatherCurrent' || w.type === 'weatherForecast' || w.type === 'weatherHourly' || w.type === 'weatherComboForecast') {
     $('wx-content-scale').addEventListener('input', (e) => {
       const pct = parseInt(e.target.value);
@@ -14601,6 +15154,25 @@ async function renderSettings() {
         </div>
         <input type="checkbox" id="s-reminders-enabled" ${s.reminders_enabled!=='0'?'checked':''} style="width:20px;height:20px;accent-color:var(--accent);flex:0 0 auto">
       </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <div style="flex:1;padding-right:12px">
+          <label style="margin-bottom:0">Message board ${infoBtn("Show the Board tab in Family Hub and the Message Board widget — short notes household members leave for each other, shown on the wall display and cleared by anyone.")}</label>
+        </div>
+        <input type="checkbox" id="s-messageboard-enabled" ${s.messageboard_enabled==='1'?'checked':''} style="width:20px;height:20px;accent-color:var(--accent);flex:0 0 auto">
+      </div>
+      <div class="settings-row" id="s-messageboard-autoclear-row" style="${s.messageboard_enabled==='1'?'':'display:none'}">
+        <label>Auto-clear notes after ${infoBtn("Notes older than this many days are cleared automatically (pinned notes are kept). Set to 0 to never auto-clear.")}</label>
+        <div style="display:flex;align-items:center;gap:8px">
+          <input class="form-input" type="number" min="0" max="365" id="s-messageboard-autoclear-days" value="${Number.isFinite(parseInt(s.messageboard_autoclear_days,10))?parseInt(s.messageboard_autoclear_days,10):14}" style="width:80px">
+          <span style="font-size:13px;color:var(--muted)">days (0 = never)</span>
+        </div>
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <div style="flex:1;padding-right:12px">
+          <label style="margin-bottom:0">Meal plan ${infoBtn("Show the Meals tab in Family Hub and the Meal Plan widget — one planned dinner per day, shown on the wall.")}</label>
+        </div>
+        <input type="checkbox" id="s-mealplan-enabled" ${s.mealplan_enabled==='1'?'checked':''} style="width:20px;height:20px;accent-color:var(--accent);flex:0 0 auto">
+      </div>
     </div>
     <div class="settings-card">
       <p style="font-size:13px;color:var(--muted);padding:14px 16px 0;margin:0 0 14px">Whichever of the features above are turned on also show up together in <b>Family Hub</b> — one installable app for Chores/To-Do/Shopping, no need to open the full calendar app. A feature switched off up there is hidden from the Hub too, not just the full app. Scan the code or visit the link below on any phone, then "Add to Home Screen" for a real app icon and full-screen launch.</p>
@@ -15475,6 +16047,13 @@ async function renderSettings() {
     });
   })();
 
+  (function wireMessageBoardEnable() {
+    const cb = $('s-messageboard-enabled'), row = $('s-messageboard-autoclear-row');
+    if (cb && row) cb.addEventListener('change', () => {
+      row.style.display = cb.checked ? '' : 'none';
+    });
+  })();
+
   (function wireFamilyHubCard() {
     const qrEl = $('hub-qr-container'), linkEl = $('hub-link-text'), copyBtn = $('hub-copy-btn');
     if (!qrEl) return;
@@ -15900,30 +16479,143 @@ async function renderSettings() {
       }
 
       box.style.display = '';
+      // Each thread is a tappable row that opens a full-screen, messaging-app
+      // style conversation view (openFeedbackThread) — replying inline in the
+      // long Settings page meant the on-screen keyboard shoved the original
+      // message off-screen and the page kept scrolling behind it.
       box.innerHTML = `<div style="font-weight:700;font-size:14px;margin-bottom:8px;color:var(--accent)">💬 ${showAll ? 'Your conversations' : 'Replies from the developer'}</div>` +
-        threads.map(t => `
-          <div style="border:1px solid var(--accent);border-radius:10px;padding:12px;margin-bottom:10px">
-            <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Your ${escapeHtml(t.kind||'feedback')} · ${escapeHtml((t.thread[0]&&t.thread[0].at)||'')}</div>
-            ${(t.thread||[]).map(m => `
-              <div style="margin-bottom:8px">
-                <span style="font-weight:700;font-size:12px;color:${m.from==='dev'?'var(--accent)':'var(--text)'}">${m.from==='dev'?'Developer':'You'}</span>
-                <div style="font-size:13px;white-space:pre-wrap;margin-top:1px">${escapeHtml(m.text||'')}</div>
-              </div>`).join('')}
-            <div style="margin-top:8px">
-              <textarea class="form-input fb-thread-reply" data-id="${t.id}" rows="2" placeholder="Write a reply…" style="width:100%;box-sizing:border-box;resize:vertical;margin:0 0 8px"></textarea>
-              <button class="fb-thread-send" data-id="${t.id}" style="width:100%;background:var(--accent);color:#fff;border:none;border-radius:9px;padding:11px;font-size:14px;font-weight:600;cursor:pointer">Send reply</button>
+        threads.map(t => {
+          const msgs = t.thread || [];
+          const last = msgs[msgs.length - 1] || {};
+          const preview = (last.text || '').replace(/\s+/g, ' ').slice(0, 90);
+          return `
+          <button class="fb-thread-open" data-id="${t.id}" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:1px solid var(--accent);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--card);color:var(--text);cursor:pointer">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:11px;color:var(--muted);margin-bottom:3px">Your ${escapeHtml(t.kind||'feedback')} · ${msgs.length} message${msgs.length===1?'':'s'}</div>
+              <div style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${last.text ? `<b>${last.from==='dev'?'Developer: ':'You: '}</b>${escapeHtml(preview)}` : '<span style="color:var(--muted)">Tap to open</span>'}</div>
             </div>
-          </div>`).join('') +
+            ${!showAll ? '<span style="width:8px;height:8px;border-radius:50%;background:var(--accent);flex:0 0 auto"></span>' : ''}
+            <span style="color:var(--muted);font-size:18px;flex:0 0 auto">›</span>
+          </button>`;
+        }).join('') +
         `<button class="fb-replies-toggle" data-mode="${showAll ? 'unread' : 'all'}" style="background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer;padding:0">${showAll ? 'Hide past replies' : 'Show past replies'}</button>`;
+
+      box.querySelectorAll('.fb-thread-open').forEach(btn => btn.addEventListener('click', () => {
+        const t = threads.find(x => String(x.id) === btn.dataset.id);
+        if (t) openFeedbackThread(t);
+      }));
 
       // Only mark seen when viewing the default (unread) view — viewing history shouldn't
       // clear the "new reply" state prematurely.
       if (!showAll) {
         threads.forEach(t => { apiFetch(`/api/feedback-replies/${t.id}/seen`, { method:'POST' }).catch(()=>{}); });
       }
-      wireThreadSends(box);
       wireRepliesToggle(box);
     }
+
+    function ensureFeedbackThreadCss() {
+      if (document.getElementById('fbt-css')) return;
+      const st = document.createElement('style');
+      st.id = 'fbt-css';
+      st.textContent = `
+        .fbt-overlay{position:fixed;left:0;top:0;width:100%;z-index:100000;background:var(--bg);display:flex;flex-direction:column;overscroll-behavior:contain}
+        .fbt-head{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:12px 12px;border-bottom:1px solid var(--border);background:var(--card)}
+        .fbt-back{background:none;border:none;color:var(--accent);font-size:30px;line-height:1;cursor:pointer;padding:0 6px}
+        .fbt-title{font-size:15px;font-weight:700}
+        .fbt-sub{font-size:11px;color:var(--muted)}
+        .fbt-body{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px;display:flex;flex-direction:column;gap:8px;overscroll-behavior:contain}
+        .fbt-msg{display:flex;flex-direction:column;max-width:82%}
+        .fbt-msg.me{align-self:flex-end;align-items:flex-end}
+        .fbt-msg.them{align-self:flex-start;align-items:flex-start}
+        .fbt-bubble{padding:9px 12px;border-radius:15px;font-size:14px;line-height:1.4;white-space:pre-wrap;word-break:break-word}
+        .fbt-msg.me .fbt-bubble{background:var(--accent);color:#fff;border-bottom-right-radius:4px}
+        .fbt-msg.them .fbt-bubble{background:var(--card);border:1px solid var(--border);border-bottom-left-radius:4px}
+        .fbt-time{font-size:10px;color:var(--muted);margin-top:2px}
+        .fbt-input{flex:0 0 auto;display:flex;gap:8px;align-items:flex-end;padding:10px 12px;padding-bottom:calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--border);background:var(--card)}
+        .fbt-input textarea{flex:1;resize:none;border:1px solid var(--border);border-radius:18px;padding:9px 14px;font:inherit;font-size:14px;background:var(--bg);color:var(--text);max-height:120px;line-height:1.4}
+        .fbt-input button{flex:0 0 auto;width:40px;height:40px;border-radius:50%;border:none;background:var(--accent);color:#fff;font-size:16px;cursor:pointer}
+        .fbt-input button:disabled{opacity:.5}
+      `;
+      document.head.appendChild(st);
+    }
+
+    function openFeedbackThread(t) {
+      if (!t) return;
+      ensureFeedbackThreadCss();
+      const ov = document.createElement('div');
+      ov.className = 'fbt-overlay';
+      ov.innerHTML = `
+        <div class="fbt-head">
+          <button class="fbt-back" aria-label="Back">‹</button>
+          <div><div class="fbt-title">Your ${escapeHtml(t.kind || 'feedback')}</div><div class="fbt-sub">Conversation with the developer</div></div>
+        </div>
+        <div class="fbt-body" id="fbt-body"></div>
+        <div class="fbt-input">
+          <textarea id="fbt-text" rows="1" placeholder="Message…" autocomplete="off"></textarea>
+          <button id="fbt-send" aria-label="Send">➤</button>
+        </div>`;
+      document.body.appendChild(ov);
+      const prevOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+
+      const bodyEl = ov.querySelector('#fbt-body');
+      const textEl = ov.querySelector('#fbt-text');
+      const sendBtn = ov.querySelector('#fbt-send');
+
+      const renderMsgs = () => {
+        bodyEl.innerHTML = (t.thread || []).map(m => `
+          <div class="fbt-msg ${m.from === 'dev' ? 'them' : 'me'}">
+            <div class="fbt-bubble">${escapeHtml(m.text || '')}</div>
+            ${m.at ? `<div class="fbt-time">${escapeHtml(m.at)}</div>` : ''}
+          </div>`).join('');
+      };
+      const toBottom = () => { bodyEl.scrollTop = bodyEl.scrollHeight; };
+      renderMsgs();
+      requestAnimationFrame(toBottom);
+
+      // Keep the whole view (and the input bar) sized to the space the
+      // on-screen keyboard leaves — the "messaging app" behaviour.
+      const vv = window.visualViewport;
+      const fit = () => {
+        ov.style.height = (vv ? vv.height : window.innerHeight) + 'px';
+        toBottom();
+      };
+      fit();
+      if (vv) { vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit); }
+
+      const autoGrow = () => { textEl.style.height = 'auto'; textEl.style.height = Math.min(textEl.scrollHeight, 120) + 'px'; };
+      textEl.addEventListener('input', autoGrow);
+
+      const close = () => {
+        if (vv) { vv.removeEventListener('resize', fit); vv.removeEventListener('scroll', fit); }
+        ov.remove();
+        document.body.style.overflow = prevOverflow;
+        loadFeedbackReplies();
+      };
+      ov.querySelector('.fbt-back').addEventListener('click', close);
+
+      const send = async () => {
+        const text = textEl.value.trim();
+        if (!text) return;
+        sendBtn.disabled = true;
+        t.thread = [...(t.thread || []), { from: 'user', text, at: '' }];
+        renderMsgs();
+        textEl.value = ''; autoGrow(); toBottom();
+        try {
+          await apiFetch(`/api/feedback-replies/${t.id}`, { method: 'POST', body: JSON.stringify({ text }) });
+        } catch { showToast('Could not send — check your connection'); }
+        sendBtn.disabled = false;
+        textEl.focus();
+      };
+      sendBtn.addEventListener('click', send);
+      textEl.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); send(); }
+      });
+      setTimeout(() => textEl.focus(), 80);
+    }
+    // Let the "developer replied" banner jump straight into a conversation.
+    window.__openFeedbackThread = openFeedbackThread;
+    window.__markFeedbackThreadSeen = (id) => { apiFetch(`/api/feedback-replies/${id}/seen`, { method: 'POST' }).catch(() => {}); };
 
     function renderShowPastLink(box) {
       // A subtle link so the user can always pull up history even with nothing unread.
@@ -15937,19 +16629,6 @@ async function renderSettings() {
       if (btn) btn.addEventListener('click', () => loadFeedbackReplies(btn.dataset.mode === 'all'));
     }
 
-    function wireThreadSends(box) {
-      box.querySelectorAll('.fb-thread-send').forEach(b => b.addEventListener('click', async () => {
-        const inp = box.querySelector(`.fb-thread-reply[data-id="${b.dataset.id}"]`);
-        const text = (inp && inp.value || '').trim();
-        if (!text) { if (inp) inp.focus(); return; }
-        b.disabled = true;
-        await apiFetch(`/api/feedback-replies/${b.dataset.id}`, { method:'POST', body: JSON.stringify({ text }) }).catch(()=>{});
-        if (inp) inp.value = '';
-        b.disabled = false;
-        showToast('Reply sent ✓');
-        loadFeedbackReplies();
-      }));
-    }
     loadFeedbackReplies();
 
     let fbImageFile = null;
@@ -17292,6 +17971,9 @@ async function renderSettings() {
       todo_enabled: ($('s-todo-enabled') && $('s-todo-enabled').checked) ? '1' : '0',
       shopping_enabled: ($('s-shopping-enabled') && $('s-shopping-enabled').checked) ? '1' : '0',
       reminders_enabled: ($('s-reminders-enabled') && $('s-reminders-enabled').checked) ? '1' : '0',
+      messageboard_enabled: ($('s-messageboard-enabled') && $('s-messageboard-enabled').checked) ? '1' : '0',
+      messageboard_autoclear_days: $('s-messageboard-autoclear-days') ? String(Math.max(0, parseInt($('s-messageboard-autoclear-days').value, 10) || 0)) : '14',
+      mealplan_enabled: ($('s-mealplan-enabled') && $('s-mealplan-enabled').checked) ? '1' : '0',
       // News sources (priority is the ★ button's .on state)
       news_national_enabled: $('news-national-enabled').checked ? '1' : '0',
       news_national_priority: $('news-national-priority-btn').classList.contains('on') ? '1' : '0',
@@ -18631,7 +19313,17 @@ async function checkFeedbackReplyBanner() {
     textEl.textContent = newThreads.length === 1
       ? `💬 The developer replied to your feedback — tap to view.`
       : `💬 The developer replied to ${newThreads.length} of your feedback threads — tap to view.`;
-    textEl.onclick = openFeedbackSection;
+    // One new thread → open the conversation directly (and mark it seen);
+    // several → the Feedback section, where each is a tappable row.
+    if (newThreads.length === 1 && typeof window.__openFeedbackThread === 'function') {
+      textEl.onclick = () => {
+        banner.style.display = 'none';
+        try { window.__markFeedbackThreadSeen(newThreads[0].id); } catch {}
+        window.__openFeedbackThread(newThreads[0]);
+      };
+    } else {
+      textEl.onclick = openFeedbackSection;
+    }
     if (closeBtn) {
       closeBtn.onclick = (e) => {
         e.stopPropagation();

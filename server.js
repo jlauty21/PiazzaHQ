@@ -877,6 +877,58 @@ db.exec(`
     sort         INTEGER DEFAULT 0,
     created_at   TEXT DEFAULT (datetime('now'))
   );
+
+  -- Family message board: short notes household members leave for each other,
+  -- shown on the wall (the "messageboard" widget) and managed from the app's
+  -- Family Hub. A whiteboard corner, not a chat — no threads or replies.
+  --   author_profile_id: nullable link to profiles.id (the app fills it from
+  --     the active profile); a deleted profile just nulls it out and the note
+  --     falls back to its stored color/author string.
+  --   pinned notes sort first and are exempt from the auto-clear sweep
+  --     (settings.messageboard_autoclear_days).
+  CREATE TABLE IF NOT EXISTS messages (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    text              TEXT NOT NULL,
+    author            TEXT DEFAULT '',
+    author_profile_id INTEGER,
+    color             TEXT DEFAULT '#4A90D9',
+    pinned            INTEGER DEFAULT 0,
+    created_at        TEXT DEFAULT (datetime('now'))
+  );
+
+  -- Cameras for the "camera" layout widget. A managed object (not free text in
+  -- the widget) specifically so stream URLs — which routinely embed
+  -- rtsp://user:pass@host — never land in the layout JSON that every browser
+  -- downloads. A widget stores only camId. The local go2rtc process ingests
+  -- each row's url once and repackages it for the browser; GET /api/cameras
+  -- redacts url entirely (see that route). Syncs host->slave like ha_token
+  -- (a slave runs its own go2rtc).
+  --   kind: 'url' = url is an rtsp/rtsps/http-mjpeg/onvif source
+  --         'ha'  = url is 'ha:<entity_id>'; server.js resolves the real
+  --                 stream from Home Assistant at config-generation time
+  CREATE TABLE IF NOT EXISTS cameras (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'url',
+    url         TEXT NOT NULL DEFAULT '',
+    created_at  TEXT DEFAULT (datetime('now'))
+  );
+
+  -- Weekly meal plan: one planned meal per (date, slot) — slot is
+  -- 'breakfast' | 'lunch' | 'dinner' (which slots the household uses is the
+  -- settings.mealplan_slots list; default just 'dinner'). The "mealplan"
+  -- widget + the Family Hub "Meals" sub-tab. An unplanned slot simply has no
+  -- row. A nightly sweep drops rows outside a sane date window. Syncs
+  -- host->slave like messages/cameras. (Migration from the old date-only PK
+  -- shape is right after the schema block.)
+  CREATE TABLE IF NOT EXISTS meals (
+    date       TEXT NOT NULL,
+    slot       TEXT NOT NULL DEFAULT 'dinner',
+    title      TEXT NOT NULL,
+    notes      TEXT DEFAULT '',
+    updated_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (date, slot)
+  );
 `);
 
 // ── Migrations for databases created before end_date support was added ───────
@@ -1280,6 +1332,27 @@ db.exec(`
 if (!columnExists('ical_events', 'location')) { db.exec(`ALTER TABLE ical_events ADD COLUMN location TEXT DEFAULT ''`); console.log('Migrated: added location column to ical_events'); }
 if (!columnExists('ical_feeds', 'show_location')) { db.exec(`ALTER TABLE ical_feeds ADD COLUMN show_location INTEGER DEFAULT 0`); console.log('Migrated: added show_location column to ical_feeds'); }
 
+// Meal plan went from one row per date to one row per (date, slot). Rebuild
+// the old table, mapping every existing row to the 'dinner' slot. (SQLite
+// can't just ADD COLUMN into a primary key.)
+if (columnExists('meals', 'date') && !columnExists('meals', 'slot')) {
+  db.exec(`
+    ALTER TABLE meals RENAME TO meals_old;
+    CREATE TABLE meals (
+      date       TEXT NOT NULL,
+      slot       TEXT NOT NULL DEFAULT 'dinner',
+      title      TEXT NOT NULL,
+      notes      TEXT DEFAULT '',
+      updated_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (date, slot)
+    );
+    INSERT INTO meals (date, slot, title, notes, updated_at)
+      SELECT date, 'dinner', title, notes, updated_at FROM meals_old;
+    DROP TABLE meals_old;
+  `);
+  console.log('Migrated: meals table now keyed by (date, slot)');
+}
+
 // Migrate the old single-recipient briefing_recipient setting (pre-multi-recipient
 // support) into the new briefing_recipients table, then remove the stale key.
 (() => {
@@ -1471,6 +1544,12 @@ const defaultSettings = {
                                    // celebrate=1 chore is completed) — parent's choice, see stickers table
   shopping_enabled:   '0',        // show the Shopping tab + widget (off by default, same as todo_enabled)
   reminders_enabled:  '1',        // show the Reminders tab in Family Hub (on by default, same as chores_enabled — new feature, but useful the moment even one reminder exists)
+  messageboard_enabled: '0',      // show the Message Board (Family Hub "Board" sub-tab + the widget) — off by default, opt-in like todo/shopping
+  messageboard_autoclear_days: '14', // notes older than this (and not pinned) are swept; '0' = never
+  mealplan_enabled:   '0',        // show the Meal Plan (Family Hub "Meals" sub-tab + the widget) — off by default, opt-in like the board
+  mealplan_slots:     'dinner',   // which meal slots the household plans — comma list of breakfast,lunch,dinner (order-insensitive; 'dinner' = the original one-per-day behaviour)
+  go2rtc_port:        '1984',     // localhost port the managed go2rtc media process binds to (camera widget)
+  camera_service_autostart: '1',  // '0' = never launch the go2rtc process even when a camera widget exists (hard off switch)
   sync_interval_min:  '5',        // how often a slave pulls fresh data from the host
   last_sync_at:       '',         // ISO timestamp of the last successful sync (slave only)
   last_sync_status:   '',         // 'ok' | 'error: <msg>' — surfaced in the app
@@ -1924,6 +2003,7 @@ if (IS_DEMO) {
     '/api/update', '/api/update-from-server', '/api/install-server',
     '/api/custom-theme', '/api/backup', '/api/restore',
     '/api/voice-token', '/api/sync', '/api/setup',
+    '/api/cameras', // a shared demo instance must not spin up go2rtc against arbitrary RTSP
   ];
   const demoAllowExact = new Set(['/api/notif-prefs', '/api/settings']); // local-only writes, harmless
   app.use((req, res, next) => {
@@ -2005,7 +2085,7 @@ function markHostEditing(ms = 8000) { HOST_EDITING_UNTIL = Date.now() + ms; }
 // 'screens' is included so that assigning a profile to a remote slave bumps the
 // version — the slave's watcher then re-syncs (and re-registers, learning its new
 // assigned profile) within seconds instead of waiting for the slow timer.
-const SHARED_TOPICS = new Set(['events', 'photos', 'settings', 'photo-settings', 'feeds', 'displays', 'layout', 'screens', 'chores', 'todos', 'favorites', 'reminders', 'profiles']);
+const SHARED_TOPICS = new Set(['events', 'photos', 'settings', 'photo-settings', 'feeds', 'displays', 'layout', 'screens', 'chores', 'todos', 'favorites', 'reminders', 'profiles', 'messages', 'cameras', 'meals']);
 
 function broadcastUpdate(topic, displayId) {
   if (SHARED_TOPICS.has(topic)) HOST_DATA_VERSION = Date.now();
@@ -4175,10 +4255,634 @@ app.delete('/api/profiles/:id', (req, res) => {
     return res.status(400).json({ error: 'This is the only manager profile — make another profile a manager first.' });
   }
   db.prepare(`UPDATE events SET owner_profile_id = NULL WHERE owner_profile_id = ?`).run(existing.id);
+  db.prepare(`UPDATE messages SET author_profile_id = NULL WHERE author_profile_id = ?`).run(existing.id);
   db.prepare(`DELETE FROM profiles WHERE id = ?`).run(existing.id);
   broadcastUpdate('profiles');
   broadcastUpdate('events');
+  broadcastUpdate('messages');
   res.json({ ok: true });
+});
+
+// ── Family message board ─────────────────────────────────────────────────────
+// Short notes shown on the wall (the "messageboard" widget) and managed from
+// the app's Family Hub. See the `messages` table comment. Syncs host->slave
+// like profiles/events; on a slave these mutating routes proxy to the host
+// (not in slaveWriteGuard's local-only allowlist).
+
+const MESSAGE_MAX_NOTES = 60; // cap the board; over this, the oldest UNPINNED note is dropped on insert
+// Delete notes older than settings.messageboard_autoclear_days (pinned notes
+// exempt; '0' = never). Cheap; runs at boot, on every GET /api/messages, and
+// hourly. Host-only — a slave mirrors the host's table wholesale.
+function sweepMessages() {
+  if (isSlave()) return;
+  const days = parseInt(getSetting('messageboard_autoclear_days'), 10);
+  if (!Number.isFinite(days) || days <= 0) return;
+  db.prepare(`DELETE FROM messages WHERE pinned = 0 AND created_at < datetime('now', ?)`).run(`-${days} days`);
+}
+try { sweepMessages(); } catch {}
+setInterval(() => { try { sweepMessages(); } catch {} }, 60 * 60 * 1000);
+
+app.get('/api/messages', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { sweepMessages(); } catch {}
+  res.json(db.prepare(`SELECT * FROM messages ORDER BY pinned DESC, created_at DESC, id DESC`).all());
+});
+
+app.post('/api/messages', (req, res) => {
+  const b = req.body || {};
+  const text = demoCleanText((b.text || '').toString().slice(0, 280), 280).trim();
+  if (!text) return res.status(400).json({ error: 'text is required' });
+  const author = demoCleanText((b.author || '').toString().slice(0, 40), 40).trim();
+  const color = /^#[0-9a-fA-F]{3,8}$/.test(b.color || '') ? b.color : '#4A90D9';
+  const authorProfileId = coerceOwnerProfileId(b.author_profile_id);
+  const result = db.prepare(
+    `INSERT INTO messages (text, author, author_profile_id, color) VALUES (?, ?, ?, ?)`
+  ).run(text, author, authorProfileId, color);
+  // Trim to the cap — keep pinned + the newest, drop the rest.
+  db.prepare(`
+    DELETE FROM messages WHERE pinned = 0 AND id NOT IN (
+      SELECT id FROM messages ORDER BY pinned DESC, created_at DESC, id DESC LIMIT ?
+    )`).run(MESSAGE_MAX_NOTES);
+  broadcastUpdate('messages');
+  res.status(201).json(db.prepare(`SELECT * FROM messages WHERE id = ?`).get(result.lastInsertRowid));
+});
+
+app.put('/api/messages/:id', (req, res) => {
+  const existing = db.prepare(`SELECT * FROM messages WHERE id = ?`).get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Message not found' });
+  const b = req.body || {};
+  const sets = [];
+  const vals = [];
+  if (b.pinned !== undefined) { sets.push('pinned=?'); vals.push(b.pinned ? 1 : 0); }
+  if (b.text !== undefined) {
+    const t = demoCleanText((b.text || '').toString().slice(0, 280), 280).trim();
+    if (!t) return res.status(400).json({ error: 'text cannot be empty' });
+    sets.push('text=?'); vals.push(t);
+  }
+  if (!sets.length) return res.json(existing);
+  vals.push(existing.id);
+  db.prepare(`UPDATE messages SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  broadcastUpdate('messages');
+  res.json(db.prepare(`SELECT * FROM messages WHERE id = ?`).get(existing.id));
+});
+
+app.delete('/api/messages/:id', (req, res) => {
+  const r = db.prepare(`DELETE FROM messages WHERE id = ?`).run(req.params.id);
+  if (r.changes === 0) return res.status(404).json({ error: 'Message not found' });
+  broadcastUpdate('messages');
+  res.json({ ok: true });
+});
+
+// ── Meal plan API ────────────────────────────────────────────────────────────
+// One planned meal per (date, slot). slot is breakfast|lunch|dinner; which
+// slots the household actually plans is settings.mealplan_slots (default just
+// 'dinner'). An unplanned slot has no row. Shown on the wall (the "mealplan"
+// widget) and managed from the app's Family Hub "Meals" sub-tab. Syncs
+// host->slave like messages.
+const MEAL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MEAL_SLOTS = ['breakfast', 'lunch', 'dinner'];
+function sweepMeals() {
+  if (isSlave()) return;
+  db.prepare(`DELETE FROM meals WHERE date < date('now','-7 days') OR date > date('now','+120 days')`).run();
+}
+try { sweepMeals(); } catch {}
+setInterval(() => { try { sweepMeals(); } catch {} }, 6 * 60 * 60 * 1000);
+
+app.get('/api/meals', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { sweepMeals(); } catch {}
+  const today = new Date();
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const defFrom = iso(today);
+  const defTo = (() => { const d = new Date(today); d.setDate(d.getDate() + 14); return iso(d); })();
+  const from = MEAL_DATE_RE.test(req.query.from || '') ? req.query.from : defFrom;
+  const to = MEAL_DATE_RE.test(req.query.to || '') ? req.query.to : defTo;
+  // A stable slot order (breakfast -> lunch -> dinner) so the client doesn't
+  // have to re-sort.
+  res.json(db.prepare(`
+    SELECT * FROM meals WHERE date BETWEEN ? AND ?
+    ORDER BY date, CASE slot WHEN 'breakfast' THEN 0 WHEN 'lunch' THEN 1 ELSE 2 END
+  `).all(from, to));
+});
+
+function upsertMeal(req, res, date, slot) {
+  if (!MEAL_DATE_RE.test(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  if (!MEAL_SLOTS.includes(slot)) return res.status(400).json({ error: 'slot must be breakfast, lunch or dinner' });
+  const b = req.body || {};
+  const title = demoCleanText((b.title || '').toString().slice(0, 80), 80).trim();
+  const notes = demoCleanText((b.notes || '').toString().slice(0, 300), 300).trim();
+  if (!title) {
+    // Empty title = clear this slot.
+    db.prepare(`DELETE FROM meals WHERE date = ? AND slot = ?`).run(date, slot);
+    broadcastUpdate('meals');
+    return res.json({ ok: true, cleared: true });
+  }
+  db.prepare(`
+    INSERT INTO meals (date, slot, title, notes, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(date, slot) DO UPDATE SET title = excluded.title, notes = excluded.notes, updated_at = excluded.updated_at
+  `).run(date, slot, title, notes);
+  broadcastUpdate('meals');
+  res.json(db.prepare(`SELECT * FROM meals WHERE date = ? AND slot = ?`).get(date, slot));
+}
+// /api/meals/:date defaults to the dinner slot (back-compat with the
+// pre-slots widget/app); /api/meals/:date/:slot is explicit.
+app.put('/api/meals/:date/:slot', (req, res) => upsertMeal(req, res, req.params.date, req.params.slot));
+app.put('/api/meals/:date', (req, res) => upsertMeal(req, res, req.params.date, 'dinner'));
+
+function deleteMeal(req, res, date, slot) {
+  if (!MEAL_DATE_RE.test(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  if (!MEAL_SLOTS.includes(slot)) return res.status(400).json({ error: 'bad slot' });
+  db.prepare(`DELETE FROM meals WHERE date = ? AND slot = ?`).run(date, slot);
+  broadcastUpdate('meals');
+  res.json({ ok: true });
+}
+app.delete('/api/meals/:date/:slot', (req, res) => deleteMeal(req, res, req.params.date, req.params.slot));
+app.delete('/api/meals/:date', (req, res) => deleteMeal(req, res, req.params.date, 'dinner'));
+
+// ── Camera streaming (managed go2rtc) ─────────────────────────────────────────
+// The "camera" layout widget shows a live RTSP / ONVIF / Home Assistant camera
+// on the wall. Browsers can't play RTSP, so a local go2rtc process ingests each
+// camera once and repackages it (WebRTC / MSE / MJPEG) for the browser. go2rtc's
+// own HTTP API binds to 127.0.0.1 and is NEVER exposed: the browser reaches
+// exactly one thing — the WebSocket at /api/camera/:id/ws, reverse-proxied to
+// go2rtc's /api/ws?src=cam_<id> (that single socket carries WebRTC signalling,
+// MSE and MJPEG) — plus /api/camera/:id/frame.jpeg for a poster still. Stream
+// URLs (which routinely embed rtsp://user:pass@host) live only in the cameras
+// table and go2rtc.yaml on disk, never in an API response.
+
+// The binary is bundled by install.sh (Pi), the Docker image, and the Windows
+// installer. When an install updates code-only through the in-app updater the
+// binary won't be there — ensureGo2rtcBinary() below downloads the pinned build
+// on first camera use so it self-heals on every platform. Keep this version +
+// the sha256 map in step with scripts/go2rtc-version.sh on a bump.
+const GO2RTC_VERSION = 'v1.9.14';
+const GO2RTC_SHA256 = {
+  go2rtc_linux_amd64: '32d616af226bd731678ffde328b94cfb94e30339bfefc469cfb76323144615a6',
+  go2rtc_linux_arm64: '359fabade8a7a51e81a55fe6df6b0ef81764a5e1d63179577534eaaa71904b50',
+  go2rtc_linux_arm:   '4d7e1639af5a2722a28e864468fd8099b3c1682565446c798bf9e3b38fde12e4',
+  go2rtc_linux_armv6: '4dc20370556b29f3a90f4c7a09dcd95472c8f74cca56d4d1fb91f32bdd15174c',
+  go2rtc_linux_i386:  '12a114d19fc9fba1b3541cf7c6bb9b01896a6845f31285ec77269e2e7c613885',
+  'go2rtc_win64.zip':     'dd4167d75cb04abe618855b7c71f8658bd009f60c1a71835d134d2c11c939907',
+  'go2rtc_win_arm64.zip': '814be0f6d8669025c7bccdd1f026ffaf613abae5352239f4ec84de543b94594a',
+  'go2rtc_win32.zip':     '6fafb817477f4d34e5edfd8bb3c547151dfc5c404bde41e274db146b17ed5c03',
+  'go2rtc_mac_amd64.zip': '9b0b9a27a4dc3a5b8b93376e7e8fc2787c6af624a512842622be84aec0171c7a',
+  'go2rtc_mac_arm64.zip': '919b78adc759d6b3883d1e1b2ac915ac0985bb903ff1897b4d228527bd64690c',
+};
+// process.arch/platform -> release asset name (or null for an arch with no build).
+function go2rtcAssetName() {
+  const a = process.arch, p = process.platform;
+  if (p === 'linux') {
+    if (a === 'x64') return 'go2rtc_linux_amd64';
+    if (a === 'arm64') return 'go2rtc_linux_arm64';
+    if (a === 'arm') return 'go2rtc_linux_arm';   // Node reports 'arm' for v6 and v7; the v7 build covers Pi 2+
+    if (a === 'ia32') return 'go2rtc_linux_i386';
+    return null;
+  }
+  if (p === 'win32') {
+    if (a === 'x64') return 'go2rtc_win64.zip';
+    if (a === 'arm64') return 'go2rtc_win_arm64.zip';
+    if (a === 'ia32') return 'go2rtc_win32.zip';
+    return null;
+  }
+  if (p === 'darwin') return a === 'arm64' ? 'go2rtc_mac_arm64.zip' : 'go2rtc_mac_amd64.zip';
+  return null;
+}
+
+const GO2RTC_BIN_NAME = IS_WIN ? 'go2rtc.exe' : 'go2rtc';
+const GO2RTC_BIN_PATH = path.join(__dirname, 'bin', GO2RTC_BIN_NAME);
+function go2rtcBinReady() { try { return fs.existsSync(GO2RTC_BIN_PATH); } catch { return false; } }
+const GO2RTC_CONFIG_PATH = dataPath('go2rtc.yaml');
+const GO2RTC_WEBRTC_PORT = 8555; // fixed local UDP port for WebRTC media (single-box case)
+function go2rtcPort() {
+  const p = parseInt(getSetting('go2rtc_port'), 10);
+  return Number.isFinite(p) && p > 0 && p < 65536 ? p : 1984;
+}
+
+const CAMERA_URL_SCHEMES = new Set(['rtsp', 'rtsps', 'rtmp', 'rtmps', 'http', 'https', 'onvif', 'hls']);
+// Validate + normalise a camera source. Returns { ok, value } | { ok:false, error }.
+// This is the whole SSRF story on the input side: the browser never causes a
+// server-side fetch (it only talks to /api/camera/*), and the only URL the
+// server hands onward is this one, to the local go2rtc — same trust class as
+// ha_base_url / the SMTP host / an iCal feed URL. We don't allowlist hosts (it
+// breaks legitimate NVRs on odd subnets), but we do bound the scheme and block
+// the cloud metadata address, the one target that turns "fetch a URL" into a
+// credential-theft primitive on a hosted box.
+function validateCameraUrl(kind, raw) {
+  const s = (raw || '').toString().trim();
+  if (kind === 'ha') {
+    return /^ha:camera\.[a-z0-9_]+$/.test(s)
+      ? { ok: true, value: s }
+      : { ok: false, error: 'Home Assistant cameras must be ha:camera.<entity_id>' };
+  }
+  let u;
+  try { u = new URL(s); } catch { return { ok: false, error: 'That is not a valid URL' }; }
+  const scheme = u.protocol.replace(/:$/, '').toLowerCase();
+  if (!CAMERA_URL_SCHEMES.has(scheme)) {
+    return { ok: false, error: `Unsupported "${scheme}:" — use rtsp / rtsps / http / https / onvif / rtmp` };
+  }
+  const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (host === '169.254.169.254' || host === 'metadata.google.internal' || host === 'metadata') {
+    return { ok: false, error: 'That address is not allowed' };
+  }
+  return { ok: true, value: s };
+}
+
+// ── go2rtc process management ──
+let _go2rtc = null;              // the child process, or null
+let _go2rtcRestartTID = null;
+let _go2rtcBackoff = 1000;
+let _go2rtcStarting = false;
+let _go2rtcUnavailable = false;    // spawn failed for a non-arch reason
+let _go2rtcUnsupportedArch = false; // no go2rtc build for this platform/arch — permanent
+let _go2rtcDownloading = false;    // fetching the binary right now
+let _go2rtcDownloadPromise = null; // in-flight download, so concurrent callers share it
+let _go2rtcStopRequested = false;
+let _go2rtcWantImmediateRespawn = false;
+const _haStreamCache = new Map(); // entity_id -> { url, at }
+
+// Stream a URL (following redirects) to a file. No auth headers — this only
+// ever fetches a pinned GitHub release asset.
+function downloadFile(url, destPath, timeoutMs = 60000, _redirects = 0) {
+  return new Promise((resolve, reject) => {
+    if (_redirects > 5) return reject(new Error('too many redirects'));
+    let lib;
+    try { lib = new URL(url).protocol === 'https:' ? https : http; } catch { return reject(new Error('bad url')); }
+    const req = lib.get(url, { headers: { 'User-Agent': 'PiazzaHQ/1.0' } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        return resolve(downloadFile(new URL(res.headers.location, url).toString(), destPath, timeoutMs, _redirects + 1));
+      }
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
+      const out = fs.createWriteStream(destPath);
+      res.pipe(out);
+      out.on('finish', () => out.close(() => resolve()));
+      out.on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('timeout')));
+  });
+}
+
+// Make sure bin/go2rtc exists — download + sha256-verify the pinned build for
+// this platform if it doesn't. Self-swallowing; sets _go2rtcUnsupportedArch /
+// _go2rtcUnavailable on a permanent / transient failure. Returns true once the
+// binary is present and ready.
+async function ensureGo2rtcBinary() {
+  if (go2rtcBinReady()) return true;
+  if (_go2rtcUnsupportedArch) return false;
+  if (_go2rtcDownloadPromise) return _go2rtcDownloadPromise;
+  const asset = go2rtcAssetName();
+  const sha = asset && GO2RTC_SHA256[asset];
+  if (!asset || !sha) {
+    _go2rtcUnsupportedArch = true;
+    console.error(`[go2rtc] no build for ${process.platform}/${process.arch} — the Camera widget is unavailable on this device`);
+    return false;
+  }
+  _go2rtcDownloadPromise = (async () => {
+    _go2rtcDownloading = true;
+    const url = `https://github.com/AlexxIT/go2rtc/releases/download/${GO2RTC_VERSION}/${asset}`;
+    const binDir = path.join(__dirname, 'bin');
+    const tmp = path.join(binDir, `.go2rtc.download.${process.pid}`);
+    try {
+      fs.mkdirSync(binDir, { recursive: true });
+      console.log(`[go2rtc] downloading ${GO2RTC_VERSION} (${asset})…`);
+      await downloadFile(url, tmp, 120000);
+      const got = crypto.createHash('sha256').update(fs.readFileSync(tmp)).digest('hex');
+      if (got !== sha) throw new Error(`sha256 mismatch (expected ${sha}, got ${got})`);
+      if (asset.endsWith('.zip')) {
+        const exDir = path.join(binDir, '.go2rtc.extract');
+        fs.rmSync(exDir, { recursive: true, force: true });
+        extractZip(tmp, exDir);
+        // the zip holds a single go2rtc / go2rtc.exe
+        const found = fs.readdirSync(exDir).find((f) => f === GO2RTC_BIN_NAME) || fs.readdirSync(exDir)[0];
+        fs.renameSync(path.join(exDir, found), GO2RTC_BIN_PATH);
+        fs.rmSync(exDir, { recursive: true, force: true });
+        fs.rmSync(tmp, { force: true });
+      } else {
+        fs.renameSync(tmp, GO2RTC_BIN_PATH);
+      }
+      if (!IS_WIN) { try { fs.chmodSync(GO2RTC_BIN_PATH, 0o755); } catch {} }
+      _go2rtcUnavailable = false;
+      console.log('[go2rtc] binary ready');
+      return true;
+    } catch (e) {
+      try { fs.rmSync(tmp, { force: true }); } catch {}
+      _go2rtcUnavailable = true; // transient — a later reload retries
+      console.error('[go2rtc] binary download failed (Camera widget unavailable for now): ' + e.message);
+      return false;
+    } finally {
+      _go2rtcDownloading = false;
+      _go2rtcDownloadPromise = null;
+    }
+  })();
+  return _go2rtcDownloadPromise;
+}
+
+function anyLayoutHasCamera() {
+  try {
+    for (const r of db.prepare(`SELECT widgets FROM layouts`).all()) {
+      const arr = JSON.parse(r.widgets || '[]');
+      if (Array.isArray(arr) && arr.some(w => w && w.type === 'camera' && w.camId)) return true;
+    }
+  } catch {}
+  return false;
+}
+
+function cameraServiceState() {
+  if (getSetting('camera_service_autostart') === '0') return 'disabled';
+  if (_go2rtcDownloading) return 'downloading';
+  if (_go2rtcUnsupportedArch || _go2rtcUnavailable) return 'unavailable';
+  if (_go2rtc) return 'running';
+  if (anyLayoutHasCamera()) return 'starting';
+  return 'stopped';
+}
+
+// Ask Home Assistant for a playable stream source for a camera entity. Prefers
+// the WebSocket `camera/stream` command (yields an HA-proxied HLS URL whose
+// token is in the path — no LLAT exposure). Cached ~5 min. null = unresolvable
+// (the widget then shows "offline"; the user can add it as a direct RTSP URL).
+async function resolveHaCameraSource(entityId) {
+  const cached = _haStreamCache.get(entityId);
+  if (cached && Date.now() - cached.at < 5 * 60 * 1000) return cached.url;
+  const base = getSetting('ha_base_url'), token = getSetting('ha_token');
+  if (!base || !token || !WebSocketClient) return null;
+  let url = null;
+  try {
+    const r = await haWsRequest(base, token, [{ type: 'camera/stream', entity_id: entityId }]);
+    const result = r && r['camera/stream'];
+    if (result && result.url) {
+      url = /^(https?|rtsps?):/.test(result.url)
+        ? result.url
+        : base.replace(/\/+$/, '') + result.url; // HA returns a relative /api/hls/... path
+    }
+  } catch {}
+  _haStreamCache.set(entityId, { url, at: Date.now() });
+  return url;
+}
+
+async function buildGo2rtcConfig() {
+  const streams = {};
+  for (const c of db.prepare(`SELECT * FROM cameras`).all()) {
+    let src = c.url;
+    if (c.kind === 'ha') {
+      src = await resolveHaCameraSource(c.url.slice(3));
+      if (!src) continue; // unresolvable — skip; widget shows offline
+    }
+    streams[`cam_${c.id}`] = src;
+  }
+  return streams;
+}
+function toGo2rtcYaml(streams) {
+  const q = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  const lines = [
+    'api:', `  listen: ${q('127.0.0.1:' + go2rtcPort())}`,
+    'rtsp:', '  listen: ""',
+    'webrtc:', `  listen: ":${GO2RTC_WEBRTC_PORT}"`, '  candidates:', `    - ${q('127.0.0.1:' + GO2RTC_WEBRTC_PORT)}`,
+    'log:', '  level: "warn"',
+    'streams:',
+  ];
+  for (const [k, v] of Object.entries(streams)) lines.push(`  ${k}: ${q(v)}`);
+  return lines.join('\n') + '\n';
+}
+
+function _go2rtcLog(buf) {
+  String(buf).split(/\r?\n/).filter(Boolean).forEach((l) => console.log('[go2rtc] ' + l));
+}
+function startCameraService() {
+  if (_go2rtc || _go2rtcStarting) return;
+  // Prefer the bundled/downloaded binary; fall back to a bare command in case
+  // go2rtc is on PATH (a hand-rolled install).
+  const bin = go2rtcBinReady() ? GO2RTC_BIN_PATH : GO2RTC_BIN_NAME;
+  _go2rtcStarting = true;
+  _go2rtcStopRequested = false;
+  let child;
+  try {
+    child = spawn(bin, ['-config', GO2RTC_CONFIG_PATH], { stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) {
+    _go2rtcStarting = false; _go2rtcUnavailable = true;
+    console.error('[go2rtc] could not start — camera widgets will show "unavailable": ' + e.message);
+    return;
+  }
+  child.on('error', (e) => {
+    _go2rtcStarting = false;
+    if (e.code === 'ENOENT') { _go2rtcUnavailable = true; console.error('[go2rtc] binary not found — cameras unavailable on this device'); }
+    else console.error('[go2rtc] process error: ' + e.message);
+  });
+  child.stdout.on('data', _go2rtcLog);
+  child.stderr.on('data', _go2rtcLog);
+  child.on('spawn', () => {
+    _go2rtcStarting = false; _go2rtcUnavailable = false; _go2rtcBackoff = 1000;
+    console.log(`[go2rtc] started (pid ${child.pid}, api 127.0.0.1:${go2rtcPort()})`);
+  });
+  child.on('exit', (code, sig) => {
+    console.log(`[go2rtc] exited (code ${code}${sig ? ', signal ' + sig : ''})`);
+    _go2rtc = null; _go2rtcStarting = false;
+    if (_go2rtcStopRequested && !_go2rtcWantImmediateRespawn) { _go2rtcStopRequested = false; return; }
+    const immediate = _go2rtcWantImmediateRespawn;
+    _go2rtcWantImmediateRespawn = false; _go2rtcStopRequested = false;
+    if (getSetting('camera_service_autostart') === '0' || !anyLayoutHasCamera()) return;
+    const delay = immediate ? 200 : _go2rtcBackoff;
+    if (!immediate) _go2rtcBackoff = Math.min(_go2rtcBackoff * 2, 15000);
+    _go2rtcRestartTID = setTimeout(() => { _go2rtcRestartTID = null; startCameraService(); }, delay);
+  });
+  _go2rtc = child;
+}
+function stopCameraService(reason) {
+  if (_go2rtcRestartTID) { clearTimeout(_go2rtcRestartTID); _go2rtcRestartTID = null; }
+  if (!_go2rtc) return;
+  console.log('[go2rtc] stopping (' + (reason || 'requested') + ')');
+  _go2rtcStopRequested = true; _go2rtcWantImmediateRespawn = false;
+  try { _go2rtc.kill(); } catch {}
+}
+// Rewrite the config and make go2rtc pick it up: kill + immediate respawn when
+// it's running (go2rtc reads its config only at startup — no reliable partial
+// reload), a fresh start when it wasn't. No-ops (and stops the service) when
+// nothing needs a camera or the hard off-switch is set.
+async function reloadCameraService() {
+  try {
+    if (getSetting('camera_service_autostart') === '0') { stopCameraService('service disabled'); return; }
+    if (!anyLayoutHasCamera()) { stopCameraService('no camera widgets'); return; }
+    let yaml;
+    try { yaml = toGo2rtcYaml(await buildGo2rtcConfig()); }
+    catch (e) { console.error('[go2rtc] config build failed: ' + e.message); return; }
+    try { fs.writeFileSync(GO2RTC_CONFIG_PATH, yaml); }
+    catch (e) { console.error('[go2rtc] config write failed: ' + e.message); return; }
+    if (_go2rtc) {
+      _go2rtcWantImmediateRespawn = true;
+      try { _go2rtc.kill(); } catch {}
+    } else {
+      // Bundled by the installer / image; downloaded on demand otherwise so a
+      // code-only in-app update still ends up with a working Camera widget.
+      const ready = await ensureGo2rtcBinary();
+      if (ready) startCameraService();
+    }
+  } catch (e) {
+    console.error('[go2rtc] reload error: ' + e.message);
+  }
+}
+// A camera widget exists but the service isn't up (typically a first-run
+// binary download that failed while offline) — retry periodically so it
+// self-heals once the network is back. Cheap: no-ops unless all conditions hold.
+setInterval(() => {
+  if (!_go2rtc && !_go2rtcStarting && !_go2rtcDownloading && !_go2rtcUnsupportedArch
+      && getSetting('camera_service_autostart') !== '0' && anyLayoutHasCamera()) {
+    reloadCameraService();
+  }
+}, 20 * 60 * 1000);
+function go2rtcApi(method, pathname) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port: go2rtcPort(), path: pathname, method, timeout: 4000 },
+      (r) => { let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => {
+        if (r.statusCode >= 400) return reject(new Error('go2rtc ' + r.statusCode));
+        try { resolve(d ? JSON.parse(d) : null); } catch { resolve(null); }
+      }); }
+    );
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('go2rtc timeout')));
+    req.end();
+  });
+}
+
+// WebSocket reverse-proxy: /api/camera/:id/ws  <->  ws://127.0.0.1:<port>/api/ws?src=cam_<id>
+let _camWss = null;
+function attachCameraWsProxy(server) {
+  if (!WebSocketClient || _camWss) return;
+  const WSS = WebSocketClient.Server || WebSocketClient.WebSocketServer;
+  if (!WSS) return;
+  _camWss = new WSS({ noServer: true });
+  server.on('upgrade', (req, socket, head) => {
+    let pathname;
+    try { pathname = new URL(req.url, 'http://localhost').pathname; } catch { return; }
+    const m = pathname.match(/^\/api\/camera\/(\d+)\/ws$/);
+    if (!m) return; // not ours — leave the socket for any other handler
+    const id = parseInt(m[1], 10);
+    if (!db.prepare(`SELECT id FROM cameras WHERE id = ?`).get(id)) { socket.destroy(); return; }
+    _camWss.handleUpgrade(req, socket, head, (client) => {
+      let upstream;
+      try { upstream = new WebSocketClient(`ws://127.0.0.1:${go2rtcPort()}/api/ws?src=cam_${id}`); }
+      catch { try { client.close(); } catch {} return; }
+      const closeBoth = () => { try { client.close(); } catch {} try { upstream.close(); } catch {} };
+      upstream.on('open', () => {
+        client.on('message', (d, isBinary) => { try { upstream.send(d, { binary: isBinary }); } catch {} });
+        upstream.on('message', (d, isBinary) => { try { client.send(d, { binary: isBinary }); } catch {} });
+      });
+      upstream.on('error', closeBoth);
+      upstream.on('close', closeBoth);
+      client.on('error', closeBoth);
+      client.on('close', closeBoth);
+    });
+  });
+}
+
+// ── Camera API ──
+function redactCamera(c) {
+  let host_hint = '';
+  if (c.kind === 'ha') host_hint = c.url.slice(3);
+  else { try { host_hint = new URL(c.url).host; } catch {} }
+  return { id: c.id, name: c.name, kind: c.kind, url_set: !!c.url, host_hint, created_at: c.created_at };
+}
+
+app.get('/api/cameras', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(db.prepare(`SELECT * FROM cameras ORDER BY name COLLATE NOCASE, id`).all().map(redactCamera));
+});
+
+app.post('/api/cameras', (req, res) => {
+  const b = req.body || {};
+  const name = demoCleanText((b.name || '').toString().slice(0, 60), 60).trim();
+  if (!name) return res.status(400).json({ error: 'name is required' });
+  const kind = b.kind === 'ha' ? 'ha' : 'url';
+  const v = validateCameraUrl(kind, b.url);
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  const r = db.prepare(`INSERT INTO cameras (name, kind, url) VALUES (?, ?, ?)`).run(name, kind, v.value);
+  broadcastUpdate('cameras');
+  reloadCameraService();
+  res.status(201).json(redactCamera(db.prepare(`SELECT * FROM cameras WHERE id = ?`).get(r.lastInsertRowid)));
+});
+
+app.put('/api/cameras/:id', (req, res) => {
+  const existing = db.prepare(`SELECT * FROM cameras WHERE id = ?`).get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Camera not found' });
+  const b = req.body || {};
+  const sets = [], vals = [];
+  if (b.name !== undefined) {
+    const name = demoCleanText((b.name || '').toString().slice(0, 60), 60).trim();
+    if (!name) return res.status(400).json({ error: 'name cannot be empty' });
+    sets.push('name=?'); vals.push(name);
+  }
+  const kind = b.kind === 'ha' ? 'ha' : b.kind === 'url' ? 'url' : existing.kind;
+  if (b.kind !== undefined) { sets.push('kind=?'); vals.push(kind); }
+  const urlGiven = b.url !== undefined && (b.url || '').toString().trim() !== '';
+  if (urlGiven) {
+    const v = validateCameraUrl(kind, b.url);
+    if (!v.ok) return res.status(400).json({ error: v.error });
+    sets.push('url=?'); vals.push(v.value);
+  } else if (kind !== existing.kind) {
+    return res.status(400).json({ error: 'Changing the source type needs a new URL' });
+  }
+  if (!sets.length) return res.json(redactCamera(existing));
+  vals.push(existing.id);
+  db.prepare(`UPDATE cameras SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  broadcastUpdate('cameras');
+  reloadCameraService();
+  res.json(redactCamera(db.prepare(`SELECT * FROM cameras WHERE id = ?`).get(existing.id)));
+});
+
+app.delete('/api/cameras/:id', (req, res) => {
+  const r = db.prepare(`DELETE FROM cameras WHERE id = ?`).run(req.params.id);
+  if (r.changes === 0) return res.status(404).json({ error: 'Camera not found' });
+  broadcastUpdate('cameras');
+  reloadCameraService();
+  res.json({ ok: true });
+});
+
+app.get('/api/cameras/:id/test', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const id = parseInt(req.params.id, 10);
+  if (!db.prepare(`SELECT id FROM cameras WHERE id = ?`).get(id)) return res.status(404).json({ error: 'Camera not found' });
+  const state = cameraServiceState();
+  if (state === 'downloading') return res.json({ ok: false, error: 'Setting up the camera service — try again in a moment.' });
+  if (state === 'unavailable') {
+    return res.json({ ok: false, error: _go2rtcUnsupportedArch
+      ? 'No camera service build for this device — run the server on Docker or Windows instead.'
+      : "Couldn't set up the camera service (offline?). It will retry on its own." });
+  }
+  if (state === 'disabled') return res.json({ ok: false, error: 'The camera service is turned off in settings.' });
+  try {
+    const info = await go2rtcApi('GET', `/api/streams?src=cam_${id}`);
+    const s = info && (info[`cam_${id}`] || info);
+    const producers = s && s.producers;
+    const online = Array.isArray(producers) && producers.some((p) => p && !p.error);
+    res.json(online ? { ok: true } : { ok: false, error: 'The camera service could not connect to this stream yet.' });
+  } catch {
+    res.json({ ok: false, error: 'The camera service is not responding.' });
+  }
+});
+
+app.get('/api/camera/service', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ state: cameraServiceState() });
+});
+
+// Poster / last-frame still (also what the widget shows dimmed while
+// reconnecting). Proxied straight from go2rtc; never cached.
+app.get('/api/camera/:id/frame.jpeg', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id) || !db.prepare(`SELECT id FROM cameras WHERE id = ?`).get(id)) return res.sendStatus(404);
+  res.set('Cache-Control', 'no-store');
+  const up = http.request(
+    { host: '127.0.0.1', port: go2rtcPort(), path: `/api/frame.jpeg?src=cam_${id}`, method: 'GET', timeout: 10000 },
+    (r) => {
+      if (r.statusCode >= 400) { res.sendStatus(502); r.resume(); return; }
+      res.status(200);
+      if (r.headers['content-type']) res.set('Content-Type', r.headers['content-type']);
+      r.pipe(res);
+    }
+  );
+  up.on('error', () => { if (!res.headersSent) res.sendStatus(502); });
+  up.on('timeout', () => up.destroy());
+  up.end();
 });
 
 // ── Settings API ─────────────────────────────────────────────────────────────
@@ -4269,6 +4973,11 @@ app.put('/api/settings', (req, res) => {
   // Settings now shows.
   if ('update_schedule_mode' in req.body || 'update_schedule_time' in req.body) {
     scheduleNextDailyUpdateInstall();
+  }
+  // The go2rtc port or the camera on/off switch changing needs the media
+  // process rewritten/restarted (or stopped) to match.
+  if ('go2rtc_port' in req.body || 'camera_service_autostart' in req.body) {
+    try { reloadCameraService(); } catch {}
   }
   const rows = db.prepare(`SELECT key, value FROM settings`).all();
   broadcastUpdate('settings');
@@ -4508,6 +5217,9 @@ function buildSyncSnapshot() {
       // Family member profiles — a mirror needs these to colour-code local
       // events by owner (owner_profile_id rides along in `events` above).
       profiles: tableRows('profiles'),
+      messages: tableRows('messages'),
+      cameras: tableRows('cameras'),
+      meals: tableRows('meals'),
     },
   };
 }
@@ -4650,6 +5362,9 @@ const applySyncSnapshot = db.transaction((snap) => {
   if (T.rewards) replaceTable('rewards', T.rewards);
   if (T.sticker_redemptions) replaceTable('sticker_redemptions', T.sticker_redemptions);
   if (T.profiles) replaceTable('profiles', T.profiles);
+  if (T.messages) replaceTable('messages', T.messages);
+  if (T.cameras) replaceTable('cameras', T.cameras);
+  if (T.meals) replaceTable('meals', T.meals);
 });
 
 // Pull any photo image files this slave is missing, so cached photos actually
@@ -4746,7 +5461,10 @@ async function syncDataOnly() {
     if (snap && snap.error) throw new Error(snap.error);
     applySyncSnapshot(snap);
     setSyncStatus('ok');
-    broadcastUpdate('settings'); broadcastUpdate('events'); broadcastUpdate('reminders'); broadcastUpdate('photos'); broadcastUpdate('layout');
+    broadcastUpdate('settings'); broadcastUpdate('events'); broadcastUpdate('reminders'); broadcastUpdate('photos'); broadcastUpdate('layout'); broadcastUpdate('cameras');
+    // The cameras table may have changed — regenerate this slave's own go2rtc
+    // config and (re)start/stop its media process to match.
+    try { reloadCameraService(); } catch {}
     return true;
   } catch (e) {
     setSyncStatus('error: ' + String(e.message || e).slice(0, 120));
@@ -9201,6 +9919,9 @@ app.put('/api/layouts/:orientation', (req, res) => {
     .run(display.id, req.params.orientation, JSON.stringify(widgets));
   markHostEditing();           // frequent layout saves = active editing; slaves speed up
   broadcastUpdate('layout', display.id);
+  // A camera widget may have just been added or removed anywhere in the fleet —
+  // (re)start or stop the local go2rtc media process to match.
+  reloadCameraService();
   res.json({ ok: true });
 });
 
@@ -11684,6 +12405,8 @@ function supervisedWindowsRestart(rollbackDir, targetVersion) {
   // Deliberately NOT closeAllConnections() here — it would race that in-flight
   // response and truncate it, and it isn't needed for the child to bind.
   try { if (httpServer) httpServer.close(); } catch {}
+  // Stop our go2rtc child so the replacement process can re-bind its port.
+  try { stopCameraService('server restart'); } catch {}
 
   setTimeout(() => {
     let child = null;
@@ -11771,6 +12494,7 @@ function restartToApply(logLabel, targetVersion, rollbackDir) {
 // .pre-restore-backup folder, exactly as it already is on the Pi.
 function restartPlain(logLabel) {
   console.log(`${logLabel}; restarting.`);
+  try { stopCameraService('server restart'); } catch {}
   if (!IS_WIN) { process.exit(0); return; }
   try { if (httpServer) httpServer.close(); } catch {}
   setTimeout(() => {
@@ -12608,6 +13332,11 @@ app.get('/hub', demoLeaseGate, (req, res) => sendCorePage(res, path.join(__dirna
 // still releasing the port and there's no systemd to restart into.
 function startServer(attempt = 0) {
   httpServer = app.listen(PORT, '0.0.0.0', () => {
+    try { attachCameraWsProxy(httpServer); } catch (e) { console.error('camera ws proxy:', e.message); }
+    // Bring the camera media service up if a layout already uses a camera
+    // widget (a reboot, or a fresh slave that just synced one in). Deferred a
+    // beat so it never delays the "running at" line / first requests.
+    setTimeout(() => { try { reloadCameraService(); } catch {} }, 2500);
     console.log(`Piazza HQ running at http://localhost:${PORT}`);
     console.log(`  Display : http://localhost:${PORT}/`);
     console.log(`  Control : http://localhost:${PORT}/app`);
@@ -12645,6 +13374,14 @@ function startServer(attempt = 0) {
   }
 }
 startServer();
+
+// Best-effort: don't leave the go2rtc child orphaned when we exit. On
+// Linux/systemd the service cgroup already sweeps it up; this covers a plain
+// `node server.js`, Windows, and Ctrl-C.
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => { try { stopCameraService('shutdown'); } catch {} process.exit(0); });
+}
+process.on('exit', () => { if (_go2rtc) { try { _go2rtc.kill(); } catch {} } });
 
 // Builds a fresh update zip from the code CURRENTLY RUNNING on this device — used
 // both for the automatic "push to slaves right after a healthy host update" flow
