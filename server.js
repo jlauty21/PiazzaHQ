@@ -929,6 +929,41 @@ db.exec(`
     updated_at TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (date, slot)
   );
+
+  -- Flight Map widget: live ADS-B aircraft tracking. Two moving parts:
+  --   flight_watch  - saved "subjects" the widget can follow. profile_id NULL
+  --                   = a household watch (added from the widget); non-null =
+  --                   an entry in that person's "My Flights" list. kind is
+  --                   'callsign' | 'reg' | 'hex'. Optional active_from/_to
+  --                   (YYYY-MM-DD) so "tomorrow's DAL456" auto-activates then
+  --                   expires. Syncs host->slave like messages/cameras.
+  --   flight_positions - a short rolling breadcrumb per aircraft, so the widget
+  --                   can draw a trail and hold a "last seen" point through a
+  --                   coverage gap. NOT synced: every device runs its own poll
+  --                   loop against the public ADS-B API (same as each running
+  --                   its own go2rtc), so each accumulates its own trail. A
+  --                   nightly-ish sweep keeps it to ~a few hours.
+  CREATE TABLE IF NOT EXISTS flight_watch (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id  INTEGER,
+    kind        TEXT NOT NULL DEFAULT 'callsign',
+    value       TEXT NOT NULL,
+    label       TEXT DEFAULT '',
+    active_from TEXT,
+    active_to   TEXT,
+    created_at  TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS flight_positions (
+    hex        TEXT NOT NULL,
+    ts         INTEGER NOT NULL,
+    lat        REAL NOT NULL,
+    lon        REAL NOT NULL,
+    alt_ft     INTEGER,
+    gs_kts     REAL,
+    track      REAL,
+    callsign   TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_flight_positions_hex_ts ON flight_positions (hex, ts);
 `);
 
 // ── Migrations for databases created before end_date support was added ───────
@@ -1177,6 +1212,14 @@ if (!columnExists('displays', 'font_family')) {
 if (!columnExists('photos', 'active')) {
   db.exec(`ALTER TABLE photos ADD COLUMN active INTEGER DEFAULT 1`);
   console.log('Migrated: added active column to photos');
+}
+if (!columnExists('photos', 'source')) {
+  db.exec(`ALTER TABLE photos ADD COLUMN source TEXT DEFAULT 'upload'`);
+  console.log('Migrated: added source column to photos');
+}
+if (!columnExists('photos', 'ext_guid')) {
+  db.exec(`ALTER TABLE photos ADD COLUMN ext_guid TEXT`);
+  console.log('Migrated: added ext_guid column to photos');
 }
 // screens table may predate the info_corner column (added with the control-URL overlay).
 if (!columnExists('screens', 'info_corner')) {
@@ -1461,7 +1504,7 @@ const defaultSettings = {
   news_world_priority: '0',
   news_local_enabled: '0',
   news_local_priority: '0',
-  news_local_location: '',          // city/region, e.g. "Wichita" or "Wichita, KS"
+  news_local_location: '',          // city/region, e.g. "Columbus" or "Columbus, OH"
   news_keywords_enabled: '0',
   news_keywords_priority: '0',
   news_keywords: '',                // comma-separated terms; each becomes its own labeled group
@@ -1491,6 +1534,16 @@ const defaultSettings = {
   icloud_calendar_url: '',        // the DEFAULT calendar collection's CalDAV URL
   icloud_calendar_name: '',       // that calendar's display name — cosmetic, for the "Connected to: X" line
   icloud_calendars_json: '',      // JSON [{url,name}] of every discovered writable calendar, for the per-event picker
+  // iCloud shared-album photo sync — paste a public shared-album link and the
+  // server polls its web feed, downloading photos into the same pool as
+  // uploads (tagged 'icloud', source='icloud'). No OAuth. Host-only.
+  icloud_album_url: '',            // the https://www.icloud.com/sharedalbum/#... link ('' = disabled)
+  icloud_album_ctag: '',           // streamCtag from the last sync — lets a poll no-op when nothing changed
+  icloud_album_last_sync: '',      // ISO timestamp of the last successful sync
+  icloud_album_last_error: '',     // last sync error message ('' = ok)
+  icloud_album_sync_minutes: '60', // poll interval (albums change less often than calendars)
+  icloud_album_max: '300',         // cap on how many of the album's photos to keep (newest first)
+  icloud_album_max_px: '2160',     // don't download a derivative taller than this (SD-card guard)
   // Google Calendar push (OAuth device flow). client_id/secret are ONE shared
   // OAuth client for all households — read from env first (see getGoogleConfig),
   // these settings are the fallback. The tokens are per-household, obtained via
@@ -1550,6 +1603,11 @@ const defaultSettings = {
   mealplan_slots:     'dinner',   // which meal slots the household plans — comma list of breakfast,lunch,dinner (order-insensitive; 'dinner' = the original one-per-day behaviour)
   go2rtc_port:        '1984',     // localhost port the managed go2rtc media process binds to (camera widget)
   camera_service_autostart: '1',  // '0' = never launch the go2rtc process even when a camera widget exists (hard off switch)
+  flightmap_enabled:  '0',        // show the Flight Map widget in the palette — off by default, opt-in like the camera
+  flightmap_source:   '',         // base URL of the ADS-B API; '' = the first built-in (airplanes.live), then adsb.lol / adsb.fi as fallbacks
+  flightmap_poll_seconds: '12',   // how often the server re-polls the ADS-B API per distinct query (clamped to >= 8)
+  flightmap_trail_minutes: '30',  // how much breadcrumb trail to keep/show per aircraft
+  flightmap_ua_contact: '',       // optional email/URL appended to the courtesy User-Agent the ADS-B APIs ask for
   sync_interval_min:  '5',        // how often a slave pulls fresh data from the host
   last_sync_at:       '',         // ISO timestamp of the last successful sync (slave only)
   last_sync_status:   '',         // 'ok' | 'error: <msg>' — surfaced in the app
@@ -1999,11 +2057,12 @@ if (IS_DEMO) {
   const DEMO_BLOCK_PREFIXES = [
     '/api/ha', '/api/ha-alerts', '/api/todoist', '/api/caldav', '/api/google',
     '/api/handwriting', '/api/briefing-settings', '/api/phone-alerts', '/api/push',
-    '/api/photos', '/api/reminders/icon-image', '/api/feeds',
+    '/api/photos', '/api/photo-album', '/api/reminders/icon-image', '/api/feeds',
     '/api/update', '/api/update-from-server', '/api/install-server',
     '/api/custom-theme', '/api/backup', '/api/restore',
     '/api/voice-token', '/api/sync', '/api/setup',
     '/api/cameras', // a shared demo instance must not spin up go2rtc against arbitrary RTSP
+    '/api/flightmap', '/api/flight-watch', // a shared demo must not poll an outside ADS-B API on a lessee's behalf
   ];
   const demoAllowExact = new Set(['/api/notif-prefs', '/api/settings']); // local-only writes, harmless
   app.use((req, res, next) => {
@@ -2085,7 +2144,7 @@ function markHostEditing(ms = 8000) { HOST_EDITING_UNTIL = Date.now() + ms; }
 // 'screens' is included so that assigning a profile to a remote slave bumps the
 // version — the slave's watcher then re-syncs (and re-registers, learning its new
 // assigned profile) within seconds instead of waiting for the slow timer.
-const SHARED_TOPICS = new Set(['events', 'photos', 'settings', 'photo-settings', 'feeds', 'displays', 'layout', 'screens', 'chores', 'todos', 'favorites', 'reminders', 'profiles', 'messages', 'cameras', 'meals']);
+const SHARED_TOPICS = new Set(['events', 'photos', 'settings', 'photo-settings', 'feeds', 'displays', 'layout', 'screens', 'chores', 'todos', 'favorites', 'reminders', 'profiles', 'messages', 'cameras', 'meals', 'flight_watch']);
 
 function broadcastUpdate(topic, displayId) {
   if (SHARED_TOPICS.has(topic)) HOST_DATA_VERSION = Date.now();
@@ -2360,6 +2419,7 @@ function requireAuth(req, res, next) {
     { method: 'GET', path: '/api/feeds' },
     { method: 'GET', path: '/api/layouts' },
     { method: 'GET', path: '/api/geocode' },
+    { method: 'GET', path: '/api/place-search' },
     { method: 'GET', path: '/api/todoist' },
     { method: 'GET', path: '/api/live' },
     { method: 'GET', path: '/api/news' },
@@ -3164,8 +3224,27 @@ function getKidWeeklyCompletion(kidId, todayStr) {
 app.get('/api/chore-chart', (req, res) => {
   const date = req.query.date || choreToday();
   const kids = db.prepare(`SELECT * FROM kids ORDER BY sort_order, id`).all();
+  // The shared bonus / extra-credit pool for the day, so a chore-chart widget
+  // can optionally surface it on the wall (claiming still happens in the app /
+  // kid page). A claimed one carries who got it; unclaimed ones are up for
+  // grabs. Same rows the per-kid /api/kids/:id/bonus-chores route reads.
+  const claimRows = db.prepare(`
+    SELECT ci.chore_id, k.name, k.avatar, k.color
+    FROM chore_instances ci JOIN kids k ON k.id = ci.kid_id
+    WHERE ci.date = ?`).all(date);
+  const claimByChore = new Map(claimRows.map(r => [r.chore_id, r]));
+  const bonusChores = db.prepare(
+    `SELECT id, title, icon, pay_amount FROM chores WHERE active = 1 AND bonus = 1 ORDER BY sort_order, id`
+  ).all().map(c => {
+    const cl = claimByChore.get(c.id);
+    return {
+      id: c.id, title: c.title, icon: c.icon, pay_amount: c.pay_amount || 0,
+      claimedBy: cl ? { name: cl.name, avatar: cl.avatar, color: cl.color } : null,
+    };
+  });
   res.json({
     date,
+    bonusChores,
     kids: kids.map(k => ({
       ...k,
       chores: getKidChores(k.id, date),
@@ -4885,6 +4964,684 @@ app.get('/api/camera/:id/frame.jpeg', (req, res) => {
   up.end();
 });
 
+// ── Flight Map (live ADS-B aircraft tracking) ────────────────────────────────
+// The "flightmap" widget shows filtered aircraft moving on a self-drawn world
+// map. Data comes from free community ADS-B APIs (airplanes.live, with
+// adsb.lol / adsb.fi as fallbacks) — polled server-side on an interval,
+// cached, and pushed to the widget via the normal SSE 'flightmap' topic. The
+// browser only ever hits /api/flightmap/* on its own origin. Every device
+// (host and each slave) runs its own poll loop, exactly like each runs its
+// own go2rtc — so flight_positions (the breadcrumb trail) is per-device and
+// not synced; only flight_watch (saved subjects) syncs host->slave.
+//
+// SSRF posture: outbound hosts are the configured source base (a settings
+// field, same trust class as ha_base_url), the pinned ADS-B fallback hosts,
+// and api.adsbdb.com for route/type enrichment. No user-supplied host ever
+// reaches a fetch — only a callsign/hex is interpolated into a fixed URL.
+
+const FLIGHT_BUILTIN_SOURCES = [
+  'https://api.airplanes.live/v2',
+  'https://api.adsb.lol/v2',
+  'https://opendata.adsb.fi/api/v2',
+];
+function flightSources() {
+  const custom = (getSetting('flightmap_source') || '').trim().replace(/\/+$/, '');
+  const list = [];
+  if (/^https?:\/\/[^\s/]+/i.test(custom)) list.push(custom);
+  for (const s of FLIGHT_BUILTIN_SOURCES) if (!list.includes(s)) list.push(s);
+  return list;
+}
+function flightUserAgent() {
+  const contact = (getSetting('flightmap_ua_contact') || '').trim();
+  return `PiazzaHQ/${APP_VERSION} (+https://piazzahq.com${contact ? '; ' + contact : ''})`;
+}
+function flightPollSeconds() {
+  const n = parseInt(getSetting('flightmap_poll_seconds'), 10);
+  return Number.isFinite(n) ? Math.max(8, Math.min(n, 120)) : 12;
+}
+function flightTrailMinutes() {
+  const n = parseInt(getSetting('flightmap_trail_minutes'), 10);
+  return Number.isFinite(n) ? Math.max(2, Math.min(n, 480)) : 30;
+}
+// A widget can ask for a longer trail than the household default via
+// ?trailMin= on /state; clamp it here (both the seed window and the storage
+// retention floor honour this).
+function clampTrailMin(v, fallback) {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? Math.max(2, Math.min(n, 480)) : fallback;
+}
+
+// Normalise one readsb/tar1090 aircraft record to our shape.
+function normalizeAircraft(ac) {
+  if (!ac || typeof ac.lat !== 'number' || typeof ac.lon !== 'number') return null;
+  const onGround = ac.alt_baro === 'ground' || ac.alt_baro === 0;
+  const altFt = ac.alt_baro === 'ground' ? 0
+    : (typeof ac.alt_baro === 'number' ? ac.alt_baro
+    : (typeof ac.alt_geom === 'number' ? ac.alt_geom : null));
+  return {
+    hex: String(ac.hex || '').trim().toLowerCase(),
+    callsign: String(ac.flight || '').trim(),
+    reg: String(ac.r || '').trim(),
+    type: String(ac.t || '').trim(),
+    lat: ac.lat, lon: ac.lon,
+    altFt,
+    gsKts: typeof ac.gs === 'number' ? ac.gs : null,
+    trackDeg: typeof ac.track === 'number' ? ac.track : (typeof ac.true_heading === 'number' ? ac.true_heading : null),
+    vertRateFpm: typeof ac.baro_rate === 'number' ? ac.baro_rate : (typeof ac.geom_rate === 'number' ? ac.geom_rate : null),
+    squawk: String(ac.squawk || '').trim(),
+    mil: !!((Number(ac.dbFlags) || 0) & 1), // readsb dbFlags bit 0 = military
+    onGround,
+  };
+}
+
+// A FlightQuery is one of:
+//   {kind:'mil'} | {kind:'type', value} | {kind:'squawk', value}
+//   {kind:'callsign', value} | {kind:'reg', value} | {kind:'hex', value}
+//   {kind:'point', lat, lon, radiusNm}
+function flightQueryPath(q) {
+  const e = encodeURIComponent;
+  switch (q.kind) {
+    case 'mil': return '/mil';
+    case 'type': return '/type/' + e(String(q.value || '').toUpperCase());
+    case 'squawk': return '/squawk/' + e(String(q.value || '').replace(/\D/g, '').slice(0, 4));
+    case 'callsign': return '/callsign/' + e(String(q.value || '').toUpperCase().replace(/[^A-Z0-9]/g, ''));
+    case 'reg': return '/reg/' + e(String(q.value || '').toUpperCase().replace(/[^A-Z0-9-]/g, ''));
+    case 'hex': return '/hex/' + e(String(q.value || '').toLowerCase().replace(/[^0-9a-f,]/g, ''));
+    case 'point': {
+      const lat = Math.max(-90, Math.min(90, Number(q.lat) || 0));
+      const lon = Math.max(-180, Math.min(180, Number(q.lon) || 0));
+      const r = Math.max(1, Math.min(250, Math.round(Number(q.radiusNm) || 100)));
+      return `/point/${lat}/${lon}/${r}`;
+    }
+    default: return null;
+  }
+}
+function flightQueryKey(q) {
+  if (!q || !q.kind) return '';
+  if (q.kind === 'point') return `point:${Number(q.lat).toFixed(3)},${Number(q.lon).toFixed(3)},${Math.round(q.radiusNm)}`;
+  return `${q.kind}:${String(q.value || '').toLowerCase()}`;
+}
+function flightQueryValid(q) { return !!(q && flightQueryPath(q)); }
+// "B738, A320" / "b738 a320" -> ['B738','A320']. The ADS-B /type/ endpoint is
+// one type per request, so a multi-type filter fans out to one query each and
+// the results merge by hex in the /state route.
+function flightTypeList(raw) {
+  return String(raw || '').toUpperCase().split(/[\s,]+/).map(s => s.replace(/[^A-Z0-9]/g, '')).filter(Boolean).slice(0, 8);
+}
+
+function flightHttpJson(base, pathname, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(base + pathname); } catch { return reject(new Error('bad url')); }
+    // https for the public APIs; http allowed too (same trust class as
+    // ha_base_url — someone may point flightmap_source at a tar1090 box on
+    // their own LAN). Scheme still bounded to the two.
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return reject(new Error('bad scheme'));
+    const lib = u.protocol === 'https:' ? https : http;
+    const req = lib.get(u, { headers: { 'User-Agent': flightUserAgent(), 'Accept': 'application/json' } }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; if (body.length > 4_000_000) req.destroy(new Error('too big')); });
+      res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(new Error('bad json')); } });
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('timeout')));
+  });
+}
+
+// Try each source in order. The first that returns aircraft wins; a source
+// that answers 200-but-empty is NOT trusted to be authoritative (a
+// soft-rate-limited mirror looks exactly like "no matching aircraft"), so we
+// keep going and take the first non-empty result, falling back to an empty
+// 200 if that's genuinely all anyone has. Returns
+// { aircraft:[...], source, degraded } — degraded=true only if every source
+// errored (caller then keeps serving whatever it had).
+async function flightFetch(q) {
+  const pathname = flightQueryPath(q);
+  if (!pathname) return { aircraft: [], source: null, degraded: true };
+  let anyOk = false, emptySource = null;
+  for (const base of flightSources()) {
+    try {
+      const json = await flightHttpJson(base, pathname);
+      anyOk = true;
+      const raw = Array.isArray(json && json.ac) ? json.ac : (Array.isArray(json && json.aircraft) ? json.aircraft : []);
+      const aircraft = raw.map(normalizeAircraft).filter(a => a && a.hex);
+      if (aircraft.length) return { aircraft, source: base, degraded: false };
+      if (!emptySource) emptySource = base;
+    } catch { /* try next source */ }
+  }
+  if (anyOk) return { aircraft: [], source: emptySource, degraded: false };
+  return { aircraft: [], source: null, degraded: true };
+}
+
+// ── route / aircraft-type enrichment (adsbdb.com — free, no key) ──
+// The ADS-B feeds carry position + callsign but not the origin/destination
+// airports or a human aircraft-type name. adsbdb fills that in. Cached in
+// memory (lost on restart, refetched — fine) and decorated onto the aircraft
+// objects the /state route returns. Only ever fetches api.adsbdb.com over
+// https; a fixed host, no user input in the URL beyond the callsign/hex.
+const _flightRouteCache = new Map();    // callsign -> { route|null, at }
+const _flightAcInfoCache = new Map();   // hex -> { info|null, at }
+const _flightEnrichInflight = new Set();
+const ROUTE_TTL = 2 * 60 * 60 * 1000;
+const ACINFO_TTL = 24 * 60 * 60 * 1000;
+
+// PIAZZA_ADSBDB_URL overrides the enrichment host (tests only; unset in prod).
+const ADSBDB_BASE = process.env.PIAZZA_ADSBDB_URL || 'https://api.adsbdb.com';
+function adsbdbGet(pathname) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(ADSBDB_BASE + pathname);
+    const lib = u.protocol === 'https:' ? https : http;
+    const req = lib.get(u,
+      { headers: { 'User-Agent': flightUserAgent(), 'Accept': 'application/json' } }, (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { body += c; if (body.length > 200000) req.destroy(new Error('too big')); });
+        res.on('end', () => {
+          if (res.statusCode === 404) return resolve(null); // unknown callsign/hex
+          if (res.statusCode !== 200) return reject(new Error('HTTP ' + res.statusCode));
+          try { resolve(JSON.parse(body)); } catch { reject(new Error('bad json')); }
+        });
+      });
+    req.on('error', reject);
+    req.setTimeout(6000, () => req.destroy(new Error('timeout')));
+  });
+}
+function _airport(a) {
+  if (!a || typeof a !== 'object') return null;
+  return {
+    icao: a.icao_code || '', iata: a.iata_code || '',
+    name: a.name || '', city: a.municipality || '',
+    lat: typeof a.latitude === 'number' ? a.latitude : null,
+    lon: typeof a.longitude === 'number' ? a.longitude : null,
+  };
+}
+async function flightEnrichOne(callsign, hex) {
+  const cs = (callsign || '').trim().toUpperCase();
+  const hx = (hex || '').trim().toLowerCase();
+  const now = Date.now();
+  const needRoute = cs && !(_flightRouteCache.has(cs) && now - _flightRouteCache.get(cs).at < ROUTE_TTL);
+  const needAc = hx && !(_flightAcInfoCache.has(hx) && now - _flightAcInfoCache.get(hx).at < ACINFO_TTL);
+  if (!needRoute && !needAc) return;
+  const inflightKey = cs + '|' + hx;
+  if (_flightEnrichInflight.has(inflightKey)) return;
+  _flightEnrichInflight.add(inflightKey);
+  try {
+    if (needRoute) {
+      try {
+        const j = await adsbdbGet('/v0/callsign/' + encodeURIComponent(cs));
+        const fr = j && j.response && typeof j.response === 'object' ? j.response.flightroute : null;
+        _flightRouteCache.set(cs, { at: now, route: fr ? { from: _airport(fr.origin), to: _airport(fr.destination), airline: (fr.airline && fr.airline.name) || '' } : null });
+      } catch { _flightRouteCache.set(cs, { at: now, route: null }); }
+    }
+    if (needAc) {
+      try {
+        const j = await adsbdbGet('/v0/aircraft/' + encodeURIComponent(hx));
+        const ac = j && j.response && typeof j.response === 'object' ? j.response.aircraft : null;
+        _flightAcInfoCache.set(hx, { at: now, info: ac ? { typeName: ac.type || '', icaoType: ac.icao_type || '', manufacturer: ac.manufacturer || '', owner: ac.registered_owner || '' } : null });
+      } catch { _flightAcInfoCache.set(hx, { at: now, info: null }); }
+    }
+  } finally {
+    _flightEnrichInflight.delete(inflightKey);
+  }
+}
+// Decorate an aircraft list with cached route/type info. When awaitSmall and
+// the list is short (a followed flight / a small watch set), block briefly on
+// the first uncached lookup so the very first render has the route; big
+// filter lists enrich in the background and pick it up next poll.
+async function enrichAircraft(list, awaitSmall) {
+  if (!Array.isArray(list) || !list.length) return list;
+  const small = list.length <= 4;
+  const jobs = [];
+  for (const a of list) {
+    if (!a.callsign && !a.hex) continue;
+    const p = flightEnrichOne(a.callsign, a.hex);
+    if (awaitSmall && small) jobs.push(p); else p.catch(() => {});
+  }
+  if (jobs.length) { try { await Promise.race([Promise.allSettled(jobs), new Promise(r => setTimeout(r, 2500))]); } catch {} }
+  for (const a of list) {
+    const r = a.callsign && _flightRouteCache.get(a.callsign.trim().toUpperCase());
+    const i = a.hex && _flightAcInfoCache.get(a.hex);
+    if (r && r.route) a.route = r.route;
+    if (i && i.info) { a.typeName = i.info.typeName; a.owner = i.info.owner; if (!a.type && i.info.icaoType) a.type = i.info.icaoType; }
+  }
+  return list;
+}
+
+// ── poll loop ──
+const _flightState = new Map();   // queryKey -> { query, fetchedAt, source, aircraft, degraded }
+const _flightBackoff = new Map(); // queryKey -> ms
+let _flightPollTID = null;
+let _flightPolling = false;
+
+function activeFlightWatches(now) {
+  const today = (now instanceof Date ? now : new Date()).toISOString().slice(0, 10);
+  return db.prepare(`SELECT * FROM flight_watch`).all().filter(r =>
+    (!r.active_from || r.active_from <= today) && (!r.active_to || r.active_to >= today));
+}
+function watchToQuery(r) {
+  const kind = r.kind === 'reg' ? 'reg' : (r.kind === 'hex' ? 'hex' : 'callsign');
+  return { kind, value: r.value };
+}
+// The union of distinct queries across every flightmap widget on every layout
+// plus every active flight_watch row. De-duped by key.
+function activeFlightQueries() {
+  const out = new Map();
+  const add = (q) => { if (flightQueryValid(q)) out.set(flightQueryKey(q), q); };
+  try {
+    for (const row of db.prepare(`SELECT widgets FROM layouts`).all()) {
+      let arr; try { arr = JSON.parse(row.widgets || '[]'); } catch { continue; }
+      if (!Array.isArray(arr)) continue;
+      for (const w of arr) {
+        if (!w || w.type !== 'flightmap') continue;
+        for (const q of widgetFlightQueries(w)) add(q);
+      }
+    }
+  } catch {}
+  try { for (const r of activeFlightWatches()) add(watchToQuery(r)); } catch {}
+  return [...out.entries()].map(([key, query]) => ({ key, query }));
+}
+// The concrete queries a single widget needs, given its subject config.
+function widgetFlightQueries(w) {
+  const s = (w && w.fmSubject) || 'filter';
+  if (s === 'flight') {
+    const kind = w.fmFlightKind === 'reg' ? 'reg' : (w.fmFlightKind === 'hex' ? 'hex' : 'callsign');
+    return w.fmFlightValue ? [{ kind, value: w.fmFlightValue }] : [];
+  }
+  if (s === 'watch') {
+    const rows = activeFlightWatches().filter(r =>
+      w.fmWatchProfileId == null ? true : String(r.profile_id) === String(w.fmWatchProfileId));
+    return rows.map(watchToQuery);
+  }
+  // filter
+  const f = (w && w.fmFilter) || {};
+  if (f.mil) return [{ kind: 'mil' }];
+  if (f.type) return flightTypeList(f.type).map(t => ({ kind: 'type', value: t }));
+  if (f.squawk) return [{ kind: 'squawk', value: f.squawk }];
+  if (f.radiusNm && (f.lat != null) && (f.lon != null))
+    return [{ kind: 'point', lat: f.lat, lon: f.lon, radiusNm: f.radiusNm }];
+  return [];
+}
+
+function recordFlightPositions(aircraft) {
+  // No isSlave() guard: a slave is a real device with a display that polls the
+  // ADS-B API itself, so it keeps its own local trail (flight_positions is not
+  // synced). Same model as each device running its own go2rtc.
+  const now = Math.floor(Date.now() / 1000);
+  const ins = db.prepare(`INSERT INTO flight_positions (hex, ts, lat, lon, alt_ft, gs_kts, track, callsign) VALUES (?,?,?,?,?,?,?,?)`);
+  const tx = db.transaction((list) => {
+    for (const a of list) {
+      if (!a.hex || typeof a.lat !== 'number' || typeof a.lon !== 'number') continue;
+      ins.run(a.hex, now, a.lat, a.lon, a.altFt == null ? null : Math.round(a.altFt),
+        a.gsKts == null ? null : a.gsKts, a.trackDeg == null ? null : a.trackDeg, a.callsign || null);
+    }
+  });
+  try { tx(aircraft); } catch {}
+}
+
+async function flightPollTick() {
+  if (_flightPolling) return;
+  _flightPolling = true;
+  try {
+    const queries = activeFlightQueries();
+    const keep = new Set(queries.map(q => q.key));
+    for (const k of [..._flightState.keys()]) if (!keep.has(k)) _flightState.delete(k);
+    if (!queries.length) return;
+    let changed = false;
+    for (const { key, query } of queries) {
+      const bo = _flightBackoff.get(key) || 0;
+      const prev = _flightState.get(key);
+      if (bo && prev && Date.now() - prev.fetchedAt < bo) continue;
+      const r = await flightFetch(query);
+      if (r.degraded) {
+        _flightBackoff.set(key, Math.min((bo || flightPollSeconds() * 1000) * 2, 5 * 60 * 1000));
+        if (prev) prev.degraded = true;
+        continue;
+      }
+      _flightBackoff.delete(key);
+      _flightState.set(key, { query, fetchedAt: Date.now(), source: r.source, aircraft: r.aircraft, degraded: false });
+      recordFlightPositions(r.aircraft);
+      enrichAircraft(r.aircraft, false).catch(() => {}); // background: next /state call serves it
+      changed = true;
+    }
+    if (changed) broadcastUpdate('flightmap');
+  } catch (e) {
+    console.error('[flightmap] poll error: ' + e.message);
+  } finally {
+    _flightPolling = false;
+  }
+}
+function startFlightPolling() {
+  if (_flightPollTID) clearInterval(_flightPollTID);
+  const run = () => { flightPollTick().catch(() => {}); };
+  _flightPollTID = setInterval(run, Math.max(4000, flightPollSeconds() * 1000));
+  run();
+}
+
+// The longest trail any flightmap widget on any layout is asking for, so the
+// sweep keeps enough history to satisfy it (a widget's fmTrailMin can exceed
+// the household flightmap_trail_minutes default).
+function maxWidgetTrailMinutes() {
+  let m = 0;
+  try {
+    for (const r of db.prepare(`SELECT widgets FROM layouts`).all()) {
+      let arr; try { arr = JSON.parse(r.widgets || '[]'); } catch { continue; }
+      for (const w of (Array.isArray(arr) ? arr : [])) {
+        if (w && w.type === 'flightmap' && Number.isFinite(+w.fmTrailMin)) m = Math.max(m, +w.fmTrailMin);
+      }
+    }
+  } catch {}
+  return m;
+}
+function sweepFlightPositions() {
+  try {
+    const keepMin = Math.min(Math.max(flightTrailMinutes(), maxWidgetTrailMinutes(), 180), 480);
+    const cutoff = Math.floor(Date.now() / 1000) - keepMin * 60;
+    db.prepare(`DELETE FROM flight_positions WHERE ts < ?`).run(cutoff);
+    // per-hex row cap — enough for ~8h at a 12s poll
+    db.prepare(`
+      DELETE FROM flight_positions WHERE rowid IN (
+        SELECT rowid FROM (
+          SELECT rowid, ROW_NUMBER() OVER (PARTITION BY hex ORDER BY ts DESC) AS rn FROM flight_positions
+        ) WHERE rn > 2600
+      )`).run();
+  } catch (e) { console.error('[flightmap] sweep error: ' + e.message); }
+}
+setInterval(() => { try { sweepFlightPositions(); } catch {} }, 30 * 60 * 1000);
+
+function anyLayoutHasFlightMap() {
+  try {
+    for (const r of db.prepare(`SELECT widgets FROM layouts`).all()) {
+      const arr = JSON.parse(r.widgets || '[]');
+      if (Array.isArray(arr) && arr.some(w => w && w.type === 'flightmap')) return true;
+    }
+  } catch {}
+  return false;
+}
+
+// ── world basemap (optional on-demand download, mirrors ensureGo2rtcBinary) ──
+// It's world-atlas@2's countries-50m.json (Natural Earth 1:50m land + country
+// borders — public domain), fetched once on first Flight Map use and
+// sha256-verified. Pinned + hashed in scripts/basemap-version.sh; keep in
+// step on a bump. Served from jsDelivr's npm mirror (stable, version-pinned);
+// PIAZZA_BASEMAP_URL overrides it (tests point it at a local fixture; unset
+// in every real deployment). ensureBasemap() accepts the file raw OR gzipped.
+const BASEMAP_VERSION = 'world-atlas@2/countries-50m';
+const BASEMAP_URL = process.env.PIAZZA_BASEMAP_URL
+  || 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json';
+const BASEMAP_SHA256_GZ = 'b0cc4fba25b956b5797bdda6b5276cfa5aac427ba3274e7c3e9eb8a50de4bf0f';
+const BASEMAP_SHA256_RAW = '04342cdc1e3016bcd7db1630de95684d67b79fe3c8c460321e87aef469502394';
+const BASEMAP_RAW_BYTES = 756420;
+const BASEMAP_PATH = dataPath('flightmap-basemap.json');
+let _basemapDownloading = false;
+let _basemapDownloadPromise = null;
+let _basemapUnavailable = false;
+let _basemapNextRetryAt = 0; // don't re-hit the network on every poll after a failure
+
+// Optional second layer: US state borders (us-atlas@3's states-10m.json —
+// public domain, US Census). Same on-demand + sha256 pattern; drawn under
+// the country outlines when the widget's "state lines" option is on.
+const STATES_URL = process.env.PIAZZA_STATES_URL || 'https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json';
+const STATES_SHA256 = 'd76b391ccfa8bff601d51e3e3da5d43a89fa46cd5caca72ce731b383be5596d0';
+const STATES_BYTES = 114554;
+const STATES_PATH = dataPath('flightmap-states.json');
+let _statesDownloading = false, _statesPromise = null, _statesUnavail = false, _statesRetryAt = 0;
+function statesReady() { try { return fs.existsSync(STATES_PATH) && fs.statSync(STATES_PATH).size === STATES_BYTES; } catch { return false; } }
+async function ensureStatesBasemap() {
+  if (statesReady()) return true;
+  if (_statesPromise) return _statesPromise;
+  if (!flightmapWanted()) return false;
+  if (_statesUnavail && Date.now() < _statesRetryAt) return false;
+  _statesPromise = (async () => {
+    _statesDownloading = true;
+    const tmp = STATES_PATH + `.dl.${process.pid}`;
+    try {
+      fs.mkdirSync(path.dirname(STATES_PATH), { recursive: true });
+      await downloadFile(STATES_URL, tmp, 60000);
+      let buf = fs.readFileSync(tmp);
+      if (buf[0] === 0x1f && buf[1] === 0x8b) buf = zlib.gunzipSync(buf);
+      if (crypto.createHash('sha256').update(buf).digest('hex') !== STATES_SHA256) throw new Error('states sha256 mismatch');
+      JSON.parse(buf);
+      fs.writeFileSync(STATES_PATH, buf);
+      _statesUnavail = false;
+      console.log('[flightmap] state-lines basemap ready');
+      return true;
+    } catch (e) {
+      try { fs.rmSync(tmp, { force: true }); } catch {}
+      _statesUnavail = true; _statesRetryAt = Date.now() + 60000;
+      console.error('[flightmap] state-lines download failed: ' + e.message);
+      return false;
+    } finally { _statesDownloading = false; _statesPromise = null; }
+  })();
+  return _statesPromise;
+}
+
+function basemapReady() {
+  try { return fs.existsSync(BASEMAP_PATH) && fs.statSync(BASEMAP_PATH).size === BASEMAP_RAW_BYTES; }
+  catch { return false; }
+}
+function basemapState() {
+  if (basemapReady()) return 'ready';
+  if (_basemapDownloading) return 'downloading';
+  if (_basemapUnavailable) return 'unavailable';
+  return 'idle';
+}
+function flightmapWanted() {
+  return getSetting('flightmap_enabled') === '1' || anyLayoutHasFlightMap();
+}
+async function ensureBasemap() {
+  if (basemapReady()) return true;
+  if (_basemapDownloadPromise) return _basemapDownloadPromise;
+  if (!flightmapWanted()) return false;
+  if (_basemapUnavailable && Date.now() < _basemapNextRetryAt) return false; // cooling off after a failure
+  _basemapDownloadPromise = (async () => {
+    _basemapDownloading = true;
+    const tmp = BASEMAP_PATH + `.download.${process.pid}`;
+    const tmpDl = tmp + '.dl';
+    try {
+      fs.mkdirSync(path.dirname(BASEMAP_PATH), { recursive: true });
+      console.log(`[flightmap] downloading basemap (${BASEMAP_VERSION})…`);
+      await downloadFile(BASEMAP_URL, tmpDl, 60000);
+      let buf = fs.readFileSync(tmpDl);
+      // The source may serve the file raw (jsDelivr) or gzipped (a mirror /
+      // the test fixture). gzip magic is 1f 8b.
+      if (buf[0] === 0x1f && buf[1] === 0x8b) {
+        if (crypto.createHash('sha256').update(buf).digest('hex') !== BASEMAP_SHA256_GZ)
+          throw new Error('basemap .gz sha256 mismatch');
+        buf = zlib.gunzipSync(buf);
+      }
+      if (crypto.createHash('sha256').update(buf).digest('hex') !== BASEMAP_SHA256_RAW)
+        throw new Error('basemap sha256 mismatch');
+      JSON.parse(buf); // must be valid JSON
+      fs.writeFileSync(tmp, buf);
+      fs.renameSync(tmp, BASEMAP_PATH);
+      fs.rmSync(tmpDl, { force: true });
+      _basemapUnavailable = false;
+      console.log('[flightmap] basemap ready');
+      return true;
+    } catch (e) {
+      try { fs.rmSync(tmp, { force: true }); } catch {}
+      try { fs.rmSync(tmpDl, { force: true }); } catch {}
+      _basemapUnavailable = true;
+      _basemapNextRetryAt = Date.now() + 60000;
+      console.error('[flightmap] basemap download failed (map unavailable for now): ' + e.message);
+      return false;
+    } finally {
+      _basemapDownloading = false;
+      _basemapDownloadPromise = null;
+    }
+  })();
+  return _basemapDownloadPromise;
+}
+// Self-heal: a flight widget exists but the basemap never landed (offline at
+// first use) — retry while it's wanted. Cheap no-op otherwise.
+setInterval(() => {
+  if (!basemapReady() && !_basemapDownloading && flightmapWanted()) ensureBasemap().catch(() => {});
+  if (!statesReady() && !_statesDownloading && flightmapWanted()) ensureStatesBasemap().catch(() => {});
+}, 20 * 60 * 1000);
+
+// ── routes ──
+function resolveSubjectQueries(qp) {
+  const subject = qp.subject || 'filter';
+  if (subject === 'flight') {
+    const kind = qp.hex ? 'hex' : (qp.reg ? 'reg' : 'callsign');
+    const value = qp.hex || qp.reg || qp.callsign || '';
+    return value ? [{ kind, value }] : [];
+  }
+  if (subject === 'watch') {
+    let rows = activeFlightWatches();
+    if (qp.watchId) rows = rows.filter(r => String(r.id) === String(qp.watchId));
+    else if (qp.profileId) rows = rows.filter(r => String(r.profile_id) === String(qp.profileId));
+    return rows.map(watchToQuery);
+  }
+  // filter
+  if (qp.mil === '1' || qp.mil === 'true') return [{ kind: 'mil' }];
+  if (qp.type) return flightTypeList(qp.type).map(t => ({ kind: 'type', value: t }));
+  if (qp.squawk) return [{ kind: 'squawk', value: qp.squawk }];
+  if (qp.radiusNm && qp.lat && qp.lon)
+    return [{ kind: 'point', lat: Number(qp.lat), lon: Number(qp.lon), radiusNm: Number(qp.radiusNm) }];
+  return [];
+}
+
+app.get('/api/flightmap/state', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const queries = resolveSubjectQueries(req.query).filter(flightQueryValid);
+  if (!queries.length) return res.json({ aircraft: [], fetchedAt: 0, source: null, degraded: false, trailSeed: {}, note: 'no subject configured' });
+  const byHex = new Map();
+  let fetchedAt = 0, source = null, degraded = false;
+  const maxAge = flightPollSeconds() * 1000;
+  for (const q of queries) {
+    const key = flightQueryKey(q);
+    let entry = _flightState.get(key);
+    if (!entry || Date.now() - entry.fetchedAt > maxAge) {
+      try {
+        const r = await flightFetch(q);
+        if (!r.degraded) {
+          entry = { query: q, fetchedAt: Date.now(), source: r.source, aircraft: r.aircraft, degraded: false };
+          _flightState.set(key, entry);
+          recordFlightPositions(r.aircraft);
+        } else if (!entry) {
+          degraded = true;
+          continue;
+        } else {
+          entry.degraded = true;
+        }
+      } catch { if (!entry) { degraded = true; continue; } }
+    }
+    if (!entry) continue;
+    fetchedAt = Math.max(fetchedAt, entry.fetchedAt);
+    source = source || entry.source;
+    if (entry.degraded) degraded = true;
+    for (const a of entry.aircraft) byHex.set(a.hex, a);
+  }
+  let aircraft = [...byHex.values()];
+  // "military only" — drop civil aircraft that happen to share an ICAO type
+  // (e.g. civil aircraft that happen to share an ICAO type with a military variant).
+  if (req.query.milOnly === '1' || req.query.milOnly === 'true') aircraft = aircraft.filter(a => a.mil);
+  // callsign-prefix filter — "all United / Delta / …" (ICAO prefixes like
+  // UAL, DAL). The ADS-B feed has no operator query, so this filters a
+  // point/area result down by callsign.
+  const csPfx = String(req.query.callsignPrefix || '').toUpperCase().split(/[\s,]+/).map(s => s.replace(/[^A-Z0-9]/g, '')).filter(Boolean);
+  if (csPfx.length) {
+    aircraft = aircraft.filter(a => { const c = (a.callsign || '').toUpperCase(); return csPfx.some(p => c.startsWith(p)); });
+  }
+  // route / aircraft-type enrichment (adsbdb) — block briefly for a small
+  // followed set so the first render has the route; big lists fill in later.
+  try { await enrichAircraft(aircraft, true); } catch {}
+  // trail seed: last N minutes of positions for each aircraft shown — the
+  // widget's own fmTrailMin (?trailMin=) wins over the household default.
+  const trailMin = clampTrailMin(req.query.trailMin, flightTrailMinutes());
+  const since = Math.floor(Date.now() / 1000) - trailMin * 60;
+  const trailSeed = {};
+  const trailStmt = db.prepare(`SELECT ts, lat, lon, alt_ft FROM flight_positions WHERE hex = ? AND ts >= ? ORDER BY ts`);
+  for (const a of aircraft) {
+    const rows = trailStmt.all(a.hex, since);
+    if (rows.length > 1) trailSeed[a.hex] = rows.map(r => [r.ts, r.lat, r.lon, r.alt_ft]);
+  }
+  res.json({ aircraft, fetchedAt, source, degraded, trailSeed });
+});
+
+app.get('/api/flightmap/trail/:hex', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const hex = String(req.params.hex || '').toLowerCase().replace(/[^0-9a-f]/g, '').slice(0, 8);
+  if (!hex) return res.json([]);
+  const mins = clampTrailMin(req.query.minutes, flightTrailMinutes());
+  const since = Math.floor(Date.now() / 1000) - mins * 60;
+  res.json(db.prepare(`SELECT ts, lat, lon, alt_ft FROM flight_positions WHERE hex = ? AND ts >= ? ORDER BY ts`).all(hex, since));
+});
+
+app.get('/api/flightmap/basemap', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (flightmapWanted()) {
+    if (!basemapReady() && !_basemapDownloading) ensureBasemap().catch(() => {});
+    if (!statesReady() && !_statesDownloading) ensureStatesBasemap().catch(() => {});
+  }
+  res.json({ state: basemapState(), version: BASEMAP_VERSION, states: statesReady() });
+});
+app.get('/api/flightmap/basemap.json', (req, res) => {
+  if (basemapReady()) {
+    res.set('Cache-Control', 'public, max-age=604800, immutable');
+    return res.sendFile(BASEMAP_PATH);
+  }
+  if (flightmapWanted()) ensureBasemap().catch(() => {});
+  res.status(503).json({ state: basemapState() });
+});
+app.get('/api/flightmap/states.json', (req, res) => {
+  if (statesReady()) {
+    res.set('Cache-Control', 'public, max-age=604800, immutable');
+    return res.sendFile(STATES_PATH);
+  }
+  if (flightmapWanted()) ensureStatesBasemap().catch(() => {});
+  res.status(503).json({ ready: false });
+});
+
+// flight_watch CRUD. slaveWriteGuard proxies the mutating verbs to the host
+// automatically (not in its local-only allowlist); GET is answered locally
+// off the synced table.
+app.get('/api/flight-watch', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(db.prepare(`SELECT * FROM flight_watch ORDER BY COALESCE(profile_id, -1), id`).all());
+});
+const FW_KINDS = new Set(['callsign', 'reg', 'hex']);
+const FW_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function cleanWatchBody(b) {
+  const kind = FW_KINDS.has(b.kind) ? b.kind : 'callsign';
+  let value = String(b.value || '').trim().toUpperCase();
+  if (kind === 'hex') value = value.toLowerCase().replace(/[^0-9a-f]/g, '').slice(0, 8);
+  else value = value.replace(/[^A-Z0-9-]/g, '').slice(0, 12);
+  const label = String(b.label || '').trim().slice(0, 60);
+  const profileId = coerceOwnerProfileId(b.profile_id);
+  const af = FW_DATE_RE.test(b.active_from || '') ? b.active_from : null;
+  const at = FW_DATE_RE.test(b.active_to || '') ? b.active_to : null;
+  return { kind, value, label, profileId, af, at };
+}
+app.post('/api/flight-watch', (req, res) => {
+  const c = cleanWatchBody(req.body || {});
+  if (!c.value) return res.status(400).json({ error: 'value is required (a callsign, registration or hex)' });
+  const r = db.prepare(`INSERT INTO flight_watch (profile_id, kind, value, label, active_from, active_to) VALUES (?,?,?,?,?,?)`)
+    .run(c.profileId, c.kind, c.value, c.label, c.af, c.at);
+  broadcastUpdate('flight_watch');
+  startFlightPolling(); // pick the new subject up now, not next tick
+  res.status(201).json(db.prepare(`SELECT * FROM flight_watch WHERE id = ?`).get(r.lastInsertRowid));
+});
+app.put('/api/flight-watch/:id', (req, res) => {
+  const existing = db.prepare(`SELECT * FROM flight_watch WHERE id = ?`).get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const c = cleanWatchBody({ ...existing, ...req.body });
+  if (!c.value) return res.status(400).json({ error: 'value cannot be empty' });
+  db.prepare(`UPDATE flight_watch SET profile_id=?, kind=?, value=?, label=?, active_from=?, active_to=? WHERE id=?`)
+    .run(c.profileId, c.kind, c.value, c.label, c.af, c.at, existing.id);
+  broadcastUpdate('flight_watch');
+  res.json(db.prepare(`SELECT * FROM flight_watch WHERE id = ?`).get(existing.id));
+});
+app.delete('/api/flight-watch/:id', (req, res) => {
+  const r = db.prepare(`DELETE FROM flight_watch WHERE id = ?`).run(req.params.id);
+  if (r.changes === 0) return res.status(404).json({ error: 'Not found' });
+  broadcastUpdate('flight_watch');
+  res.json({ ok: true });
+});
+
 // ── Settings API ─────────────────────────────────────────────────────────────
 
 // GET /api/settings
@@ -4978,6 +5735,12 @@ app.put('/api/settings', (req, res) => {
   // process rewritten/restarted (or stopped) to match.
   if ('go2rtc_port' in req.body || 'camera_service_autostart' in req.body) {
     try { reloadCameraService(); } catch {}
+  }
+  // Flight Map: enabling it (or changing the source/interval) should take
+  // effect now — re-arm the poll loop and pre-fetch the basemap.
+  if ('flightmap_enabled' in req.body || 'flightmap_source' in req.body || 'flightmap_poll_seconds' in req.body) {
+    try { startFlightPolling(); } catch {}
+    try { if (flightmapWanted()) { ensureBasemap().catch(() => {}); ensureStatesBasemap().catch(() => {}); } } catch {}
   }
   const rows = db.prepare(`SELECT key, value FROM settings`).all();
   broadcastUpdate('settings');
@@ -5220,6 +5983,10 @@ function buildSyncSnapshot() {
       messages: tableRows('messages'),
       cameras: tableRows('cameras'),
       meals: tableRows('meals'),
+      // Saved flight subjects (incl. per-profile "My Flights"). flight_positions
+      // is deliberately NOT synced — each device polls the ADS-B API itself and
+      // builds its own trail, same as each device running its own go2rtc.
+      flight_watch: tableRows('flight_watch'),
     },
   };
 }
@@ -5365,6 +6132,7 @@ const applySyncSnapshot = db.transaction((snap) => {
   if (T.messages) replaceTable('messages', T.messages);
   if (T.cameras) replaceTable('cameras', T.cameras);
   if (T.meals) replaceTable('meals', T.meals);
+  if (T.flight_watch) replaceTable('flight_watch', T.flight_watch);
 });
 
 // Pull any photo image files this slave is missing, so cached photos actually
@@ -5915,7 +6683,7 @@ function proxyJSONToHost(method, urlPath, bodyObj) {
 // ── Geocoding — zip code to lat/lon (nominatim, free, no key) ────────────────
 // US Postal abbreviations for the 50 states + DC, used to turn a full state name
 // (as returned by Nominatim) into the compact "ST" people expect next to a city,
-// e.g. "Wichita, KS" rather than "Wichita, Kansas".
+// e.g. "Columbus, OH" rather than "Columbus, Ohio".
 const US_STATE_ABBR = {
   'Alabama':'AL','Alaska':'AK','Arizona':'AZ','Arkansas':'AR','California':'CA','Colorado':'CO',
   'Connecticut':'CT','Delaware':'DE','Florida':'FL','Georgia':'GA','Hawaii':'HI','Idaho':'ID',
@@ -6041,6 +6809,20 @@ app.get('/api/geocode', async (req, res) => {
   }
   // Return both label keys so either caller style works.
   res.json({ lat, lon, display_name, location_label: locationLabel, label: locationLabel });
+});
+
+// Free-text place search (city / airport / landmark / ZIP) → lat/lon + label.
+// Read-only: unlike /api/geocode this never touches the device's saved weather
+// location. Used by widgets that let you centre a map on a searched place.
+app.get('/api/place-search', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (q.length < 2) return res.status(400).json({ error: 'A search term is required.' });
+  try {
+    const r = await geocodeAddress(q);
+    res.json({ lat: r.lat, lon: r.lon, label: r.label });
+  } catch (e) {
+    res.status(404).json({ error: (e && e.message) || 'Place not found' });
+  }
 });
 
 // ── Weather proxy (Open-Meteo, free, no API key) ─────────────────────────────
@@ -6299,7 +7081,7 @@ async function getWeatherNWS(lat, lon) {
 // which had never actually been exercised before beta.7 (a separate crash
 // in trackTodayExtreme was throwing first every time, so this line never
 // even ran until that crash was fixed). Verified now with a continuous
-// 72-hour sweep across multiple longitudes/hemispheres (Wichita, Tokyo,
+// 72-hour sweep across multiple longitudes/hemispheres (Denver, Tokyo,
 // London, Sydney) — exactly one flip to day and one to night per real 24h
 // period, everywhere tested.
 function computeSunTimes(lat, lon, when) {
@@ -6585,12 +7367,14 @@ app.get('/api/air-quality', async (req, res) => {
 // for a specific widget, not setting the device's home location).
 const _geocodeCache = new Map(); // query -> { lat, lon, label, at }
 const GEOCODE_CACHE_MS = 24 * 60 * 60 * 1000; // 24h — addresses don't move
+// Override the geocoder base only in tests (PIAZZA_NOMINATIM_URL); unset everywhere real.
+const NOMINATIM_BASE = process.env.PIAZZA_NOMINATIM_URL || 'https://nominatim.openstreetmap.org';
 function geocodeAddress(query) {
   const cached = _geocodeCache.get(query);
   if (cached && (Date.now() - cached.at) < GEOCODE_CACHE_MS) return Promise.resolve(cached);
   return new Promise((resolve, reject) => {
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
-    https.get(url, { headers: { 'User-Agent': 'PiazzaHQ/1.0' } }, (apiRes) => {
+    const url = `${NOMINATIM_BASE}/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
+    (url.startsWith('http://') ? http : https).get(url, { headers: { 'User-Agent': 'PiazzaHQ/1.0' } }, (apiRes) => {
       let data = '';
       apiRes.on('data', c => data += c);
       apiRes.on('end', () => {
@@ -8594,6 +9378,278 @@ function scheduleNextDailyUpdateInstall() {
   }, msUntil);
 }
 scheduleNextDailyUpdateInstall(); // arm at boot — no-op if mode is 'immediate'
+
+// ── iCloud shared-album photo sync ───────────────────────────────────────────
+// A public iCloud shared album exposes an unauthenticated web feed (the same
+// thing icloud.com renders for a shared-album link). We poll it like an iCal
+// feed: paste a URL, the server downloads the photos into the same pool as
+// uploads (source='icloud', tagged 'icloud'). Host-only; a broken album sync
+// must never affect uploaded photos — errors just land in
+// icloud_album_last_error. Highest-risk of the planned features (undocumented
+// Apple endpoint) — keep every failure path graceful.
+//
+// PIAZZA_ICLOUD_HOST overrides the sharedstreams host (tests point it at a
+// fake server; unset in every real deployment).
+
+const SHARED_ALBUM_B62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+function parseSharedAlbumToken(url) {
+  const s = String(url || '').trim();
+  // Classic tokens are ~15 alphanumerics; newer "Copy Link" tokens are long
+  // (60-120 chars) and contain '-' / '_' (base64url). Accept both shapes.
+  let m = s.match(/icloud\.com\/sharedalbum\/#?([A-Za-z0-9._-]{8,240})/i);
+  if (m) return m[1];
+  m = s.match(/share\.icloud\.com\/photos\/([A-Za-z0-9._-]{8,240})/i);
+  if (m) return m[1];
+  return null;
+}
+function isSharedAlbumUrl(url) { return !!parseSharedAlbumToken(url); }
+// First-guess partition host from the token. Correct for classic short tokens;
+// modern long tokens derive to a low-numbered partition (p1/p2/…) that Apple
+// no longer runs, so icloudStreamPost() falls back to a list of known-live
+// partitions — whichever answers replies 330 + X-Apple-MMe-Host with the
+// album's real home, which icloudStreamFollow() then chases.
+function sharedAlbumBaseHost(token) {
+  const seg = token[0] === 'A' ? token.slice(1, 3) : token.slice(1, 2);
+  let n = 0;
+  for (const ch of seg) { const d = SHARED_ALBUM_B62.indexOf(ch); if (d < 0) { n = 0; break; } n = n * 62 + d; }
+  if (!Number.isFinite(n) || n < 1) n = 1;
+  return `p${n}-sharedstreams.icloud.com`;
+}
+// Known-live sharedstreams partitions to bootstrap from when the derived guess
+// doesn't resolve. Any of them will 330-redirect a valid token to its real
+// partition; the list is just for resilience if one is down/renamed.
+const ICLOUD_BOOTSTRAP_HOSTS = ['p23', 'p52', 'p97', 'p113', 'p143', 'p161', 'p192']
+  .map(p => `${p}-sharedstreams.icloud.com`);
+const _icloudTransient = (e) =>
+  /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|timed out|socket hang up|network|getaddrinfo/i
+    .test(String((e && e.message) || e));
+function icloudStreamRequest(url, bodyObj) {
+  return new Promise((resolve, reject) => {
+    let u; try { u = new URL(url); } catch { return reject(new Error('bad iCloud url')); }
+    const lib = u.protocol === 'http:' ? http : https;
+    const payload = Buffer.from(JSON.stringify(bodyObj || {}), 'utf8');
+    const req = lib.request({
+      hostname: u.hostname, port: u.port || (u.protocol === 'http:' ? 80 : 443), path: u.pathname + u.search, method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain;charset=UTF-8', 'Content-Length': payload.length,
+        'User-Agent': 'PiazzaHQ/1.0', 'Origin': 'https://www.icloud.com', 'Accept': '*/*',
+      },
+      agent: false,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => { chunks.push(c); });
+      res.on('end', () => {
+        let buf = Buffer.concat(chunks);
+        const enc = (res.headers['content-encoding'] || '').toLowerCase();
+        try {
+          if (enc === 'gzip') buf = zlib.gunzipSync(buf);
+          else if (enc === 'deflate') buf = zlib.inflateSync(buf);
+          else if (enc === 'br') buf = zlib.brotliDecompressSync(buf);
+        } catch {}
+        let json = null;
+        try { json = JSON.parse(buf.toString('utf8')); } catch {}
+        resolve({ statusCode: res.statusCode, headers: res.headers, json });
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(20000, () => req.destroy(new Error('iCloud request timed out')));
+    req.write(payload); req.end();
+  });
+}
+const _icloudRoot = (host) => /^https?:\/\//i.test(host) ? host.replace(/\/+$/, '') : 'https://' + host;
+// One start host, chasing 330 + X-Apple-MMe-Host to the album's real partition.
+async function icloudStreamFollow(host, token, endpoint, bodyObj) {
+  for (let hop = 0; hop < 4; hop++) {
+    const r = await icloudStreamRequest(`${_icloudRoot(host)}/${token}/sharedstreams/${endpoint}`, bodyObj);
+    if (r.statusCode === 330 && r.headers['x-apple-mme-host']) { host = String(r.headers['x-apple-mme-host']); continue; }
+    if (r.statusCode !== 200 || !r.json) throw new Error(`iCloud "${endpoint}" returned HTTP ${r.statusCode}`);
+    return { host, json: r.json };
+  }
+  throw new Error(`iCloud "${endpoint}": too many partition redirects`);
+}
+async function icloudStreamPost(host, token, endpoint, bodyObj) {
+  // Try the derived guess first; on a DNS/connection failure fall through to
+  // the known-live partitions. A test host override never falls back to Apple.
+  const extra = process.env.PIAZZA_ICLOUD_HOST ? [] : ICLOUD_BOOTSTRAP_HOSTS;
+  const seen = new Set();
+  const candidates = [host, ...extra].filter((h) => {
+    const k = String(h || '').toLowerCase().replace(/^https?:\/\//, '');
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  let lastErr;
+  for (const start of candidates) {
+    try { return await icloudStreamFollow(start, token, endpoint, bodyObj); }
+    catch (e) { lastErr = e; if (!_icloudTransient(e)) throw e; }
+  }
+  throw lastErr || new Error(`iCloud "${endpoint}": no reachable partition host`);
+}
+// Largest derivative no taller than capPx; else the smallest available.
+function pickAlbumDerivative(derivatives, capPx) {
+  const list = Object.values(derivatives || {})
+    .map(d => ({ checksum: d && d.checksum, width: +(d && d.width) || 0, height: +(d && d.height) || 0, fileSize: +(d && d.fileSize) || 0 }))
+    .filter(d => d.checksum);
+  if (!list.length) return null;
+  const under = list.filter(d => d.height && d.height <= capPx);
+  return (under.length ? under.sort((a, b) => b.height - a.height) : list.sort((a, b) => a.height - b.height))[0];
+}
+function imageExtFromMagic(b) {
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpg';
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'png';
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'gif';
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'webp';
+  return null; // HEIC or anything a browser can't render — skip it
+}
+
+let _albumSyncing = false;
+async function syncIcloudAlbum() {
+  const out = { added: 0, removed: 0, skipped: 0 };
+  if (isSlave()) return out;
+  if (_albumSyncing) return { ...out, error: 'A sync is already running.' };
+  const token = parseSharedAlbumToken(getSetting('icloud_album_url'));
+  if (!token) return out;
+  _albumSyncing = true;
+  try {
+    let host = process.env.PIAZZA_ICLOUD_HOST || sharedAlbumBaseHost(token);
+    const ws = await icloudStreamPost(host, token, 'webstream', { streamCtag: null });
+    host = ws.host;
+    const stream = ws.json || {};
+    const newCtag = stream.streamCtag ? String(stream.streamCtag) : '';
+    const savedCtag = getSetting('icloud_album_ctag');
+
+    let photos = Array.isArray(stream.photos) ? stream.photos.filter(p => p && p.photoGuid) : [];
+    photos.sort((a, b) => String(b.dateCreated || '').localeCompare(String(a.dateCreated || '')));
+    const maxN = Math.max(1, Math.min(2000, parseInt(getSetting('icloud_album_max'), 10) || 300));
+    photos = photos.slice(0, maxN);
+    const wantGuids = new Set(photos.map(p => p.photoGuid));
+
+    // Removals first — a photo pulled from the album (or now past the cap)
+    // gets deleted locally, regardless of the ctag.
+    for (const row of db.prepare(`SELECT id, filename, ext_guid FROM photos WHERE source = 'icloud'`).all()) {
+      if (!wantGuids.has(row.ext_guid)) {
+        try { fs.unlinkSync(path.join(UPLOAD_DIR, row.filename)); } catch {}
+        db.prepare(`DELETE FROM photos WHERE id = ?`).run(row.id);
+        out.removed++;
+      }
+    }
+    const haveGuids = new Set(db.prepare(`SELECT ext_guid FROM photos WHERE source = 'icloud'`).all().map(r => r.ext_guid));
+
+    // Nothing changed and nothing missing → no-op poll.
+    if (newCtag && newCtag === savedCtag && out.removed === 0 && [...wantGuids].every(g => haveGuids.has(g))) {
+      setSetting('icloud_album_last_sync', new Date().toISOString());
+      setSetting('icloud_album_last_error', '');
+      return out;
+    }
+
+    const toAdd = photos.filter(p => !haveGuids.has(p.photoGuid));
+    const capPx = Math.max(320, Math.min(4320, parseInt(getSetting('icloud_album_max_px'), 10) || 2160));
+    for (let i = 0; i < toAdd.length; i += 20) {
+      const batch = toAdd.slice(i, i + 20);
+      const meta = new Map(); // checksum -> { guid, caption }
+      const guids = [];
+      for (const p of batch) {
+        const d = pickAlbumDerivative(p.derivatives, capPx);
+        if (!d) { out.skipped++; continue; }
+        guids.push(p.photoGuid);
+        meta.set(d.checksum, { guid: p.photoGuid, caption: String(p.caption || '').slice(0, 200) });
+      }
+      if (!guids.length) continue;
+      const au = await icloudStreamPost(host, token, 'webasseturls', { photoGuids: guids });
+      host = au.host;
+      const items = (au.json && au.json.items) || {};
+      for (const [checksum, m] of meta) {
+        const it = items[checksum];
+        if (!it || !it.url_location || !it.url_path) { out.skipped++; continue; }
+        const assetUrl = (/^https?:\/\//i.test(it.url_location) ? it.url_location : 'https://' + it.url_location) + it.url_path;
+        const safe = String(m.guid).replace(/[^A-Za-z0-9]/g, '').slice(0, 40);
+        const tmp = path.join(UPLOAD_DIR, `.icloud.dl.${safe}.${process.pid}`);
+        try {
+          await downloadFile(assetUrl, tmp, 45000);
+          const fd = fs.openSync(tmp, 'r');
+          const hb = Buffer.alloc(16);
+          fs.readSync(fd, hb, 0, 16, 0);
+          fs.closeSync(fd);
+          const ext = imageExtFromMagic(hb);
+          if (!ext) { fs.unlinkSync(tmp); out.skipped++; continue; }
+          const filename = `icloud_${safe}.${ext}`;
+          fs.renameSync(tmp, path.join(UPLOAD_DIR, filename));
+          const maxOrder = db.prepare(`SELECT MAX(sort_order) m FROM photos`).get().m || 0;
+          db.prepare(`INSERT INTO photos (filename, label, tags, sort_order, source, ext_guid) VALUES (?,?,?,?,?,?)`)
+            .run(filename, m.caption, 'icloud', maxOrder + 1, 'icloud', m.guid);
+          out.added++;
+        } catch (e) {
+          try { fs.unlinkSync(tmp); } catch {}
+          out.skipped++;
+        }
+      }
+    }
+
+    if (newCtag) setSetting('icloud_album_ctag', newCtag);
+    setSetting('icloud_album_last_sync', new Date().toISOString());
+    setSetting('icloud_album_last_error', '');
+    if (out.added || out.removed) broadcastUpdate('photos');
+    console.log(`[icloud-album] sync: +${out.added} -${out.removed} (${out.skipped} skipped)`);
+    return out;
+  } catch (e) {
+    setSetting('icloud_album_last_error', String(e && e.message || e).slice(0, 300));
+    console.error('[icloud-album] sync failed: ' + (e && e.message || e));
+    return { ...out, error: String(e && e.message || e) };
+  } finally {
+    _albumSyncing = false;
+  }
+}
+function icloudAlbumIntervalMs() {
+  const m = parseInt(getSetting('icloud_album_sync_minutes'), 10);
+  return Math.max(15, Number.isFinite(m) ? m : 60) * 60 * 1000;
+}
+function scheduleIcloudAlbumSync() {
+  setTimeout(() => {
+    (async () => { try { if (parseSharedAlbumToken(getSetting('icloud_album_url'))) await syncIcloudAlbum(); } catch {} })()
+      .finally(scheduleIcloudAlbumSync);
+  }, icloudAlbumIntervalMs());
+}
+scheduleIcloudAlbumSync();
+setTimeout(() => { try { if (parseSharedAlbumToken(getSetting('icloud_album_url'))) syncIcloudAlbum().catch(() => {}); } catch {} }, 4500);
+
+app.get('/api/photo-album', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    url: getSetting('icloud_album_url') || '',
+    connected: !!parseSharedAlbumToken(getSetting('icloud_album_url')),
+    last_sync: getSetting('icloud_album_last_sync') || '',
+    last_error: getSetting('icloud_album_last_error') || '',
+    count: db.prepare(`SELECT COUNT(*) n FROM photos WHERE source = 'icloud'`).get().n,
+    syncing: _albumSyncing,
+  });
+});
+app.put('/api/photo-album', (req, res) => {
+  const url = String((req.body && req.body.url) || '').trim();
+  if (!url) return res.status(400).json({ error: 'A shared-album URL is required.' });
+  if (!isSharedAlbumUrl(url)) {
+    return res.status(400).json({ error: 'That doesn\'t look like an iCloud shared-album link (icloud.com/sharedalbum/#… or share.icloud.com/photos/…).' });
+  }
+  setSetting('icloud_album_url', url);
+  setSetting('icloud_album_ctag', '');
+  setSetting('icloud_album_last_error', '');
+  broadcastUpdate('settings');
+  syncIcloudAlbum().catch(() => {});
+  res.json({ ok: true });
+});
+app.post('/api/photo-album/sync', async (req, res) => {
+  if (!parseSharedAlbumToken(getSetting('icloud_album_url'))) return res.status(400).json({ error: 'No album connected.' });
+  const r = await syncIcloudAlbum();
+  res.json({ ok: !r.error, ...r });
+});
+app.delete('/api/photo-album', (req, res) => {
+  const rows = db.prepare(`SELECT id, filename FROM photos WHERE source = 'icloud'`).all();
+  for (const row of rows) { try { fs.unlinkSync(path.join(UPLOAD_DIR, row.filename)); } catch {} }
+  db.prepare(`DELETE FROM photos WHERE source = 'icloud'`).run();
+  for (const k of ['icloud_album_url', 'icloud_album_ctag', 'icloud_album_last_sync', 'icloud_album_last_error']) setSetting(k, '');
+  broadcastUpdate('photos');
+  broadcastUpdate('settings');
+  res.json({ ok: true, removed: rows.length });
+});
 
 // ── Photos API ────────────────────────────────────────────────────────────────
 
@@ -13337,6 +14393,12 @@ function startServer(attempt = 0) {
     // widget (a reboot, or a fresh slave that just synced one in). Deferred a
     // beat so it never delays the "running at" line / first requests.
     setTimeout(() => { try { reloadCameraService(); } catch {} }, 2500);
+    // Flight Map: start the ADS-B poll loop and pre-fetch the basemap if the
+    // widget is enabled / in use. Deferred for the same reason as the camera.
+    setTimeout(() => {
+      try { startFlightPolling(); } catch (e) { console.error('[flightmap] start:', e.message); }
+      try { if (flightmapWanted()) { ensureBasemap().catch(() => {}); ensureStatesBasemap().catch(() => {}); } } catch {}
+    }, 3000);
     console.log(`Piazza HQ running at http://localhost:${PORT}`);
     console.log(`  Display : http://localhost:${PORT}/`);
     console.log(`  Control : http://localhost:${PORT}/app`);

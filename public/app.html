@@ -1390,6 +1390,13 @@ const RELEASE_NOTES = {
     'The Message Board, Meal Plan and Camera widgets can now be configured right on the screen in Live Editing, not just from the app.',
     'Feedback replies now open in a full-screen conversation view, and a display no longer comes back blank after an update.',
   ],
+  '1.87.0': [
+    'New: a Flight Map widget — live aircraft on the wall from free community ADS-B data. Track all military traffic, one or more aircraft types, an airline, everything within a radius of a place, a squawk code, a specific flight, or a family member\'s saved flight. Off by default (Settings → Features).',
+    'New: My Flights — each family profile gets a saved-flights list (Settings → Family profiles → edit a person → Manage flights), so a flying family member can add the day\'s flight number from their phone and have the wall pick it up automatically.',
+    'New: iCloud Shared Album as a photo source — paste a public shared-album link in Settings → Photos and new photos sync in on a timer alongside your uploads.',
+    'New: the Chore Chart widget can show the shared bonus-chore pool on the wall — a toggle adds a strip of what\'s up for grabs today and who\'s already claimed what.',
+    'Plus various bug fixes and improvements.',
+  ],
 };
 
 // Beta-suffix-aware version compare — same scheme as the mothership server's
@@ -4026,6 +4033,7 @@ function updateFamilyHubVisibility(s) {
   window._remindersEnabled = s.reminders_enabled !== '0';
   window._messageboardEnabled = s.messageboard_enabled === '1';
   window._mealplanEnabled = s.mealplan_enabled === '1';
+  window._flightmapEnabled = s.flightmap_enabled === '1';
   const enabled = { chores: window._choresEnabled, todo: window._todoEnabled, shopping: window._shoppingEnabled, reminders: window._remindersEnabled, board: window._messageboardEnabled, meals: window._mealplanEnabled };
   const anyEnabled = enabled.chores || enabled.todo || enabled.shopping || enabled.reminders || enabled.board || enabled.meals;
   const familyTabEl = document.getElementById('tab-family');
@@ -4682,6 +4690,41 @@ async function renderCalendarsSubTab() {
 // ── Photos ────────────────────────────────────────────────────────────────────
 async function renderPhotos() {
   const photos = await apiFetch('/api/photos');
+  let album = null;
+  try { album = await apiFetch('/api/photo-album'); } catch (e) { album = null; }
+
+  // iCloud shared-album card — paste a public shared-album link and the hub
+  // pulls those photos into the shared library (tagged "icloud"), re-checking
+  // on a timer. Host-only feature; a slave just proxies these calls.
+  let albumCard = '';
+  if (album) {
+    const connected = !!album.connected;
+    const last = album.last_sync ? new Date(album.last_sync) : null;
+    const lastTxt = last && !isNaN(last) ? last.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never';
+    let status = '';
+    if (connected) {
+      status = `<div style="font-size:12px;color:var(--muted);margin-top:8px">`
+        + `${album.count} photo${album.count === 1 ? '' : 's'} imported · last checked ${lastTxt}`
+        + (album.syncing ? ' · <span style="color:var(--accent)">syncing now…</span>' : '')
+        + (album.last_error ? `<br><span style="color:#c0392b">Last error: ${String(album.last_error).replace(/</g, '&lt;')}</span>` : '')
+        + `</div>`;
+    }
+    albumCard = `
+    <div style="background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:6px;font-weight:600;margin-bottom:4px">
+        ☁️ iCloud Shared Album
+        ${infoBtn('On an iPhone/iPad: open the shared album in Photos → the people icon → "Public Website" (turn it on) → "Share Link". Paste that <b>icloud.com/sharedalbum/…</b> link here. The hub copies new photos from that album into this library automatically. HEIC photos are skipped (browsers can\'t show them) — turn on "Most Compatible" in iPhone Settings → Camera → Formats if that\'s a problem.')}
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 10px">Photos added to a public iCloud shared album show up here on their own, tagged <b>icloud</b>.</p>
+      <input class="form-input" id="album-url" placeholder="https://www.icloud.com/sharedalbum/#…" value="${(album.url || '').replace(/"/g, '&quot;')}" style="margin:0 0 8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn-mini" id="album-save-btn" style="background:var(--accent);color:#fff;border-color:var(--accent)">${connected ? 'Update link' : 'Connect'}</button>
+        ${connected ? `<button class="btn-mini" id="album-sync-btn">Sync now</button>` : ''}
+        ${connected ? `<button class="btn-mini" id="album-disconnect-btn" style="color:#c0392b">Disconnect</button>` : ''}
+      </div>
+      ${status}
+    </div>`;
+  }
 
   let photoGrid = '';
   if (photos.length === 0) {
@@ -4720,6 +4763,7 @@ async function renderPhotos() {
   $('content').innerHTML = `
     <div class="section-header" style="margin-top:4px">Your Photos (${photos.length})</div>
     <p style="font-size:12px;color:var(--muted);margin:-4px 0 12px;padding:0 2px">Upload your photos here. Tap the 🏷️ on a photo to tag it (e.g. "kids", "vacation") — then in the <b>Devices</b> tab, point any screen's screensaver at a tag so it shows just that subset. To choose <b>which</b> photos show in a placed widget, add a Photo widget in the <b>Layout</b> tab instead.</p>
+    ${albumCard}
     ${photoGrid}
 
     <input type="file" id="photo-file-input" accept="image/jpeg,image/png,image/webp,image/gif">
@@ -4747,6 +4791,36 @@ async function renderPhotos() {
     else { showToast('Photo uploaded ✓'); }
     renderPhotos();
   });
+
+  // iCloud shared-album card
+  if ($('album-save-btn')) {
+    $('album-save-btn').addEventListener('click', async () => {
+      const url = ($('album-url').value || '').trim();
+      if (!url) { showToast('Paste a shared-album link first'); return; }
+      const btn = $('album-save-btn'); btn.disabled = true; btn.textContent = 'Saving…';
+      const r = await apiFetch('/api/photo-album', { method: 'PUT', body: JSON.stringify({ url }) });
+      if (r && r.error) { showToast('❌ ' + r.error); btn.disabled = false; btn.textContent = 'Connect'; return; }
+      showToast('Album connected — importing photos…');
+      setTimeout(renderPhotos, 2500);
+    });
+  }
+  if ($('album-sync-btn')) {
+    $('album-sync-btn').addEventListener('click', async () => {
+      const btn = $('album-sync-btn'); btn.disabled = true; btn.textContent = 'Syncing…';
+      const r = await apiFetch('/api/photo-album/sync', { method: 'POST' });
+      if (r && r.error) showToast('❌ ' + r.error);
+      else showToast(`Sync done: +${r.added || 0} −${r.removed || 0}${r.skipped ? ` (${r.skipped} skipped)` : ''}`);
+      renderPhotos();
+    });
+  }
+  if ($('album-disconnect-btn')) {
+    $('album-disconnect-btn').addEventListener('click', async () => {
+      if (!confirm('Disconnect the iCloud album? Photos it imported will be removed from this library (your uploads stay).')) return;
+      const r = await apiFetch('/api/photo-album', { method: 'DELETE' });
+      showToast(r && r.removed != null ? `Removed ${r.removed} imported photo${r.removed === 1 ? '' : 's'}` : 'Album disconnected');
+      renderPhotos();
+    });
+  }
 
   // Delete photo
   document.querySelectorAll('.photo-thumb-del').forEach(btn => {
@@ -7028,6 +7102,7 @@ const WIDGET_DEFS = [
   { type:'messageboard', label:'Message Board', icon:'📝' },
   { type:'mealplan', label:'Meal Plan', icon:'🍽️' },
   { type:'camera', label:'Camera', icon:'📹' },
+  { type:'flightmap', label:'Flight Map', icon:'✈️' },
   { type:'countdown', label:'Countdown', icon:'⏳' },
   { type:'moonphase', label:'Moon Phase', icon:'🌙' },
   { type:'airquality', label:'Air Quality', icon:'🌬️' },
@@ -7053,7 +7128,7 @@ const WIDGET_CATEGORIES = [
   { id:'calendar', label:'Calendar', icon:'🗓️', types:['minical','upcoming','today','agenda'] },
   { id:'weather',  label:'Weather',  icon:'☀️', types:['weather','weatherCurrent','weatherForecast','weatherHourly','weatherComboForecast','airquality','moonphase','metar','radar'] },
   { id:'tasks',    label:'Tasks',    icon:'✅', types:['tasks','tasksCombined','todo'] },
-  { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel'] },
+  { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel','flightmap'] },
   { id:'photos',   label:'Photos',   icon:'🖼️', types:['photo'] },
   { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan'] },
   { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode','layoutswitcher'] },
@@ -7296,6 +7371,7 @@ async function renderLayoutEditorSubTab() {
     window._shoppingEnabled = s.shopping_enabled === '1';
     window._messageboardEnabled = s.messageboard_enabled === '1';
     window._mealplanEnabled = s.mealplan_enabled === '1';
+    window._flightmapEnabled = s.flightmap_enabled === '1';
   } catch { window._todoEnabled = window._todoEnabled || false; }
 
   // Load current display+orientation's layout
@@ -7412,7 +7488,7 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
           <span id="layout-display-btn-label">${currentDisplay ? escapeHtml(currentDisplay.name) : 'Select…'}</span>
           <span style="opacity:.6;margin-left:8px">▾</span>
         </button>
-        <div id="layout-display-menu" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--card);border:1px solid var(--border);border-radius:10px;max-height:280px;overflow-y:auto;touch-action:pan-y;overscroll-behavior-y:contain;z-index:60;box-shadow:0 8px 24px rgba(0,0,0,.35)"></div>
+        <div id="layout-display-menu" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--card);border:1px solid var(--border);border-radius:10px;max-height:280px;overflow-y:auto;touch-action:pan-y;overscroll-behavior-y:contain;z-index:1001;box-shadow:0 8px 24px rgba(0,0,0,.35)"></div>
       </div>
     </div>
 
@@ -7473,7 +7549,7 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
 
     <div class="section-header">Add Widget</div>
     <div class="widget-cats">
-      ${WIDGET_CATEGORIES.filter(c => c.id !== 'smarthome' || typeof profileAllows !== 'function' || profileAllows('ha')).map(c=>{ const visibleTypes = c.types.filter(t => (t !== 'todo' || window._todoEnabled) && (t !== 'shoppinglist' || window._shoppingEnabled) && (t !== 'messageboard' || window._messageboardEnabled) && (t !== 'mealplan' || window._mealplanEnabled)); return `
+      ${WIDGET_CATEGORIES.filter(c => c.id !== 'smarthome' || typeof profileAllows !== 'function' || profileAllows('ha')).map(c=>{ const visibleTypes = c.types.filter(t => (t !== 'todo' || window._todoEnabled) && (t !== 'shoppinglist' || window._shoppingEnabled) && (t !== 'messageboard' || window._messageboardEnabled) && (t !== 'mealplan' || window._mealplanEnabled) && (t !== 'flightmap' || window._flightmapEnabled)); return `
         <div class="widget-cat" data-cat="${c.id}">
           <button class="cat-head" data-cat-toggle="${c.id}">
             <span class="cat-ic">${c.icon}</span>
@@ -7612,6 +7688,10 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
       if (def.type === 'camera') {
         newWidget.w = 44; newWidget.h = 32; newWidget.camFit = 'contain'; newWidget.camShowTitle = true;
       }
+      if (def.type === 'flightmap') {
+        newWidget.w = 46; newWidget.h = 38; newWidget.fmSubject = 'filter'; newWidget.fmFilter = { mil: true };
+        newWidget.fmFollow = false; newWidget.fmTrailMin = 30; newWidget.fmShowData = true; newWidget.fmLabels = true; newWidget.fmFontPx = 13;
+      }
       if (def.type === 'tasks') {
         newWidget.w = 30; newWidget.h = 40; newWidget.projectId = null; newWidget.projectName = 'Tasks';
       }
@@ -7634,7 +7714,7 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
         newWidget.w = 42; newWidget.h = 36; newWidget.wxComboStyle = 'stacked';
       }
       if (def.type === 'chorechart') {
-        newWidget.w = 50; newWidget.h = 45; newWidget.choreTitle = 'Daily Chore Chart'; newWidget.choreShowDone = true; newWidget.choreFontPx = 15;
+        newWidget.w = 50; newWidget.h = 45; newWidget.choreTitle = 'Daily Chore Chart'; newWidget.choreShowDone = true; newWidget.choreShowBonus = false; newWidget.choreFontPx = 15;
       }
       if (def.type === 'countdown') {
         newWidget.w = 24; newWidget.h = 22; newWidget.cdTitle = 'Countdown'; newWidget.cdFontPx = 22; newWidget.cdRepeatYearly = false;
@@ -9211,6 +9291,131 @@ async function drawWidgetSettingsPanel() {
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">Meals are shared across every Meal Plan widget and the Family Hub Meals tab — set one anywhere, it shows everywhere.</p>
     `;
+  } else if (w.type === 'flightmap') {
+    // Parallel copy of display.html's renderFlightMapAdvancedSettings — keep in sync.
+    const subject = w.fmSubject || 'filter';
+    const f = w.fmFilter || {};
+    const filterMode = f.mil ? 'mil' : (f.type ? 'type' : (f.squawk ? 'squawk' : (f.airline ? 'airline' : (f.radiusNm ? 'radius' : 'mil'))));
+    const trailMin = Math.max(2, Math.min(360, Number(w.fmTrailMin) || 30));
+    let fmS = {}; try { fmS = await apiFetch('/api/settings'); } catch {}
+    const homeSet = fmS && fmS.weather_lat && fmS.weather_lon;
+    let fmProfiles = []; try { fmProfiles = await apiFetch('/api/profiles'); } catch {}
+    if (!Array.isArray(fmProfiles)) fmProfiles = [];
+    const sel = (v, cur) => v === cur ? 'selected' : '';
+    typeSpecificHtml = `
+      <div class="settings-row">
+        <label>Show</label>
+        <select class="form-input" id="fm-subject">
+          <option value="filter" ${sel('filter', subject)}>A group of aircraft (filter)</option>
+          <option value="flight" ${sel('flight', subject)}>One specific flight</option>
+          <option value="watch" ${sel('watch', subject)}>A saved flight (My Flights)</option>
+        </select>
+      </div>
+      <div class="settings-row" id="fm-filter-block" ${subject === 'filter' ? '' : 'style="display:none"'}>
+        <label>Which aircraft</label>
+        <select class="form-input" id="fm-filter-mode">
+          <option value="mil" ${sel('mil', filterMode)}>All military</option>
+          <option value="type" ${sel('type', filterMode)}>All of one type (ICAO code)</option>
+          <option value="airline" ${sel('airline', filterMode)}>An airline (United, Delta, …)</option>
+          <option value="radius" ${sel('radius', filterMode)}>Everything near home</option>
+          <option value="squawk" ${sel('squawk', filterMode)}>A squawk code</option>
+        </select>
+        <div id="fm-type-row" style="margin-top:8px;${filterMode === 'type' ? '' : 'display:none'}">
+          <input class="form-input" type="text" id="fm-type" placeholder="e.g. B738, A320" value="${escapeHtml(f.type || '')}">
+          <p style="font-size:11px;color:var(--muted);margin-top:4px">ICAO type designator(s), comma-separated for more than one — a Boeing 737-800 is <code>B738</code>, an A320 <code>A320</code>, a C-17 <code>C17</code>.</p>
+        </div>
+        <div id="fm-airline-row" style="margin-top:8px;${filterMode === 'airline' ? '' : 'display:none'}">
+          <input class="form-input" type="text" id="fm-airline" list="fm-airline-list" placeholder="e.g. UAL, DAL, AAL" value="${escapeHtml(f.airline || '')}">
+          <datalist id="fm-airline-list">
+            <option value="UAL">United</option><option value="DAL">Delta</option><option value="AAL">American</option>
+            <option value="SWA">Southwest</option><option value="JBU">JetBlue</option><option value="ASA">Alaska</option>
+            <option value="FFT">Frontier</option><option value="NKS">Spirit</option><option value="SKW">SkyWest</option>
+            <option value="FDX">FedEx</option><option value="UPS">UPS</option><option value="GTI">Atlas Air</option>
+          </datalist>
+          <p style="font-size:11px;color:var(--muted);margin-top:4px">ICAO callsign prefix(es), comma-separated. Covers the area around the map centre (radius below) — the ADS-B feed has no global airline query.</p>
+        </div>
+        <div id="fm-squawk-row" style="margin-top:8px;${filterMode === 'squawk' ? '' : 'display:none'}">
+          <input class="form-input" type="text" id="fm-squawk" maxlength="4" placeholder="e.g. 7700" value="${escapeHtml(f.squawk || '')}">
+        </div>
+        <label id="fm-milonly-row" style="display:${(filterMode === 'mil' || filterMode === 'airline') ? 'none' : 'flex'};align-items:center;gap:8px;margin-top:10px;cursor:pointer">
+          <input type="checkbox" id="fm-milonly" ${f.milOnly ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--accent);flex:0 0 auto">
+          <span>Military only ${infoBtn("Drop civil aircraft sharing an ICAO type — e.g. civil aircraft that happen to share an ICAO type with a military variant.")}</span>
+        </label>
+        <div id="fm-radius-row" style="margin-top:8px;${(filterMode === 'radius' || filterMode === 'airline') ? '' : 'display:none'}">
+          <label style="font-size:12px;color:var(--muted)">Search radius</label>
+          <div class="range-row">
+            <input type="range" id="fm-radius" min="20" max="250" step="10" value="${Math.max(20, Math.min(250, Number(f.radiusNm) || (filterMode === 'airline' ? 250 : 150)))}">
+            <span class="range-val" id="fm-radius-val">${Math.max(20, Math.min(250, Number(f.radiusNm) || (filterMode === 'airline' ? 250 : 150)))} nm</span>
+          </div>
+          <p style="font-size:11px;color:var(--muted);margin-top:4px">${homeSet ? 'Around the map centre (or your weather location).' : 'Set your location in Settings → Weather first.'}</p>
+        </div>
+        <div id="fm-center-row" style="margin-top:10px;${filterMode === 'radius' ? 'display:none' : ''}">
+          <label style="font-size:12px;color:var(--muted)">Centre the map on (optional)</label>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
+            <input class="form-input" type="text" id="fm-cplace" placeholder="City, airport, or ZIP" value="${escapeHtml(f.centerLabel || '')}" style="flex:1;min-width:0">
+            <button type="button" class="pf-btn ghost" id="fm-cgo" style="flex:0 0 auto;padding:6px 10px">Set</button>
+            <button type="button" class="pf-btn ghost" id="fm-chome" style="flex:0 0 auto;padding:6px 10px">Home</button>
+            <button type="button" class="pf-btn ghost" id="fm-cclear" style="flex:0 0 auto;padding:6px 10px">Clear</button>
+          </div>
+          <p style="font-size:11px;color:var(--muted);margin-top:4px" id="fm-cplace-hint">${f.centerLat != null && f.centerLon != null && f.centerLat !== '' ? '📍 ' + (f.centerLabel || ((+f.centerLat).toFixed(2) + ', ' + (+f.centerLon).toFixed(2))) : 'Type a place and press Set (or Enter). Blank = a fixed near-hemisphere view.'}</p>
+          <!-- Only type/mil/squawk modes use this span — airline/radius modes
+               size the view off "Search radius" instead, so this slider would
+               silently do nothing there. -->
+          <div class="range-row" id="fm-span-row" style="margin-top:6px;${filterMode === 'airline' ? 'display:none' : ''}">
+            <input type="range" id="fm-span" min="400" max="6000" step="100" value="${Math.max(400, Math.min(6000, Number(f.spanNm) || 2600))}">
+            <span class="range-val" id="fm-span-val">${Math.max(400, Math.min(6000, Number(f.spanNm) || 2600))} nm</span>
+          </div>
+        </div>
+      </div>
+      <div class="settings-row" id="fm-flight-block" ${subject === 'flight' ? '' : 'style="display:none"'}>
+        <label>Flight</label>
+        <div style="display:flex;gap:6px">
+          <select class="form-input" id="fm-flight-kind" style="flex:0 0 auto;width:auto">
+            <option value="callsign" ${sel('callsign', w.fmFlightKind || 'callsign')}>Callsign</option>
+            <option value="reg" ${sel('reg', w.fmFlightKind)}>Tail #</option>
+            <option value="hex" ${sel('hex', w.fmFlightKind)}>ICAO hex</option>
+          </select>
+          <input class="form-input" type="text" id="fm-flight-value" placeholder="e.g. DAL456" value="${escapeHtml(w.fmFlightValue || '')}" style="flex:1">
+        </div>
+        <p style="font-size:11px;color:var(--muted);margin-top:4px">A pilot flies whatever aircraft is on the route — track the day's callsign/flight number, not a fixed tail.</p>
+      </div>
+      <div class="settings-row" id="fm-watch-block" ${subject === 'watch' ? '' : 'style="display:none"'}>
+        <label>Whose flights</label>
+        <select class="form-input" id="fm-watch-profile">
+          <option value="">Everyone's saved flights</option>
+          ${fmProfiles.map(p => `<option value="${p.id}" ${String(w.fmWatchProfileId) === String(p.id) ? 'selected' : ''}>${escapeHtml(p.name || 'Profile')}</option>`).join('')}
+        </select>
+        <p style="font-size:11px;color:var(--muted);margin-top:4px">Add flights under a profile's <strong>My Flights</strong>. This widget follows whichever are active today.</p>
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Follow the aircraft ${infoBtn("Keep the map centred on the tracked flight. For a filter, leave this off so the view stays put.")}</label>
+        <input type="checkbox" id="fm-follow" ${w.fmFollow ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show the info panel</label>
+        <input type="checkbox" id="fm-showdata" ${w.fmShowData !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show trails</label>
+        <input type="checkbox" id="fm-showtrails" ${w.fmShowTrails !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Label aircraft ${infoBtn("Show each aircraft's callsign next to it. Auto-hidden when the view is too crowded; the selected one is always labelled.")}</label>
+        <input type="checkbox" id="fm-labels" ${w.fmLabels !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show state / province lines</label>
+        <input type="checkbox" id="fm-states" ${w.fmStates !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <div class="settings-row">
+        <label>Trail length</label>
+        <div class="range-row">
+          <input type="range" id="fm-trail" min="5" max="360" step="5" value="${trailMin}">
+          <span class="range-val" id="fm-trail-val">${trailMin >= 60 ? (trailMin / 60).toFixed(trailMin % 60 ? 1 : 0) + ' h' : trailMin + ' min'}</span>
+        </div>
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">Positions come from free community ADS-B receivers (airplanes.live, adsb.lol / adsb.fi as backups). Coverage is thin over oceans — an aircraft there shows its last known position.</p>
+    `;
   } else if (w.type === 'camera') {
     if (_appCamPanelWidgetId !== w.id) { _appCamForm.open = false; _appCamForm.editId = null; _appCamPanelWidgetId = w.id; }
     let cams = [];
@@ -10109,6 +10314,11 @@ async function drawWidgetSettingsPanel() {
         <input type="checkbox" id="cc-showstickers" ${w.choreShowStickers!==false?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
       <p style="font-size:11px;color:var(--muted);margin-top:-4px">Shows each kid's sticker balance next to their streak, when they have one. On by default.</p>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show ⭐ Bonus chores</label>
+        <input type="checkbox" id="cc-showbonus" ${w.choreShowBonus?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:-4px">Adds a strip below the chart with the shared bonus / extra-credit chores up for grabs today. Claiming still happens in the app or on the kid page. Off by default.</p>
       <p style="font-size:11px;color:var(--muted);margin-top:6px">If this is blank on the display, make sure you've added kids and chores in the <b>Chores</b> tab.</p>
     `;
   } else if (w.type === 'chorelb') {
@@ -10290,7 +10500,7 @@ async function drawWidgetSettingsPanel() {
       </div>
       <div class="settings-row">
         <label>To</label>
-        <input class="form-input" id="tv-destination" value="${escapeHtml(w.travelDestination||'')}" placeholder="e.g. 123 Main St, Wichita, KS">
+        <input class="form-input" id="tv-destination" value="${escapeHtml(w.travelDestination||'')}" placeholder="e.g. 123 Main St, Columbus, OH">
       </div>
       <div class="settings-row">
         <label>Mode</label>
@@ -11176,6 +11386,103 @@ async function drawWidgetSettingsPanel() {
       else w.mpSlots = picked;
       rebuildCanvas();
     }));
+  } else if (w.type === 'flightmap') {
+    const $$ = (id) => document.getElementById(id);
+    const hide = (id, h) => { const e = $$(id); if (e) e.style.display = h ? 'none' : ''; };
+    if ($$('fm-subject')) $$('fm-subject').addEventListener('change', (e) => {
+      w.fmSubject = e.target.value;
+      hide('fm-filter-block', w.fmSubject !== 'filter');
+      hide('fm-flight-block', w.fmSubject !== 'flight');
+      hide('fm-watch-block', w.fmSubject !== 'watch');
+      if (w.fmSubject === 'flight' || w.fmSubject === 'watch') { w.fmFollow = true; if ($$('fm-follow')) $$('fm-follow').checked = true; }
+      rebuildCanvas();
+    });
+    const fmCenter = () => {
+      const f0 = w.fmFilter || {}, c = {};
+      if (f0.centerLat != null && f0.centerLat !== '') c.centerLat = f0.centerLat;
+      if (f0.centerLon != null && f0.centerLon !== '') c.centerLon = f0.centerLon;
+      if (f0.centerLabel) c.centerLabel = f0.centerLabel;
+      if (f0.spanNm) c.spanNm = f0.spanNm;
+      if (f0.milOnly) c.milOnly = true;
+      return c;
+    };
+    if ($$('fm-filter-mode')) $$('fm-filter-mode').addEventListener('change', (e) => {
+      const m = e.target.value;
+      if (m === 'radius') {
+        const ex = fmCenter(); delete ex.centerLat; delete ex.centerLon; delete ex.spanNm;
+        apiFetch('/api/settings').then(s => { w.fmFilter = { ...ex, radiusNm: Number(($$('fm-radius') || {}).value) || 150, lat: parseFloat(s.weather_lat), lon: parseFloat(s.weather_lon) }; rebuildCanvas(); }).catch(() => {});
+      } else if (m === 'airline') {
+        const ex = fmCenter();
+        apiFetch('/api/settings').then(s => {
+          w.fmFilter = { ...ex, airline: ($$('fm-airline') || {}).value || '', radiusNm: Number(($$('fm-radius') || {}).value) || 250,
+            lat: (ex.centerLat != null ? ex.centerLat : parseFloat(s.weather_lat)), lon: (ex.centerLon != null ? ex.centerLon : parseFloat(s.weather_lon)) };
+          delete w.fmFilter.milOnly; rebuildCanvas();
+        }).catch(() => {});
+      } else {
+        w.fmFilter = { ...fmCenter() };
+        if (m === 'mil') { w.fmFilter.mil = true; delete w.fmFilter.milOnly; }
+        else if (m === 'type') w.fmFilter.type = ($$('fm-type') || {}).value || '';
+        else if (m === 'squawk') w.fmFilter.squawk = ($$('fm-squawk') || {}).value || '';
+      }
+      hide('fm-type-row', m !== 'type'); hide('fm-squawk-row', m !== 'squawk'); hide('fm-airline-row', m !== 'airline');
+      hide('fm-radius-row', m !== 'radius' && m !== 'airline'); hide('fm-center-row', m === 'radius'); hide('fm-span-row', m === 'airline');
+      const mr = $$('fm-milonly-row'); if (mr) mr.style.display = (m === 'mil' || m === 'airline') ? 'none' : 'flex';
+      rebuildCanvas();
+    });
+    if ($$('fm-airline')) $$('fm-airline').addEventListener('input', (e) => { w.fmFilter = { ...(w.fmFilter || {}), airline: e.target.value.toUpperCase() }; rebuildCanvas(); });
+    if ($$('fm-milonly')) $$('fm-milonly').addEventListener('change', (e) => {
+      w.fmFilter = { ...(w.fmFilter || {}) };
+      if (e.target.checked) w.fmFilter.milOnly = true; else delete w.fmFilter.milOnly;
+      rebuildCanvas();
+    });
+    if ($$('fm-type')) $$('fm-type').addEventListener('input', (e) => { w.fmFilter = { ...fmCenter(), type: e.target.value.toUpperCase() }; rebuildCanvas(); });
+    if ($$('fm-squawk')) $$('fm-squawk').addEventListener('input', (e) => { w.fmFilter = { ...fmCenter(), squawk: e.target.value.replace(/\D/g, '').slice(0, 4) }; rebuildCanvas(); });
+    const fmCHint = (t) => { if ($$('fm-cplace-hint')) $$('fm-cplace-hint').textContent = t; };
+    const fmSetCenter = (lat, lon, label) => {
+      const base = { ...(w.fmFilter || {}) }; delete base.centerLat; delete base.centerLon; delete base.centerLabel;
+      const ok = lat !== '' && lon !== '' && Number.isFinite(+lat) && Number.isFinite(+lon);
+      if (ok) { base.centerLat = +lat; base.centerLon = +lon; if (label) base.centerLabel = label; }
+      fmCHint(ok ? ('📍 ' + (label || ((+lat).toFixed(2) + ', ' + (+lon).toFixed(2)))) : 'Type a place and press Set (or Enter). Blank = a fixed near-hemisphere view.');
+      if (base.airline) {
+        if (ok) { base.lat = +lat; base.lon = +lon; w.fmFilter = base; rebuildCanvas(); }
+        else { apiFetch('/api/settings').then(s => { base.lat = parseFloat(s.weather_lat); base.lon = parseFloat(s.weather_lon); w.fmFilter = base; rebuildCanvas(); }).catch(() => { w.fmFilter = base; rebuildCanvas(); }); }
+        return;
+      }
+      w.fmFilter = base; rebuildCanvas();
+    };
+    const cplace = $$('fm-cplace');
+    const fmRunPlaceSearch = async () => {
+      const q = (cplace.value || '').trim();
+      if (q.length < 2) { fmSetCenter('', ''); return; }
+      fmCHint('Searching…');
+      try {
+        const r = await apiFetch('/api/place-search?q=' + encodeURIComponent(q));
+        if (r && r.lat != null && r.lon != null) { cplace.value = r.label || q; fmSetCenter(r.lat, r.lon, r.label || q); }
+        else fmCHint((r && r.error) || 'Nothing found for that.');
+      } catch { fmCHint('Search failed — try again.'); }
+    };
+    if ($$('fm-cgo')) $$('fm-cgo').addEventListener('click', fmRunPlaceSearch);
+    if (cplace) cplace.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); fmRunPlaceSearch(); } });
+    if ($$('fm-chome')) $$('fm-chome').addEventListener('click', () => {
+      apiFetch('/api/settings').then(s => { const la = parseFloat(s.weather_lat), lo = parseFloat(s.weather_lon); if (Number.isFinite(la) && Number.isFinite(lo)) { cplace.value = 'Home'; fmSetCenter(la, lo, 'Home'); } }).catch(() => {});
+    });
+    if ($$('fm-cclear')) $$('fm-cclear').addEventListener('click', () => { cplace.value = ''; fmSetCenter('', ''); });
+    if ($$('fm-span')) $$('fm-span').addEventListener('input', (e) => { const v = Number(e.target.value); $$('fm-span-val').textContent = v + ' nm'; w.fmFilter = { ...(w.fmFilter || {}), spanNm: v }; rebuildCanvas(); });
+    if ($$('fm-radius')) $$('fm-radius').addEventListener('input', (e) => {
+      const val = Number(e.target.value); $$('fm-radius-val').textContent = val + ' nm';
+      const cur = w.fmFilter || {};
+      if (cur.centerLat != null && cur.centerLon != null) { w.fmFilter = { ...cur, radiusNm: val, lat: cur.centerLat, lon: cur.centerLon }; rebuildCanvas(); }
+      else apiFetch('/api/settings').then(s => { w.fmFilter = { ...cur, radiusNm: val, lat: parseFloat(s.weather_lat), lon: parseFloat(s.weather_lon) }; rebuildCanvas(); }).catch(() => {});
+    });
+    if ($$('fm-flight-kind')) $$('fm-flight-kind').addEventListener('change', (e) => { w.fmFlightKind = e.target.value; rebuildCanvas(); });
+    if ($$('fm-flight-value')) $$('fm-flight-value').addEventListener('input', (e) => { w.fmFlightValue = e.target.value.toUpperCase().trim(); rebuildCanvas(); });
+    if ($$('fm-watch-profile')) $$('fm-watch-profile').addEventListener('change', (e) => { w.fmWatchProfileId = e.target.value || null; rebuildCanvas(); });
+    if ($$('fm-follow')) $$('fm-follow').addEventListener('change', (e) => { w.fmFollow = e.target.checked; });
+    if ($$('fm-showdata')) $$('fm-showdata').addEventListener('change', (e) => { w.fmShowData = e.target.checked; rebuildCanvas(); });
+    if ($$('fm-showtrails')) $$('fm-showtrails').addEventListener('change', (e) => { w.fmShowTrails = e.target.checked; rebuildCanvas(); });
+    if ($$('fm-labels')) $$('fm-labels').addEventListener('change', (e) => { w.fmLabels = e.target.checked; rebuildCanvas(); });
+    if ($$('fm-states')) $$('fm-states').addEventListener('change', (e) => { w.fmStates = e.target.checked; rebuildCanvas(); });
+    if ($$('fm-trail')) $$('fm-trail').addEventListener('input', (e) => { const m = parseInt(e.target.value, 10); w.fmTrailMin = m; $$('fm-trail-val').textContent = m >= 60 ? (m / 60).toFixed(m % 60 ? 1 : 0) + ' h' : m + ' min'; });
   } else if (w.type === 'camera') {
     if ($('cam-select')) $('cam-select').addEventListener('change', (e) => {
       w.camId = e.target.value ? parseInt(e.target.value, 10) : null;
@@ -11645,6 +11952,7 @@ async function drawWidgetSettingsPanel() {
     });
     if ($('cc-showdone')) $('cc-showdone').addEventListener('change', (e) => { w.choreShowDone = e.target.checked; });
     if ($('cc-showstickers')) $('cc-showstickers').addEventListener('change', (e) => { w.choreShowStickers = e.target.checked; });
+    if ($('cc-showbonus')) $('cc-showbonus').addEventListener('change', (e) => { w.choreShowBonus = e.target.checked; });
     const picks = document.querySelectorAll('.cc-kid-pick');
     const syncKidSel = () => {
       const all = [...picks];
@@ -15079,7 +15387,7 @@ async function renderSettings() {
       </div>
       <div class="settings-row">
         <label>Location Name <span class="info-btn" onclick="showInfoPopup('location-name-help')">ⓘ</span></label>
-        <input class="form-input" id="s-weather-location" value="${s.weather_location_manual || s.weather_location_auto || ''}" placeholder="e.g. Wichita, KS" autocomplete="off">
+        <input class="form-input" id="s-weather-location" value="${s.weather_location_manual || s.weather_location_auto || ''}" placeholder="e.g. Columbus, OH" autocomplete="off">
       </div>
       <div class="settings-row">
         <label>Units ${infoBtn("The default for every weather widget. Any individual widget can override this in its own settings.")}</label>
@@ -15172,6 +15480,12 @@ async function renderSettings() {
           <label style="margin-bottom:0">Meal plan ${infoBtn("Show the Meals tab in Family Hub and the Meal Plan widget — one planned dinner per day, shown on the wall.")}</label>
         </div>
         <input type="checkbox" id="s-mealplan-enabled" ${s.mealplan_enabled==='1'?'checked':''} style="width:20px;height:20px;accent-color:var(--accent);flex:0 0 auto">
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <div style="flex:1;padding-right:12px">
+          <label style="margin-bottom:0">Flight Map ${infoBtn("Show the Flight Map widget in the layout palette — a self-drawn world map with live aircraft (military, a type, a radius, or one tracked flight). Positions come from free community ADS-B APIs; a small world basemap downloads once. No Family Hub tab.")}</label>
+        </div>
+        <input type="checkbox" id="s-flightmap-enabled" ${s.flightmap_enabled==='1'?'checked':''} style="width:20px;height:20px;accent-color:var(--accent);flex:0 0 auto">
       </div>
     </div>
     <div class="settings-card">
@@ -15638,7 +15952,7 @@ async function renderSettings() {
           <button type="button" class="news-star ${s.news_local_priority==='1'?'on':''}" id="news-local-priority-btn" title="Priority">★</button>
           <input type="checkbox" id="news-local-enabled" ${s.news_local_enabled==='1'?'checked':''} class="news-toggle">
         </div>
-        <input class="form-input news-src-extra" id="news-local-location" value="${(s.news_local_location||'').replace(/"/g,'&quot;')}" placeholder="City or region, e.g. Wichita, KS" autocomplete="off" style="margin-top:8px">
+        <input class="form-input news-src-extra" id="news-local-location" value="${(s.news_local_location||'').replace(/"/g,'&quot;')}" placeholder="City or region, e.g. Columbus, OH" autocomplete="off" style="margin-top:8px">
       </div>
 
       <div class="news-src" data-src="keywords">
@@ -17974,6 +18288,7 @@ async function renderSettings() {
       messageboard_enabled: ($('s-messageboard-enabled') && $('s-messageboard-enabled').checked) ? '1' : '0',
       messageboard_autoclear_days: $('s-messageboard-autoclear-days') ? String(Math.max(0, parseInt($('s-messageboard-autoclear-days').value, 10) || 0)) : '14',
       mealplan_enabled: ($('s-mealplan-enabled') && $('s-mealplan-enabled').checked) ? '1' : '0',
+      flightmap_enabled: ($('s-flightmap-enabled') && $('s-flightmap-enabled').checked) ? '1' : '0',
       // News sources (priority is the ★ button's .on state)
       news_national_enabled: $('news-national-enabled').checked ? '1' : '0',
       news_national_priority: $('news-national-priority-btn').classList.contains('on') ? '1' : '0',
@@ -19768,6 +20083,8 @@ function openProfileEditor(profile) {
       <div class="pf-field"><label>Opens to</label><select id="pf-landing" class="form-input"></select></div>
       <div class="pf-field"><label>Gateway PIN — optional, prompted only when switching in</label>
         <input id="pf-pin" class="form-input" inputmode="numeric" maxlength="8" placeholder="${p.pin ? '•••• set — blank keeps it' : 'No PIN'}" value=""></div>
+      ${(!isNew && window._flightmapEnabled) ? `<div class="pf-field"><label>My Flights ${infoBtn("Flights this person is on — a Flight Map widget set to follow them (or everyone's saved flights) tracks whichever are active today. Add the day's callsign / flight number; give it a date range if it's a future trip.")}</label>
+        <button type="button" class="pf-btn ghost" id="pf-flights" style="width:100%">✈️ Manage ${escapeHtml(p.name || 'this person')}'s flights…</button></div>` : ''}
       ${manager ? `<label class="pf-check" style="margin-top:14px"><input type="checkbox" id="pf-manager"${p.is_manager ? ' checked' : ''}> Manager — can edit everyone's profile</label>` : ''}
       <div class="pf-actions">
         <button class="pf-btn primary" id="pf-save">Save</button>
@@ -19806,6 +20123,8 @@ function openProfileEditor(profile) {
   }));
   back.querySelectorAll('.pf-feat').forEach(cb => cb.addEventListener('change', () => { features[cb.dataset.feat] = cb.checked; markCustom(); }));
   back.querySelector('#pf-landing').addEventListener('change', e => { landingPref = e.target.value; });
+  const flightsBtn = back.querySelector('#pf-flights');
+  if (flightsBtn) flightsBtn.addEventListener('click', () => openMyFlightsSheet(p));
 
   back.querySelector('#pf-cancel').addEventListener('click', () => {
     back.remove();
@@ -19864,6 +20183,93 @@ function openProfileEditor(profile) {
       back.querySelector('#pf-err').textContent = (r && r.error) || 'Could not save';
     }
   });
+}
+
+// ── "My Flights" — a profile's saved flights (flight_watch rows with
+// profile_id set). A Flight Map widget in "saved flight" mode tracks
+// whichever are active today. Stacks over the profile editor sheet.
+const FW_KIND_LABEL = { callsign: 'Flight / callsign', reg: 'Tail number', hex: 'ICAO hex' };
+async function openMyFlightsSheet(profile) {
+  if (!profile || !profile.id) return;
+  document.querySelectorAll('.myflights-back').forEach(el => el.remove());
+  ensureProfileCss();
+  const back = document.createElement('div');
+  back.className = 'pf-sheet-back myflights-back';
+  back.style.zIndex = '10050';
+  back.innerHTML = `<div class="pf-sheet">
+    <h3>✈️ ${escapeHtml(profile.name || 'Profile')}'s flights</h3>
+    <div id="mf-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px"></div>
+    <div class="pf-field"><label>Add a flight</label>
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <select id="mf-kind" class="form-input" style="flex:0 0 auto;width:auto">
+          <option value="callsign">Flight / callsign</option>
+          <option value="reg">Tail #</option>
+          <option value="hex">ICAO hex</option>
+        </select>
+        <input id="mf-value" class="form-input" placeholder="e.g. DAL456" style="flex:1">
+      </div>
+      <input id="mf-label" class="form-input" placeholder="Label (optional) — e.g. Denver trip" style="margin-bottom:6px">
+      <div style="display:flex;gap:6px;align-items:center">
+        <label style="font-size:12px;color:var(--muted);flex:0 0 auto">Active</label>
+        <input id="mf-from" class="form-input" type="date" style="flex:1">
+        <span style="color:var(--muted)">→</span>
+        <input id="mf-to" class="form-input" type="date" style="flex:1">
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin:6px 0 0">Leave the dates blank for a flight that's active right now. A range makes a future trip auto-activate then expire.</p>
+      <div id="mf-err" style="color:var(--danger,#ff5d5d);font-size:12px;min-height:15px;margin-top:6px"></div>
+    </div>
+    <div class="pf-actions">
+      <button class="pf-btn primary" id="mf-add">Add</button>
+      <button class="pf-btn ghost" id="mf-close">Done</button>
+    </div>
+  </div>`;
+  document.body.appendChild(back);
+  const $ = (id) => back.querySelector('#' + id);
+  const close = () => back.remove();
+  $('mf-close').addEventListener('click', close);
+  back.addEventListener('click', (e) => { if (e.target === back) close(); });
+
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const fmtRange = (r) => {
+    if (!r.active_from && !r.active_to) return 'now';
+    const today = iso(new Date());
+    const pending = r.active_from && r.active_from > today;
+    const expired = r.active_to && r.active_to < today;
+    return `${r.active_from || '…'} → ${r.active_to || '…'}${pending ? ' (upcoming)' : expired ? ' (past)' : ''}`;
+  };
+  async function refresh() {
+    let rows = [];
+    try { rows = (await apiFetch('/api/flight-watch')).filter(r => String(r.profile_id) === String(profile.id)); } catch {}
+    const list = $('mf-list');
+    if (!rows.length) { list.innerHTML = `<p style="font-size:12px;color:var(--muted);margin:0">No flights yet.</p>`; return; }
+    list.innerHTML = rows.map(r => `
+      <div style="display:flex;align-items:center;gap:8px;background:var(--card-2,rgba(255,255,255,0.05));border-radius:10px;padding:8px 10px">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600">${escapeHtml(r.value)} <span style="font-size:11px;color:var(--muted);font-weight:400">${escapeHtml(FW_KIND_LABEL[r.kind] || r.kind)}</span></div>
+          <div style="font-size:11px;color:var(--muted)">${escapeHtml(r.label ? r.label + ' · ' : '')}${escapeHtml(fmtRange(r))}</div>
+        </div>
+        <button class="pf-btn danger" data-del="${r.id}" style="padding:4px 10px;flex:0 0 auto">Remove</button>
+      </div>`).join('');
+    list.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
+      await apiFetch('/api/flight-watch/' + b.dataset.del, { method: 'DELETE' });
+      refresh();
+    }));
+  }
+  $('mf-add').addEventListener('click', async () => {
+    const value = $('mf-value').value.trim();
+    if (!value) { $('mf-err').textContent = 'Enter a flight number, callsign, tail number or hex.'; return; }
+    const body = {
+      profile_id: profile.id, kind: $('mf-kind').value, value,
+      label: $('mf-label').value.trim(),
+      active_from: $('mf-from').value || '', active_to: $('mf-to').value || '',
+    };
+    const r = await apiFetch('/api/flight-watch', { method: 'POST', body: JSON.stringify(body) });
+    if (r && r.id) {
+      $('mf-value').value = ''; $('mf-label').value = ''; $('mf-from').value = ''; $('mf-to').value = ''; $('mf-err').textContent = '';
+      refresh();
+    } else { $('mf-err').textContent = (r && r.error) || 'Could not add'; }
+  });
+  refresh();
 }
 
 function renderProfilesSettingsBody() {

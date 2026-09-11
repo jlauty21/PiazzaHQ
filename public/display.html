@@ -26,6 +26,9 @@
   <!-- go2rtc's <video-stream> web component, vendored locally (see the file
        header). Powers the Camera widget: WebRTC with MSE/MJPEG fallback. -->
   <script src="/vendor/video-rtc.js" defer></script>
+  <!-- Minimal TopoJSON decoder (see the file header). Powers the Flight Map
+       widget's self-drawn world basemap. -->
+  <script src="/vendor/topojson-lite.js" defer></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -1007,7 +1010,7 @@
        applyTheme() below, since it's per-user content, not a fixed CSS scene
        like every other theme here. */
     body[data-theme="custom"] #theme-bg { background:#1a1a1a; background-size:cover; background-position:center; }
-    /* KC-46 Ready Room — dark operational backdrop with a nav-display feel:
+    /* Flight Deck — dark operational backdrop with a nav-display feel:
        range rings and a glow centered on the same ownship reference point
        (bottom-center) the TCAS simulation uses, spaced at 2.5nm increments
        (7.5vh per nm, matching the simulation's scale) — not just decorative,
@@ -1788,6 +1791,98 @@
       width:40px; height:40px; border-radius:50%; border:none;
       background:rgba(255,255,255,0.14); color:#e8edf5; font-size:17px; cursor:pointer;
     }
+
+    /* ── Flight Map widget ──
+       Self-drawn world map (canvas) with live ADS-B aircraft. Two stacked
+       canvases: fm-base (land/borders, redrawn only on view change) and
+       fm-air (aircraft/trails, redrawn each frame for smooth motion).
+       Every colour resolves off theme vars so it conforms to custom
+       templates like every other widget. */
+    .w-flightmap { position:relative; width:100%; height:100%; border-radius:8px; overflow:hidden;
+      background:color-mix(in srgb, var(--text) 4%, transparent); }
+    .w-flightmap canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+    .w-flightmap .fm-base { z-index:0; }
+    .w-flightmap .fm-air  { z-index:1; }
+    .fm-badge {
+      position:absolute; top:6px; right:8px; z-index:2; font-size:10px; line-height:1.3;
+      color:color-mix(in srgb, var(--text) 60%, transparent); text-align:right;
+      text-transform:uppercase; letter-spacing:0.4px; pointer-events:none;
+      text-shadow:0 1px 3px rgba(0,0,0,0.55);
+    }
+    .fm-badge .fm-delayed { color:var(--accent2, var(--accent)); }
+    .fm-data {
+      position:absolute; left:8px; bottom:8px; z-index:2; max-width:70%;
+      background:color-mix(in srgb, var(--text) 10%, transparent);
+      border:1px solid color-mix(in srgb, var(--text) 18%, transparent);
+      border-radius:8px; padding:6px 9px; color:var(--text); line-height:1.35;
+      backdrop-filter:blur(2px);
+    }
+    .fm-data .fm-cs { font-weight:700; letter-spacing:0.5px; }
+    .fm-data .fm-sub { color:color-mix(in srgb, var(--text) 62%, transparent); }
+    .fm-data .fm-route { color:var(--accent); font-weight:600; }
+    .fm-empty { position:absolute; inset:0; z-index:2; display:flex; flex-direction:column;
+      align-items:center; justify-content:center; gap:8px; text-align:center; padding:14px;
+      color:color-mix(in srgb, var(--text) 65%, transparent); }
+    .fm-empty .fm-emoji { font-size:2.2em; opacity:0.45; }
+    .fm-expand {
+      position:absolute; right:6px; bottom:6px; z-index:3; width:26px; height:26px;
+      border:none; border-radius:6px; cursor:pointer;
+      background:color-mix(in srgb, var(--text) 14%, transparent);
+      color:var(--text); font-size:13px; line-height:1;
+    }
+    #flightmap-overlay {
+      position:fixed; inset:0; z-index:95; display:none; padding:2vmin;
+      background:rgba(2,4,10,0.94); backdrop-filter:blur(3px);
+    }
+    #flightmap-overlay.on { display:flex; gap:2vmin; }
+    #flightmap-overlay .fmo-map { position:relative; flex:1; min-width:0;
+      border-radius:12px; overflow:hidden; background:color-mix(in srgb, var(--text) 5%, transparent); }
+    #flightmap-overlay .fmo-list {
+      width:min(320px, 32vw); overflow-y:auto; color:#e8edf5; font-size:13px;
+      display:flex; flex-direction:column; gap:4px;
+    }
+    #flightmap-overlay .fmo-list .fmo-row {
+      display:flex; justify-content:space-between; gap:8px; padding:6px 8px; border-radius:6px;
+      background:rgba(255,255,255,0.06); cursor:pointer;
+    }
+    #flightmap-overlay .fmo-list .fmo-row.sel { background:rgba(255,255,255,0.16); }
+    #flightmap-overlay-close {
+      position:absolute; top:2vmin; right:2vmin; z-index:2; width:40px; height:40px;
+      border-radius:50%; border:none; background:rgba(255,255,255,0.14); color:#e8edf5;
+      font-size:17px; cursor:pointer;
+    }
+    /* Single-aircraft detail card (tap a plane). Deliberately theme-neutral —
+       a plain light card with dark text so the data is always readable, no
+       matter what the wall theme is. */
+    #fm-detail-overlay { position:fixed; inset:0; z-index:97; display:none;
+      align-items:center; justify-content:center; padding:4vmin;
+      background:rgba(6,10,18,0.55); }
+    #fm-detail-overlay.on { display:flex; }
+    #fm-detail-overlay .fmd-card {
+      width:min(420px, 94vw); max-height:88vh; overflow-y:auto;
+      background:#ffffff; color:#16202b;
+      border:1px solid rgba(0,0,0,0.12);
+      border-radius:14px; padding:18px 20px 16px;
+      box-shadow:0 12px 40px rgba(0,0,0,0.4);
+      position:relative;
+    }
+    #fm-detail-overlay .fmd-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+      padding-right:34px; }
+    #fm-detail-overlay .fmd-cs { font-size:22px; font-weight:700; letter-spacing:0.5px; color:#0d1520; }
+    #fm-detail-overlay .fmd-type { color:#5b6673; font-size:14px; }
+    #fm-detail-overlay .fmd-mil { font-size:11px; font-weight:700; text-transform:uppercase;
+      letter-spacing:0.5px; color:#8a5a00; background:#ffe7b3; border-radius:4px; padding:1px 6px; }
+    #fm-detail-overlay .fmd-route { margin:12px 0 4px; font-size:15px; color:#16202b; }
+    #fm-detail-overlay .fmd-route b { color:#1364c4; }
+    #fm-detail-overlay .fmd-route .fmd-type { color:#5b6673; }
+    #fm-detail-overlay .fmd-grid { display:grid; grid-template-columns:auto 1fr; gap:6px 14px;
+      font-size:13.5px; margin-top:12px; }
+    #fm-detail-overlay .fmd-grid .k { color:#71808f; white-space:nowrap; }
+    #fm-detail-overlay .fmd-grid > div:not(.k) { color:#16202b; }
+    #fm-detail-overlay .fmd-foot { margin-top:14px; font-size:11px; color:#8a97a4; }
+    #fm-detail-overlay .fmd-close { position:absolute; top:10px; right:10px; width:32px; height:32px;
+      border:none; border-radius:50%; background:rgba(0,0,0,0.07); color:#3a4652; font-size:15px; cursor:pointer; }
+    #fm-detail-overlay .fmd-close:hover { background:rgba(0,0,0,0.13); }
 
     /* ── Weather widget ──
        All inner sizes scale off --wx-scale (default 1) so a single "Content Size"
@@ -2724,6 +2819,18 @@
     .w-chorechart .cc-ic { font-size:calc(var(--cc-font) * 1.15 * var(--ui-scale,1)); flex-shrink:0; }
     .w-chorechart .cc-label { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .w-chorechart .cc-empty { font-size:calc(var(--cc-font) * 0.92 * var(--ui-scale,1)); color:var(--text2); text-align:center; padding:calc(8px * var(--ui-scale,1)) 0; }
+    .w-chorechart .cc-bonus { margin-top:calc(8px * var(--ui-scale,1)); padding-top:calc(7px * var(--ui-scale,1)); border-top:1px solid color-mix(in srgb, var(--text) 14%, transparent); }
+    .w-chorechart .cc-bonus-head { font-size:calc(var(--cc-font) * 0.9 * var(--ui-scale,1)); font-weight:700; letter-spacing:0.5px; color:#ffb454; margin-bottom:calc(5px * var(--ui-scale,1)); }
+    .w-chorechart .cc-bonus-list { display:flex; flex-wrap:wrap; gap:calc(6px * var(--ui-scale,1)); overflow:hidden; }
+    .w-chorechart .cc-bonus-chip { display:inline-flex; align-items:center; gap:calc(5px * var(--ui-scale,1));
+      font-size:calc(var(--cc-font) * 0.95 * var(--ui-scale,1)); padding:calc(3px * var(--ui-scale,1)) calc(8px * var(--ui-scale,1));
+      border-radius:calc(999px * var(--ui-scale,1)); background:color-mix(in srgb, #ffb454 16%, transparent);
+      border:1px solid color-mix(in srgb, #ffb454 40%, transparent); white-space:nowrap; }
+    .w-chorechart .cc-bonus-chip.claimed { opacity:0.5; background:color-mix(in srgb, var(--text) 8%, transparent); border-color:color-mix(in srgb, var(--text) 18%, transparent); }
+    .w-chorechart .cc-bonus-chip.claimed .cc-bonus-label { text-decoration:line-through; }
+    .w-chorechart .cc-bonus-label { overflow:hidden; text-overflow:ellipsis; }
+    .w-chorechart .cc-bonus-pay { font-weight:700; color:#3ec97a; }
+    .w-chorechart .cc-bonus-who { font-weight:700; font-size:calc(var(--cc-font) * 0.85 * var(--ui-scale,1)); }
 
     /* Chore Leaderboard widget */
     .w-chorelb { display:flex; flex-direction:column; height:100%; overflow:hidden; --lb-font:13px; }
@@ -3225,7 +3332,7 @@ function dayIndexForWeekStart(date, override){ return (date.getDay() - weekStart
 function fmtTime(t, ampmOverride){ if(!t) return 'All day'; const [h,m]=t.split(':').map(Number); if (use24Hour()) return `${pad(h)}:${pad(m)}`; const meridiem = h>=12?'pm':'am'; return `${h%12||12}:${pad(m)} ${ampmCase(ampmOverride)==='upper' ? meridiem.toUpperCase() : meridiem}`; }
 
 // ── State ────────────────────────────────────────────────────────────────────
-let state = { events:[], reminders:[], messages:[], cameras:[], meals:{}, weather:null, settings:{}, photoSettings:{}, photos:[], layout:[], tasksByProject:{}, tasksErrorByProject:{}, news:[], newsError:null, stocks:[], stocksError:null, choreChart:null, stickers:[] };
+let state = { events:[], reminders:[], messages:[], cameras:[], meals:{}, weather:null, settings:{}, photoSettings:{}, photos:[], layout:[], tasksByProject:{}, tasksErrorByProject:{}, news:[], newsError:null, stocks:[], stocksError:null, choreChart:null, stickers:[], flightmap:{}, flightWatch:[] };
 // Set during startup identity resolution (see the /api/screen-config call
 // below) and left as the single source of truth for "is this device
 // currently a slave" everywhere else in the file — enterEditMode() in
@@ -3297,7 +3404,7 @@ let displayConfig = { force_orientation: 'auto', rotation: 0, theme: '', screens
 // ── Theme (template) backgrounds & effects ───────────────────────────────────
 // Sets body[data-theme] (drives the CSS background scene) and spawns the matching
 // animated particles into #theme-fx. Safe to call repeatedly; clears prior FX.
-// Tracks setInterval ids for KC-46's continuously-updating TCAS altitude tags —
+// Tracks setInterval ids for Flight Deck's continuously-updating TCAS altitude tags —
 // clearing #theme-fx's innerHTML removes the DOM elements but NOT these JS
 // timers, so without this list they'd silently pile up every time applyTheme()
 // re-runs (theme change, orientation change, etc.).
@@ -4229,6 +4336,7 @@ function renderLayout() {
   requestAnimationFrame(wireMealPlanTaps);
   requestAnimationFrame(wireCameraStreams);
   requestAnimationFrame(wireCameraTaps);
+  requestAnimationFrame(wireFlightMaps);
   requestAnimationFrame(wireTodoWidgetTaps);
   requestAnimationFrame(wireShoppingWidgetTaps);
   requestAnimationFrame(wireTasksWidgetTaps);
@@ -4406,6 +4514,7 @@ function renderWidget(w) {
     case 'messageboard': return renderMessageBoard(w);
     case 'mealplan': return renderMealPlan(w);
     case 'camera': return renderCamera(w);
+    case 'flightmap': return renderFlightMap(w);
     case 'countdown': return renderCountdown(w);
     case 'moonphase': return renderMoonPhase(w);
     case 'airquality': return renderAirQuality(w);
@@ -5326,6 +5435,872 @@ function openCameraOverlay(camId) {
   vs.src = `/api/camera/${cam.id}/ws`;
   setTimeout(() => { if (vs.video) { vs.video.controls = false; vs.video.muted = true; vs.video.poster = `/api/camera/${cam.id}/frame.jpeg`; } }, 0);
   overlay.style.display = 'flex';
+}
+
+// ═══ Flight Map widget (live ADS-B) ═════════════════════════════════════════
+// Self-drawn world map on <canvas> + aircraft polled from /api/flightmap/*.
+// The basemap (land + country borders) is a TopoJSON downloaded once by the
+// server and decoded here into two Path2Ds; drawing is then just a
+// transform + fill/stroke, cheap enough to redraw on a weak Pi. Aircraft
+// dead-reckon between polls so they glide.
+const FM_DEG = Math.PI / 180;
+function fmMercY(lat) { const l = Math.max(-85, Math.min(85, lat)) * FM_DEG; return Math.log(Math.tan(Math.PI / 4 + l / 2)) / FM_DEG; }
+function fmDurLabel(m) { return m >= 60 ? (m / 60).toFixed(m % 60 === 0 ? 0 : 1) + ' h' : m + ' min'; }
+
+const _fmBasemap = { dlState: 'idle', land: null, border: null, stateLines: null, stateAttempts: 0, promise: null };
+let _fmBasemapPollTID = null;
+const _fmInst = new Map();  // widget id -> render instance
+
+// TopoJSON object -> a Path2D of its rings, projected (lon, mercY(lat)).
+// TopoJSON object -> a flat list of [lon,lat] rings (no projection yet).
+function _fmTopoRings(topo, obj) {
+  const out = [];
+  const dec = window.TopoLite.decode(topo, obj);
+  for (const poly of dec.polygons) for (const ring of poly) out.push(ring);
+  return out;
+}
+// Sutherland-Hodgman: clip a simple polygon (array of [x,y]) against an
+// axis-aligned rectangle, one edge of the rectangle at a time. Standard,
+// exact — unlike clamping stray points, it can't distort a fill's winding.
+function _fmClipRect(pts, x0, y0, x1, y1) {
+  function clipSide(input, inside, cross) {
+    if (input.length < 3) return [];
+    const out = [];
+    for (let i = 0; i < input.length; i++) {
+      const cur = input[i], prev = input[(i - 1 + input.length) % input.length];
+      const curIn = inside(cur), prevIn = inside(prev);
+      if (curIn) { if (!prevIn) out.push(cross(prev, cur)); out.push(cur); }
+      else if (prevIn) out.push(cross(prev, cur));
+    }
+    return out;
+  }
+  const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  let poly = pts;
+  poly = clipSide(poly, p => p[0] >= x0, (a, b) => lerp(a, b, (x0 - a[0]) / (b[0] - a[0])));
+  poly = clipSide(poly, p => p[0] <= x1, (a, b) => lerp(a, b, (x1 - a[0]) / (b[0] - a[0])));
+  poly = clipSide(poly, p => p[1] >= y0, (a, b) => lerp(a, b, (y0 - a[1]) / (b[1] - a[1])));
+  poly = clipSide(poly, p => p[1] <= y1, (a, b) => lerp(a, b, (y1 - a[1]) / (b[1] - a[1])));
+  return poly;
+}
+// Project [lon,lat] rings into a SCREEN-space Path2D for the current view.
+// A single pre-projected world path + ctx.scale() had two problems: an
+// antimeridian-crossing ring (Russia, Antarctica) drew a line straight across
+// the map, and zoomed in, the untouched rest of the world projected tens of
+// thousands of pixels past every edge — Skia silently dropped a fill that
+// large. Fix: split rings at any edge too long to be real coastline (handles
+// the antimeridian), then CLIP each piece to a window around the current view
+// before projecting, so the path Skia actually rasterises never exceeds a
+// couple of panel-widths regardless of zoom. Real clipping, not clamping —
+// clamping distorts which pixels are "inside" and silently over-fills.
+// Shared by both path builders below: the view's clip window (in lon /
+// mercY-lat "projected" degrees, generous by a fixed PIXEL margin converted
+// to degrees — a flat degree margin would be tiny at low zoom but balloon to
+// thousands of screen pixels at high zoom, defeating the point), plus
+// splitting a ring into pieces at any edge too long to be real coastline (a
+// 50m dataset's edges are well under 2°) — an antimeridian wrap or a stray
+// decode discontinuity.
+function _fmClipWindow(v, W, H) {
+  const cMY = fmMercY(v.centerLat);
+  const marginPx = 150;
+  const halfW = (W / 2 + marginPx) / v.zoom, halfH = (H / 2 + marginPx) / v.zoom;
+  return { cLon: v.centerLon, cMY, x0: v.centerLon - halfW, x1: v.centerLon + halfW, y0: cMY - halfH, y1: cMY + halfH };
+}
+function _fmSplitRing(ring) {
+  const pieces = [[]];
+  let prevLon = null, prevLat = null;
+  for (const pt of ring) {
+    const lon = pt[0], lat = pt[1];
+    if (prevLon !== null && (Math.abs(lon - prevLon) > 180 || Math.hypot(lon - prevLon, lat - prevLat) > 30)) pieces.push([]);
+    pieces[pieces.length - 1].push([lon, fmMercY(lat)]);
+    prevLon = lon; prevLat = lat;
+  }
+  return pieces;
+}
+// A filled shape (land): real polygon clipping. The clip-boundary segments
+// Sutherland-Hodgman inserts are invisible/correct as part of an area fill.
+function _fmRingsPath(rings, v, W, H) {
+  const p = new Path2D();
+  if (!rings || !rings.length) return p;
+  const { cMY, x0, x1, y0, y1 } = _fmClipWindow(v, W, H);
+  for (const ring of rings) {
+    for (let poly of _fmSplitRing(ring)) {
+      if (poly.length < 3) continue;
+      // Shift by whichever multiple of 360° brings this piece near the clip
+      // window — Russia's lon run near -170 needs +360 to sit next to a
+      // window centred past +170, and vice versa.
+      const avgLon = poly.reduce((s, q) => s + q[0], 0) / poly.length;
+      if (avgLon < x0 - 180) poly = poly.map(q => [q[0] + 360, q[1]]);
+      else if (avgLon > x1 + 180) poly = poly.map(q => [q[0] - 360, q[1]]);
+      let bx0 = Infinity, bx1 = -Infinity, by0 = Infinity, by1 = -Infinity;
+      for (const q of poly) { if (q[0] < bx0) bx0 = q[0]; if (q[0] > bx1) bx1 = q[0]; if (q[1] < by0) by0 = q[1]; if (q[1] > by1) by1 = q[1]; }
+      if (bx1 < x0 || bx0 > x1 || by1 < y0 || by0 > y1) continue; // no overlap with the view — skip entirely
+      const clipped = _fmClipRect(poly, x0, y0, x1, y1);
+      if (clipped.length < 3) continue;
+      let started = false;
+      for (const q of clipped) {
+        const sx = W / 2 + (q[0] - v.centerLon) * v.zoom, sy = H / 2 - (q[1] - cMY) * v.zoom;
+        if (!started) { p.moveTo(sx, sy); started = true; } else p.lineTo(sx, sy);
+      }
+      p.closePath();
+    }
+  }
+  return p;
+}
+// Liang-Barsky: clip a single segment to an axis-aligned rect. Returns the
+// visible portion as [x0,y0,x1,y1], or null if none of it is inside.
+function _fmClipSegment(x0, y0, x1, y1, xmin, ymin, xmax, ymax) {
+  let t0 = 0, t1 = 1;
+  const dx = x1 - x0, dy = y1 - y0;
+  const edges = [[-dx, x0 - xmin], [dx, xmax - x0], [-dy, y0 - ymin], [dy, ymax - y0]];
+  for (const [p, q] of edges) {
+    if (p === 0) { if (q < 0) return null; continue; }
+    const r = q / p;
+    if (p < 0) { if (r > t1) return null; if (r > t0) t0 = r; }
+    else { if (r < t0) return null; if (r < t1) t1 = r; }
+  }
+  return [x0 + t0 * dx, y0 + t0 * dy, x0 + t1 * dx, y0 + t1 * dy];
+}
+// A stroked outline (country borders, state lines): clip each EDGE
+// independently instead of the whole polygon. Polygon clipping (_fmRingsPath)
+// is wrong here — filling in the rectangle's own edges where a huge landmass
+// gets cut off is invisible on a fill but draws as a bogus straight line
+// (exactly the diagonal streak this was built to fix) when stroked. Per-edge
+// clipping only ever draws pieces of the real coastline, never a seam.
+function _fmStrokeRingsPath(rings, v, W, H) {
+  const p = new Path2D();
+  if (!rings || !rings.length) return p;
+  const { x0, x1, y0, y1 } = _fmClipWindow(v, W, H);
+  const proj = (q) => [W / 2 + (q[0] - v.centerLon) * v.zoom, H / 2 - (q[1] - fmMercY(v.centerLat)) * v.zoom];
+  for (const ring of rings) {
+    for (let piece of _fmSplitRing(ring)) {
+      if (piece.length < 2) continue;
+      // Whole-piece bbox reject BEFORE walking every edge — at anything but a
+      // world-spanning view, most of the ~100k border points belong to a
+      // continent nowhere near the window; this turns that into an O(1) skip
+      // per piece instead of O(edges). Same antimeridian re-centring as the
+      // fill path, for the same reason (a piece near -170° needs +360° to
+      // land next to a window centred past +170°, and vice versa).
+      const avgLon = piece.reduce((s, q) => s + q[0], 0) / piece.length;
+      if (avgLon < x0 - 180) piece = piece.map(q => [q[0] + 360, q[1]]);
+      else if (avgLon > x1 + 180) piece = piece.map(q => [q[0] - 360, q[1]]);
+      let bx0 = Infinity, bx1 = -Infinity, by0 = Infinity, by1 = -Infinity;
+      for (const q of piece) { if (q[0] < bx0) bx0 = q[0]; if (q[0] > bx1) bx1 = q[0]; if (q[1] < by0) by0 = q[1]; if (q[1] > by1) by1 = q[1]; }
+      if (bx1 < x0 || bx0 > x1 || by1 < y0 || by0 > y1) continue;
+      for (let i = 1; i < piece.length; i++) {
+        const a = piece[i - 1], b = piece[i];
+        if ((a[0] < x0 && b[0] < x0) || (a[0] > x1 && b[0] > x1) || (a[1] < y0 && b[1] < y0) || (a[1] > y1 && b[1] > y1)) continue; // both on the same outside side — cheap reject
+        const clipped = _fmClipSegment(a[0], a[1], b[0], b[1], x0, y0, x1, y1);
+        if (!clipped) continue;
+        const s0 = proj([clipped[0], clipped[1]]), s1 = proj([clipped[2], clipped[3]]);
+        p.moveTo(s0[0], s0[1]);
+        p.lineTo(s1[0], s1[1]);
+      }
+    }
+  }
+  return p;
+}
+async function ensureFmBasemap() {
+  const statesDone = !!_fmBasemap.stateLines || (_fmBasemap.stateAttempts || 0) >= 5;
+  if (_fmBasemap.land && statesDone) return true;
+  if (_fmBasemap.promise) return _fmBasemap.promise;
+  _fmBasemap.promise = (async () => {
+    try {
+      if (!window.TopoLite) return false;
+      if (!_fmBasemap.land) {
+        const st = await fetch('/api/flightmap/basemap').then(r => r.json()).catch(() => ({}));
+        _fmBasemap.dlState = st.state || 'idle';
+        if (st.state !== 'ready') return false;
+        const topo = await fetch('/api/flightmap/basemap.json').then(r => r.json());
+        _fmBasemap.land = _fmTopoRings(topo, 'land');
+        _fmBasemap.border = _fmTopoRings(topo, 'countries');
+        _fmBasemap.dlState = 'ready';
+      }
+      // state / province lines — best-effort, never blocks the world map
+      if (!_fmBasemap.stateLines && (_fmBasemap.stateAttempts || 0) < 5) {
+        _fmBasemap.stateAttempts = (_fmBasemap.stateAttempts || 0) + 1;
+        try {
+          const sr = await fetch('/api/flightmap/states.json');
+          if (sr.ok) { const stopo = await sr.json(); _fmBasemap.stateLines = _fmTopoRings(stopo, 'states'); }
+        } catch {}
+      }
+      return !!_fmBasemap.land;
+    } catch (e) { return false; }
+    finally { _fmBasemap.promise = null; }
+  })();
+  return _fmBasemap.promise;
+}
+function maybePollFmBasemap() {
+  const wanted = (state.layout || []).some(w => w && w.type === 'flightmap');
+  const done = _fmBasemap.land && (_fmBasemap.stateLines || (_fmBasemap.stateAttempts || 0) >= 5);
+  if (!wanted || done) { if (_fmBasemapPollTID) { clearInterval(_fmBasemapPollTID); _fmBasemapPollTID = null; } return; }
+  if (_fmBasemapPollTID) return;
+  _fmBasemapPollTID = setInterval(async () => {
+    const ok = await ensureFmBasemap();
+    if (ok) { clearInterval(_fmBasemapPollTID); _fmBasemapPollTID = null; renderFmAll(); }
+  }, 5000);
+}
+
+// ── per-query data fetch ──
+function fmQueryParams(w) {
+  const p = new URLSearchParams();
+  const s = w.fmSubject || 'filter';
+  if (s === 'flight') {
+    p.set('subject', 'flight');
+    const k = w.fmFlightKind === 'reg' ? 'reg' : (w.fmFlightKind === 'hex' ? 'hex' : 'callsign');
+    p.set(k, w.fmFlightValue || '');
+  } else if (s === 'watch') {
+    p.set('subject', 'watch');
+    if (w.fmWatchProfileId != null && w.fmWatchProfileId !== '') p.set('profileId', w.fmWatchProfileId);
+  } else {
+    p.set('subject', 'filter');
+    const f = w.fmFilter || {};
+    if (f.mil) p.set('mil', '1');
+    else if (f.type) p.set('type', f.type);
+    else if (f.squawk) p.set('squawk', f.squawk);
+    else if (f.airline && f.lat != null && f.lon != null) { p.set('radiusNm', f.radiusNm || 250); p.set('lat', f.lat); p.set('lon', f.lon); p.set('callsignPrefix', f.airline); }
+    else if (f.radiusNm && f.lat != null && f.lon != null) { p.set('radiusNm', f.radiusNm); p.set('lat', f.lat); p.set('lon', f.lon); }
+    if (f.milOnly && !f.mil) p.set('milOnly', '1');
+  }
+  if (w.fmTrailMin) p.set('trailMin', w.fmTrailMin);
+  return p;
+}
+function fmKey(w) { return fmQueryParams(w).toString(); }
+
+let _fmFetchInFlight = new Set();
+async function fetchFlightmap(force) {
+  const widgets = (state.layout || []).filter(w => w && w.type === 'flightmap');
+  const keys = new Set();
+  for (const w of widgets) {
+    const key = fmKey(w);
+    if (keys.has(key)) continue;
+    keys.add(key);
+    const cur = state.flightmap[key];
+    if (!force && cur && Date.now() - cur.at < 8000) continue;
+    if (_fmFetchInFlight.has(key)) continue;
+    _fmFetchInFlight.add(key);
+    try {
+      const d = await fetch('/api/flightmap/state?' + key).then(r => r.json());
+      const now = Date.now();
+      for (const a of (d.aircraft || [])) a._at = now;
+      state.flightmap[key] = {
+        at: now, aircraft: d.aircraft || [], trailSeed: d.trailSeed || {},
+        degraded: !!d.degraded, source: d.source || null,
+      };
+    } catch (e) { /* keep last */ }
+    finally { _fmFetchInFlight.delete(key); }
+  }
+  // drop stale keys no widget uses any more
+  for (const k of Object.keys(state.flightmap)) if (!keys.has(k)) delete state.flightmap[k];
+  renderFmAll();
+}
+let _fmPollTID = null;
+function startFmPolling() {
+  if (_fmPollTID) return;
+  _fmPollTID = setInterval(() => {
+    if ((state.layout || []).some(w => w && w.type === 'flightmap')) fetchFlightmap(false);
+  }, 12000);
+}
+
+// ── widget HTML ──
+function renderFlightMap(widget) {
+  const w = widget || {};
+  const showData = w.fmShowData !== false;
+  return `<div class="w-flightmap" data-widget-id="${w.id}" data-fm-key="${escapeHtmlD(fmKey(w))}">
+    <canvas class="fm-base"></canvas>
+    <canvas class="fm-air"></canvas>
+    <div class="fm-badge"></div>
+    ${showData ? '<div class="fm-data" hidden></div>' : ''}
+    <button class="fm-expand" title="Expand" aria-label="Expand">⛶</button>
+    <div class="fm-empty" hidden></div>
+  </div>`;
+}
+
+// ── projection helpers ──
+function fmProject(lat, lon, view, W, H) {
+  return {
+    x: W / 2 + (lon - view.centerLon) * view.zoom,
+    y: H / 2 - (fmMercY(lat) - fmMercY(view.centerLat)) * view.zoom,
+  };
+}
+function fmDeadReckon(a, now) {
+  if (a.onGround || !a.gsKts || a.trackDeg == null) return { lat: a.lat, lon: a.lon };
+  const dt = Math.max(0, (now - (a._at || now)) / 1000);
+  const nm = a.gsKts * dt / 3600;
+  const dLat = (nm / 60) * Math.cos(a.trackDeg * FM_DEG);
+  const dLon = (nm / 60) * Math.sin(a.trackDeg * FM_DEG) / Math.max(0.2, Math.cos(a.lat * FM_DEG));
+  return { lat: a.lat + dLat, lon: a.lon + dLon };
+}
+function fmDesiredView(w, data, W, H) {
+  const s = w.fmSubject || 'filter';
+  const ac = (data && data.aircraft) || [];
+  if (s === 'flight' || s === 'watch') {
+    const tgt = ac[0];
+    const inst = _fmInst.get(w.id);
+    if (tgt) { if (inst) inst.lastTarget = { lat: tgt.lat, lon: tgt.lon }; }
+    const c = tgt || (inst && inst.lastTarget);
+    if (c) { const span = 16; return { centerLat: c.lat, centerLon: c.lon, zoom: Math.max(W, H) / span }; }
+    return { centerLat: 30, centerLon: -40, zoom: W / 360 };
+  }
+  const f = w.fmFilter || {};
+  if (f.radiusNm && f.lat != null && f.lon != null) {
+    // Fit the radius circle's bounding box into the viewport, correcting for
+    // the Mercator stretch at this latitude (a naive radius/60 degrees is
+    // ~25% off at mid-latitudes, so the shown area didn't match the radius).
+    const cLat = +f.lat, cLon = +f.lon, rLat = Math.max(0.25, (+f.radiusNm) / 60);
+    const ySpan = fmMercY(Math.min(85, cLat + rLat)) - fmMercY(Math.max(-85, cLat - rLat));
+    const xSpan = 2 * rLat / Math.max(0.2, Math.cos(cLat * FM_DEG));
+    return { centerLat: cLat, centerLon: cLon, zoom: Math.max(0.15, Math.min((W * 0.9) / xSpan, (H * 0.9) / ySpan)) };
+  }
+  // an explicit centre pins mil/type/squawk to a region (spanNm across); no
+  // centre = a fixed near-hemisphere view so the map doesn't wander.
+  if (f.centerLat != null && f.centerLon != null && f.centerLat !== '' && f.centerLon !== '') {
+    const spanNm = Math.max(200, Math.min(6000, +f.spanNm || 2600));
+    return { centerLat: +f.centerLat, centerLon: +f.centerLon, zoom: Math.max(W, H) / (spanNm / 60) };
+  }
+  const homeLon = parseFloat(state.settings && state.settings.weather_lon);
+  return { centerLat: 25, centerLon: Number.isFinite(homeLon) ? homeLon : -30, zoom: W / 360 };
+}
+
+// ── the render/animation loop for one widget ──
+function fmStartInstance(el, w) {
+  const id = w.id;
+  const old = _fmInst.get(id);
+  if (old && old.raf) cancelAnimationFrame(old.raf);
+  const baseC = el.querySelector('.fm-base'), airC = el.querySelector('.fm-air');
+  const badge = el.querySelector('.fm-badge'), dataEl = el.querySelector('.fm-data'), emptyEl = el.querySelector('.fm-empty');
+  if (!baseC || !airC) return;
+  const inst = {
+    id, el, baseC, airC, badge, dataEl, emptyEl, w,
+    view: null, baseDirty: true, raf: 0, selectedHex: (old && old.selectedHex) || null,
+    lastTarget: old && old.lastTarget || null, lastW: 0, lastH: 0,
+  };
+  _fmInst.set(id, inst);
+
+  // Resolve theme colours to concrete rgb()/rgba() strings the 2D canvas can
+  // always parse. Read the vars from the widget element itself (not <html>) —
+  // themes are set on body[data-theme], which document.documentElement does
+  // NOT inherit, so reading from <html> gave the wrong (default-dark) palette
+  // on light themes like corkboard and the map drew light-on-light = blank.
+  const _fmProbe = document.createElement('span');
+  _fmProbe.style.cssText = 'position:absolute;left:-9999px;width:0;height:0';
+  const resolveColor = (expr) => {
+    try {
+      _fmProbe.style.color = '';
+      _fmProbe.style.color = expr;
+      el.appendChild(_fmProbe);
+      const c = getComputedStyle(_fmProbe).color;
+      _fmProbe.remove();
+      return c && c !== '' ? c : expr;
+    } catch { return expr; }
+  };
+  const themeCol = () => {
+    const cs = getComputedStyle(el);
+    const g = (v, f) => (cs.getPropertyValue(v) || '').trim() || f;
+    const text = g('--text', '#1a1a1a'), accent = g('--accent', '#4A90D9');
+    const accent2 = g('--accent2', '') || accent;
+    const mix = (c, pct) => resolveColor(`color-mix(in srgb, ${c} ${pct}%, transparent)`);
+    return {
+      text, accent, accent2,
+      ocean: mix(text, 7),   // full-canvas water wash
+      land: mix(text, 26),   // land fill — solid enough to read on a paper/light theme
+      coast: mix(text, 46),  // coastlines + country borders
+      stateLn: mix(text, 22), // internal state / province lines — subtler
+      trail: mix(accent, 55),
+      tagBg: mix(text, 15),  // per-aircraft info block backdrop (drawn twice)
+      altLo: resolveColor(accent2), altHi: resolveColor(accent),
+    };
+  };
+
+  function sizeCanvases() {
+    const r = el.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const W = Math.max(1, Math.round(r.width)), H = Math.max(1, Math.round(r.height));
+    if (W === inst.lastW && H === inst.lastH) return { W, H, dpr, changed: false };
+    for (const c of [baseC, airC]) { c.width = W * dpr; c.height = H * dpr; }
+    inst.lastW = W; inst.lastH = H; inst.baseDirty = true;
+    return { W, H, dpr, changed: true };
+  }
+
+  function drawBase(W, H, dpr, col) {
+    const ctx = baseC.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    // a water wash across the whole panel so the map reads as its own surface
+    // regardless of what the theme puts behind the widget (a paper card on
+    // corkboard, a dark panel on dark themes, etc.)
+    ctx.fillStyle = col.ocean;
+    ctx.fillRect(0, 0, W, H);
+    if (!_fmBasemap.land) return;
+    const v = inst.view;
+    // Build the basemap in SCREEN space for THIS view (cached until the view
+    // moves). Doing it here rather than as one pre-projected path + ctx.scale()
+    // is what fixes both the smear across the map and the totally blank map
+    // when zoomed in — see _fmRingsPath().
+    const bk = Math.round(v.centerLat * 40) + ',' + Math.round(v.centerLon * 40) + ',' + Math.round(v.zoom * 20) + ',' + W + 'x' + H;
+    if (!inst._basePaths || inst._basePaths.key !== bk) {
+      inst._basePaths = {
+        key: bk,
+        land: _fmRingsPath(_fmBasemap.land, v, W, H),
+        border: _fmStrokeRingsPath(_fmBasemap.border, v, W, H),
+        stateLines: _fmBasemap.stateLines ? _fmStrokeRingsPath(_fmBasemap.stateLines, v, W, H) : null,
+      };
+    }
+    const bp = inst._basePaths;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, W, H);
+    ctx.clip();
+    ctx.lineJoin = 'round';
+    ctx.fillStyle = col.land;
+    ctx.fill(bp.land, 'evenodd');
+    if (bp.stateLines && inst.w.fmStates !== false) {
+      ctx.lineWidth = 0.6;
+      ctx.strokeStyle = col.stateLn;
+      ctx.stroke(bp.stateLines);
+    }
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = col.coast;
+    ctx.stroke(bp.border);
+    ctx.restore();
+    // search-radius ring for radius / airline filters, in screen space
+    const ff = inst.w.fmFilter || {};
+    if (ff.radiusNm && ff.lat != null && ff.lon != null) {
+      const c = fmProject(+ff.lat, +ff.lon, v, W, H);
+      const rLat = (+ff.radiusNm) / 60;
+      const rx = (rLat / Math.max(0.2, Math.cos(+ff.lat * FM_DEG))) * v.zoom;
+      const ry = (fmMercY(+ff.lat + rLat) - fmMercY(+ff.lat)) * v.zoom;
+      ctx.save();
+      ctx.beginPath();
+      ctx.ellipse(c.x, c.y, Math.abs(rx), Math.abs(ry), 0, 0, Math.PI * 2);
+      ctx.setLineDash([5, 4]);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = col.stateLn;
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // parse "rgb(a)(...)" to [r,g,b,a]; anything else -> null
+  function _rgba(s) {
+    const m = /rgba?\(([^)]+)\)/i.exec(s || '');
+    if (!m) return null;
+    const p = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
+    return [p[0] || 0, p[1] || 0, p[2] || 0, p[3] == null ? 1 : p[3]];
+  }
+  function altColor(altFt, col) {
+    const t = Math.max(0, Math.min(1, (altFt || 0) / 40000));
+    const lo = _rgba(col.altLo), hi = _rgba(col.altHi);
+    if (!lo || !hi) return col.accent;
+    const c = i => Math.round(lo[i] + (hi[i] - lo[i]) * t);
+    return `rgb(${c(0)}, ${c(1)}, ${c(2)})`;
+  }
+  function drawTrail(ctx, seed, live, view, W, H, col) {
+    if (!seed || seed.length < 2) { if (!seed) return; }
+    ctx.lineWidth = 1.5; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    const pts = (seed || []).slice();
+    let started = false;
+    for (const s of pts) { const q = fmProject(s[1], s[2], view, W, H); if (!started) { ctx.moveTo(q.x, q.y); started = true; } else ctx.lineTo(q.x, q.y); }
+    if (live) { const q = fmProject(live.lat, live.lon, view, W, H); if (!started) ctx.moveTo(q.x, q.y); else ctx.lineTo(q.x, q.y); }
+    ctx.strokeStyle = col.trail;
+    ctx.stroke();
+  }
+  function drawPlane(ctx, x, y, trackDeg, fill, selected) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(((trackDeg || 0)) * FM_DEG);
+    ctx.beginPath();
+    ctx.moveTo(0, -7); ctx.lineTo(5, 6); ctx.lineTo(0, 3); ctx.lineTo(-5, 6); ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+    if (selected) { ctx.lineWidth = 1.6; ctx.strokeStyle = '#fff'; ctx.stroke(); }
+    ctx.restore();
+  }
+  // Build a tag's content + measured size (no drawing). `full` adds route +
+  // altitude/speed/climb lines; otherwise it's just ident + ICAO type.
+  function buildTag(ctx, a, fontPx, bold, full) {
+    const ident = a.callsign || a.reg || (a.hex || '').toUpperCase();
+    if (!ident) return null;
+    const f1 = fontPx, f2 = Math.max(9, fontPx - 2);
+    const lines = [{ t: ident + (a.type ? '   ' + a.type : ''), big: true }];
+    if (full) {
+      if (a.route && (a.route.from || a.route.to)) {
+        const ap = x => x ? (x.iata || x.icao || x.city || '?') : '?';
+        lines.push({ t: ap(a.route.from) + ' → ' + ap(a.route.to), accent: true });
+      }
+      const parts = [];
+      if (a.onGround) parts.push('on ground');
+      else {
+        if (a.altFt != null) parts.push('FL' + Math.round(a.altFt / 100));
+        if (a.gsKts != null) parts.push(Math.round(a.gsKts) + ' kt');
+        const vr = a.vertRateFpm;
+        if (vr > 150) parts.push('↑'); else if (vr < -150) parts.push('↓');
+      }
+      if (parts.length) lines.push({ t: parts.join('  ') });
+    }
+    const padX = 6, padY = 4, lh = f2 + 4;
+    let wMax = 0;
+    for (const ln of lines) {
+      ctx.font = `${ln.big ? (bold ? '700 ' : '600 ') : ''}${ln.big ? f1 : f2}px Inter, system-ui, sans-serif`;
+      wMax = Math.max(wMax, ctx.measureText(ln.t).width);
+    }
+    return {
+      lines, bold, f1, f2, lh, padX, padY,
+      boxW: Math.ceil(wMax) + padX * 2,
+      boxH: padY * 2 + f1 + (lines.length - 1) * lh,
+    };
+  }
+  function paintTag(ctx, bx, by, px, py, tag, col) {
+    const { boxW, boxH, lines, bold, f1, f2, lh, padX, padY } = tag;
+    ctx.save();
+    // leader line to the nearest point on the box border
+    const lx = Math.max(bx, Math.min(px, bx + boxW));
+    const ly = Math.max(by, Math.min(py, by + boxH));
+    ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(lx, ly);
+    ctx.strokeStyle = col.stateLn; ctx.lineWidth = 1; ctx.stroke();
+    // box (filled twice for a touch more opacity)
+    const rr = 4;
+    ctx.beginPath();
+    ctx.moveTo(bx + rr, by);
+    ctx.arcTo(bx + boxW, by, bx + boxW, by + boxH, rr);
+    ctx.arcTo(bx + boxW, by + boxH, bx, by + boxH, rr);
+    ctx.arcTo(bx, by + boxH, bx, by, rr);
+    ctx.arcTo(bx, by, bx + boxW, by, rr);
+    ctx.closePath();
+    ctx.fillStyle = col.tagBg; ctx.fill(); ctx.fill();
+    ctx.lineWidth = 1; ctx.strokeStyle = bold ? col.altHi : col.stateLn; ctx.stroke();
+    // text
+    ctx.textBaseline = 'top';
+    let ty = by + padY;
+    for (const ln of lines) {
+      ctx.font = `${ln.big ? (bold ? '700 ' : '600 ') : ''}${ln.big ? f1 : f2}px Inter, system-ui, sans-serif`;
+      ctx.lineWidth = 3; ctx.lineJoin = 'round'; ctx.strokeStyle = col.tagBg;
+      ctx.strokeText(ln.t, bx + padX, ty);
+      ctx.fillStyle = ln.big ? (bold ? col.altHi : col.text) : (ln.accent ? col.altHi : col.stateLn);
+      ctx.fillText(ln.t, bx + padX, ty);
+      ty += ln.big ? f1 + 2 : lh;
+    }
+    ctx.restore();
+  }
+  const _rectHit = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  const _overlapArea = (a, b) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) *
+                                 Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+  // Choose a non-overlapping box position around (px,py). Returns {bx,by}.
+  function placeTag(px, py, boxW, boxH, obstacles, W, H) {
+    const g = 12;
+    const cands = [
+      [px + g, py - boxH - g], [px + g, py + g],
+      [px - g - boxW, py - boxH - g], [px - g - boxW, py + g],
+      [px + g, py - boxH / 2], [px - g - boxW, py - boxH / 2],
+      [px - boxW / 2, py - boxH - g], [px - boxW / 2, py + g],
+      [px + g, py - boxH - g * 3.2], [px - g - boxW, py + g * 3.2],
+      [px + g * 3.2, py - boxH / 2], [px - g * 3.2 - boxW, py - boxH / 2],
+    ];
+    let best = null, bestScore = Infinity;
+    for (const [cx, cy] of cands) {
+      const bx = Math.max(2, Math.min(cx, W - boxW - 2));
+      const by = Math.max(2, Math.min(cy, H - boxH - 2));
+      const r = { x: bx, y: by, w: boxW, h: boxH };
+      let score = 0;
+      for (const o of obstacles) score += _overlapArea(r, o);
+      // small penalty for drifting from the ideal up-right spot
+      score += Math.hypot(bx - (px + g), by - (py - boxH - g)) * 0.02;
+      if (score === 0) return { bx, by };
+      if (score < bestScore) { bestScore = score; best = { bx, by }; }
+    }
+    return best;
+  }
+
+  function frame() {
+    if (_fmInst.get(id) !== inst) return; // superseded
+    const { W, H, dpr } = sizeCanvases();
+    const key = fmKey(inst.w);
+    const data = state.flightmap[key];
+    const col = themeCol();
+
+    // view easing
+    const desired = fmDesiredView(inst.w, data, W, H);
+    if (!inst.view) inst.view = { ...desired };
+    const v = inst.view;
+    const near = Math.abs(v.centerLat - desired.centerLat) < 0.02 && Math.abs(v.centerLon - desired.centerLon) < 0.02 && Math.abs(v.zoom - desired.zoom) < 0.5;
+    if (!near) {
+      v.centerLat += (desired.centerLat - v.centerLat) * 0.12;
+      v.centerLon += (desired.centerLon - v.centerLon) * 0.12;
+      v.zoom += (desired.zoom - v.zoom) * 0.12;
+      inst.baseDirty = true;
+    }
+
+    if (!_fmBasemap.land) { ensureFmBasemap(); maybePollFmBasemap(); }
+    if (inst.baseDirty && _fmBasemap.land) { drawBase(W, H, dpr, col); inst.baseDirty = false; }
+
+    // air layer
+    const actx = airC.getContext('2d');
+    actx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    actx.clearRect(0, 0, W, H);
+    const now = Date.now();
+    const ac = (data && data.aircraft) || [];
+    inst._screen = [];
+    const onScreen = [];
+    for (const a of ac) {
+      const dr = fmDeadReckon(a, now);
+      const q = fmProject(dr.lat, dr.lon, v, W, H);
+      if (q.x < -20 || q.x > W + 20 || q.y < -20 || q.y > H + 20) continue;
+      const seed = (data.trailSeed || {})[a.hex];
+      if (inst.w.fmShowTrails !== false) drawTrail(actx, seed, dr, v, W, H, col);
+      const sel = a.hex === inst.selectedHex;
+      drawPlane(actx, q.x, q.y, a.trackDeg, sel ? col.accent : altColor(a.altFt, col), sel);
+      const rec = { hex: a.hex, x: q.x, y: q.y, a };
+      inst._screen.push(rec);
+      onScreen.push(rec);
+    }
+    // per-aircraft tags on top of every chevron. Off with the "Label
+    // aircraft" setting; the selected/followed one is always tagged.
+    //   <= 16 on screen : full block (ident + type / route / alt·speed·climb)
+    //   17..60          : just ident + type
+    //   > 60            : nothing (except the selected one, full)
+    const wantLabels = inst.w.fmLabels !== false;
+    const labelFont = Math.max(10, (inst.w.fmFontPx || 13) - 1);
+    if (wantLabels || inst.selectedHex) {
+      const n = onScreen.length;
+      const fullAll = n <= 16;
+      const tagged = onScreen.filter(r => (r.hex === inst.selectedHex) || (wantLabels && n <= 60));
+      // Solve the placement (deconfliction) only every ~0.55s or when the set
+      // of tagged aircraft / the zoom changes — between solves each block just
+      // rides along with its chevron, so labels stay stable and don't jitter.
+      const solveKey = tagged.map(r => r.hex).sort().join(',') + '|' + Math.round(v.zoom);
+      inst._tagPos = inst._tagPos || {};
+      if (!inst._tagSolveAt || now - inst._tagSolveAt > 550 || solveKey !== inst._tagSolveKey) {
+        inst._tagSolveAt = now; inst._tagSolveKey = solveKey;
+        const chevBoxes = onScreen.map(r => ({ x: r.x - 9, y: r.y - 9, w: 18, h: 18 }));
+        // selected first, then top-to-bottom, so the important one gets its spot
+        const order = tagged.slice().sort((a, b) =>
+          (b.hex === inst.selectedHex) - (a.hex === inst.selectedHex) || a.y - b.y);
+        const placed = [];
+        const fresh = {};
+        for (const r of order) {
+          const isSel = r.hex === inst.selectedHex;
+          const tag = buildTag(actx, r.a, labelFont, isSel, isSel || fullAll);
+          if (!tag) continue;
+          const pos = placeTag(r.x, r.y, tag.boxW, tag.boxH, placed.concat(chevBoxes), W, H);
+          placed.push({ x: pos.bx, y: pos.by, w: tag.boxW, h: tag.boxH });
+          fresh[r.hex] = { bx: pos.bx, by: pos.by, ax: r.x, ay: r.y, full: isSel || fullAll };
+        }
+        inst._tagPos = fresh;
+      }
+      for (const r of tagged) {
+        const p = inst._tagPos[r.hex];
+        const isSel = r.hex === inst.selectedHex;
+        const tag = buildTag(actx, r.a, labelFont, isSel, p ? p.full : (isSel || fullAll));
+        if (!tag) continue;
+        let bx, by;
+        if (p) { bx = p.bx + (r.x - p.ax); by = p.by + (r.y - p.ay); }
+        else { bx = r.x + 12; by = r.y - tag.boxH - 12; }
+        bx = Math.max(2, Math.min(bx, W - tag.boxW - 2));
+        by = Math.max(2, Math.min(by, H - tag.boxH - 2));
+        paintTag(actx, bx, by, r.x, r.y, tag, col);
+      }
+    }
+
+    // badge
+    let bd = '';
+    if (!_fmBasemap.land) bd = 'setting up map…';
+    else if (data && data.degraded) bd = '<span class="fm-delayed">⚠ delayed</span>';
+    else if ((inst.w.fmSubject || 'filter') === 'filter') bd = ac.length + ' aircraft';
+    if (data && data.source) bd += (bd ? ' · ' : '') + data.source.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    if (badge) badge.innerHTML = bd;
+
+    // empty / no-signal
+    if (emptyEl) {
+      const s = inst.w.fmSubject || 'filter';
+      if (_fmBasemap.land && !ac.length && (s === 'flight' || s === 'watch')) {
+        emptyEl.hidden = false;
+        emptyEl.innerHTML = `<div class="fm-emoji">✈️</div><div>Not currently tracked${inst.lastTarget ? ' — waiting for the next position' : ''}</div>`;
+      } else emptyEl.hidden = true;
+    }
+
+    // data block
+    if (dataEl) {
+      let show = inst.selectedHex ? ac.find(a => a.hex === inst.selectedHex) : null;
+      if (!show && (inst.w.fmSubject === 'flight' || inst.w.fmSubject === 'watch')) show = ac[0];
+      if (show) {
+        const vs = show.vertRateFpm > 120 ? '↑' : show.vertRateFpm < -120 ? '↓' : '→';
+        const alt = show.onGround ? 'on ground' : (show.altFt != null ? Math.round(show.altFt).toLocaleString() + ' ft' : '—');
+        const rt = show.route;
+        const ap = (a) => a ? (a.iata || a.icao || a.city || '?') : '?';
+        dataEl.hidden = false;
+        dataEl.style.fontSize = (inst.w.fmFontPx || 13) + 'px';
+        dataEl.innerHTML =
+          `<div class="fm-cs">${escapeHtmlD(show.callsign || show.reg || show.hex.toUpperCase())}</div>` +
+          (rt && (rt.from || rt.to) ? `<div class="fm-route">${escapeHtmlD(ap(rt.from))} → ${escapeHtmlD(ap(rt.to))}</div>` : '') +
+          `<div class="fm-sub">${escapeHtmlD([show.typeName || show.type, show.reg].filter(Boolean).join(' · ') || '')}</div>` +
+          `<div>${alt}${show.gsKts != null && !show.onGround ? ' · ' + Math.round(show.gsKts) + ' kt ' + vs : ''}</div>`;
+      } else dataEl.hidden = true;
+    }
+
+    inst.raf = requestAnimationFrame(frame);
+  }
+  inst.raf = requestAnimationFrame(frame);
+}
+
+function wireFlightMaps() {
+  document.querySelectorAll('.w-flightmap[data-widget-id]').forEach(el => {
+    const id = el.getAttribute('data-widget-id');
+    const w = (state.layout || []).find(x => String(x.id) === String(id));
+    if (!w) return;
+    fmStartInstance(el, w);
+    if (el._fmTapWired) return;
+    el._fmTapWired = true;
+    el.addEventListener('click', (e) => {
+      // the expand button + tapping an aircraft for its detail card both work
+      // even in Live Edit (they don't move or edit the widget).
+      if (e.target.closest('.fm-expand')) { e.stopPropagation(); openFlightMapOverlay(id); return; }
+      const inst = _fmInst.get(id);
+      if (!inst || !inst._screen) return;
+      const r = el.getBoundingClientRect();
+      const px = e.clientX - r.left, py = e.clientY - r.top;
+      // generous touch target; a tap near a plane opens its detail, a tap in
+      // empty space does nothing (use the ⛶ button for the full-screen map).
+      let best = null, bd = 44;
+      for (const s of inst._screen) { const d = Math.hypot(s.x - px, s.y - py); if (d < bd) { bd = d; best = s; } }
+      if (best) {
+        e.stopPropagation();
+        inst.selectedHex = best.hex;
+        openFmAircraftDetail(fmKey(inst.w), best.hex);
+      }
+    });
+  });
+  // clean up instances whose element is gone
+  for (const [id, inst] of _fmInst) {
+    if (!document.body.contains(inst.el)) { if (inst.raf) cancelAnimationFrame(inst.raf); _fmInst.delete(id); }
+  }
+  maybePollFmBasemap();
+  startFmPolling();
+}
+function renderFmAll() {
+  // nudge every live instance to redraw its base (theme / data changed)
+  for (const inst of _fmInst.values()) inst.baseDirty = true;
+}
+
+function openFlightMapOverlay(widgetId) {
+  const w = (state.layout || []).find(x => String(x.id) === String(widgetId));
+  if (!w) return;
+  let ov = document.getElementById('flightmap-overlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'flightmap-overlay';
+    ov.innerHTML = `<button id="flightmap-overlay-close" aria-label="Close">✕</button>
+      <div class="fmo-map"><canvas class="fm-base"></canvas><canvas class="fm-air"></canvas><div class="fm-badge"></div><div class="fm-data" hidden></div></div>
+      <div class="fmo-list"></div>`;
+    document.body.appendChild(ov);
+    const close = () => { ov.classList.remove('on'); const i = _fmInst.get('__overlay__'); if (i && i.raf) cancelAnimationFrame(i.raf); _fmInst.delete('__overlay__'); };
+    ov.querySelector('#flightmap-overlay-close').addEventListener('click', close);
+    ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ov.classList.contains('on')) close(); });
+  }
+  ov.classList.add('on');
+  const mapEl = ov.querySelector('.fmo-map');
+  const listEl = ov.querySelector('.fmo-list');
+  const ow = { ...w, id: '__overlay__' };
+  fmStartInstance(mapEl, ow);
+  mapEl._fmTapWired = false;
+  if (!mapEl._fmOvWired) {
+    mapEl._fmOvWired = true;
+    mapEl.addEventListener('click', (e) => {
+      const inst = _fmInst.get('__overlay__'); if (!inst || !inst._screen) return;
+      const r = mapEl.getBoundingClientRect();
+      const px = e.clientX - r.left, py = e.clientY - r.top;
+      let best = null, bd = 26;
+      for (const s of inst._screen) { const d = Math.hypot(s.x - px, s.y - py); if (d < bd) { bd = d; best = s; } }
+      if (best) { inst.selectedHex = best.hex; openFmAircraftDetail(fmKey(ow), best.hex); }
+    });
+  }
+  const refreshList = () => {
+    if (!ov.classList.contains('on')) return;
+    const inst = _fmInst.get('__overlay__');
+    const data = state.flightmap[fmKey(ow)];
+    const ac = (data && data.aircraft) || [];
+    const apc = (x) => x ? (x.iata || x.icao || '') : '';
+    listEl.innerHTML = ac.slice(0, 60).map(a => {
+      const rt = a.route && (a.route.from || a.route.to) ? `${apc(a.route.from)}→${apc(a.route.to)}` : '';
+      return `<div class="fmo-row ${inst && inst.selectedHex === a.hex ? 'sel' : ''}" data-hex="${a.hex}">
+        <span>${escapeHtmlD(a.callsign || a.reg || a.hex.toUpperCase())}${rt ? ` <span style="opacity:.6">${escapeHtmlD(rt)}</span>` : ''}</span>
+        <span>${escapeHtmlD(a.typeName || a.type || '')} ${a.onGround ? 'GND' : (a.altFt != null ? Math.round(a.altFt / 100) : '')}</span>
+      </div>`;
+    }).join('') || '<div style="opacity:.6;padding:8px">No aircraft in view</div>';
+    listEl.querySelectorAll('.fmo-row').forEach(row => row.addEventListener('click', () => {
+      const i = _fmInst.get('__overlay__'); if (i) i.selectedHex = row.dataset.hex;
+      refreshList();
+      openFmAircraftDetail(fmKey(ow), row.dataset.hex);
+    }));
+  };
+  refreshList();
+  clearInterval(ov._listTID);
+  ov._listTID = setInterval(refreshList, 3000);
+  fetchFlightmap(true);
+}
+
+// Full detail card for one aircraft — everything the feed + adsbdb give us.
+// Re-renders every 2s off the latest poll data; closes on ✕ / tap-outside / Esc.
+let _fmDetail = null; // { key, hex, tid }
+function openFmAircraftDetail(key, hex) {
+  if (!hex) return;
+  let ov = document.getElementById('fm-detail-overlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'fm-detail-overlay';
+    ov.innerHTML = `<div class="fmd-card"><button class="fmd-close" aria-label="Close">✕</button><div class="fmd-body"></div></div>`;
+    document.body.appendChild(ov);
+    const close = () => {
+      ov.classList.remove('on');
+      if (_fmDetail) { clearInterval(_fmDetail.tid); _fmDetail = null; }
+      const fmo = document.querySelector('#flightmap-overlay .fmo-list'); if (fmo) fmo.style.visibility = '';
+    };
+    ov._close = close;
+    ov.querySelector('.fmd-close').addEventListener('click', close);
+    ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ov.classList.contains('on')) close(); });
+  }
+  const card = ov.querySelector('.fmd-body');
+  const fld = (k, val) => val === '' || val == null ? '' : `<div class="k">${k}</div><div>${escapeHtmlD(String(val))}</div>`;
+  const ap = (x) => {
+    if (!x) return '—';
+    const code = [x.iata, x.icao].filter(Boolean).join(' / ');
+    return (x.name || x.city || code || '?') + (code && (x.name || x.city) ? ` (${code})` : '');
+  };
+  const render = () => {
+    const data = state.flightmap[key];
+    const a = ((data && data.aircraft) || []).find(x => x.hex === hex);
+    if (!a) { card.innerHTML = `<div class="fmd-head"><span class="fmd-cs">${escapeHtmlD(hex.toUpperCase())}</span></div><div class="fmd-foot">No longer in view.</div>`; return; }
+    const ageS = a._at ? Math.round((Date.now() - a._at) / 1000) : null;
+    const vr = a.vertRateFpm;
+    const vrTxt = a.onGround ? '' : (vr > 120 ? `climbing ${Math.round(vr)} fpm` : vr < -120 ? `descending ${Math.round(-vr)} fpm` : 'level');
+    const sq = a.squawk;
+    const sqEmerg = sq === '7500' ? ' ⚠ hijack' : sq === '7600' ? ' ⚠ radio failure' : sq === '7700' ? ' ⚠ emergency' : '';
+    card.innerHTML =
+      `<div class="fmd-head">
+        <span class="fmd-cs">${escapeHtmlD(a.callsign || a.reg || a.hex.toUpperCase())}</span>
+        <span class="fmd-type">${escapeHtmlD([a.typeName || a.type, a.type && a.typeName ? a.type : ''].filter(Boolean).join(' · '))}</span>
+        ${a.mil ? '<span class="fmd-mil">Military</span>' : ''}
+      </div>
+      ${(a.route && (a.route.from || a.route.to)) ? `<div class="fmd-route"><b>${escapeHtmlD(ap(a.route.from))}</b> → <b>${escapeHtmlD(ap(a.route.to))}</b>${a.route.airline ? `<br><span class="fmd-type">${escapeHtmlD(a.route.airline)}</span>` : ''}</div>` : ''}
+      <div class="fmd-grid">
+        ${fld('Status', a.onGround ? 'On ground' : 'In flight')}
+        ${fld('Altitude', a.onGround ? '—' : (a.altFt != null ? Math.round(a.altFt).toLocaleString() + ' ft' + (vrTxt ? ' · ' + vrTxt : '') : '—'))}
+        ${fld('Ground speed', a.gsKts != null ? Math.round(a.gsKts) + ' kt' : '—')}
+        ${fld('Heading', a.trackDeg != null ? Math.round(a.trackDeg) + '°' : '—')}
+        ${fld('Squawk', sq ? sq + sqEmerg : '—')}
+        ${fld('Registration', a.reg || '—')}
+        ${fld('ICAO hex', a.hex ? a.hex.toUpperCase() : '—')}
+        ${fld('Operator', a.owner || '')}
+        ${fld('Position', (a.lat != null && a.lon != null) ? a.lat.toFixed(4) + ', ' + a.lon.toFixed(4) : '—')}
+      </div>
+      <div class="fmd-foot">${data && data.source ? 'via ' + escapeHtmlD(data.source.replace(/^https?:\/\//, '')) : ''}${ageS != null ? ` · updated ${ageS}s ago` : ''}</div>`;
+  };
+  _fmDetail = { key, hex, tid: setInterval(render, 2000) };
+  render();
+  ov.classList.add('on');
+  const fmo = document.querySelector('#flightmap-overlay .fmo-list'); if (fmo) fmo.style.visibility = 'hidden';
+  fetchFlightmap(true);
 }
 
 // Shared: builds the location label + scale style for any weather widget variant.
@@ -8069,6 +9044,7 @@ function renderChoreChart(widget) {
   }
   const showDone = w.choreShowDone !== false; // optionally hide completed
   const showStickers = w.choreShowStickers !== false; // optionally hide sticker balance
+  const showBonus = !!w.choreShowBonus; // optionally append the shared bonus pool
   // Optional per-display child filter. null/undefined = all children.
   let kidsList = data.kids;
   if (Array.isArray(w.choreKidIds) && w.choreKidIds.length) {
@@ -8091,9 +9067,26 @@ function renderChoreChart(widget) {
       <div class="cc-items">${items}</div>
     </div>`;
   }).join('');
+  let bonusHtml = '';
+  if (showBonus) {
+    const bonus = (data.bonusChores || []);
+    const chips = bonus.length ? bonus.map(b => {
+      const claimed = !!b.claimedBy;
+      const pay = b.pay_amount > 0 ? ` <span class="cc-bonus-pay">+$${(+b.pay_amount).toFixed(2)}</span>` : '';
+      const who = claimed
+        ? `<span class="cc-bonus-who" style="color:${b.claimedBy.color || 'inherit'}">${b.claimedBy.avatar || ''} ${escapeHtmlD(b.claimedBy.name || '')}</span>`
+        : '';
+      return `<div class="cc-bonus-chip ${claimed ? 'claimed' : ''}">
+        <span class="cc-ic">${choreIconHtmlD(b.icon)}</span>
+        <span class="cc-bonus-label">${escapeHtmlD(b.title)}</span>${pay}${who}
+      </div>`;
+    }).join('') : `<div class="cc-empty">No bonus chores right now</div>`;
+    bonusHtml = `<div class="cc-bonus"><div class="cc-bonus-head">⭐ Up for grabs</div><div class="cc-bonus-list">${chips}</div></div>`;
+  }
   return `<div class="w-chorechart" style="${ccStyle}">
     <div class="cc-head">${escapeHtmlD(title)}</div>
     <div class="cc-cols" style="--cc-count:${kidsList.length}">${cols}</div>
+    ${bonusHtml}
   </div>`;
 }
 // Phase 2 of the "interact directly on whatever screen is showing this"
@@ -8577,6 +9570,7 @@ const WIDGET_BASIC_SETTINGS = {
   chorelb:       { fontField: 'lbFontPx',       fontDefault: 15, fontMin: 8,  fontMax: 80, fontStep: 1, titleField: 'lbTitle', titlePlaceholder: 'Chore Leaderboard' },
   messageboard:  { fontField: 'mbFontPx',       fontDefault: 14, fontMin: 10, fontMax: 40, fontStep: 1 },
   mealplan:      { fontField: 'mpFontPx',       fontDefault: 15, fontMin: 10, fontMax: 36, fontStep: 1 },
+  flightmap:     { fontField: 'fmFontPx',       fontDefault: 13, fontMin: 9,  fontMax: 28, fontStep: 1 },
   countdown:     { fontField: 'cdFontPx',       fontDefault: 22, fontMin: 8,  fontMax: 100, fontStep: 1, titleField: 'cdTitle', titlePlaceholder: 'Countdown' },
   moonphase:     { fontField: 'mpFontPx',       fontDefault: 20, fontMin: 8,  fontMax: 80,  fontStep: 1 },
   airquality:    { fontField: 'aqFontPx',       fontDefault: 18, fontMin: 8,  fontMax: 72,  fontStep: 1 },
@@ -8893,7 +9887,7 @@ function rerenderSingleWidget(id) {
   // replaced DOM. All idempotent (each checks its own _tapWired flag before
   // attaching), so calling them broadly here is safe and simpler than
   // scoping each one to just this element.
-  wireChoreChartTaps(); wireMessageBoardTaps(); wireMealPlanTaps(); wireCameraStreams(); wireCameraTaps(); wireTodoWidgetTaps(); wireShoppingWidgetTaps(); wireTasksWidgetTaps(); wireMiniCalNav(); wireEntityStatusTaps(); wireHaSparklines(); wireLayoutSwitcherTaps(); wireWeatherComboTabTaps(); wireEventDetailTaps();
+  wireChoreChartTaps(); wireMessageBoardTaps(); wireMealPlanTaps(); wireCameraStreams(); wireCameraTaps(); wireFlightMaps(); wireTodoWidgetTaps(); wireShoppingWidgetTaps(); wireTasksWidgetTaps(); wireMiniCalNav(); wireEntityStatusTaps(); wireHaSparklines(); wireLayoutSwitcherTaps(); wireWeatherComboTabTaps(); wireEventDetailTaps();
   // QR codes are generated into their container by a separate pass after
   // any render (renderQRCodes(), normally run after a full renderLayout())
   // — innerHTML alone only creates an empty .qr-container div, so without
@@ -8964,7 +9958,7 @@ async function deleteWidget(id) {
 // separately-built settings UI ported field-for-field from app.html's own
 // drawWidgetSettingsPanel(), not a generic renderer. Add to this list only
 // alongside actually building that type's render/wire functions.
-const WIDGET_ADVANCED_TYPES = ['minical', 'weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast', 'todo', 'shoppinglist', 'chorechart', 'chorelb', 'countdown', 'radar', 'qrcode', 'timer', 'moonphase', 'airquality', 'onthisday', 'dailyquote', 'metar', 'clock', 'date', 'news', 'stocks', 'travel', 'sports', 'text', 'decoration', 'upcoming', 'today', 'agenda', 'photo', 'tasks', 'tasksCombined', 'entitystatus', 'smarthomeDashboard', 'groupcontrol', 'messageboard', 'mealplan', 'camera'];
+const WIDGET_ADVANCED_TYPES = ['minical', 'weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast', 'todo', 'shoppinglist', 'chorechart', 'chorelb', 'countdown', 'radar', 'qrcode', 'timer', 'moonphase', 'airquality', 'onthisday', 'dailyquote', 'metar', 'clock', 'date', 'news', 'stocks', 'travel', 'sports', 'text', 'decoration', 'upcoming', 'today', 'agenda', 'photo', 'tasks', 'tasksCombined', 'entitystatus', 'smarthomeDashboard', 'groupcontrol', 'messageboard', 'mealplan', 'camera', 'flightmap'];
 
 function openWidgetSettingsPanel(id) {
   const w = state.layout.find(x => String(x.id) === String(id));
@@ -9412,6 +10406,10 @@ async function openWidgetAdvancedPanel(id) {
     if (_camPanelWidgetId !== w.id) { _camFormOpen = false; _camFormEditId = null; _camPanelWidgetId = w.id; }
     body.innerHTML = renderCameraAdvancedSettings(w);
     wireCameraAdvancedSettings(w);
+  } else if (w.type === 'flightmap') {
+    title.textContent = 'Flight Map Settings';
+    body.innerHTML = renderFlightMapAdvancedSettings(w);
+    wireFlightMapAdvancedSettings(w);
   } else if (w.type === 'news') {
     title.textContent = 'News Settings';
     body.innerHTML = renderNewsAdvancedSettings(w);
@@ -11047,6 +12045,10 @@ function renderChoreChartAdvancedSettings(w, kids) {
       <label>Show ⭐ Sticker Balance ${infoBtn("Shows each kid's sticker balance next to their streak, when they have one. On by default.")}</label>
       <input type="checkbox" id="cc-showstickers" ${w.choreShowStickers!==false?'checked':''}>
     </div>
+    <div class="was-toggle-row">
+      <label>Show ⭐ Bonus chores ${infoBtn("Adds a strip below the chart listing the shared bonus / extra-credit chores that are up for grabs today. Claiming still happens in the app or on the kid page. Off by default.")}</label>
+      <input type="checkbox" id="cc-showbonus" ${w.choreShowBonus?'checked':''}>
+    </div>
     <p class="was-hint">If this is blank on the display, make sure kids and chores are set up in the app's Chores tab.</p>
   `;
 }
@@ -11073,6 +12075,12 @@ function wireChoreChartAdvancedSettings(w) {
   const showStickers = document.getElementById('cc-showstickers');
   if (showStickers) showStickers.addEventListener('change', (e) => {
     w.choreShowStickers = e.target.checked;
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  });
+  const showBonus = document.getElementById('cc-showbonus');
+  if (showBonus) showBonus.addEventListener('change', (e) => {
+    w.choreShowBonus = e.target.checked;
     rerenderSingleWidget(w.id);
     scheduleLayoutSave();
   });
@@ -12252,6 +13260,278 @@ function wireMealPlanAdvancedSettings(w) {
   }));
 }
 
+// ── Flight Map widget advanced settings ───────────────────────────────────
+function renderFlightMapAdvancedSettings(w) {
+  const subject = w.fmSubject || 'filter';
+  const f = w.fmFilter || {};
+  const filterMode = f.mil ? 'mil' : (f.type ? 'type' : (f.squawk ? 'squawk' : (f.airline ? 'airline' : (f.radiusNm ? 'radius' : 'mil'))));
+  const trailMin = Math.max(2, Math.min(360, Number(w.fmTrailMin) || 30));
+  const profiles = Array.isArray(state.profiles) ? state.profiles : [];
+  const homeSet = state.settings && state.settings.weather_lat && state.settings.weather_lon;
+  const sel = (v, cur) => v === cur ? 'selected' : '';
+  return `
+    <div class="was-row">
+      <label>Show</label>
+      <select id="fm-subject" style="width:100%">
+        <option value="filter" ${sel('filter', subject)}>A group of aircraft (filter)</option>
+        <option value="flight" ${sel('flight', subject)}>One specific flight</option>
+        <option value="watch" ${sel('watch', subject)}>A saved flight (from the app)</option>
+      </select>
+    </div>
+    <div class="was-row" id="fm-filter-block" ${subject === 'filter' ? '' : 'hidden'}>
+      <label>Which aircraft</label>
+      <select id="fm-filter-mode" style="width:100%">
+        <option value="mil" ${sel('mil', filterMode)}>All military</option>
+        <option value="type" ${sel('type', filterMode)}>All of one type (ICAO code)</option>
+        <option value="airline" ${sel('airline', filterMode)}>An airline (United, Delta, …)</option>
+        <option value="radius" ${sel('radius', filterMode)}>Everything near home</option>
+        <option value="squawk" ${sel('squawk', filterMode)}>A squawk code</option>
+      </select>
+      <div id="fm-type-row" style="margin-top:8px" ${filterMode === 'type' ? '' : 'hidden'}>
+        <input type="text" id="fm-type" placeholder="e.g. B738, A320" value="${escapeHtmlD(f.type || '')}" style="width:100%">
+        <p class="was-hint">ICAO type designator(s), comma-separated for more than one. A Boeing 737-800 is <code>B738</code>, an A320 <code>A320</code>, a C-17 <code>C17</code>.</p>
+      </div>
+      <div id="fm-squawk-row" style="margin-top:8px" ${filterMode === 'squawk' ? '' : 'hidden'}>
+        <input type="text" id="fm-squawk" placeholder="e.g. 7700" maxlength="4" value="${escapeHtmlD(f.squawk || '')}" style="width:100%">
+      </div>
+      <div id="fm-airline-row" style="margin-top:8px" ${filterMode === 'airline' ? '' : 'hidden'}>
+        <input type="text" id="fm-airline" list="fm-airline-list" placeholder="e.g. UAL, DAL, AAL" value="${escapeHtmlD(f.airline || '')}" style="width:100%">
+        <datalist id="fm-airline-list">
+          <option value="UAL">United</option><option value="DAL">Delta</option><option value="AAL">American</option>
+          <option value="SWA">Southwest</option><option value="JBU">JetBlue</option><option value="ASA">Alaska</option>
+          <option value="FFT">Frontier</option><option value="NKS">Spirit</option><option value="SKW">SkyWest</option>
+          <option value="FDX">FedEx</option><option value="UPS">UPS</option><option value="GTI">Atlas Air</option>
+        </datalist>
+        <p class="was-hint">ICAO callsign prefix(es), comma-separated. Covers the area around the map centre (radius below) — the ADS-B feed has no global airline query.</p>
+      </div>
+      <label id="fm-milonly-row" style="display:${(filterMode === 'mil' || filterMode === 'airline') ? 'none' : 'flex'};align-items:center;gap:8px;margin-top:10px;cursor:pointer">
+        <input type="checkbox" id="fm-milonly" ${f.milOnly ? 'checked' : ''} style="width:16px;height:16px;accent-color:var(--accent)">
+        Military only ${infoBtn("Drop civil aircraft that happen to share an ICAO type — e.g. civil aircraft that happen to share an ICAO type with a military variant.")}
+      </label>
+      <div id="fm-center-row" style="margin-top:10px" ${filterMode === 'radius' ? 'hidden' : ''}>
+        <label style="font-size:12px;opacity:.8">Centre the map on (optional)</label>
+        <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
+          <input type="text" id="fm-cplace" placeholder="City, airport, or ZIP" value="${escapeHtmlD(f.centerLabel || '')}" style="flex:1;min-width:0">
+          <button type="button" id="fm-cgo" style="flex:0 0 auto;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer">Set</button>
+          <button type="button" id="fm-chome" style="flex:0 0 auto;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer">Home</button>
+          <button type="button" id="fm-cclear" style="flex:0 0 auto;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer">Clear</button>
+        </div>
+        <p class="was-hint" id="fm-cplace-hint">${f.centerLat != null && f.centerLon != null && f.centerLat !== '' ? '📍 ' + (f.centerLabel || ((+f.centerLat).toFixed(2) + ', ' + (+f.centerLon).toFixed(2))) : 'Type a place and press Set (or Enter). Blank = a fixed near-hemisphere view.'}</p>
+        <!-- Only type/mil/squawk modes use this span — airline/radius modes size
+             the view off "Search radius" instead (fmDesiredView checks radiusNm
+             first), so this slider would silently do nothing there. -->
+        <div id="fm-span-row" ${filterMode === 'airline' ? 'hidden' : ''}>
+          <div class="was-range-row" style="margin-top:6px">
+            <input type="range" id="fm-span" min="400" max="6000" step="100" value="${Math.max(400, Math.min(6000, Number(f.spanNm) || 2600))}">
+            <span class="was-range-val" id="fm-span-val">${Math.max(400, Math.min(6000, Number(f.spanNm) || 2600))} nm across</span>
+          </div>
+        </div>
+      </div>
+      <div id="fm-radius-row" style="margin-top:8px" ${(filterMode === 'radius' || filterMode === 'airline') ? '' : 'hidden'}>
+        <label style="font-size:12px;opacity:.8">Search radius</label>
+        <div class="was-range-row">
+          <input type="range" id="fm-radius" min="20" max="250" step="10" value="${Math.max(20, Math.min(250, Number(f.radiusNm) || (filterMode === 'airline' ? 250 : 150)))}">
+          <span class="was-range-val" id="fm-radius-val">${Math.max(20, Math.min(250, Number(f.radiusNm) || (filterMode === 'airline' ? 250 : 150)))} nm</span>
+        </div>
+        <p class="was-hint">${homeSet ? 'Around the map centre above (or your weather location).' : 'Set your location in Settings → Weather first.'}</p>
+      </div>
+    </div>
+    <div class="was-row" id="fm-flight-block" ${subject === 'flight' ? '' : 'hidden'}>
+      <label>Flight</label>
+      <div style="display:flex;gap:6px">
+        <select id="fm-flight-kind" style="flex:0 0 auto">
+          <option value="callsign" ${sel('callsign', w.fmFlightKind || 'callsign')}>Callsign</option>
+          <option value="reg" ${sel('reg', w.fmFlightKind)}>Tail #</option>
+          <option value="hex" ${sel('hex', w.fmFlightKind)}>ICAO hex</option>
+        </select>
+        <input type="text" id="fm-flight-value" placeholder="e.g. DAL456" value="${escapeHtmlD(w.fmFlightValue || '')}" style="flex:1">
+      </div>
+      <p class="was-hint">A pilot flies whatever aircraft is on the route, so track the day's callsign/flight number (they'll need to tell you), not a fixed tail.</p>
+    </div>
+    <div class="was-row" id="fm-watch-block" ${subject === 'watch' ? '' : 'hidden'}>
+      <label>Whose flights</label>
+      <select id="fm-watch-profile" style="width:100%">
+        <option value="">Everyone's saved flights</option>
+        ${profiles.map(p => `<option value="${p.id}" ${String(w.fmWatchProfileId) === String(p.id) ? 'selected' : ''}>${escapeHtmlD(p.name || 'Profile')}</option>`).join('')}
+      </select>
+      <p class="was-hint">Saved flights are added from the app. This widget follows whichever ones are active today.</p>
+    </div>
+    <div class="was-toggle-row">
+      <label>Follow the aircraft ${infoBtn("Keep the map centred on the tracked flight. For a filter, leave this off so the view stays put.")}</label>
+      <input type="checkbox" id="fm-follow" ${w.fmFollow ? 'checked' : ''}>
+    </div>
+    <div class="was-toggle-row">
+      <label>Show the info panel</label>
+      <input type="checkbox" id="fm-showdata" ${w.fmShowData !== false ? 'checked' : ''}>
+    </div>
+    <div class="was-toggle-row">
+      <label>Show trails</label>
+      <input type="checkbox" id="fm-showtrails" ${w.fmShowTrails !== false ? 'checked' : ''}>
+    </div>
+    <div class="was-toggle-row">
+      <label>Label aircraft ${infoBtn("Show each aircraft's callsign next to it. Auto-hidden when the view is too crowded to read; the selected one is always labelled.")}</label>
+      <input type="checkbox" id="fm-labels" ${w.fmLabels !== false ? 'checked' : ''}>
+    </div>
+    <div class="was-toggle-row">
+      <label>Show state / province lines ${infoBtn("Draw US state borders (and, where the data has them, other admin boundaries) under the country outlines.")}</label>
+      <input type="checkbox" id="fm-states" ${w.fmStates !== false ? 'checked' : ''}>
+    </div>
+    <div class="was-row">
+      <label>Trail length</label>
+      <div class="was-range-row">
+        <input type="range" id="fm-trail" min="5" max="360" step="5" value="${trailMin}">
+        <span class="was-range-val" id="fm-trail-val">${fmDurLabel(trailMin)}</span>
+      </div>
+    </div>
+    <p class="was-hint">Positions come from free community ADS-B receivers (airplanes.live, with adsb.lol / adsb.fi as backups). Coverage is thin over oceans and remote areas — an aircraft there shows its last known position.</p>
+  `;
+}
+function wireFlightMapAdvancedSettings(w) {
+  const save = () => { rerenderSingleWidget(w.id); scheduleLayoutSave(); fetchFlightmap(true); };
+  const $ = (id) => document.getElementById(id);
+  const setHidden = (id, hide) => { const e = $(id); if (e) e.hidden = hide; };
+  const subj = $('fm-subject');
+  if (subj) subj.addEventListener('change', (e) => {
+    w.fmSubject = e.target.value;
+    setHidden('fm-filter-block', w.fmSubject !== 'filter');
+    setHidden('fm-flight-block', w.fmSubject !== 'flight');
+    setHidden('fm-watch-block', w.fmSubject !== 'watch');
+    if (w.fmSubject === 'flight' || w.fmSubject === 'watch') w.fmFollow = true;
+    const fc = $('fm-follow'); if (fc) fc.checked = !!w.fmFollow;
+    save();
+  });
+  // Filter-level extras (map centre, "military only") are independent of the
+  // mil/type/squawk sub-mode, so preserve them across mode + value edits.
+  const extras = () => {
+    const c = {};
+    const f0 = w.fmFilter || {};
+    if (f0.centerLat != null && f0.centerLat !== '') c.centerLat = f0.centerLat;
+    if (f0.centerLon != null && f0.centerLon !== '') c.centerLon = f0.centerLon;
+    if (f0.centerLabel) c.centerLabel = f0.centerLabel;
+    if (f0.spanNm) c.spanNm = f0.spanNm;
+    if (f0.milOnly) c.milOnly = true;
+    return c;
+  };
+  const center = extras; // legacy name used below
+  const homeLL = () => ({ lat: parseFloat(state.settings.weather_lat), lon: parseFloat(state.settings.weather_lon) });
+  const fmode = $('fm-filter-mode');
+  if (fmode) fmode.addEventListener('change', (e) => {
+    const m = e.target.value;
+    if (m === 'radius') {
+      w.fmFilter = { ...extras(), radiusNm: Number(($('fm-radius') || {}).value) || 150, ...homeLL() };
+      delete w.fmFilter.centerLat; delete w.fmFilter.centerLon; delete w.fmFilter.spanNm;
+    } else if (m === 'airline') {
+      const ex = extras();
+      const c = homeLL();
+      w.fmFilter = { ...ex, airline: ($('fm-airline') || {}).value || '', radiusNm: Number(($('fm-radius') || {}).value) || 250,
+        lat: (ex.centerLat != null ? ex.centerLat : c.lat), lon: (ex.centerLon != null ? ex.centerLon : c.lon) };
+      delete w.fmFilter.milOnly;
+    } else {
+      w.fmFilter = { ...extras() };
+      if (m === 'mil') { w.fmFilter.mil = true; delete w.fmFilter.milOnly; }
+      else if (m === 'type') w.fmFilter.type = ($('fm-type') || {}).value || '';
+      else if (m === 'squawk') w.fmFilter.squawk = ($('fm-squawk') || {}).value || '';
+    }
+    setHidden('fm-type-row', m !== 'type');
+    setHidden('fm-squawk-row', m !== 'squawk');
+    setHidden('fm-airline-row', m !== 'airline');
+    setHidden('fm-radius-row', m !== 'radius' && m !== 'airline');
+    setHidden('fm-span-row', m === 'airline');
+    setHidden('fm-center-row', m === 'radius');
+    const mr = $('fm-milonly-row'); if (mr) mr.style.display = (m === 'mil' || m === 'airline') ? 'none' : 'flex';
+    save();
+  });
+  const alIn = $('fm-airline');
+  if (alIn) alIn.addEventListener('input', (e) => {
+    w.fmFilter = { ...(w.fmFilter || {}), airline: e.target.value.toUpperCase() };
+    save();
+  });
+  const mil1 = $('fm-milonly');
+  if (mil1) mil1.addEventListener('change', (e) => {
+    w.fmFilter = { ...(w.fmFilter || {}) };
+    if (e.target.checked) w.fmFilter.milOnly = true; else delete w.fmFilter.milOnly;
+    save();
+  });
+  const tIn = $('fm-type');
+  if (tIn) tIn.addEventListener('input', (e) => { w.fmFilter = { ...extras(), type: e.target.value.toUpperCase() }; save(); });
+  const sqIn = $('fm-squawk');
+  if (sqIn) sqIn.addEventListener('input', (e) => { w.fmFilter = { ...center(), squawk: e.target.value.replace(/\D/g, '').slice(0, 4) }; save(); });
+  const setCenter = (lat, lon, label) => {
+    const base = { ...(w.fmFilter || {}) };
+    delete base.centerLat; delete base.centerLon; delete base.centerLabel;
+    const ok = lat !== '' && lon !== '' && Number.isFinite(+lat) && Number.isFinite(+lon);
+    if (ok) { base.centerLat = +lat; base.centerLon = +lon; if (label) base.centerLabel = label; }
+    // airline mode's point query centres on lat/lon — keep it in sync with the
+    // chosen centre (falls back to home when cleared).
+    if (base.airline) {
+      base.lat = ok ? +lat : parseFloat(state.settings.weather_lat);
+      base.lon = ok ? +lon : parseFloat(state.settings.weather_lon);
+    }
+    w.fmFilter = base; save();
+    const hint = $('fm-cplace-hint');
+    if (hint) hint.textContent = ok
+      ? ('📍 ' + (label || ((+lat).toFixed(2) + ', ' + (+lon).toFixed(2))))
+      : 'Type a place and press Set (or Enter). Blank = a fixed near-hemisphere view.';
+  };
+  const placeIn = $('fm-cplace');
+  const runPlaceSearch = async () => {
+    const q = (placeIn.value || '').trim();
+    const hint = $('fm-cplace-hint');
+    if (q.length < 2) { setCenter('', ''); return; }
+    if (hint) hint.textContent = 'Searching…';
+    try {
+      const r = await fetch('/api/place-search?q=' + encodeURIComponent(q)).then(x => x.json());
+      if (r && r.lat != null && r.lon != null) { placeIn.value = r.label || q; setCenter(r.lat, r.lon, r.label || q); }
+      else if (hint) hint.textContent = (r && r.error) || 'Nothing found for that.';
+    } catch { if (hint) hint.textContent = 'Search failed — try again.'; }
+  };
+  if ($('fm-cgo')) $('fm-cgo').addEventListener('click', runPlaceSearch);
+  if (placeIn) placeIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); runPlaceSearch(); } });
+  if ($('fm-chome')) $('fm-chome').addEventListener('click', () => {
+    const la = parseFloat(state.settings.weather_lat), lo = parseFloat(state.settings.weather_lon);
+    if (Number.isFinite(la) && Number.isFinite(lo)) { placeIn.value = 'Home'; setCenter(la, lo, 'Home'); }
+  });
+  if ($('fm-cclear')) $('fm-cclear').addEventListener('click', () => { placeIn.value = ''; setCenter('', ''); });
+  const spanIn = $('fm-span');
+  if (spanIn) spanIn.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    $('fm-span-val').textContent = v + ' nm across';
+    w.fmFilter = { ...(w.fmFilter || {}), spanNm: v }; save();
+  });
+  const rIn = $('fm-radius');
+  if (rIn) rIn.addEventListener('input', (e) => {
+    const val = Number(e.target.value);
+    $('fm-radius-val').textContent = val + ' nm';
+    const cur = w.fmFilter || {};
+    const useLat = cur.centerLat != null ? cur.centerLat : parseFloat(state.settings.weather_lat);
+    const useLon = cur.centerLon != null ? cur.centerLon : parseFloat(state.settings.weather_lon);
+    w.fmFilter = { ...cur, radiusNm: val, lat: useLat, lon: useLon };
+    save();
+  });
+  const fk = $('fm-flight-kind');
+  if (fk) fk.addEventListener('change', (e) => { w.fmFlightKind = e.target.value; save(); });
+  const fv = $('fm-flight-value');
+  if (fv) fv.addEventListener('input', (e) => { w.fmFlightValue = e.target.value.toUpperCase().trim(); save(); });
+  const wp = $('fm-watch-profile');
+  if (wp) wp.addEventListener('change', (e) => { w.fmWatchProfileId = e.target.value || null; save(); });
+  const fol = $('fm-follow');
+  if (fol) fol.addEventListener('change', (e) => { w.fmFollow = e.target.checked; save(); });
+  const sd = $('fm-showdata');
+  if (sd) sd.addEventListener('change', (e) => { w.fmShowData = e.target.checked; save(); });
+  const stt = $('fm-showtrails');
+  if (stt) stt.addEventListener('change', (e) => { w.fmShowTrails = e.target.checked; save(); });
+  const lbl = $('fm-labels');
+  if (lbl) lbl.addEventListener('change', (e) => { w.fmLabels = e.target.checked; save(); });
+  const stl = $('fm-states');
+  if (stl) stl.addEventListener('change', (e) => { w.fmStates = e.target.checked; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
+  const tr = $('fm-trail');
+  if (tr) tr.addEventListener('input', (e) => {
+    w.fmTrailMin = parseInt(e.target.value, 10);
+    $('fm-trail-val').textContent = fmDurLabel(w.fmTrailMin);
+    save();
+  });
+}
+
 // ── Camera widget advanced settings ───────────────────────────────────────
 // Cameras are a global managed list (state.cameras, URLs redacted). The panel
 // lets you pick one, add/edit/remove one inline, set fit + title, and test.
@@ -12941,7 +14221,7 @@ function renderTravelAdvancedSettings(w) {
     </div>
     <div class="was-row">
       <label>To</label>
-      <input type="text" id="tv-destination" value="${escapeHtmlD(w.travelDestination||'')}" placeholder="e.g. 123 Main St, Wichita, KS">
+      <input type="text" id="tv-destination" value="${escapeHtmlD(w.travelDestination||'')}" placeholder="e.g. 123 Main St, Columbus, OH">
     </div>
     <div class="was-row">
       <label>Mode</label>
@@ -13847,6 +15127,7 @@ const WIDGET_DEFS = [
   { type:'messageboard', label:'Message Board', icon:'📝' },
   { type:'mealplan', label:'Meal Plan', icon:'🍽️' },
   { type:'camera', label:'Camera', icon:'📹' },
+  { type:'flightmap', label:'Flight Map', icon:'✈️' },
   { type:'countdown', label:'Countdown', icon:'⏳' },
   { type:'moonphase', label:'Moon Phase', icon:'🌙' },
   { type:'airquality', label:'Air Quality', icon:'🌬️' },
@@ -13868,7 +15149,7 @@ const WIDGET_CATEGORIES = [
   { id:'calendar', label:'Calendar', icon:'🗓️', types:['minical','upcoming','today','agenda'] },
   { id:'weather',  label:'Weather',  icon:'☀️', types:['weather','weatherCurrent','weatherForecast','weatherHourly','weatherComboForecast','airquality','moonphase','metar','radar'] },
   { id:'tasks',    label:'Tasks',    icon:'✅', types:['tasks','tasksCombined','todo'] },
-  { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel'] },
+  { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel','flightmap'] },
   { id:'photos',   label:'Photos',   icon:'🖼️', types:['photo'] },
   { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan'] },
   { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode'] },
@@ -13897,6 +15178,7 @@ function buildNewWidgetDefaults(type) {
   else if (type === 'messageboard') { w.w = 34; w.h = 26; w.mbFontPx = 14; }
   else if (type === 'mealplan') { w.w = 30; w.h = 34; w.mpDays = 7; w.mpFontPx = 15; }
   else if (type === 'camera') { w.w = 44; w.h = 32; w.camFit = 'contain'; w.camShowTitle = true; }
+  else if (type === 'flightmap') { w.w = 46; w.h = 38; w.fmSubject = 'filter'; w.fmFilter = { mil: true }; w.fmFollow = false; w.fmTrailMin = 30; w.fmShowData = true; w.fmLabels = true; w.fmFontPx = 13; }
   else if (type === 'tasks') { w.w = 30; w.h = 40; w.projectId = null; w.projectName = 'Tasks'; }
   else if (type === 'news') { w.w = 32; w.h = 45; }
   else if (type === 'stocks') { w.w = 28; w.h = 30; w.stockTickers = []; }
@@ -13904,7 +15186,7 @@ function buildNewWidgetDefaults(type) {
   else if (type === 'weatherForecast') { w.w = 40; w.h = 18; w.wxForecastDays = 5; }
   else if (type === 'weatherHourly') { w.w = 42; w.h = 20; w.wxHourlyStyle = 'hourly'; w.wxHours = 6; }
   else if (type === 'weatherComboForecast') { w.w = 42; w.h = 36; w.wxComboStyle = 'stacked'; }
-  else if (type === 'chorechart') { w.w = 50; w.h = 45; w.choreTitle = 'Daily Chore Chart'; w.choreShowDone = true; w.choreFontPx = 15; }
+  else if (type === 'chorechart') { w.w = 50; w.h = 45; w.choreTitle = 'Daily Chore Chart'; w.choreShowDone = true; w.choreShowBonus = false; w.choreFontPx = 15; }
   else if (type === 'countdown') { w.w = 24; w.h = 22; w.cdTitle = 'Countdown'; w.cdFontPx = 22; w.cdRepeatYearly = false; }
   else if (type === 'moonphase') { w.w = 22; w.h = 22; w.mpFontPx = 20; w.mpShowIllum = true; w.mpShowAge = false; }
   else if (type === 'airquality') { w.w = 26; w.h = 32; w.aqFontPx = 18; w.aqShowUV = true; w.aqShowPollen = true; }
@@ -19117,6 +20399,11 @@ function connectLiveUpdates() {
     } else if (topic === 'meals') {
       await fetchMeals();
       renderLayout();
+    } else if (topic === 'flightmap') {
+      fetchFlightmap(true);
+    } else if (topic === 'flight_watch') {
+      try { state.flightWatch = await fetch('/api/flight-watch').then(r => r.json()); } catch {}
+      fetchFlightmap(true);
     } else if (topic === 'settings') {
       const sRes = await fetch('/api/settings');
       state.settings = await sRes.json();
@@ -19339,7 +20626,7 @@ async function init() {
   // Load the layout + data, each guarded. A failure in one doesn't blank the screen.
   let _layoutBootOk = false;
   try { await fetchLayout(currentOrientation); _layoutBootOk = true; } catch (e) { console.error('init: layout', e); state.layout = state.layout || []; }
-  await Promise.allSettled([fetchEvents(), fetchReminders(), fetchMessages(), fetchCameras(), fetchMeals(), fetchWeather(), fetchPhotos(), fetchProfiles()]);
+  await Promise.allSettled([fetchEvents(), fetchReminders(), fetchMessages(), fetchCameras(), fetchMeals(), fetchWeather(), fetchPhotos(), fetchProfiles(), fetchFlightmap(true)]);
   await Promise.allSettled([fetchTasksForLayout(), fetchTodoForLayout(), fetchShoppingListForLayout(), fetchNews(), fetchStocks(), fetchChoreChart(), fetchStickersForLayout(), fetchAirQuality(), fetchTravelTimes(), fetchOnThisDay(), fetchDailyQuote(), fetchSports(), fetchMetarTaf(), fetchHaEntities()]);
   fetchEventHistory().then(renderLayout).catch(()=>{}); // deep history in background
   try { renderLayout(); } catch (e) { console.error('init: render', e); }

@@ -549,11 +549,11 @@ const TEMPLATES = [
     ],
   },
 
-  // ── 22. KC-46 Ready Room (my addition — operational, METAR/TAF front and center) ──
+  // ── 22. Flight Deck (operational feel — METAR/TAF front and center) ──
   {
     id: 'flightdeck', category: 'General',
     name: 'Flight Deck',
-    blurb: 'Current field weather up front, schedule at a glance — built like an actual ready room display.',
+    blurb: 'Current field weather up front, schedule at a glance — built like an operations board.',
     accent: '#5b8dd6', accent2: '#f4a300', textColor: '#e8edf5',
     calDecor: 'none',
     landscape: [
