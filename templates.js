@@ -594,7 +594,85 @@ const TEMPLATES = [
     ],
   },
 
-  // ── 24. Custom (user-uploaded background + up to 3 decorations) ───────────────
+  // ── 24. Thanksgiving ───────────────────────────────────────────────────────
+  {
+    id: 'thanksgiving', category: 'Holidays',
+    name: 'Thanksgiving',
+    blurb: 'A warm harvest glow in cranberry and toasted-squash tones, turkey-marked event days.',
+    accent: '#c2703a', accent2: '#7a3b12', textColor: '#fdf3e7',
+    calDecor: 'icon:turkey',
+    landscape: [
+      { type:'clock',   x:2,  y:3,  w:38, h:12 },
+      { type:'date',    x:2,  y:16, w:38, h:6  },
+      { type:'weather', x:64, y:3,  w:34, h:16 },
+      cal({ x:2, y:26, w:70, h:70, calWrap:'clamp2', calMaxLines:3 }),
+      { type:'upcoming', x:74, y:26, w:24, h:70, upShowTime:true },
+    ],
+    portrait: [
+      { type:'clock',    x:4,  y:2,  w:92, h:9  },
+      { type:'date',     x:4,  y:12, w:92, h:5  },
+      { type:'weather',  x:4,  y:19, w:92, h:12 },
+      cal({ x:2, y:33, w:96, h:42, calWrap:'clamp2', calMaxLines:3 }),
+      { type:'upcoming', x:4,  y:77, w:92, h:21, upShowTime:true },
+    ],
+  },
+
+  // ── 25. Hanukkah ───────────────────────────────────────────────────────────
+  {
+    id: 'hanukkah', category: 'Holidays',
+    name: 'Hanukkah',
+    blurb: 'Candlelight gold rising into a deep blue night, menorah-marked event days.',
+    accent: '#f2c94c', accent2: '#1d3461', textColor: '#f2f6ff',
+    calDecor: 'icon:menorah',
+    landscape: [
+      { type:'clock',   x:2,  y:3,  w:38, h:12 },
+      { type:'date',    x:2,  y:16, w:38, h:6  },
+      { type:'weather', x:64, y:3,  w:34, h:16 },
+      cal({ x:2, y:26, w:70, h:70, calWrap:'clamp2', calMaxLines:3 }),
+      { type:'upcoming', x:74, y:26, w:24, h:70, upShowTime:true },
+    ],
+    portrait: [
+      { type:'clock',    x:4,  y:2,  w:92, h:9  },
+      { type:'date',     x:4,  y:12, w:92, h:5  },
+      { type:'weather',  x:4,  y:19, w:92, h:12 },
+      cal({ x:2, y:33, w:96, h:42, calWrap:'clamp2', calMaxLines:3 }),
+      { type:'upcoming', x:4,  y:77, w:92, h:21, upShowTime:true },
+    ],
+  },
+
+  // ── 26. Back to School (my addition — a morning-routine command center) ───────
+  // Function-first like Home Hub/Command Center, not decorative — no themed
+  // background/particles (matches that same trio's precedent), the identity
+  // comes from the widget mix instead: breakfast/lunch on the meal plan, a
+  // school-supply shopping list, and a chore chart retitled for the morning
+  // routine. First template to use Meal Plan or Shopping List.
+  {
+    id: 'backtoschool', category: 'General',
+    name: 'Back to School',
+    blurb: 'Morning routine, packed lunches, and the school-supply list — ready for the first week and beyond.',
+    accent: '#d9622b', accent2: '#2f6b4f', textColor: '#fdf6ec',
+    calDecor: 'none',
+    landscape: [
+      { type:'clock',       x:2,  y:3,  w:22, h:10 },
+      { type:'date',        x:2,  y:14, w:22, h:6  },
+      { type:'weather',     x:26, y:3,  w:24, h:17, wxForecastDays:4 },
+      { type:'countdown',   x:52, y:3,  w:46, h:17, cdTitle:'First Day of School' },
+      { type:'mealplan',    x:2,  y:23, w:48, h:29, mpSlots:['breakfast','lunch'], mpDays:5 },
+      { type:'shoppinglist',x:52, y:23, w:46, h:29 },
+      { type:'chorechart',  x:2,  y:54, w:96, h:43, choreTitle:'Morning Routine', choreShowDone:true },
+    ],
+    portrait: [
+      { type:'clock',       x:4,  y:2,  w:44, h:7  },
+      { type:'date',        x:50, y:2,  w:44, h:7  },
+      { type:'weather',     x:4,  y:11, w:44, h:13, wxForecastDays:4 },
+      { type:'countdown',   x:50, y:11, w:44, h:13, cdTitle:'First Day of School' },
+      { type:'mealplan',    x:4,  y:26, w:92, h:20, mpSlots:['breakfast','lunch'], mpDays:5 },
+      { type:'shoppinglist',x:4,  y:48, w:92, h:20 },
+      { type:'chorechart',  x:2,  y:70, w:96, h:28, choreTitle:'Morning Routine', choreShowDone:true },
+    ],
+  },
+
+  // ── 27. Custom (user-uploaded background + up to 3 decorations) ───────────────
   {
     id: 'custom', category: 'General',
     name: 'Custom',

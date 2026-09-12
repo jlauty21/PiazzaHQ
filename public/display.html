@@ -934,6 +934,20 @@
     body[data-theme="birthday"] { --accent:#7dd8f5; }
     body[data-theme="birthday"] .mc-cell { background:rgba(255,93,143,0.10); border-color:rgba(76,201,240,0.35); }
     body[data-theme="birthday"] .mc-names, body[data-theme="birthday"] .mc-month, body[data-theme="birthday"] .mc-year { color:var(--accent); }
+    /* Thanksgiving — harvest glow rising from the table */
+    body[data-theme="thanksgiving"] #theme-bg {
+      background:radial-gradient(circle at 50% 100%, #a8571e 0%, #6b3a17 45%, #2c1608 100%);
+    }
+    body[data-theme="thanksgiving"] { --accent:#e0a458; }
+    body[data-theme="thanksgiving"] .mc-cell { background:rgba(194,112,58,0.14); border-color:rgba(122,59,18,0.4); }
+    body[data-theme="thanksgiving"] .mc-names, body[data-theme="thanksgiving"] .mc-month, body[data-theme="thanksgiving"] .mc-year { color:var(--accent); }
+    /* Hanukkah — candlelight gold under a deep blue night */
+    body[data-theme="hanukkah"] #theme-bg {
+      background:radial-gradient(circle at 50% 100%, #f2c94c 0%, #1d3461 45%, #0a1830 100%);
+    }
+    body[data-theme="hanukkah"] { --accent:#f2c94c; }
+    body[data-theme="hanukkah"] .mc-cell { background:rgba(29,52,97,0.18); border-color:rgba(242,201,76,0.4); }
+    body[data-theme="hanukkah"] .mc-names, body[data-theme="hanukkah"] .mc-month, body[data-theme="hanukkah"] .mc-year { color:var(--accent); }
     /* Minimal — clean dark (matches default) */
     body[data-theme="minimal"] #theme-bg { background:#0a0e1a; }
     body[data-theme="minimal"] { --accent:#e8eaf0; }
@@ -1899,6 +1913,22 @@
       color:var(--text2); width:100%; text-align:var(--wx-location-text-align, left); }
     .w-weather .desc { font-size:calc(14px * var(--wx-scale)); color:var(--text2); }
     .w-weather .wx-hilo { font-size:calc(13px * var(--wx-scale)); color:var(--text2); margin-top:2px; }
+    /* Optional feels-like/humidity/gust/UV row and sunrise-sunset row, shared
+       by weatherCurrent and weatherComboForecast's current block. Off by
+       default per-field; both rows collapse to nothing when empty. */
+    .wx-stat-row { display:flex; width:100%; margin-top:calc(10px * var(--wx-scale)); padding-top:calc(10px * var(--wx-scale));
+      border-top:1px solid var(--border); }
+    .wx-stat { flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; position:relative; min-width:0; }
+    .wx-stat + .wx-stat::before { content:''; position:absolute; left:0; top:2px; bottom:2px; width:1px; background:var(--border); }
+    .wx-stat-label { font-size:calc(10px * var(--wx-scale)); letter-spacing:0.06em; text-transform:uppercase; color:var(--text2); }
+    .wx-stat-value { font-size:calc(15px * var(--wx-scale)); font-weight:500; }
+    .wx-stat-unit { font-size:calc(11px * var(--wx-scale)); font-weight:400; color:var(--text2); margin-left:1px; }
+    .wx-sun-row { display:flex; width:100%; align-items:center; justify-content:center; gap:calc(18px * var(--wx-scale));
+      margin-top:calc(8px * var(--wx-scale)); padding-top:calc(8px * var(--wx-scale)); border-top:1px solid var(--border);
+      font-size:calc(12px * var(--wx-scale)); color:var(--text2); }
+    .wx-sun-pt { display:flex; align-items:center; gap:calc(5px * var(--wx-scale)); }
+    .wx-sun-pt svg { flex-shrink:0; width:calc(13px * var(--wx-scale)); height:calc(13px * var(--wx-scale)); }
+    .wx-sun-pt b { color:var(--text); font-weight:500; }
     .w-weather-forecast { justify-content:center; }
     .w-weather .forecast-only { margin-top:0; }
     .w-weather .forecast { display:flex; gap:calc(6px * var(--wx-scale)); margin-top:calc(8px * var(--wx-scale)); flex-wrap:wrap; }
@@ -1912,6 +1942,11 @@
     .w-weather .fd-icon svg { width:100%; height:100%; display:block; }
     .w-weather .fd-hi { font-size:calc(14px * var(--wx-scale)); font-weight:500; }
     .w-weather .fd-lo { font-size:calc(12px * var(--wx-scale)); color:var(--text2); }
+    /* Compact sunrise/sunset pair on today's tile only (renderWeatherForecast, wxShowSunrise). */
+    .w-weather .fd-sun { display:flex; flex-direction:column; align-items:center; gap:2px; margin-top:calc(6px * var(--wx-scale));
+      padding-top:calc(6px * var(--wx-scale)); border-top:1px solid var(--border); }
+    .w-weather .fd-sun-pt { display:flex; align-items:center; gap:3px; font-size:calc(10px * var(--wx-scale)); color:var(--text2); }
+    .w-weather .fd-sun-pt svg { width:calc(11px * var(--wx-scale)); height:calc(11px * var(--wx-scale)); flex-shrink:0; }
 
     /* ── Full calendar widget ── */
     .widget-minical { justify-content:stretch !important; }
@@ -2888,6 +2923,7 @@
     .wxh-hr { font-size:calc(13px * var(--wx-scale,1)); color:var(--text2); white-space:nowrap; }
     .wxh-icon svg { width:calc(34px * var(--wx-scale,1)); height:calc(34px * var(--wx-scale,1)); }
     .wxh-temp { font-size:calc(18px * var(--wx-scale,1)); font-weight:500; }
+    .wxh-feels { font-size:calc(10px * var(--wx-scale,1)); color:var(--text2); white-space:nowrap; }
     .wxh-pop { font-size:calc(11px * var(--wx-scale,1)); color:var(--accent); min-height:calc(13px * var(--wx-scale,1)); }
     .wxh-parts { display:flex; gap:calc(10px * var(--wx-scale,1)); justify-content:space-around; }
     .wxh-part { display:flex; flex-direction:column; align-items:center; gap:calc(4px * var(--wx-scale,1)); flex:1; min-width:0; }
@@ -3260,6 +3296,7 @@ const CAL_DECOR_ICONS = {
   star: '⭐', sparkle: '✨', ornament: '🎄', egg: '🥚',
   pumpkin: '🎃', leaf: '🍁', balloon: '🎈',
   heart: '❤️', flower: '🌸', sun: '☀️', wave: '🌊',
+  turkey: '🦃', menorah: '🕎',
 };
 // ── Weather SVG icons (no emoji font dependency — renders reliably in kiosk Chromium) ──
 function weatherSVG(code, isDay = 1) {
@@ -3618,6 +3655,31 @@ function applyTheme() {
         + `background:${color};box-shadow:inset -25% -20% 30% rgba(0,0,0,0.18), inset 20% 20% 25% rgba(255,255,255,0.35);"></div>`
         + `<div style="position:absolute;left:50%;top:80%;width:1px;height:22%;background:rgba(255,255,255,0.4);transform:translateX(-50%);"></div>`;
       return el(body, `left:${left}%;width:${w}px;height:${h}px;--drift:${rnd(-50,50)}px;`
+        + `animation:fx-rise ${dur}s linear ${delay}s infinite;`);
+    });
+  } else if (theme === 'thanksgiving') {
+    // Harvest leaves, a chestnut, and drifting wheat — deliberately a different
+    // glyph mix from Autumn's ('🍂','🍁','🍃') so picking this over the plain
+    // seasonal template still feels like its own distinct look.
+    const harvest = ['🍂','🌰','🌾'];
+    make(20, (i) => {
+      const size = rndSize(15, 28), left = rnd(0, 100), dur = rnd(9, 17), delay = rnd(-17, 0);
+      return el(harvest[i % harvest.length], `left:${left}%;font-size:${size}px;--drift:${rnd(-50,50)}px;`
+        + `animation:fx-fall ${dur}s linear ${delay}s infinite;`);
+    });
+  } else if (theme === 'hanukkah') {
+    // Calm, not confetti — mostly soft rising candlelight embers (like Summer's
+    // bubbles, but warm gold) with a few Stars of David drifting up among them,
+    // fitting a holiday about light rather than a festive shower.
+    make(24, () => {
+      const size = rndSize(5, 13), left = rnd(0, 100), dur = rnd(9, 17), delay = rnd(-17, 0);
+      return el('', `left:${left}%;width:${size}px;height:${size}px;border-radius:50%;`
+        + `background:rgba(255,208,110,0.55);box-shadow:0 0 6px 2px rgba(255,208,110,0.35);`
+        + `--drift:${rnd(-25,25)}px;animation:fx-rise ${dur}s linear ${delay}s infinite;`);
+    });
+    make(8, () => {
+      const size = rndSize(14, 22), left = rnd(0, 100), dur = rnd(12, 20), delay = rnd(-20, 0);
+      return el('✡️', `left:${left}%;font-size:${size}px;opacity:0.8;--drift:${rnd(-30,30)}px;`
         + `animation:fx-rise ${dur}s linear ${delay}s infinite;`);
     });
   } else if (theme === 'valentine') {
@@ -6529,6 +6591,51 @@ function formatTemp(fahrenheit, unit) {
   const val = unit === 'celsius' ? (fahrenheit - 32) * 5 / 9 : fahrenheit;
   return `${Math.round(val)}°`;
 }
+// "6:42 AM" from an Open-Meteo/OWM local-time ISO string ("2026-09-11T06:42").
+// NWS doesn't report sunrise/sunset (blank strings) — returns '' right back,
+// same "just don't show it" contract every other optional field here uses.
+function formatWxTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const hr = d.getHours() % 12 || 12, ap = d.getHours() < 12 ? 'AM' : 'PM';
+  return `${hr}:${String(d.getMinutes()).padStart(2, '0')} ${ap}`;
+}
+// A small horizon-line glyph with an arrow up (sunrise) or down (sunset).
+function weatherSunIcon(kind) {
+  const c = kind === 'set' ? '#7ec8e3' : '#fbbf24';
+  const arrow = kind === 'set'
+    ? `<path d="M12 4v6" stroke="${c}" stroke-width="1.6" stroke-linecap="round"/><path d="M9 7l3 3 3-3" stroke="${c}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`
+    : `<path d="M12 10V4" stroke="${c}" stroke-width="1.6" stroke-linecap="round"/><path d="M9 7l3-3 3 3" stroke="${c}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`;
+  return `<svg viewBox="0 0 24 24" fill="none">${arrow}<path d="M4 15h16" stroke="${c}" stroke-width="1.6" stroke-linecap="round"/><path d="M7 15a5 5 0 0 1 10 0" stroke="${c}" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>`;
+}
+// Feels-like/humidity/gust/UV row for a "current conditions" block — shared
+// by weatherCurrent and weatherComboForecast. Each field is its own toggle;
+// a toggled-on field with no data from the active provider (NWS reports
+// none of these) is just skipped rather than showing a dash.
+function weatherStatRow(widget, cur) {
+  const w = widget || {};
+  const unit = effectiveWxUnit(widget);
+  const stats = [];
+  if (w.wxShowFeelsLike && cur.apparent_temperature != null) stats.push(['Feels', formatTemp(cur.apparent_temperature, unit)]);
+  if (w.wxShowHumidity && cur.relative_humidity_2m != null) stats.push(['Humidity', `${Math.round(cur.relative_humidity_2m)}<span class="wx-stat-unit">%</span>`]);
+  if (w.wxShowWindGust && cur.wind_gusts_10m != null) stats.push(['Gusts', `${Math.round(cur.wind_gusts_10m)}<span class="wx-stat-unit">mph</span>`]);
+  if (w.wxShowUV && cur.uv_index != null) stats.push(['UV', Math.round(cur.uv_index)]);
+  if (!stats.length) return '';
+  return `<div class="wx-stat-row">${stats.map(([label, value]) =>
+    `<div class="wx-stat"><div class="wx-stat-label">${label}</div><div class="wx-stat-value">${value}</div></div>`).join('')}</div>`;
+}
+// Sunrise/sunset row — always today's (index 0 of the daily arrays).
+function weatherSunRow(widget, daily) {
+  if (!(widget && widget.wxShowSunrise) || !daily) return '';
+  const rise = formatWxTime((daily.sunrise || [])[0]);
+  const set = formatWxTime((daily.sunset || [])[0]);
+  if (!rise && !set) return '';
+  return `<div class="wx-sun-row">` +
+    (rise ? `<span class="wx-sun-pt">${weatherSunIcon('rise')}<b>${rise}</b></span>` : '') +
+    (set ? `<span class="wx-sun-pt">${weatherSunIcon('set')}<b>${set}</b></span>` : '') +
+    `</div>`;
+}
 // Resolves the EFFECTIVE unit for one widget — its own override if set
 // (matching the same override pattern already used for location, see
 // wxLat/wxLon), otherwise the device-wide default from Settings → Weather.
@@ -6537,16 +6644,30 @@ function effectiveWxUnit(widget) {
   return (widget && widget.wxUnit) || settings.weather_unit || 'fahrenheit';
 }
 // Builds the forecast-day strip HTML for up to `days` days.
-function weatherForecastDays(daily, days, unit) {
+// showSunToday: only renderWeatherForecast's standalone daily list opts in —
+// renderWeatherCurrent's inline strip and the legacy renderWeather forecast
+// already show today's sunrise/sunset in their own dedicated row above this
+// strip, so adding it again to day-0's tile here would be redundant.
+function weatherForecastDays(daily, days, unit, showSunToday) {
   const dailyCodes = daily.weather_code ?? daily.weathercode ?? [];
   const n = Math.min(days || 5, daily.time.length);
   return daily.time.slice(0, n).map((t,i) => {
     const d = new Date(t+'T00:00:00');
+    const sunToday = (showSunToday && i === 0) ? (() => {
+      const rise = formatWxTime((daily.sunrise || [])[0]);
+      const set = formatWxTime((daily.sunset || [])[0]);
+      if (!rise && !set) return '';
+      return `<div class="fd-sun">` +
+        (rise ? `<span class="fd-sun-pt">${weatherSunIcon('rise')}${rise}</span>` : '') +
+        (set ? `<span class="fd-sun-pt">${weatherSunIcon('set')}${set}</span>` : '') +
+        `</div>`;
+    })() : '';
     return `<div class="fd">
       <div class="fd-name">${DAYS_S[d.getDay()]}</div>
       <div class="fd-icon">${weatherSVG(dailyCodes[i])}</div>
       <div class="fd-hi">${formatTemp(daily.temperature_2m_max[i], unit)}</div>
       <div class="fd-lo">${formatTemp(daily.temperature_2m_min[i], unit)}</div>
+      ${sunToday}
     </div>`;
   }).join('');
 }
@@ -6576,6 +6697,8 @@ function renderWeather(widget) {
   const stacked = locationAtBottom ? `${curHtml}${locationHtml}` : `${locationHtml}${curHtml}`;
   return `<div class="w-weather" style="${weatherWidgetStyle(widget)}">
     ${stacked}
+    ${weatherStatRow(widget, cur)}
+    ${weatherSunRow(widget, daily)}
     <div class="forecast">${forecast}</div>
   </div>`;
 }
@@ -6610,6 +6733,8 @@ function renderWeatherCurrent(widget) {
   const stacked = (locationAtBottom && strip) ? `${curHtml}${locationHtml}` : `${locationHtml}${curHtml}`;
   return `<div class="w-weather w-weather-current" style="${weatherWidgetStyle(widget)}">
     ${stacked}
+    ${weatherStatRow(widget, cur)}
+    ${weatherSunRow(widget, daily)}
     ${strip}
   </div>`;
 }
@@ -6625,7 +6750,7 @@ function renderWeatherForecast(widget) {
   const unit = effectiveWxUnit(widget);
   return `<div class="w-weather w-weather-forecast" style="${weatherWidgetStyle(widget)}">
     ${(showLoc && locationLabel) ? `<div class="wx-location">${escapeHtmlD(locationLabel)}</div>` : ''}
-    <div class="forecast forecast-only">${weatherForecastDays(daily, days, unit)}</div>
+    <div class="forecast forecast-only">${weatherForecastDays(daily, days, unit, widget && widget.wxShowSunrise)}</div>
   </div>`;
 }
 
@@ -6688,6 +6813,7 @@ function renderWeatherHourly(widget) {
   } else {
     // Hourly strip: next N hours from now.
     const count = Math.max(2, Math.min(12, parseInt(w.wxHours) || 6));
+    const feelsArr = h.apparent_temperature || [];
     const cells = [];
     for (let k = 0; k < count; k++) {
       const i = startIdx + k;
@@ -6696,10 +6822,12 @@ function renderWeatherHourly(widget) {
       const hr = dt.getHours() % 12 || 12, ap = dt.getHours() < 12 ? 'AM' : 'PM';
       const isDay = isDayArr ? isDayArr[i] : (dt.getHours() >= 6 && dt.getHours() < 19 ? 1 : 0);
       const pop = pops[i] != null ? pops[i] : 0;
+      const feels = (w.wxShowFeelsLike && feelsArr[i] != null) ? `<div class="wxh-feels">feels ${formatTemp(feelsArr[i], unit)}</div>` : '';
       cells.push(`<div class="wxh-hour">
         <div class="wxh-hr">${hr}${ap}</div>
         <div class="wxh-icon">${weatherSVG(codes[i], isDay)}</div>
         <div class="wxh-temp">${formatTemp(temps[i], unit)}</div>
+        ${feels}
         <div class="wxh-pop">${pop>0?pop+'%':''}</div>
       </div>`);
     }
@@ -6783,12 +6911,15 @@ function weatherComboDailyCells(daily, days, unit) {
 // smaller treatment (its own new CSS, since nothing existing matches it)
 // keeps current conditions present without dominating a layout that's
 // already tight on vertical room.
-function weatherComboCurrentHtml(wx, unit, compact, locationLabel) {
+function weatherComboCurrentHtml(wx, unit, compact, locationLabel, widget) {
   const cur = wx.current, daily = wx.daily;
   const code = cur.weather_code ?? cur.weathercode;
   const hi = daily && daily.temperature_2m_max ? formatTemp(daily.temperature_2m_max[0], unit) : null;
   const lo = daily && daily.temperature_2m_min ? formatTemp(daily.temperature_2m_min[0], unit) : null;
   const locHtml = locationLabel ? `<div class="wx-location">${escapeHtmlD(locationLabel)}</div>` : '';
+  // Stat/sun rows only on the "full" variant — the compact (Columns-only)
+  // variant is deliberately kept small so it doesn't outgrow the column
+  // list beside it (see comment above), so those rows skip it entirely.
   if (compact) {
     return `<div class="wxc-cur-compact">
       <div class="wxc-cur-compact-icon">${weatherSVG(code, cur.is_day)}</div>
@@ -6805,7 +6936,9 @@ function weatherComboCurrentHtml(wx, unit, compact, locationLabel) {
       ${locHtml}
       <div class="desc">${WMO_DESC[code]||''}</div>
       ${hi!==null ? `<div class="wx-hilo">H ${hi} · L ${lo}</div>` : ''}</div>
-    </div>`;
+    </div>
+    ${weatherStatRow(widget, cur)}
+    ${weatherSunRow(widget, daily)}`;
 }
 function renderWeatherComboForecast(widget) {
   const wx = weatherForWidget(widget);
@@ -6828,7 +6961,7 @@ function renderWeatherComboForecast(widget) {
   // be "aligned with" in the first place, so it falls back to its
   // original standalone line instead of silently disappearing just
   // because an unrelated toggle is off.
-  const curHtml = hasCur ? weatherComboCurrentHtml(wx, unit, style === 'columns', showLoc ? locationLabel : '') : '';
+  const curHtml = hasCur ? weatherComboCurrentHtml(wx, unit, style === 'columns', showLoc ? locationLabel : '', widget) : '';
   const standaloneLocationHtml = (!hasCur && showLoc && locationLabel) ? `<div class="wx-location">${escapeHtmlD(locationLabel)}</div>` : '';
 
   const styleDefaults = {
@@ -11522,6 +11655,50 @@ function renderWeatherAdvancedSettings(w, wxSettings) {
       </select>
       ${w.type === 'weatherCurrent' ? `<p class="was-hint">Only visible when Forecast Days above is greater than 0 — otherwise there's no forecast for it to sit above.</p>` : ''}
     </div>` : '';
+  // Off by default for every field — these only add visual weight to a
+  // widget that's already tuned, so an existing saved layout shouldn't
+  // change on update. Subset per widget type: weatherHourly is already
+  // tight on width (only feels-like fits), weatherForecast has no
+  // current-conditions block to hang feels/humidity/gust/UV off of (only
+  // today's sunrise/sunset fits), and weather/weatherCurrent/
+  // weatherComboForecast all show a full current-conditions block so they
+  // get the complete set.
+  const hasCurrentBlock = w.type === 'weather' || w.type === 'weatherCurrent' || w.type === 'weatherComboForecast';
+  const extraFieldsControl = hasCurrentBlock ? `
+    <div class="was-box">
+      <div class="was-toggle-row">
+        <label>Show Feels-Like Temp</label>
+        <input type="checkbox" id="wx-show-feels" ${w.wxShowFeelsLike ? 'checked' : ''}>
+      </div>
+      <div class="was-toggle-row">
+        <label>Show Humidity</label>
+        <input type="checkbox" id="wx-show-humidity" ${w.wxShowHumidity ? 'checked' : ''}>
+      </div>
+      <div class="was-toggle-row">
+        <label>Show Wind Gusts</label>
+        <input type="checkbox" id="wx-show-gust" ${w.wxShowWindGust ? 'checked' : ''}>
+      </div>
+      <div class="was-toggle-row">
+        <label>Show UV Index</label>
+        <input type="checkbox" id="wx-show-uv" ${w.wxShowUV ? 'checked' : ''}>
+      </div>
+      <div class="was-toggle-row">
+        <label>Show Sunrise / Sunset</label>
+        <input type="checkbox" id="wx-show-sunrise" ${w.wxShowSunrise ? 'checked' : ''}>
+      </div>
+    </div>` : (w.type === 'weatherHourly') ? `
+    <div class="was-box">
+      <div class="was-toggle-row">
+        <label>Show Feels-Like Temp ${infoBtn("Adds a small 'feels 71°' line under each hour's temperature.")}</label>
+        <input type="checkbox" id="wx-show-feels" ${w.wxShowFeelsLike ? 'checked' : ''}>
+      </div>
+    </div>` : (w.type === 'weatherForecast') ? `
+    <div class="was-box">
+      <div class="was-toggle-row">
+        <label>Show Sunrise / Sunset ${infoBtn("Adds today's sunrise and sunset time to today's row only.")}</label>
+        <input type="checkbox" id="wx-show-sunrise" ${w.wxShowSunrise ? 'checked' : ''}>
+      </div>
+    </div>` : '';
   return `
     <div class="was-row" id="wx-content-scale-row">
       <label>Content Size ${infoBtn("Scales the temperature, icon, and forecast tiles together. Resize the widget box itself using the resize handles on the display.")}</label>
@@ -11535,6 +11712,7 @@ function renderWeatherAdvancedSettings(w, wxSettings) {
     ${comboStyleControl}
     ${hourlyStyleControl}
     ${hoursSlider}
+    ${extraFieldsControl}
     <div class="was-box">
       <div class="was-toggle-row">
         <label>Override location for this widget ${infoBtn("Use a different location than the global one — e.g. a vacation-home display. Leave off to use the location from Settings → Weather.")}</label>
@@ -11545,6 +11723,12 @@ function renderWeatherAdvancedSettings(w, wxSettings) {
         <div style="display:flex;gap:8px;margin-bottom:10px">
           <input type="text" id="wx-loc-zip" placeholder="e.g. 90210" style="flex:1" inputmode="numeric">
           <button id="wx-loc-lookup" type="button" class="was-inline-btn">Look up</button>
+        </div>
+        <div style="margin:2px 0 10px;font-size:11px;color:rgba(255,255,255,0.4);text-align:center">— or —</div>
+        <label style="font-size:12px;color:rgba(255,255,255,0.6);display:block;margin-bottom:6px">Search by place name</label>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <input type="text" id="wx-loc-place" placeholder="e.g. Denver, or Yellowstone National Park" style="flex:1">
+          <button id="wx-loc-place-go" type="button" class="was-inline-btn">Search</button>
         </div>
         <label style="font-size:12px;color:rgba(255,255,255,0.6);display:block;margin-bottom:6px">Label (shown on the widget)</label>
         <input type="text" id="wx-loc-label" value="${w.wxLabel || ''}" placeholder="e.g. Lake House" style="margin-bottom:10px">
@@ -11620,6 +11804,19 @@ function wireWeatherAdvancedSettings(w, wxSettings) {
     rerenderSingleWidget(w.id);
     scheduleLayoutSave();
   });
+  const wireCheck = (id, prop) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', (e) => {
+      w[prop] = e.target.checked;
+      rerenderSingleWidget(w.id);
+      scheduleLayoutSave();
+    });
+  };
+  wireCheck('wx-show-feels', 'wxShowFeelsLike');
+  wireCheck('wx-show-humidity', 'wxShowHumidity');
+  wireCheck('wx-show-gust', 'wxShowWindGust');
+  wireCheck('wx-show-uv', 'wxShowUV');
+  wireCheck('wx-show-sunrise', 'wxShowSunrise');
   const hourlyStyle = document.getElementById('wx-hourly-style');
   if (hourlyStyle) {
     hourlyStyle.addEventListener('change', (e) => {
@@ -11744,6 +11941,31 @@ function wireWeatherAdvancedSettings(w, wxSettings) {
       }
     });
   }
+  const placeGo = document.getElementById('wx-loc-place-go');
+  const placeIn = document.getElementById('wx-loc-place');
+  const runPlaceSearch = async () => {
+    const q = (placeIn.value || '').trim();
+    const status = document.getElementById('wx-loc-status');
+    if (q.length < 2) { status.textContent = 'Type at least 2 characters.'; return; }
+    status.textContent = 'Searching…';
+    try {
+      const r = await (await fetch(`/api/place-search?q=${encodeURIComponent(q)}`)).json();
+      if (r && r.lat != null && r.lon != null) {
+        w.wxLat = String(r.lat); w.wxLon = String(r.lon);
+        if (!w.wxLabel && r.label) { w.wxLabel = r.label; document.getElementById('wx-loc-label').value = r.label; }
+        status.textContent = `📍 ${r.label || (r.lat + ', ' + r.lon)}`;
+        rerenderSingleWidget(w.id);
+        scheduleLayoutSave();
+        showDisplayToast('Location set ✓');
+      } else {
+        status.textContent = (r && r.error) || 'Nothing found for that.';
+      }
+    } catch {
+      status.textContent = 'Search failed — check your connection.';
+    }
+  };
+  if (placeGo) placeGo.addEventListener('click', runPlaceSearch);
+  if (placeIn) placeIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); runPlaceSearch(); } });
 }
 
 // ── To-Do List / Shopping List / Chore Chart advanced settings ─────────────

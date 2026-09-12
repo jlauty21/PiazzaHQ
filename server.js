@@ -1565,6 +1565,8 @@ const defaultSettings = {
   ha_alerts_json: '',             // JSON [{id,entityId,name,op,value,dwellMin,message,enabled}] — condition alerts
   phone_alerts_enabled: '0',      // 0/1 — relay notifications to the household's phones via the mothership
   notif_prefs_json: '',           // JSON { <kind>: {screen:bool, phone:bool} } — per-kind delivery matrix
+  severe_weather_alerts_enabled: '0', // 0/1 — poll NWS for active alerts at the household's weather location
+  severe_weather_min_severity: 'Moderate', // Extreme|Severe|Moderate|Minor — NWS severity floor to notify on
   handwriting_enabled: '0',       // 0/1 — show the ✍️ button on the add-event sheet
   myscript_app_key: '',           // MyScript application key
   myscript_hmac_key: '',          // MyScript HMAC key (server-side only, never echoed)
@@ -5742,6 +5744,13 @@ app.put('/api/settings', (req, res) => {
     try { startFlightPolling(); } catch {}
     try { if (flightmapWanted()) { ensureBasemap().catch(() => {}); ensureStatesBasemap().catch(() => {}); } } catch {}
   }
+  // Severe weather alerts: turning it on (or changing location/severity)
+  // should show up now, not up to 10 minutes from now — same fast-recheck
+  // pattern PUT /api/ha-alerts already uses for its own condition alerts.
+  if ('severe_weather_alerts_enabled' in req.body || 'severe_weather_min_severity' in req.body ||
+      'weather_lat' in req.body || 'weather_lon' in req.body) {
+    setTimeout(checkWeatherAlerts, 500);
+  }
   const rows = db.prepare(`SELECT key, value FROM settings`).all();
   broadcastUpdate('settings');
   // 'feed_default_opacity' is baked into each event's color_opacity server-side
@@ -6727,14 +6736,17 @@ function nominatimPostalSearch(zip, countryCode) {
   const countryParam = countryCode ? `&country=${countryCode}` : '';
   const url = `https://nominatim.openstreetmap.org/search?postalcode=${encodeURIComponent(zip)}${countryParam}&format=json&addressdetails=1&limit=1`;
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'PiazzaHQ/1.0' } }, (apiRes) => {
+    // family:4/timeout — same fix as geocodeAddress() just below, same host.
+    const req = https.get(url, { family: 4, headers: { 'User-Agent': 'PiazzaHQ/1.0' } }, (apiRes) => {
       let data = '';
       apiRes.on('data', c => data += c);
       apiRes.on('end', () => {
         try { resolve(JSON.parse(data)); }
         catch (e) { reject(new Error('Failed to parse geocoding response')); }
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => req.destroy(new Error(`Timed out looking up postal code "${zip}"`)));
   });
 }
 
@@ -6851,14 +6863,21 @@ function emailFormatTemp(fahrenheit) {
 function emailTempUnitLabel() {
   return getSetting('weather_unit') === 'celsius' ? 'C' : 'F';
 }
+// PIAZZA_OPENMETEO_URL overrides the base (tests only; unset in prod).
+const OPENMETEO_BASE = process.env.PIAZZA_OPENMETEO_URL || 'https://api.open-meteo.com';
 function getWeather(lat, lon) {
   return new Promise((resolve, reject) => {
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-      `&current=temperature_2m,weather_code,wind_speed_10m,is_day` +
-      `&hourly=temperature_2m,weather_code,precipitation_probability,is_day` +
+    // apparent_temperature/relative_humidity_2m/wind_gusts_10m ride the same
+    // current/hourly call as everything else — no extra request. UV index
+    // isn't a valid `current` variable on this API, only `hourly`/`daily`;
+    // reconcileWeatherToday() below picks the closest-to-now hourly value
+    // into current.uv_index so every provider ends up with the same shape.
+    const url = `${OPENMETEO_BASE}/v1/forecast?latitude=${lat}&longitude=${lon}` +
+      `&current=temperature_2m,weather_code,wind_speed_10m,wind_gusts_10m,apparent_temperature,relative_humidity_2m,is_day` +
+      `&hourly=temperature_2m,weather_code,precipitation_probability,apparent_temperature,uv_index,is_day` +
       `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset` +
       `&temperature_unit=fahrenheit&wind_speed_unit=mph&forecast_days=16&timezone=auto`;
-    const req = https.get(url, (apiRes) => {
+    const req = (url.startsWith('http://') ? http : https).get(url, { family: 4 }, (apiRes) => {
       let data = '';
       apiRes.on('data', chunk => data += chunk);
       apiRes.on('end', () => {
@@ -6897,7 +6916,7 @@ function getWeatherOWM(lat, lon, apiKey) {
   return new Promise((resolve, reject) => {
     const url = `https://api.openweathermap.org/data/3.0/onecall?lat=${lat}&lon=${lon}` +
       `&units=imperial&exclude=minutely,alerts&appid=${encodeURIComponent(apiKey)}`;
-    const req = https.get(url, (apiRes) => {
+    const req = https.get(url, { family: 4 }, (apiRes) => {
       let data = '';
       apiRes.on('data', c => data += c);
       apiRes.on('end', () => {
@@ -6914,6 +6933,10 @@ function getWeatherOWM(lat, lon, apiKey) {
               temperature_2m: cur.temp,
               weather_code: owmToWmo(cur.weather?.[0]?.id ?? 800),
               wind_speed_10m: cur.wind_speed,
+              wind_gusts_10m: cur.wind_gust,
+              apparent_temperature: cur.feels_like,
+              relative_humidity_2m: cur.humidity,
+              uv_index: cur.uvi,
               is_day: (cur.dt >= cur.sunrise && cur.dt < cur.sunset) ? 1 : 0,
             },
             hourly: {
@@ -6921,6 +6944,8 @@ function getWeatherOWM(lat, lon, apiKey) {
               temperature_2m: hours.map(h => h.temp),
               weather_code: hours.map(h => owmToWmo(h.weather?.[0]?.id ?? 800)),
               precipitation_probability: hours.map(h => Math.round((h.pop || 0) * 100)),
+              apparent_temperature: hours.map(h => h.feels_like),
+              uv_index: hours.map(h => h.uvi),
               is_day: hours.map(h => (h.dt >= (j.current?.sunrise||0) && h.dt < (j.current?.sunset||0)) ? 1 : 0),
             },
             daily: {
@@ -6973,7 +6998,7 @@ function nwsTextToWmo(text) {
 // ever times out to let the normal per-poll retry take over.
 function httpGetJSON(url, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { 'User-Agent': 'PiazzaHQ/1.0 (family calendar display)', 'Accept': 'application/geo+json' } }, (r) => {
+    const req = (url.startsWith('http://') ? http : https).get(url, { family: 4, headers: { 'User-Agent': 'PiazzaHQ/1.0 (family calendar display)', 'Accept': 'application/geo+json' } }, (r) => {
       if (r.statusCode >= 300 && r.statusCode < 400 && r.headers.location) {
         return httpGetJSON(r.headers.location, timeoutMs).then(resolve, reject);
       }
@@ -7177,6 +7202,20 @@ function reconcileWeatherToday(w, lat, lon) {
     }
   }
   if (w.current) w.current.is_day = isDaytimeAt(lat, lon, new Date());
+  // UV index isn't a valid Open-Meteo `current` variable (only hourly/daily),
+  // so current.uv_index arrives empty from getWeather() — fill it from the
+  // hourly series' closest-to-now value. No-op for OWM (already set from
+  // cur.uvi) and for NWS (doesn't report UV at all — stays absent, same as
+  // NWS's already-blank sunrise/sunset).
+  if (w.current && w.current.uv_index == null && w.hourly && Array.isArray(w.hourly.uv_index) && Array.isArray(w.hourly.time)) {
+    const now = Date.now();
+    let idx = 0;
+    for (let i = 0; i < w.hourly.time.length; i++) {
+      if (new Date(w.hourly.time[i]).getTime() <= now) idx = i; else break;
+    }
+    const uv = w.hourly.uv_index[idx];
+    if (uv != null) w.current.uv_index = uv;
+  }
   return w;
 }
 
@@ -7228,7 +7267,7 @@ function getRadarFrames() {
     return Promise.resolve(radarFramesCache);
   }
   return new Promise((resolve, reject) => {
-    https.get('https://api.rainviewer.com/public/weather-maps.json', (apiRes) => {
+    const req = https.get('https://api.rainviewer.com/public/weather-maps.json', { family: 4 }, (apiRes) => {
       let data = '';
       apiRes.on('data', chunk => data += chunk);
       apiRes.on('end', () => {
@@ -7253,7 +7292,9 @@ function getRadarFrames() {
           resolve(result);
         } catch { reject(new Error('Failed to parse RainViewer data')); }
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => req.destroy(new Error('Timed out fetching RainViewer radar frames')));
   });
 }
 app.get('/api/radar-frames', async (req, res) => {
@@ -7291,14 +7332,16 @@ function getAirQuality(lat, lon) {
       `&current=us_aqi,pm2_5,pm10,uv_index` +
       `&hourly=grass_pollen,birch_pollen,ragweed_pollen` +
       `&timezone=auto&forecast_days=1`;
-    https.get(url, (apiRes) => {
+    const req = https.get(url, { family: 4 }, (apiRes) => {
       let data = '';
       apiRes.on('data', chunk => data += chunk);
       apiRes.on('end', () => {
         try { resolve(JSON.parse(data)); }
         catch { reject(new Error('Failed to parse air quality data')); }
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => req.destroy(new Error('Timed out fetching air quality data')));
   });
 }
 function aqiCategory(aqi) {
@@ -7369,12 +7412,17 @@ const _geocodeCache = new Map(); // query -> { lat, lon, label, at }
 const GEOCODE_CACHE_MS = 24 * 60 * 60 * 1000; // 24h — addresses don't move
 // Override the geocoder base only in tests (PIAZZA_NOMINATIM_URL); unset everywhere real.
 const NOMINATIM_BASE = process.env.PIAZZA_NOMINATIM_URL || 'https://nominatim.openstreetmap.org';
+// Real bug (contact-form inquiry #6 follow-up, 2026-09-12): a household on
+// a network with broken/partial outbound IPv6 couldn't get the new per-
+// widget place-name search to resolve anything — same class of bug as
+// fetchUrl()'s, just never applied here. Forces IPv4 and times out a
+// stalled connection instead of hanging forever.
 function geocodeAddress(query) {
   const cached = _geocodeCache.get(query);
   if (cached && (Date.now() - cached.at) < GEOCODE_CACHE_MS) return Promise.resolve(cached);
   return new Promise((resolve, reject) => {
     const url = `${NOMINATIM_BASE}/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
-    (url.startsWith('http://') ? http : https).get(url, { headers: { 'User-Agent': 'PiazzaHQ/1.0' } }, (apiRes) => {
+    const req = (url.startsWith('http://') ? http : https).get(url, { family: 4, headers: { 'User-Agent': 'PiazzaHQ/1.0' } }, (apiRes) => {
       let data = '';
       apiRes.on('data', c => data += c);
       apiRes.on('end', () => {
@@ -7386,7 +7434,11 @@ function geocodeAddress(query) {
           resolve(result);
         } catch { reject(new Error('Failed to parse geocoding response')); }
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    // PIAZZA_GEOCODE_TIMEOUT_MS overrides the default (tests only; unset in
+    // prod) — lets a test exercise a genuine timeout in well under a second.
+    req.setTimeout(Number(process.env.PIAZZA_GEOCODE_TIMEOUT_MS) || 10000, () => req.destroy(new Error(`Timed out looking up "${query}"`)));
   });
 }
 // OSRM's public demo router — free, no key, no signup. Road-network typical
@@ -7395,7 +7447,7 @@ function getOsrmDuration(origin, destination, mode) {
   const profile = mode === 'walking' ? 'foot' : mode === 'bicycling' ? 'bike' : 'driving';
   const url = `https://router.project-osrm.org/route/v1/${profile}/${origin.lon},${origin.lat};${destination.lon},${destination.lat}?overview=false`;
   return new Promise((resolve, reject) => {
-    https.get(url, (apiRes) => {
+    const req = https.get(url, { family: 4 }, (apiRes) => {
       let data = '';
       apiRes.on('data', c => data += c);
       apiRes.on('end', () => {
@@ -7406,7 +7458,9 @@ function getOsrmDuration(origin, destination, mode) {
           resolve({ durationMin: Math.round(route.duration / 60), distanceMiles: Math.round(route.distance / 1609.34 * 10) / 10, trafficAware: false });
         } catch { reject(new Error('Failed to parse routing response')); }
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => req.destroy(new Error('Timed out fetching a route from OSRM')));
   });
 }
 // Google's Distance Matrix API — needs the user's own key, but gives a
@@ -7417,7 +7471,7 @@ function getGoogleDuration(origin, destination, mode, apiKey) {
   const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin.lat},${origin.lon}&destinations=${destination.lat},${destination.lon}` +
     `&mode=${gMode}&departure_time=now&key=${encodeURIComponent(apiKey)}`;
   return new Promise((resolve, reject) => {
-    https.get(url, (apiRes) => {
+    const req = https.get(url, { family: 4 }, (apiRes) => {
       let data = '';
       apiRes.on('data', c => data += c);
       apiRes.on('end', () => {
@@ -7429,7 +7483,9 @@ function getGoogleDuration(origin, destination, mode, apiKey) {
           resolve({ durationMin: Math.round(seconds / 60), distanceMiles: Math.round(el.distance.value / 1609.34 * 10) / 10, trafficAware: !!el.duration_in_traffic });
         } catch { reject(new Error('Failed to parse Google response')); }
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => req.destroy(new Error('Timed out fetching a route from Google')));
   });
 }
 app.get('/api/travel-time', async (req, res) => {
@@ -7455,14 +7511,16 @@ app.get('/api/travel-time', async (req, res) => {
 let onThisDayCache = { dateKey: null, data: null };
 function fetchJsonWithUA(url) {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'PiazzaHQApp/1.0 (self-hosted family wall display; contact via project repo)' } }, (apiRes) => {
+    const req = https.get(url, { family: 4, headers: { 'User-Agent': 'PiazzaHQApp/1.0 (self-hosted family wall display; contact via project repo)' } }, (apiRes) => {
       let data = '';
       apiRes.on('data', c => data += c);
       apiRes.on('end', () => {
         if (apiRes.statusCode !== 200) return reject(new Error(`HTTP ${apiRes.statusCode}`));
         try { resolve(JSON.parse(data)); } catch { reject(new Error('Failed to parse response')); }
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => req.destroy(new Error('Timed out fetching from Wikipedia')));
   });
 }
 // Picks n random items from an array without mutating it (Fisher-Yates partial shuffle).
@@ -7895,11 +7953,29 @@ app.post('/api/feeds/:id/sync', async (req, res) => {
 
 // ── iCal parser ───────────────────────────────────────────────────────────────
 
-function fetchUrl(urlStr) {
+// Real, confirmed bug (contact-form inquiry #6, 2026-09-12): a household on
+// a network with broken/partial outbound IPv6 (common — many home ISPs/
+// routers are like this) got "Host Unreachable" trying to sync a calendar
+// feed, worked around it by editing the feed URL into SQLite directly. Two
+// gaps, same shape as fixes already applied elsewhere in this file:
+//  - No `family: 4`. Without it, Node can resolve an IPv6 address for the
+//    calendar host and fail outright (ENETUNREACH/EHOSTUNREACH) on a broken
+//    IPv6 path — unlike a browser, Node doesn't "happy eyeballs" fall back
+//    to IPv4 on its own. Already fixed for Gmail SMTP in
+//    buildMailTransporter(); never applied here, despite this being the
+//    single most-used outbound call in the app.
+//  - No request timeout. A connection that stalls (not outright fails) hung
+//    forever with no error — the same bug class already fixed in
+//    httpGetJSON()/getWeather() this session, missed here.
+// PIAZZA_FETCH_TIMEOUT_MS overrides the default (tests only — lets a test
+// exercise a genuine timeout in milliseconds instead of waiting out the real
+// 20s default; unset in prod).
+function fetchUrl(urlStr, timeoutMs = Number(process.env.PIAZZA_FETCH_TIMEOUT_MS) || 20000) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(urlStr);
     const lib = parsed.protocol === 'https:' ? https : http;
-    lib.get(urlStr, {
+    const req = lib.get(urlStr, {
+      family: 4,
       headers: {
         'User-Agent': 'PiazzaHQ/1.0',
         // Some calendar hosts (e.g. iCloud) serve different/empty content to
@@ -7916,7 +7992,7 @@ function fetchUrl(urlStr) {
         // Resolve relative redirect targets against the current URL
         const next = new URL(res.headers.location, urlStr).toString();
         res.resume(); // discard the redirect body so the socket frees up
-        return resolve(fetchUrl(next));
+        return resolve(fetchUrl(next, timeoutMs));
       }
 
       // Collect the raw body as binary, since a compressed response is bytes,
@@ -7948,7 +8024,9 @@ function fetchUrl(urlStr) {
         }
         resolve(body);
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`Timed out after ${timeoutMs}ms fetching ${urlStr}`)));
   });
 }
 
@@ -8494,6 +8572,7 @@ function httpsRequest(url, method, { body = null, headers = {}, auth = null, max
       const bodyBuf = body != null ? Buffer.from(body, 'utf8') : null;
       if (bodyBuf) reqHeaders['Content-Length'] = bodyBuf.length;
       const req = https.request({
+        family: 4,
         hostname: target.hostname,
         port: target.port || 443,
         path: target.pathname + target.search,
@@ -9032,6 +9111,8 @@ const _activeNotifications = new Map(); // key -> { key, kind, title, body, url,
 // from this list; add a row here when a new producer is introduced.
 const NOTIF_KINDS = [
   { id: 'ha-alert', label: 'Home Assistant alerts' },
+  { id: 'weather-alert', label: 'Severe weather alerts' },
+  { id: 'kiosk-recovered', label: 'Kiosk auto-recovery' },
 ];
 function getNotifPrefs() {
   let stored = {};
@@ -9116,6 +9197,70 @@ app.put('/api/notif-prefs', (req, res) => {
   }
   setSetting('notif_prefs_json', JSON.stringify(clean));
   res.json({ ok: true, prefs: clean });
+});
+
+// ── Severe weather alerts (NWS, free, keyless, US-only) ─────────────────────
+// A second producer into the same notification pipeline the HA alerts above
+// use — no new banner, no new delivery-prefs UI, just another thing that
+// calls raiseNotification()/clearNotification(). Polls the household's own
+// weather location, independent of whichever provider (Open-Meteo/OWM/NWS)
+// is actually chosen for the forecast display.
+// PIAZZA_NWS_ALERTS_URL overrides the base (tests only; unset in prod).
+const NWS_ALERTS_BASE = process.env.PIAZZA_NWS_ALERTS_URL || 'https://api.weather.gov';
+const SEVERITY_RANK = { Extreme: 4, Severe: 3, Moderate: 2, Minor: 1, Unknown: 0 };
+const _activeWeatherAlertIds = new Set();
+
+async function checkWeatherAlerts() {
+  if (IS_DEMO || isSlave()) return;
+  if (getSetting('severe_weather_alerts_enabled') !== '1') return;
+  const lat = getSetting('weather_lat'), lon = getSetting('weather_lon');
+  if (!lat || !lon) return;
+  const minSeverity = SEVERITY_RANK[getSetting('severe_weather_min_severity') || 'Moderate'] ?? 2;
+  let alerts;
+  try {
+    const j = await httpGetJSON(`${NWS_ALERTS_BASE}/alerts/active?point=${(+lat).toFixed(4)},${(+lon).toFixed(4)}`);
+    alerts = (j && j.features) || [];
+  } catch { return; } // transient NWS failure — leave existing alerts as-is, try again next poll
+  const liveIds = new Set();
+  for (const f of alerts) {
+    const p = f.properties || {};
+    if ((SEVERITY_RANK[p.severity] ?? 0) < minSeverity) continue;
+    liveIds.add(f.id);
+    if (!_activeWeatherAlertIds.has(f.id)) {
+      raiseNotification({
+        kind: 'weather-alert', key: `weather-alert:${f.id}`,
+        title: p.event || 'Weather Alert', body: p.headline || p.description || '',
+      });
+    }
+  }
+  for (const id of _activeWeatherAlertIds) if (!liveIds.has(id)) clearNotification(`weather-alert:${id}`);
+  _activeWeatherAlertIds.clear();
+  for (const id of liveIds) _activeWeatherAlertIds.add(id);
+}
+setInterval(checkWeatherAlerts, 10 * 60 * 1000);
+setTimeout(checkWeatherAlerts, 25 * 1000); // stagger from checkHaAlerts' own 20s boot kick
+
+// A third producer into the same pipeline, this one from OUTSIDE the Node
+// process entirely: scripts/kiosk-watchdog.js (a bash+systemd-timer thing,
+// not app code) posts here after it detects and recovers a frozen/crashed
+// kiosk Chromium, so that recovery shows up on-screen/phone through the
+// exact same channel HA alerts and weather alerts already use, rather than
+// happening invisibly. Loopback-only in practice (the watchdog only ever
+// runs on this same device against its own localhost:3000), but not
+// enforced server-side — same trust level as the rest of this LAN-facing app.
+app.post('/api/kiosk-watchdog/report', (req, res) => {
+  const restarted = !!(req.body && req.body.restarted);
+  const giveUp = !!(req.body && req.body.giveUp);
+  const reason = (req.body && req.body.reason === 'crashed') ? 'crashed' : 'hung';
+  const reasonText = reason === 'crashed' ? 'stopped running' : 'stopped responding';
+  const title = giveUp ? 'Display needs attention' : 'Display auto-recovered';
+  const body = giveUp
+    ? `The kiosk display ${reasonText} repeatedly and auto-recovery gave up after 3 tries in 30 minutes — it may need a manual look.`
+    : restarted
+      ? `The kiosk display ${reasonText} and was automatically restarted.`
+      : `The kiosk display ${reasonText}, but the automatic restart didn't take — it may need a manual look.`;
+  raiseNotification({ kind: 'kiosk-recovered', key: `kiosk-recovered:${Date.now()}`, title, body });
+  res.json({ ok: true });
 });
 
 app.get('/api/phone-alerts', (req, res) => {
@@ -10988,7 +11133,8 @@ app.put('/api/layouts/:orientation', (req, res) => {
 // The current API lives under /api/v1/ and wraps list responses as { results: [...], next_cursor }.
 function todoistGet(token, path) {
   return new Promise((resolve, reject) => {
-    https.get({
+    const req = https.get({
+      family: 4,
       hostname: 'api.todoist.com',
       path,
       headers: { 'Authorization': `Bearer ${token}` }
@@ -11010,7 +11156,9 @@ function todoistGet(token, path) {
           reject({ status: 500, message: 'Failed to parse Todoist response' });
         }
       });
-    }).on('error', err => reject({ status: 500, message: err.message }));
+    });
+    req.on('error', err => reject({ status: 500, message: err.message }));
+    req.setTimeout(10000, () => req.destroy(new Error('Timed out contacting Todoist')));
   });
 }
 
@@ -11022,6 +11170,7 @@ function todoistGet(token, path) {
 function todoistPost(token, path) {
   return new Promise((resolve, reject) => {
     const apiReq = https.request({
+      family: 4,
       hostname: 'api.todoist.com',
       path,
       method: 'POST',
@@ -11042,6 +11191,7 @@ function todoistPost(token, path) {
       });
     });
     apiReq.on('error', err => reject({ status: 500, message: err.message }));
+    apiReq.setTimeout(10000, () => apiReq.destroy(new Error('Timed out contacting Todoist')));
     apiReq.end();
   });
 }

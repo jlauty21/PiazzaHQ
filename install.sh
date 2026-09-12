@@ -476,7 +476,12 @@ else
   warn "Could not set the browser homepage (no permission to write ${CHROMIUM_POLICY_DIR}) — not fatal, just cosmetic."
 fi
 
-KIOSK_CMD="${CHROMIUM_BIN} --kiosk --disable-gpu --disable-extensions --disable-component-update --disable-background-networking --disable-sync --disable-features=Translate --renderer-process-limit=1 --noerrdialogs --disable-infobars --disable-restore-session-state --check-for-update-interval=31536000 --password-store=basic ${KIOSK_URL}"
+KIOSK_DEBUG_PORT="${PIAZZA_KIOSK_DEBUG_PORT:-9222}"
+KIOSK_CMD="${CHROMIUM_BIN} --kiosk --disable-gpu --disable-extensions --disable-component-update --disable-background-networking --disable-sync --disable-features=Translate --renderer-process-limit=1 --noerrdialogs --disable-infobars --disable-restore-session-state --check-for-update-interval=31536000 --password-store=basic --remote-debugging-port=${KIOSK_DEBUG_PORT} --remote-allow-origins=http://127.0.0.1:${KIOSK_DEBUG_PORT} ${KIOSK_URL}"
+# --remote-debugging-port/--remote-allow-origins: lets scripts/kiosk-watchdog.js
+# (step 8c below) tell a genuinely frozen kiosk tab apart from a browser
+# process that's merely still alive, via the Chrome DevTools Protocol. Binds
+# to loopback only when no --remote-debugging-address is given.
 # --password-store=basic: without this, Chromium tries to encrypt its saved-
 # password store using a key held in the OS's keyring (GNOME Keyring via
 # libsecret on Raspberry Pi OS) — and on an auto-login kiosk there's no login
@@ -735,6 +740,62 @@ echo "  ${DIM}Takes effect after the reboot at the end of this install (or right
 echo "  reconfigure/reload your window manager yourself).${RST}"
 echo
 
+# ── 8c. Kiosk watchdog (detects a frozen kiosk tab, not just a crashed one) ───
+# Born from a real incident (2026-09-12): the kiosk Chromium froze after a
+# routine update while the server itself stayed perfectly healthy — a plain
+# "is the process running" check would have missed it entirely, since the
+# renderer never died. scripts/kiosk-watchdog.js polls the Chrome DevTools
+# Protocol every few minutes to ask the actual tab "are you still executing
+# JS?", and if not, recovers it via the SAME `kiosk restart` a human would
+# run by hand, then reports what happened through the app's own notification
+# pipeline (Settings → Notification delivery, same as HA/weather alerts).
+say "Setting up the kiosk watchdog (detects and recovers a frozen display)"
+WATCHDOG_SERVICE_PATH="/etc/systemd/system/piazzahq-kiosk-watchdog.service"
+WATCHDOG_TIMER_PATH="/etc/systemd/system/piazzahq-kiosk-watchdog.timer"
+render_watchdog_service() {
+  cat <<EOF
+[Unit]
+Description=Piazza HQ kiosk watchdog (one-shot check + recover)
+After=piazzahq.service
+
+[Service]
+Type=oneshot
+User=${RUN_USER}
+Environment=PI_CALENDAR_URL=http://localhost:3000
+Environment=PIAZZA_KIOSK_DEBUG_PORT=${KIOSK_DEBUG_PORT}
+ExecStart=${NODE_BIN} ${PROJECT_DIR}/scripts/kiosk-watchdog.js
+EOF
+}
+render_watchdog_timer() {
+  cat <<EOF
+[Unit]
+Description=Run the Piazza HQ kiosk watchdog every 3 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=3min
+Unit=piazzahq-kiosk-watchdog.service
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+install_watchdog=1
+if [[ -f "$WATCHDOG_SERVICE_PATH" && -f "$WATCHDOG_TIMER_PATH" ]] \
+   && diff -q <(render_watchdog_service) "$WATCHDOG_SERVICE_PATH" >/dev/null 2>&1 \
+   && diff -q <(render_watchdog_timer) "$WATCHDOG_TIMER_PATH" >/dev/null 2>&1; then
+  skip "kiosk watchdog already up to date"
+  install_watchdog=0
+fi
+if [[ $install_watchdog -eq 1 ]]; then
+  render_watchdog_service | sudo tee "$WATCHDOG_SERVICE_PATH" >/dev/null
+  render_watchdog_timer   | sudo tee "$WATCHDOG_TIMER_PATH"   >/dev/null
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now piazzahq-kiosk-watchdog.timer >/dev/null 2>&1 || true
+  ok "Kiosk watchdog installed (checks every ~3 min, reports via Settings → Notification delivery)"
+fi
+echo
+
 # ── 9. Optional remote access (Tailscale) ─────────────────────────────────────
 # Lets the control app be reached from anywhere (not just home WiFi) over a
 # private network. Fully optional and can also be run later, standalone, via
@@ -887,6 +948,7 @@ echo "      bash setup-remote-access.sh           # add remote access (or --stat
 echo "      sudo systemctl status piazzahq     # is the server running?"
 echo "      journalctl -u piazzahq -f          # live logs"
 echo "      sudo systemctl restart piazzahq    # restart after changes"
+echo "      systemctl status piazzahq-kiosk-watchdog.timer   # kiosk watchdog schedule"
 echo
 
 # ── Reboot ──────────────────────────────────────────────────────────────────

@@ -1397,6 +1397,14 @@ const RELEASE_NOTES = {
     'New: the Chore Chart widget can show the shared bonus-chore pool on the wall — a toggle adds a strip of what\'s up for grabs today and who\'s already claimed what.',
     'Plus various bug fixes and improvements.',
   ],
+  '1.87.2': [
+    'New: five more weather details — feels-like temperature, humidity, wind gusts, sunrise/sunset, and UV index — each its own toggle in a weather widget\'s settings, off by default.',
+    'New: severe weather alerts (Settings → Severe Weather Alerts) — free US National Weather Service warnings/watches near your location, delivered through the same on-screen banner and phone alerts as Home Assistant alerts.',
+    'New: a weather widget\'s location override can now be set by typing a place name, not just a ZIP code.',
+    'New: three display templates — Thanksgiving, Hanukkah, and Back to School.',
+    'New: the wall display can now notice when its own screen freezes up and restart itself automatically, with a notification when it happens.',
+    'Fixed: calendar feeds, place-name location search, and several other features could fail or hang ("Host Unreachable") on networks with partial IPv6 connectivity.',
+  ],
 };
 
 // Beta-suffix-aware version compare — same scheme as the mothership server's
@@ -1950,7 +1958,7 @@ async function duplicateDisplayById(id, name) {
 // opening one closes the others. "Advanced" sections are tucked behind a toggle.
 const SETTINGS_ICONS = {
   'General':'🏠', 'Display':'🖥️', 'Photo Widget Defaults':'🖼️', 'Features & Family Hub':'✨', 'Weather':'☀️', 'Calendar Sync':'🔄', 'Todoist':'✅', 'To-Do Lists':'📝',
-  'Stocks':'📈', 'News':'📰', 'Daily Briefing':'✉️', 'Feedback & Ideas':'💬', 'Version & License':'⬆️', 'Security':'🔒', 'Multi-Device':'🖥️', 'Home Assistant':'🏠', 'App Preferences':'📱', 'Beta Checklist':'✅',
+  'Stocks':'📈', 'News':'📰', 'Daily Briefing':'✉️', 'Feedback & Ideas':'💬', 'Version & License':'⬆️', 'Security':'🔒', 'Multi-Device':'🖥️', 'Home Assistant':'🏠', 'Severe Weather Alerts':'⚠️', 'App Preferences':'📱', 'Beta Checklist':'✅',
   'Support the Project':'☕',
   'Push to iCloud Calendar':'📅', 'Push to Google Calendar':'📅', 'Handwriting input':'✍️',
   'Family profiles':'👥',
@@ -1975,6 +1983,7 @@ const SETTINGS_GROUPS = {
   'Stocks':                  'Data Sources',
   'Todoist':                 'Data Sources',
   'Home Assistant':          'Data Sources',
+  'Severe Weather Alerts':   'Data Sources',
   'Calendar Sync':           'Data Sources',
   'Push to iCloud Calendar': 'Data Sources',
   'Push to Google Calendar': 'Data Sources',
@@ -5338,6 +5347,9 @@ const TEMPLATE_SWATCH = {
   aviation: 'linear-gradient(180deg, #0d2240, #3a5f8a 70%, #d98a4a)',
   flightdeck: 'radial-gradient(ellipse at 50% 100%, #5b8dd6, #10151f 65%, #0a0d12)',
   nautical: 'linear-gradient(180deg, #0a2e3d, #1c5a73 55%, #3f8fa8 85%, #e8c468)',
+  thanksgiving: 'radial-gradient(circle at 50% 100%, #c2703a, #6b3a17 55%, #2c1608)',
+  hanukkah: 'radial-gradient(circle at 50% 70%, #f2c94c, #1d3461 55%, #0a1830)',
+  backtoschool: 'linear-gradient(160deg, #d9622b, #2f6b4f 65%, #1c3d2c)',
   custom: 'linear-gradient(160deg, #3a3a3a, #1a1a1a)',
 };
 const TEMPLATE_EMOJI = {
@@ -5345,7 +5357,8 @@ const TEMPLATE_EMOJI = {
   corkboard:'📌', postit:'📝', easter:'🥚', halloween:'🎃', autumn:'🍁',
   birthday:'🎈', valentine:'💗', spring:'🌸', summer:'☀️', moderndark:'💠',
   homehub:'🏠', minimal:'▫️', photoframe:'🖼️', dailydigest:'📰', commandcenter:'🖥️',
-  aviation:'✈️', flightdeck:'🛫', nautical:'⛵', custom:'🖌️',
+  aviation:'✈️', flightdeck:'🛫', nautical:'⛵', thanksgiving:'🦃', hanukkah:'🕎',
+  backtoschool:'🎒', custom:'🖌️',
 };
 
 async function loadTemplateGallery() {
@@ -9568,6 +9581,46 @@ async function drawWidgetSettingsPanel() {
           <span class="range-val" id="wx-hours-val">${wxHours}</span>
         </div>
       </div>` : '';
+    // Off by default for every field — matches display.html's identical
+    // block and reasoning: subset per widget type, since weatherHourly is
+    // too tight on width for anything but feels-like, and weatherForecast
+    // has no current-conditions block to hang feels/humidity/gust/UV off of.
+    const hasCurrentBlock = w.type === 'weather' || w.type === 'weatherCurrent' || w.type === 'weatherComboForecast';
+    const extraFieldsControl = hasCurrentBlock ? `
+      <div class="settings-row" style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--bg)">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <label style="margin-bottom:0">Show Feels-Like Temp</label>
+          <input type="checkbox" id="wx-show-feels" ${w.wxShowFeelsLike ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+          <label style="margin-bottom:0">Show Humidity</label>
+          <input type="checkbox" id="wx-show-humidity" ${w.wxShowHumidity ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+          <label style="margin-bottom:0">Show Wind Gusts</label>
+          <input type="checkbox" id="wx-show-gust" ${w.wxShowWindGust ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+          <label style="margin-bottom:0">Show UV Index</label>
+          <input type="checkbox" id="wx-show-uv" ${w.wxShowUV ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+          <label style="margin-bottom:0">Show Sunrise / Sunset</label>
+          <input type="checkbox" id="wx-show-sunrise" ${w.wxShowSunrise ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+        </div>
+      </div>` : (w.type === 'weatherHourly') ? `
+      <div class="settings-row" style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--bg)">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <label style="margin-bottom:0">Show Feels-Like Temp ${infoBtn("Adds a small 'feels 71°' line under each hour's temperature.")}</label>
+          <input type="checkbox" id="wx-show-feels" ${w.wxShowFeelsLike ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+        </div>
+      </div>` : (w.type === 'weatherForecast') ? `
+      <div class="settings-row" style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--bg)">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <label style="margin-bottom:0">Show Sunrise / Sunset ${infoBtn("Adds today's sunrise and sunset time to today's row only.")}</label>
+          <input type="checkbox" id="wx-show-sunrise" ${w.wxShowSunrise ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+        </div>
+      </div>` : '';
     typeSpecificHtml = `
       <div class="settings-row" id="wx-content-scale-row">
         <label>Content Size ${infoBtn("Scales the temperature, icon, and forecast tiles together. Resize the widget box itself by dragging its corners on the layout.")}</label>
@@ -9580,6 +9633,7 @@ async function drawWidgetSettingsPanel() {
       ${comboStyleControl}
       ${hourlyStyleControl}
       ${hoursSlider}
+      ${extraFieldsControl}
       <div class="settings-row" style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--bg)">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <label style="margin-bottom:0">Override location for this widget</label>
@@ -9591,6 +9645,12 @@ async function drawWidgetSettingsPanel() {
           <div style="display:flex;gap:8px;margin-bottom:8px">
             <input class="form-input" id="wx-loc-zip" placeholder="e.g. 90210 or SW1A 1AA" style="flex:1">
             <button id="wx-loc-lookup" style="background:var(--accent);border:none;border-radius:9px;color:#fff;padding:0 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">Look up</button>
+          </div>
+          <div style="margin:2px 0 8px;font-size:11px;color:var(--muted);text-align:center">— or —</div>
+          <label style="font-size:12px;color:var(--muted)">Search by place name</label>
+          <div style="display:flex;gap:8px;margin-bottom:8px">
+            <input class="form-input" id="wx-loc-place" placeholder="e.g. Denver, or Yellowstone National Park" style="flex:1">
+            <button id="wx-loc-place-go" style="background:var(--accent);border:none;border-radius:9px;color:#fff;padding:0 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">Search</button>
           </div>
           <label style="font-size:12px;color:var(--muted)">Label (shown on the widget)</label>
           <input class="form-input" id="wx-loc-label" value="${w.wxLabel || ''}" placeholder="e.g. Lake House" style="margin-bottom:8px">
@@ -11611,6 +11671,14 @@ async function drawWidgetSettingsPanel() {
     if ($('wx-show-location')) {
       $('wx-show-location').addEventListener('change', (e) => { w.wxShowLocation = e.target.checked; });
     }
+    const wireCheck = (id, prop) => {
+      if ($(id)) $(id).addEventListener('change', (e) => { w[prop] = e.target.checked; });
+    };
+    wireCheck('wx-show-feels', 'wxShowFeelsLike');
+    wireCheck('wx-show-humidity', 'wxShowHumidity');
+    wireCheck('wx-show-gust', 'wxShowWindGust');
+    wireCheck('wx-show-uv', 'wxShowUV');
+    wireCheck('wx-show-sunrise', 'wxShowSunrise');
 
     // Per-widget location override (e.g. vacation home).
     const ovToggle = $('wx-loc-override');
@@ -11673,6 +11741,28 @@ async function drawWidgetSettingsPanel() {
           $('wx-loc-status').textContent = 'Lookup failed — check your connection.';
         }
       });
+    }
+    if ($('wx-loc-place-go')) {
+      const runPlaceSearch = async () => {
+        const q = ($('wx-loc-place').value || '').trim();
+        if (q.length < 2) { $('wx-loc-status').textContent = 'Type at least 2 characters.'; return; }
+        $('wx-loc-status').textContent = 'Searching…';
+        try {
+          const r = await apiFetch(`/api/place-search?q=${encodeURIComponent(q)}`);
+          if (r && r.lat != null && r.lon != null) {
+            w.wxLat = String(r.lat); w.wxLon = String(r.lon);
+            if (!w.wxLabel && r.label) { w.wxLabel = r.label; $('wx-loc-label').value = r.label; }
+            $('wx-loc-status').textContent = `📍 ${r.label || (r.lat + ', ' + r.lon)}`;
+            showToast('Location set — Save Layout to keep it');
+          } else {
+            $('wx-loc-status').textContent = (r && r.error) || 'Nothing found for that.';
+          }
+        } catch {
+          $('wx-loc-status').textContent = 'Search failed — check your connection.';
+        }
+      };
+      $('wx-loc-place-go').addEventListener('click', runPlaceSearch);
+      $('wx-loc-place').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); runPlaceSearch(); } });
     }
   }
 
@@ -15865,6 +15955,25 @@ async function renderSettings() {
       </div>
     </div>
 
+    <div class="section-header">Severe Weather Alerts</div>
+    <div class="settings-card">
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <div style="flex:1;padding-right:12px">
+          <label style="margin-bottom:0">Severe weather alerts ${infoBtn("Uses the free US National Weather Service — no key, but US-only. Polls your weather location every 10 minutes for active warnings/watches and fires through the same banner + phone alert system as Home Assistant alerts above (set delivery there in Notification delivery).")}</label>
+        </div>
+        <input type="checkbox" id="s-wxalert-enabled" ${s.severe_weather_alerts_enabled==='1'?'checked':''} style="width:20px;height:20px;accent-color:var(--accent);flex:0 0 auto">
+      </div>
+      <div class="settings-row" id="s-wxalert-severity-row" style="${s.severe_weather_alerts_enabled==='1'?'':'display:none'}">
+        <label>Minimum severity ${infoBtn("NWS rates every alert Extreme/Severe/Moderate/Minor. Moderate and up covers real warnings and watches while skipping routine advisories (Frost Advisory, Small Craft Advisory, etc).")}</label>
+        <select class="form-input" id="s-wxalert-severity">
+          <option value="Extreme"  ${s.severe_weather_min_severity==='Extreme'?'selected':''}>Extreme only</option>
+          <option value="Severe"   ${s.severe_weather_min_severity==='Severe'?'selected':''}>Severe and up</option>
+          <option value="Moderate" ${(!s.severe_weather_min_severity||s.severe_weather_min_severity==='Moderate')?'selected':''}>Moderate and up</option>
+          <option value="Minor"    ${s.severe_weather_min_severity==='Minor'?'selected':''}>Minor and up (everything)</option>
+        </select>
+      </div>
+    </div>
+
     <div class="section-header">Voice Control (Siri Shortcuts)</div>
     <div class="settings-card">
       <p style="font-size:13px;color:var(--muted);margin:0 0 14px">Lets Siri (via the iOS Shortcuts app) add items to your shopping list or a To-Do list by voice — "Hey Siri, add milk to the shopping list." This generates a long-lived token; the actual Shortcut is built once in Apple's Shortcuts app using it.</p>
@@ -16363,6 +16472,13 @@ async function renderSettings() {
 
   (function wireMessageBoardEnable() {
     const cb = $('s-messageboard-enabled'), row = $('s-messageboard-autoclear-row');
+    if (cb && row) cb.addEventListener('change', () => {
+      row.style.display = cb.checked ? '' : 'none';
+    });
+  })();
+
+  (function wireWeatherAlertEnable() {
+    const cb = $('s-wxalert-enabled'), row = $('s-wxalert-severity-row');
     if (cb && row) cb.addEventListener('change', () => {
       row.style.display = cb.checked ? '' : 'none';
     });
@@ -18289,6 +18405,8 @@ async function renderSettings() {
       messageboard_autoclear_days: $('s-messageboard-autoclear-days') ? String(Math.max(0, parseInt($('s-messageboard-autoclear-days').value, 10) || 0)) : '14',
       mealplan_enabled: ($('s-mealplan-enabled') && $('s-mealplan-enabled').checked) ? '1' : '0',
       flightmap_enabled: ($('s-flightmap-enabled') && $('s-flightmap-enabled').checked) ? '1' : '0',
+      severe_weather_alerts_enabled: ($('s-wxalert-enabled') && $('s-wxalert-enabled').checked) ? '1' : '0',
+      severe_weather_min_severity: $('s-wxalert-severity') ? $('s-wxalert-severity').value : 'Moderate',
       // News sources (priority is the ★ button's .on state)
       news_national_enabled: $('news-national-enabled').checked ? '1' : '0',
       news_national_priority: $('news-national-priority-btn').classList.contains('on') ? '1' : '0',

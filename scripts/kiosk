@@ -29,7 +29,8 @@ URL="${PI_CALENDAR_URL:-http://localhost:3000?nopreview}"
 # things, which looks exactly like a cursor/unclutter problem but isn't one.
 # Match any kiosk Chromium regardless of binary name (chromium vs chromium-browser).
 KIOSK_MATCH="\-\-kiosk"
-KIOSK_FLAGS="--kiosk --disable-gpu --disable-extensions --disable-component-update --disable-background-networking --disable-sync --disable-features=Translate --renderer-process-limit=1 --noerrdialogs --disable-infobars --disable-restore-session-state --check-for-update-interval=31536000"
+KIOSK_DEBUG_PORT="${PIAZZA_KIOSK_DEBUG_PORT:-9222}"
+KIOSK_FLAGS="--kiosk --disable-gpu --disable-extensions --disable-component-update --disable-background-networking --disable-sync --disable-features=Translate --renderer-process-limit=1 --noerrdialogs --disable-infobars --disable-restore-session-state --check-for-update-interval=31536000 --remote-debugging-port=${KIOSK_DEBUG_PORT} --remote-allow-origins=http://127.0.0.1:${KIOSK_DEBUG_PORT}"
 # --disable-gpu: some Pi/driver combos (e.g. VideoCore IV on a Pi 3 or
 # earlier — no ES 3.0 support at all) fail to create a GLES 3.0 context,
 # which cascades into real Chromium instability and a white screen that
@@ -38,8 +39,22 @@ KIOSK_FLAGS="--kiosk --disable-gpu --disable-extensions --disable-component-upda
 # background update checks, GCM registration retries, sync, translate),
 # which matters on lower-RAM Pi's where Chromium's process tree is competing
 # with the server's own boot-time work for headroom.
+# --remote-debugging-port: lets scripts/kiosk-watchdog.js ask this specific
+# tab's renderer "are you actually still executing JS?" via the Chrome
+# DevTools Protocol — the only way to tell a genuinely frozen page apart
+# from a browser process that's merely still alive (which is what the
+# 2026-09-12 black-screen incident turned out to be). Binds to loopback
+# only when no --remote-debugging-address is given — never reachable off
+# this Pi. --remote-allow-origins: recent Chromium versions reject the
+# DevTools HTTP/WS endpoints without an explicit allowed origin.
 
 GRN=$'\033[32m'; YLW=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
+
+# Sentinel file marking a DELIBERATE "kiosk off" — e.g. for maintenance.
+# Anything that auto-recovers a hung/crashed kiosk (scripts/kiosk-watchdog.js)
+# checks for this first and must never fight it. `kiosk on`/`toggle`-to-on
+# clear it; only `kiosk off`/`toggle`-to-off set it.
+OFF_SENTINEL="$HOME/.config/piazzahq-kiosk-off"
 
 # Chromium goes by a few binary names depending on the OS build.
 chromium_bin() {
@@ -49,11 +64,57 @@ chromium_bin() {
   echo "chromium-browser"
 }
 
+# Discover DISPLAY/WAYLAND_DISPLAY/XAUTHORITY for launching a GUI app outside
+# an interactive desktop session — needed because neither an SSH shell nor a
+# systemd timer inherits them the way running `kiosk` from the Ctrl+Alt+K
+# keybind (in-session) does. Confirmed as a real gap: recovering a hung kiosk
+# by hand over SSH failed silently ("Can't open display") until these were
+# set explicitly. No-ops if already set (the in-session case).
+#
+# Order: (1) borrow env from a running compositor/WM process — tells us X11
+# vs Wayland at the same time; (2) X11 fallback/correction via Xorg's own
+# command line, which always carries its display number and -auth path
+# directly (confirmed on real hardware: more reliable than assuming the WM's
+# own environ has XAUTHORITY set — openbox's doesn't necessarily); (3) the
+# conventional :0 / ~/.Xauthority default, if nothing above found anything.
+discover_display_env() {
+  if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then return 0; fi
+
+  local wm_pid=""
+  for name in labwc wayfire openbox; do
+    wm_pid="$(pgrep -x "$name" | head -1)"
+    [[ -n "$wm_pid" ]] && break
+  done
+  if [[ -n "$wm_pid" && -r "/proc/$wm_pid/environ" ]]; then
+    local envdump; envdump="$(tr '\0' '\n' < "/proc/$wm_pid/environ" 2>/dev/null)"
+    local d w x
+    d="$(echo "$envdump" | sed -n 's/^DISPLAY=//p' | head -1)"
+    w="$(echo "$envdump" | sed -n 's/^WAYLAND_DISPLAY=//p' | head -1)"
+    x="$(echo "$envdump" | sed -n 's/^XAUTHORITY=//p' | head -1)"
+    [[ -n "$d" ]] && export DISPLAY="$d"
+    [[ -n "$w" ]] && export WAYLAND_DISPLAY="$w"
+    [[ -n "$x" ]] && export XAUTHORITY="$x"
+  fi
+
+  if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+    local xorg_line; xorg_line="$(ps -eo args | grep -m1 '[X]org')"
+    if [[ -n "$xorg_line" ]]; then
+      export DISPLAY="$(echo "$xorg_line" | grep -oP '(?<= )(:[0-9]+)(?= |$)' | head -1)"
+      local a; a="$(echo "$xorg_line" | grep -oP -- '-auth \K\S+')"
+      [[ -n "$a" ]] && export XAUTHORITY="$a"
+    fi
+  fi
+
+  [[ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] && export DISPLAY=":0"
+  [[ -z "${XAUTHORITY:-}" && -f "$HOME/.Xauthority" ]] && export XAUTHORITY="$HOME/.Xauthority"
+}
+
 is_running() {
   pgrep -f "$KIOSK_MATCH" >/dev/null 2>&1
 }
 
 kiosk_off() {
+  mkdir -p "$(dirname "$OFF_SENTINEL")" && touch "$OFF_SENTINEL"
   if is_running; then
     # Kill the kiosk Chromium instances. -f matches the full command line so we
     # only hit the kiosk, not an unrelated browser window.
@@ -76,13 +137,14 @@ kiosk_off() {
 }
 
 kiosk_on() {
+  rm -f "$OFF_SENTINEL"
   if is_running; then
     echo "Kiosk is already running."
     return 0
   fi
+  discover_display_env
   local bin; bin="$(chromium_bin)"
   # Launch detached so it survives this shell/SSH session ending.
-  # Wayland/labwc kiosks read these env vars; they're harmless if already set.
   nohup "$bin" $KIOSK_FLAGS "$URL" >/dev/null 2>&1 &
   disown 2>/dev/null || true
   # Restart the cursor-hider too (ignore if not installed). Prefer the Wayland-
