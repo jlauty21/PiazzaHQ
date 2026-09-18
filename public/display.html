@@ -1778,6 +1778,16 @@
       object-fit:var(--cam-fit, contain); background:#000; pointer-events:none;
     }
     .cam-frame video-stream .info { font-size:11px; opacity:0.6; }
+    /* .mode is the vendored component's own demo scaffolding — it labels
+       whichever protocol the stream negotiated (MSE/HLS/MP4/MJPEG) across the
+       top of the video the moment it connects. Useful for the upstream
+       project's own example page, not for a household's wall display — a
+       real user filed this as a bug (2026-09-17), not a feature, seeing
+       literally "MJPEG" stamped on their camera's image. .status stays
+       visible: unlike .mode, it only fills in on a real connection error, so
+       hiding it would hide genuinely useful troubleshooting info instead of
+       just a protocol-name label nobody asked to see. */
+    .cam-frame video-stream .mode { display:none; }
     .cam-frame video::-webkit-media-controls { display:none !important; }
     .cam-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:14px; text-align:center; }
     .cam-emoji { font-size:2.4em; opacity:0.4; }
@@ -1795,6 +1805,7 @@
     }
     #camera-overlay-frame video-stream { display:block; width:100%; height:100%; }
     #camera-overlay-frame video-stream video { width:100% !important; height:100% !important; object-fit:contain; background:#000; }
+    #camera-overlay-frame video-stream .mode { display:none; } /* same reasoning as .cam-frame's .mode above */
     #camera-overlay-title {
       position:absolute; top:3vmin; left:3vmin; color:#e8edf5;
       font-size:16px; font-weight:700; text-shadow:0 1px 4px rgba(0,0,0,0.8);
@@ -2004,6 +2015,26 @@
     .mc-reminder-badges.pos-bottom-left { bottom:2px; left:2px; }
     .mc-reminder-badge { filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4)); }
     .mc-cell-postit .mc-sticker-badges { z-index:3; } /* sit above the sticky-note layer, not behind it */
+    /* Weather-on-calendar — three content styles (Corner Badge / Forecast
+       Row / Icon Only) sharing ONE position model: top-left/top-right sit
+       INLINE on the same row as the day number itself (not a separate line
+       above/below it), bottom-left/bottom-right form their own row at the
+       foot of the cell. A fourth "tint the whole cell" concept was mocked
+       up but deliberately not built (too imprecise for anyone who actually
+       needs the temperature, and inconsistent with how every other weather
+       surface in this app already renders via weatherSVG()). .mc-daynum is
+       always the row's first item (it's first in the DOM) so "top-right"
+       naturally lands opposite it; "top-left" reorders weather first. */
+    .mc-day-toprow { display:flex; align-items:center; justify-content:space-between; gap:4px; }
+    .mc-weather-bottom-row { display:flex; align-items:center; gap:4px; margin-top:1px; }
+    .mc-wx-chip { display:flex; align-items:center; gap:2px; flex-shrink:0;
+      font-size:calc(var(--cal-font) * 0.9); font-weight:600; color:var(--text2);
+      background:color-mix(in srgb, var(--text) 8%, transparent); border-radius:5px; padding:1px 4px 1px 2px; line-height:1; }
+    .mc-wx-row { display:flex; align-items:center; gap:4px; flex-shrink:0; }
+    .mc-wx-temps { font-size:calc(var(--cal-font) * 0.95); color:var(--text2); font-weight:600; }
+    .mc-wx-temps b { color:var(--text); font-weight:700; }
+    .mc-wx-icon, .mc-wx-icon-solo { flex-shrink:0; display:inline-block; }
+    .mc-wx-icon svg, .mc-wx-icon-solo svg { width:100%; height:100%; display:block; }
     .mc-daynum {
       font-size:calc(var(--cal-font) * 1.25); font-weight:500; line-height:1.3;
       flex-shrink:0; width:calc(var(--cal-font) * 2); height:calc(var(--cal-font) * 2);
@@ -4352,7 +4383,18 @@ function renderLayout() {
     // defeat the entire point of reusing the node. Fresh/changed widgets
     // (including radar widgets whose fingerprint DID change) render
     // normally.
-    if (!reused) el.innerHTML = renderWidget(w);
+    //
+    // Isolated in its own try/catch — a real incident (2026-09-13) traced
+    // "unrelated widgets going blank together" back to exactly this call
+    // having none: this whole loop is a plain forEach, so ONE widget's
+    // render throwing killed the loop right there, and every widget later
+    // in state.layout simply never got its turn that pass. A widget that
+    // throws now just logs and renders nothing itself — every other widget,
+    // regardless of position in the layout, still draws normally.
+    if (!reused) {
+      try { el.innerHTML = renderWidget(w); }
+      catch (e) { console.error('renderWidget failed for', w.type, w.id, e); el.innerHTML = ''; }
+    }
     canvas.appendChild(el);
   });
 
@@ -4529,13 +4571,34 @@ function fitCalendarCells() {
     if (baseMore === 0 && fitsHeight() && fitsLines()) return;
 
     if (moreEl) moreEl.style.display = '';
+    // Binary search for the largest event count that still fits, instead of
+    // peeling events off one at a time and re-measuring after each — a real
+    // incident (2026-09-13) traced a genuine slowdown on Pi-class hardware
+    // back to exactly that: each single-event peel forces its own synchronous
+    // layout reflow (read scrollHeight/offsetHeight right after a DOM write),
+    // so a busy day with many events meant many forced reflows, once per
+    // cell, on every render pass — worse the less room a cell has left for
+    // events (e.g. once weather-on-calendar content is also eating into that
+    // same space). "Fits" is monotonic in how many events are shown (hiding
+    // an event can only shrink scrollHeight/line count, never grow it), so
+    // this converges to the exact same cutoff the old linear peel did, just
+    // in O(log n) measurements instead of O(n).
+    const setVisibleCount = (n) => { for (let i = 0; i < events.length; i++) events[i].style.display = i < n ? '' : 'none'; };
+    const fits = () => fitsHeight() && fitsLines();
     let visible = events.length;
-    // Peel events off the end until BOTH the height and the line cap are satisfied.
-    while (visible > 0 && (!fitsHeight() || !fitsLines())) {
-      visible--;
-      events[visible].style.display = 'none';
-      hiddenCount++;
+    setVisibleCount(visible);
+    if (!fits()) {
+      // Find the largest count in [0, events.length) that fits.
+      let lo = 0, hi = events.length - 1;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        setVisibleCount(mid);
+        if (fits()) lo = mid; else hi = mid - 1;
+      }
+      visible = lo;
+      setVisibleCount(visible);
     }
+    hiddenCount += events.length - visible;
     if (moreEl) {
       if (hiddenCount > 0) {
         moreEl.textContent = `+${hiddenCount} more`;
@@ -8189,6 +8252,47 @@ function renderMiniCalGrid(widget) {
     return `<div class="mc-reminder-badges pos-${reminderBadgePos}">${badges}</div>`;
   };
 
+  // Weather-on-calendar: opt-in (calShowWeather, default off). Reuses
+  // whichever forecast the household's default weather location already has
+  // cached (weatherForWidget falls back to state.weather when this widget
+  // has no wxLat/wxLon of its own, which minical widgets never set today) —
+  // no separate fetch, no per-calendar location setting to configure. Only
+  // days the forecast API's daily window actually covers (today + however
+  // many days out it returns) get anything; a day further out, or in the
+  // past, just shows no weather cue.
+  const showWeather = !!(widget && widget.calShowWeather);
+  const weatherStyle = (widget && widget.calWeatherStyle) || 'badge'; // 'badge'|'row'|'icon' — content only, not position
+  // Position — one field, 4 values, shared by all three styles.
+  // top-left/top-right: inline on .mc-daynum's own row (see .mc-day-toprow).
+  // bottom-left/bottom-right: their own row at the foot of the cell.
+  const weatherPos = (widget && widget.calWeatherPosition) || 'top-right';
+  const weatherIsTop = showWeather && (weatherPos === 'top-left' || weatherPos === 'top-right');
+  const weatherIsBottomLeft = showWeather && weatherPos === 'bottom-left';
+  const weatherIsBottomRight = showWeather && weatherPos === 'bottom-right';
+  const weatherIconSizePx = (widget && widget.calWeatherSizePx) || Math.round(fontPx * 1.4);
+  const weatherIconSizeExpr = `calc(${weatherIconSizePx}px * var(--ui-scale,1))`;
+  const weatherByDate = {};
+  if (showWeather) {
+    const wx = weatherForWidget(widget);
+    const daily = wx && wx.daily;
+    if (daily && Array.isArray(daily.time)) {
+      daily.time.forEach((t, idx) => {
+        const code = daily.weather_code ? daily.weather_code[idx] : undefined;
+        if (code === undefined) return;
+        weatherByDate[t] = { code, hi: Math.round(daily.temperature_2m_max[idx]), lo: Math.round(daily.temperature_2m_min[idx]) };
+      });
+    }
+  }
+  const weatherIconSpan = (code, cls, sizeExpr) => `<span class="${cls}" style="width:${sizeExpr};height:${sizeExpr}">${weatherSVG(code)}</span>`;
+  const weatherContentHtml = (ds) => {
+    const w = weatherByDate[ds];
+    if (!w) return '';
+    const title = ` title="${escapeHtmlD(WMO_DESC[w.code]||'')}"`;
+    if (weatherStyle === 'badge') return `<span class="mc-wx-chip"${title}>${weatherIconSpan(w.code, 'mc-wx-icon', weatherIconSizeExpr)}<span>${w.hi}°</span></span>`;
+    if (weatherStyle === 'row') return `<span class="mc-wx-row"${title}>${weatherIconSpan(w.code, 'mc-wx-icon', weatherIconSizeExpr)}<span class="mc-wx-temps"><b>${w.hi}°</b>/${w.lo}°</span></span>`;
+    return weatherIconSpan(w.code, 'mc-wx-icon-solo', weatherIconSizeExpr); // 'icon'
+  };
+
   const cellsHtml = cellDates.map((c, i) => {
     const ds = dateStrs[i];
     const isToday = ds === todayStr2;
@@ -8343,18 +8447,30 @@ function renderMiniCalGrid(widget) {
         ? `<div class="mc-note" style="--note-bg:${noteColor}">${noteItems}${moreNote}</div>`
         : `<div class="mc-note mc-note-empty" style="--note-bg:${noteColor}"></div>`;
       return `<div class="mc-cell mc-cell-postit${isPast?' past':''}${isToday?' today':''}" data-date="${ds}">
-        <div class="mc-daynum">${c.date.getDate()}</div>
+        <div class="mc-day-toprow">
+          ${weatherIsTop && weatherPos === 'top-left' ? weatherContentHtml(ds) : ''}
+          <div class="mc-daynum">${c.date.getDate()}</div>
+          ${weatherIsTop && weatherPos === 'top-right' ? weatherContentHtml(ds) : ''}
+        </div>
         ${note}
+        ${weatherIsBottomLeft ? `<div class="mc-weather-bottom-row" style="justify-content:flex-start">${weatherContentHtml(ds)}</div>` : ''}
+        ${weatherIsBottomRight ? `<div class="mc-weather-bottom-row" style="justify-content:flex-end">${weatherContentHtml(ds)}</div>` : ''}
         ${stickerBadgesHtml(ds)}
         ${reminderBadgesHtml(ds)}
       </div>`;
     }
 
     return `<div class="mc-cell${isPast?' past':''}${isToday?' today':''}" style="${stripeStyle}" data-date="${ds}">
-      <div class="mc-daynum">${c.date.getDate()}</div>
+      <div class="mc-day-toprow">
+        ${weatherIsTop && weatherPos === 'top-left' ? weatherContentHtml(ds) : ''}
+        <div class="mc-daynum">${c.date.getDate()}</div>
+        ${weatherIsTop && weatherPos === 'top-right' ? weatherContentHtml(ds) : ''}
+      </div>
       ${stripeLabelHtml}
       <div class="mc-span-spacer" style="height:${reservedHeight}"></div>
       <div class="mc-events" data-fit="1" data-max-lines="${(widget && widget.calMaxLines) || 0}">${evHtml}${moreHtml}</div>
+      ${weatherIsBottomLeft ? `<div class="mc-weather-bottom-row" style="justify-content:flex-start">${weatherContentHtml(ds)}</div>` : ''}
+      ${weatherIsBottomRight ? `<div class="mc-weather-bottom-row" style="justify-content:flex-end">${weatherContentHtml(ds)}</div>` : ''}
       ${lineHtml}
       ${stickerBadgesHtml(ds)}
       ${reminderBadgesHtml(ds)}

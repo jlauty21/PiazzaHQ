@@ -9913,12 +9913,45 @@ async function drawWidgetSettingsPanel() {
         </div>
       </div>
     `;
+    const calWeatherStyle = w.calWeatherStyle || 'badge';
+    const weatherInner = `
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show Weather</label>
+        <input type="checkbox" id="cal-show-weather-toggle" ${w.calShowWeather?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:-4px">Shows that day's forecast on however many days ahead your household's weather location has one for — reuses that same location, nothing extra to set up.</p>
+      <div class="settings-row" id="cal-weather-style-row" style="${w.calShowWeather?'':'display:none'}">
+        <label>Style</label>
+        <select class="form-input" id="cal-weather-style-select">
+          <option value="badge" ${calWeatherStyle==='badge'?'selected':''}>Corner badge (icon + high)</option>
+          <option value="row"   ${calWeatherStyle==='row'?'selected':''}>Forecast row (icon + high/low)</option>
+          <option value="icon"  ${calWeatherStyle==='icon'?'selected':''}>Icon only</option>
+        </select>
+      </div>
+      <div class="settings-row" id="cal-weather-position-row" style="${w.calShowWeather?'':'display:none'}">
+        <label>Position</label>
+        <select class="form-input" id="cal-weather-position-select">
+          <option value="top-right"    ${(w.calWeatherPosition||'top-right')==='top-right'?'selected':''}>Top right, same row as the date</option>
+          <option value="top-left"     ${w.calWeatherPosition==='top-left'?'selected':''}>Top left, same row as the date</option>
+          <option value="bottom-right" ${w.calWeatherPosition==='bottom-right'?'selected':''}>Bottom right</option>
+          <option value="bottom-left"  ${w.calWeatherPosition==='bottom-left'?'selected':''}>Bottom left</option>
+        </select>
+      </div>
+      <div class="settings-row" id="cal-weather-size-row" style="${w.calShowWeather?'':'display:none'}">
+        <label>Icon Size (px)</label>
+        <div class="range-row">
+          <input type="range" id="cal-weather-size-range" min="8" max="48" step="1" value="${w.calWeatherSizePx || Math.round(fontPx * 1.4)}">
+          <span class="range-val" id="cal-weather-size-val">${w.calWeatherSizePx || Math.round(fontPx * 1.4)}px</span>
+        </div>
+      </div>
+    `;
     typeSpecificHtml = `
       <div id="minical-settings-acc">
         ${accordionSection({ id: 'layout', icon: '📐', label: 'Layout', sub: 'View, days shown, font sizing', inner: layoutInner }, _calSettingsOpenSection === 'layout')}
         ${accordionSection({ id: 'colors', icon: '🎨', label: 'Event Colors & Style', sub: 'Color coding, today indicator, decorations', inner: colorsInner }, _calSettingsOpenSection === 'colors')}
         ${accordionSection({ id: 'reminders', icon: '🗑️', label: 'Reminder Badges', sub: 'Show on calendar, position, size', inner: remindersInner, hidden: calLayout !== 'grid' }, _calSettingsOpenSection === 'reminders')}
         ${accordionSection({ id: 'stickers', icon: '⭐', label: 'Sticker Badges', sub: 'Show on calendar, position, size', inner: stickersInner, hidden: calLayout !== 'grid' }, _calSettingsOpenSection === 'stickers')}
+        ${accordionSection({ id: 'weather', icon: '🌤️', label: 'Weather', sub: 'Show on calendar, style, position', inner: weatherInner, hidden: calLayout !== 'grid' }, _calSettingsOpenSection === 'weather')}
       </div>
     `;
   } else if (w.type === 'upcoming') {
@@ -11881,6 +11914,30 @@ async function drawWidgetSettingsPanel() {
       $('cal-sticker-size-range').addEventListener('input', (e) => {
         w.calStickerSizePx = parseInt(e.target.value, 10);
         $('cal-sticker-size-val').textContent = w.calStickerSizePx + 'px';
+      });
+    }
+    if ($('cal-show-weather-toggle')) {
+      $('cal-show-weather-toggle').addEventListener('change', (e) => {
+        w.calShowWeather = e.target.checked;
+        // Style/Position/Size rows' visibility depends on this.
+        _calSettingsOpenSection = 'weather';
+        drawWidgetSettingsPanel();
+      });
+    }
+    if ($('cal-weather-style-select')) {
+      $('cal-weather-style-select').addEventListener('change', (e) => {
+        w.calWeatherStyle = e.target.value;
+      });
+    }
+    if ($('cal-weather-position-select')) {
+      $('cal-weather-position-select').addEventListener('change', (e) => {
+        w.calWeatherPosition = e.target.value;
+      });
+    }
+    if ($('cal-weather-size-range')) {
+      $('cal-weather-size-range').addEventListener('input', (e) => {
+        w.calWeatherSizePx = parseInt(e.target.value, 10);
+        $('cal-weather-size-val').textContent = w.calWeatherSizePx + 'px';
       });
     }
     if ($('cal-show-reminders-toggle')) {
@@ -19767,26 +19824,38 @@ async function checkFeedbackReplyBanner() {
     banner.style.display = 'flex';
   } catch { /* central server unreachable — leave prior banner state alone */ }
 }
-// ── HA alert banner (in the app) ────────────────────────────────────────────
-// The wall display shows a fired Home Assistant alert; this surfaces the same
-// active alerts in the app and lets them be dismissed from here — which clears
-// them everywhere (same /api/notifications/dismiss the display calls), whether
-// or not this phone is set up to receive push. Works on host and slave (a
-// slave proxies /api/notifications/active to its host).
+// ── Alert banner (in the app) ───────────────────────────────────────────────
+// The wall display shows any fired notification (HA alert, severe weather,
+// kiosk auto-recovery, whatever NOTIF_KINDS grows to) as an on-screen banner
+// with its own "✕" to dismiss; most wall displays — including every one of
+// Jon's — aren't touchscreens, so that "✕" is often physically unreachable.
+// This surfaces the exact same active notifications here in the app instead,
+// and dismissing from here clears them everywhere (same
+// /api/notifications/dismiss the display's own banner calls), whether or not
+// this phone is set up to receive push. Works on host and slave (a slave
+// proxies /api/notifications/active to its host). Originally HA-alert-only
+// (hence the element IDs below still saying "ha-alert") — broadened to every
+// kind after a real incident where a kiosk-recovery notice got stuck on a
+// non-touch display with no way to clear it short of a power cycle.
 async function checkHaAlertBannerApp() {
   const banner = document.getElementById('ha-alert-banner-app');
   const textEl = document.getElementById('ha-alert-banner-app-text');
   const closeBtn = document.getElementById('ha-alert-banner-app-close');
   if (!banner || !textEl) return;
-  // The active profile has Home Assistant hidden — don't surface HA alerts here.
-  if (typeof profileAllows === 'function' && !profileAllows('ha')) { banner.style.display = 'none'; return; }
   try {
     const data = await apiFetch('/api/notifications/active');
-    const alerts = ((data && data.notifications) || []).filter(n => n && n.kind === 'ha-alert');
+    let alerts = (data && data.notifications) || [];
+    // The active profile has Home Assistant hidden — don't surface HA-sourced
+    // alerts here specifically; every other kind (weather, kiosk-recovery,
+    // future ones) still shows regardless of the HA profile setting, since
+    // none of them have anything to do with Home Assistant.
+    if (typeof profileAllows === 'function' && !profileAllows('ha')) {
+      alerts = alerts.filter(n => n && n.kind !== 'ha-alert');
+    }
     if (!alerts.length) { banner.style.display = 'none'; return; }
     textEl.textContent = alerts.length === 1
-      ? `⚠ ${alerts[0].body || alerts[0].title || 'Home Assistant alert'}`
-      : `⚠ ${alerts.length} Home Assistant alerts active — tap to review`;
+      ? `⚠ ${alerts[0].body || alerts[0].title || 'Alert'}`
+      : `⚠ ${alerts.length} alerts active — tap to review`;
     textEl.onclick = () => { const t = document.querySelector('.tab[data-tab="settings"]'); if (t) t.click(); };
     if (closeBtn) closeBtn.onclick = async (e) => {
       e.stopPropagation();

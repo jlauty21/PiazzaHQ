@@ -116,9 +116,43 @@ is_running() {
 kiosk_off() {
   mkdir -p "$(dirname "$OFF_SENTINEL")" && touch "$OFF_SENTINEL"
   if is_running; then
-    # Kill the kiosk Chromium instances. -f matches the full command line so we
-    # only hit the kiosk, not an unrelated browser window.
-    pkill -f "$KIOSK_MATCH"
+    # Kill the WHOLE kiosk Chromium process tree, not just the one process
+    # matching --kiosk. A real incident (2026-09-12) traced a display that
+    # got progressively less stable across repeated auto-recoveries back to
+    # this exact line: `pkill -f "$KIOSK_MATCH"` only matches processes whose
+    # OWN command line contains "--kiosk" literally — true for the top-level
+    # browser process, but NOT for any of its children (Chromium's zygote,
+    # GPU, utility, and renderer processes each get their own distinct
+    # --type=... flags, never a copy of the parent's argv). So every prior
+    # "kiosk off"/"kiosk restart" — manual or watchdog-triggered — killed
+    # only the front door and left the entire rest of that instance's
+    # process tree running as orphans, competing for the same limited RAM/
+    # CPU with whatever got launched next. Confirmed on real hardware: the
+    # stale process/tab count grew with every single restart cycle.
+    #
+    # The fix: Chromium's subprocesses inherit the browser process's own
+    # process GROUP (confirmed on real hardware — every zygote/GPU/utility/
+    # renderer process shared the exact same PGID as the main process; only
+    # the separate crashpad-handler monitors sit outside it, which is fine,
+    # they're inert without something to watch). Signaling the whole group
+    # in one shot reaches all of them regardless of how many there are or
+    # what flags they carry.
+    while read -r pid; do
+      [[ -z "$pid" ]] && continue
+      pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+      [[ -z "$pgid" ]] && continue
+      kill -TERM -- "-$pgid" 2>/dev/null || true
+    done < <(pgrep -f "$KIOSK_MATCH")
+    sleep 1
+    # Safety net: anything that ignored SIGTERM (or was already mid-crash
+    # and unresponsive to it) gets SIGKILL — this is exactly the failure
+    # mode that let orphans survive before, so don't leave it to chance.
+    while read -r pid; do
+      [[ -z "$pid" ]] && continue
+      pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+      [[ -z "$pgid" ]] && continue
+      kill -KILL -- "-$pgid" 2>/dev/null || true
+    done < <(pgrep -f "$KIOSK_MATCH")
     # Pause the cursor-hider so the desktop is usable.
     pkill -x unclutter 2>/dev/null || true
     # NOT pkill -x here: "unclutter-xfixes" is 16 characters, one over Linux's

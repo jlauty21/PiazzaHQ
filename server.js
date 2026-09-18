@@ -4,6 +4,7 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const zlib = require('zlib');
+const { Readable } = require('stream');
 const { URL } = require('url');
 const fs = require('fs');
 const multer = require('multer');
@@ -15,6 +16,56 @@ const nodemailer = require('nodemailer');
 let tvDrivers = { DRIVERS: {} };
 try { tvDrivers = require('./tv-control'); }
 catch (e) { console.error('TV control module failed to load (TV control will be unavailable): ' + e.message); }
+
+// ── Shared outbound HTTP client (fetch() + AbortController) ──────────────────
+// Every internet-facing fetcher in this file used to hand-roll its own
+// http.get()/https.get() with req.setTimeout()+req.destroy() as its only
+// cancellation path. That combination has a real failure mode a self-hosted
+// user diagnosed directly (support email, 2026-09-16): a connection that
+// stalls AFTER response headers/some body arrives doesn't always unstick
+// cleanly on req.destroy() the way it does with curl or fetch()'s own
+// AbortController — they saw response activity around 9s but still hit the
+// 20s req.setTimeout() ceiling, while curl and fetch() against the identical
+// URL completed normally. AbortController-driven cancellation is the fix
+// curl and fetch() both already benefit from; every helper below gets the
+// same benefit from one place instead of N slightly-different hand-rolled
+// copies (and, as a bonus, fetch() auto-decompresses gzip/br responses, so
+// several of those copies no longer need their own zlib handling either).
+//
+// family:4 pins outbound connections to IPv4 — Node's legacy http/https
+// modules don't reliably fall back off a broken/partial IPv6 path the way a
+// browser's Happy Eyeballs does (a household with broken IPv6 got outright
+// unreachable errors; contact-form inquiry #6, 2026-09-12), which is why so
+// many call sites already forced it by hand. fetch() has no direct `family`
+// option — it takes a `dispatcher` (an undici Agent) instead.
+let _ipv4Dispatcher = null;
+try {
+  const { Agent } = require('undici');
+  _ipv4Dispatcher = new Agent({ connect: { family: 4 } });
+} catch (e) {
+  // Same defensive-require shape as tv-control just above: a device
+  // mid-update (code already swapped, but the best-effort `npm install` for
+  // this new dependency — server.js:13841 — skipped or failed because it
+  // was offline right then) must still boot on its existing node_modules,
+  // not crash-loop waiting on a network that might not come back before
+  // someone notices. Every fetch below still gets the real fix
+  // (AbortController-based cancellation) — it just loses the explicit IPv4
+  // pin until the next successful update. Windows never runs that
+  // npm-install step at all (server.js:13839's comment explains why), so
+  // its build vendors node_modules/undici directly instead.
+  console.error('undici unavailable — outbound fetch() will use its default dispatcher (no forced IPv4): ' + e.message);
+}
+// Low-level: fetch() with a hard timeout via AbortController, and the IPv4
+// pin above when available. timeoutMessage lets a caller keep its own
+// specific wording (e.g. "Timed out looking up ...") instead of a generic one.
+function fetchWithTimeout(url, { method = 'GET', headers, body, timeoutMs = 10000, timeoutMessage } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(timeoutMessage || `Timed out after ${timeoutMs}ms: ${url}`)), timeoutMs);
+  const opts = { method, headers, body, signal: controller.signal };
+  if (_ipv4Dispatcher) opts.dispatcher = _ipv4Dispatcher;
+  return fetch(url, opts).finally(() => clearTimeout(timer));
+}
+
 const { execFile, execFileSync, spawn } = require('child_process');
 const os = require('os');
 // Windows has no process supervisor (systemd with Restart=always) to bring us
@@ -1864,31 +1915,21 @@ function resolveFeedbackKey() {
 // cached rather than clearing it.
 let _supportLinksCache = { data: null, at: 0 };
 const SUPPORT_LINKS_TTL_MS = 6 * 60 * 60 * 1000;
-function fetchSupportLinks() {
-  return new Promise((resolve) => {
-    const now = Date.now();
-    if (_supportLinksCache.data && (now - _supportLinksCache.at) < SUPPORT_LINKS_TTL_MS) {
-      return resolve(_supportLinksCache.data);
-    }
-    const serverUrl = resolveUpdateServerUrl();
-    if (!serverUrl) return resolve(_supportLinksCache.data || { stripeUrl: '', paypalUrl: '' });
-    const mod = serverUrl.startsWith('https:') ? https : http;
-    const req = mod.get(serverUrl + '/api/v1/support-links', { timeout: 8000 }, (r) => {
-      let data = '';
-      r.on('data', c => data += c);
-      r.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          _supportLinksCache = { data: parsed, at: now };
-          resolve(parsed);
-        } catch (e) {
-          resolve(_supportLinksCache.data || { stripeUrl: '', paypalUrl: '' });
-        }
-      });
-    });
-    req.on('error', () => resolve(_supportLinksCache.data || { stripeUrl: '', paypalUrl: '' }));
-    req.on('timeout', () => { req.destroy(); resolve(_supportLinksCache.data || { stripeUrl: '', paypalUrl: '' }); });
-  });
+async function fetchSupportLinks() {
+  const now = Date.now();
+  if (_supportLinksCache.data && (now - _supportLinksCache.at) < SUPPORT_LINKS_TTL_MS) {
+    return _supportLinksCache.data;
+  }
+  const serverUrl = resolveUpdateServerUrl();
+  if (!serverUrl) return _supportLinksCache.data || { stripeUrl: '', paypalUrl: '' };
+  try {
+    const res = await fetchWithTimeout(serverUrl + '/api/v1/support-links', { timeoutMs: 8000 });
+    const parsed = await res.json();
+    _supportLinksCache = { data: parsed, at: now };
+    return parsed;
+  } catch {
+    return _supportLinksCache.data || { stripeUrl: '', paypalUrl: '' };
+  }
 }
 const UPDATE_TMP   = path.join(__dirname, '.update-tmp');     // staging for the uploaded zip
 // Two backup pools, replacing the old single .update-backup folder:
@@ -4014,59 +4055,39 @@ async function forwardFeedbackToCentral({ kind, message, device_name, image }) {
     } catch { /* skip image on any read error */ }
   }
   const body = JSON.stringify(payload);
-  const transport = target.protocol === 'https:' ? require('https') : require('http');
-
-  await new Promise((resolve, reject) => {
-    const r = transport.request({
-      hostname: target.hostname,
-      port: target.port || (target.protocol === 'https:' ? 443 : 80),
-      path: target.pathname,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body),
-        ...(key ? { 'x-feedback-key': key } : {}),
-      },
-    }, (resp) => { resp.resume(); resp.on('end', resolve); });
-    r.on('error', reject);
-    r.setTimeout(8000, () => { r.destroy(new Error('central feedback timeout')); });
-    r.write(body);
-    r.end();
+  const res = await fetchWithTimeout(target, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(key ? { 'x-feedback-key': key } : {}) },
+    body,
+    timeoutMs: 8000,
+    timeoutMessage: 'central feedback timeout',
   });
+  await res.text(); // drain the body, matching the original's resp.resume()/'end' wait
 }
 
 // Small helper: make a JSON request to the central server (GET or POST), returning the
 // parsed body. Used for the feedback reply thread. Resolves null on any failure so the
 // UI degrades gracefully when the server is unreachable.
-function centralRequest(method, pathAndQuery, bodyObj) {
-  return new Promise((resolve) => {
-    const base = resolveFeedbackUrl();
-    if (!base) return resolve(null);
-    const key = resolveFeedbackKey();
-    let target;
-    try { target = new URL(base + pathAndQuery); } catch { return resolve(null); }
-    const transport = target.protocol === 'https:' ? require('https') : require('http');
-    const body = bodyObj ? JSON.stringify(bodyObj) : null;
-    const r = transport.request({
-      hostname: target.hostname,
-      port: target.port || (target.protocol === 'https:' ? 443 : 80),
-      path: target.pathname + target.search,
+async function centralRequest(method, pathAndQuery, bodyObj) {
+  const base = resolveFeedbackUrl();
+  if (!base) return null;
+  const key = resolveFeedbackKey();
+  let target;
+  try { target = new URL(base + pathAndQuery); } catch { return null; }
+  const body = bodyObj ? JSON.stringify(bodyObj) : null;
+  try {
+    const res = await fetchWithTimeout(target, {
       method,
       headers: {
         'Accept': 'application/json',
         ...(key ? { 'x-feedback-key': key } : {}),
-        ...(body ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } : {}),
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
       },
-    }, (resp) => {
-      let data = '';
-      resp.on('data', c => data += c);
-      resp.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
+      body,
+      timeoutMs: 8000,
     });
-    r.on('error', () => resolve(null));
-    r.setTimeout(8000, () => { r.destroy(); resolve(null); });
-    if (body) r.write(body);
-    r.end();
-  });
+    return await res.json();
+  } catch { return null; }
 }
 
 // APP endpoint: fetch any developer replies to this device's feedback.
@@ -4583,24 +4604,16 @@ const _haStreamCache = new Map(); // entity_id -> { url, at }
 
 // Stream a URL (following redirects) to a file. No auth headers — this only
 // ever fetches a pinned GitHub release asset.
-function downloadFile(url, destPath, timeoutMs = 60000, _redirects = 0) {
-  return new Promise((resolve, reject) => {
-    if (_redirects > 5) return reject(new Error('too many redirects'));
-    let lib;
-    try { lib = new URL(url).protocol === 'https:' ? https : http; } catch { return reject(new Error('bad url')); }
-    const req = lib.get(url, { headers: { 'User-Agent': 'PiazzaHQ/1.0' } }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        res.resume();
-        return resolve(downloadFile(new URL(res.headers.location, url).toString(), destPath, timeoutMs, _redirects + 1));
-      }
-      if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
-      const out = fs.createWriteStream(destPath);
-      res.pipe(out);
-      out.on('finish', () => out.close(() => resolve()));
-      out.on('error', reject);
-    });
-    req.on('error', reject);
-    req.setTimeout(timeoutMs, () => req.destroy(new Error('timeout')));
+// fetch() follows redirects on its own, so the manual redirect-recursion this
+// used to need is gone along with the raw http.get() call.
+async function downloadFile(url, destPath, timeoutMs = 60000) {
+  const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'PiazzaHQ/1.0' }, timeoutMs, timeoutMessage: 'timeout' });
+  if (res.status !== 200) throw new Error('HTTP ' + res.status);
+  const out = fs.createWriteStream(destPath);
+  await new Promise((resolve, reject) => {
+    Readable.fromWeb(res.body).pipe(out);
+    out.on('finish', () => out.close(() => resolve()));
+    out.on('error', reject);
   });
 }
 
@@ -5071,25 +5084,22 @@ function flightTypeList(raw) {
   return String(raw || '').toUpperCase().split(/[\s,]+/).map(s => s.replace(/[^A-Z0-9]/g, '')).filter(Boolean).slice(0, 8);
 }
 
-function flightHttpJson(base, pathname, timeoutMs = 8000) {
-  return new Promise((resolve, reject) => {
-    let u;
-    try { u = new URL(base + pathname); } catch { return reject(new Error('bad url')); }
-    // https for the public APIs; http allowed too (same trust class as
-    // ha_base_url — someone may point flightmap_source at a tar1090 box on
-    // their own LAN). Scheme still bounded to the two.
-    if (u.protocol !== 'https:' && u.protocol !== 'http:') return reject(new Error('bad scheme'));
-    const lib = u.protocol === 'https:' ? https : http;
-    const req = lib.get(u, { headers: { 'User-Agent': flightUserAgent(), 'Accept': 'application/json' } }, (res) => {
-      if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
-      let body = '';
-      res.setEncoding('utf8');
-      res.on('data', (c) => { body += c; if (body.length > 4_000_000) req.destroy(new Error('too big')); });
-      res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(new Error('bad json')); } });
-    });
-    req.on('error', reject);
-    req.setTimeout(timeoutMs, () => req.destroy(new Error('timeout')));
+async function flightHttpJson(base, pathname, timeoutMs = 8000) {
+  let u;
+  try { u = new URL(base + pathname); } catch { throw new Error('bad url'); }
+  // https for the public APIs; http allowed too (same trust class as
+  // ha_base_url — someone may point flightmap_source at a tar1090 box on
+  // their own LAN). Scheme still bounded to the two.
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('bad scheme');
+  const res = await fetchWithTimeout(u, {
+    headers: { 'User-Agent': flightUserAgent(), 'Accept': 'application/json' },
+    timeoutMs,
+    timeoutMessage: 'timeout',
   });
+  if (res.status !== 200) throw new Error('HTTP ' + res.status);
+  const body = await res.text();
+  if (body.length > 4_000_000) throw new Error('too big');
+  try { return JSON.parse(body); } catch { throw new Error('bad json'); }
 }
 
 // Try each source in order. The first that returns aircraft wins; a source
@@ -5131,24 +5141,18 @@ const ACINFO_TTL = 24 * 60 * 60 * 1000;
 
 // PIAZZA_ADSBDB_URL overrides the enrichment host (tests only; unset in prod).
 const ADSBDB_BASE = process.env.PIAZZA_ADSBDB_URL || 'https://api.adsbdb.com';
-function adsbdbGet(pathname) {
-  return new Promise((resolve, reject) => {
-    const u = new URL(ADSBDB_BASE + pathname);
-    const lib = u.protocol === 'https:' ? https : http;
-    const req = lib.get(u,
-      { headers: { 'User-Agent': flightUserAgent(), 'Accept': 'application/json' } }, (res) => {
-        let body = '';
-        res.setEncoding('utf8');
-        res.on('data', (c) => { body += c; if (body.length > 200000) req.destroy(new Error('too big')); });
-        res.on('end', () => {
-          if (res.statusCode === 404) return resolve(null); // unknown callsign/hex
-          if (res.statusCode !== 200) return reject(new Error('HTTP ' + res.statusCode));
-          try { resolve(JSON.parse(body)); } catch { reject(new Error('bad json')); }
-        });
-      });
-    req.on('error', reject);
-    req.setTimeout(6000, () => req.destroy(new Error('timeout')));
+async function adsbdbGet(pathname) {
+  const u = new URL(ADSBDB_BASE + pathname);
+  const res = await fetchWithTimeout(u, {
+    headers: { 'User-Agent': flightUserAgent(), 'Accept': 'application/json' },
+    timeoutMs: 6000,
+    timeoutMessage: 'timeout',
   });
+  if (res.status === 404) return null; // unknown callsign/hex
+  if (res.status !== 200) throw new Error('HTTP ' + res.status);
+  const body = await res.text();
+  if (body.length > 200000) throw new Error('too big');
+  try { return JSON.parse(body); } catch { throw new Error('bad json'); }
 }
 function _airport(a) {
   if (!a || typeof a !== 'object') return null;
@@ -6732,22 +6736,17 @@ function buildLocationLabel(address) {
 
 // Single Nominatim postal-code search, returning the parsed results array
 // (empty if none). Shared by resolveGeoCandidates below.
-function nominatimPostalSearch(zip, countryCode) {
+async function nominatimPostalSearch(zip, countryCode) {
   const countryParam = countryCode ? `&country=${countryCode}` : '';
   const url = `https://nominatim.openstreetmap.org/search?postalcode=${encodeURIComponent(zip)}${countryParam}&format=json&addressdetails=1&limit=1`;
-  return new Promise((resolve, reject) => {
-    // family:4/timeout — same fix as geocodeAddress() just below, same host.
-    const req = https.get(url, { family: 4, headers: { 'User-Agent': 'PiazzaHQ/1.0' } }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', c => data += c);
-      apiRes.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(new Error('Failed to parse geocoding response')); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(10000, () => req.destroy(new Error(`Timed out looking up postal code "${zip}"`)));
+  // family:4/timeout — same fix as geocodeAddress() just below, same host.
+  const res = await fetchWithTimeout(url, {
+    headers: { 'User-Agent': 'PiazzaHQ/1.0' },
+    timeoutMs: 10000,
+    timeoutMessage: `Timed out looking up postal code "${zip}"`,
   });
+  try { return await res.json(); }
+  catch { throw new Error('Failed to parse geocoding response'); }
 }
 
 // Queries a US-scoped search and an unrestricted worldwide search in
@@ -6865,32 +6864,23 @@ function emailTempUnitLabel() {
 }
 // PIAZZA_OPENMETEO_URL overrides the base (tests only; unset in prod).
 const OPENMETEO_BASE = process.env.PIAZZA_OPENMETEO_URL || 'https://api.open-meteo.com';
-function getWeather(lat, lon) {
-  return new Promise((resolve, reject) => {
-    // apparent_temperature/relative_humidity_2m/wind_gusts_10m ride the same
-    // current/hourly call as everything else — no extra request. UV index
-    // isn't a valid `current` variable on this API, only `hourly`/`daily`;
-    // reconcileWeatherToday() below picks the closest-to-now hourly value
-    // into current.uv_index so every provider ends up with the same shape.
-    const url = `${OPENMETEO_BASE}/v1/forecast?latitude=${lat}&longitude=${lon}` +
-      `&current=temperature_2m,weather_code,wind_speed_10m,wind_gusts_10m,apparent_temperature,relative_humidity_2m,is_day` +
-      `&hourly=temperature_2m,weather_code,precipitation_probability,apparent_temperature,uv_index,is_day` +
-      `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset` +
-      `&temperature_unit=fahrenheit&wind_speed_unit=mph&forecast_days=16&timezone=auto`;
-    const req = (url.startsWith('http://') ? http : https).get(url, { family: 4 }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', chunk => data += chunk);
-      apiRes.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch { reject(new Error('Failed to parse weather data')); }
-      });
-    });
-    req.on('error', reject);
-    // See httpGetJSON's comment above for why this matters — a stalled
-    // (not outright failed) request would otherwise hang forever with no
-    // error, same bug class, same fix.
-    req.setTimeout(10000, () => req.destroy(new Error('Timed out fetching Open-Meteo weather')));
-  });
+async function getWeather(lat, lon) {
+  // apparent_temperature/relative_humidity_2m/wind_gusts_10m ride the same
+  // current/hourly call as everything else — no extra request. UV index
+  // isn't a valid `current` variable on this API, only `hourly`/`daily`;
+  // reconcileWeatherToday() below picks the closest-to-now hourly value
+  // into current.uv_index so every provider ends up with the same shape.
+  const url = `${OPENMETEO_BASE}/v1/forecast?latitude=${lat}&longitude=${lon}` +
+    `&current=temperature_2m,weather_code,wind_speed_10m,wind_gusts_10m,apparent_temperature,relative_humidity_2m,is_day` +
+    `&hourly=temperature_2m,weather_code,precipitation_probability,apparent_temperature,uv_index,is_day` +
+    `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset` +
+    `&temperature_unit=fahrenheit&wind_speed_unit=mph&forecast_days=16&timezone=auto`;
+  // See fetchWithTimeout's comment above for why this matters — a stalled
+  // (not outright failed) request would otherwise hang forever with no
+  // error, same bug class, same fix.
+  const res = await fetchWithTimeout(url, { timeoutMs: 10000, timeoutMessage: 'Timed out fetching Open-Meteo weather' });
+  try { return await res.json(); }
+  catch { throw new Error('Failed to parse weather data'); }
 }
 
 // Maps an OpenWeatherMap condition id (https://openweathermap.org/weather-conditions)
@@ -6912,59 +6902,50 @@ function owmToWmo(id) {
 }
 // Fetches from OpenWeatherMap (One Call 3.0) and normalizes to the Open-Meteo shape
 // the rest of the app expects. Requires the user's own API key.
-function getWeatherOWM(lat, lon, apiKey) {
-  return new Promise((resolve, reject) => {
-    const url = `https://api.openweathermap.org/data/3.0/onecall?lat=${lat}&lon=${lon}` +
-      `&units=imperial&exclude=minutely,alerts&appid=${encodeURIComponent(apiKey)}`;
-    const req = https.get(url, { family: 4 }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', c => data += c);
-      apiRes.on('end', () => {
-        try {
-          const j = JSON.parse(data);
-          if (j.cod && String(j.cod) !== '200') return reject(new Error(j.message || 'OpenWeatherMap error'));
-          const cur = j.current || {};
-          const hours = (j.hourly || []).slice(0, 48);
-          const days = (j.daily || []).slice(0, 16);
-          const iso = t => new Date(t * 1000).toISOString().slice(0, 16);
-          const isoDate = t => new Date(t * 1000).toISOString().slice(0, 10);
-          resolve({
-            current: {
-              temperature_2m: cur.temp,
-              weather_code: owmToWmo(cur.weather?.[0]?.id ?? 800),
-              wind_speed_10m: cur.wind_speed,
-              wind_gusts_10m: cur.wind_gust,
-              apparent_temperature: cur.feels_like,
-              relative_humidity_2m: cur.humidity,
-              uv_index: cur.uvi,
-              is_day: (cur.dt >= cur.sunrise && cur.dt < cur.sunset) ? 1 : 0,
-            },
-            hourly: {
-              time: hours.map(h => iso(h.dt)),
-              temperature_2m: hours.map(h => h.temp),
-              weather_code: hours.map(h => owmToWmo(h.weather?.[0]?.id ?? 800)),
-              precipitation_probability: hours.map(h => Math.round((h.pop || 0) * 100)),
-              apparent_temperature: hours.map(h => h.feels_like),
-              uv_index: hours.map(h => h.uvi),
-              is_day: hours.map(h => (h.dt >= (j.current?.sunrise||0) && h.dt < (j.current?.sunset||0)) ? 1 : 0),
-            },
-            daily: {
-              time: days.map(d => isoDate(d.dt)),
-              weather_code: days.map(d => owmToWmo(d.weather?.[0]?.id ?? 800)),
-              temperature_2m_max: days.map(d => d.temp?.max),
-              temperature_2m_min: days.map(d => d.temp?.min),
-              precipitation_probability_max: days.map(d => Math.round((d.pop || 0) * 100)),
-              sunrise: days.map(d => iso(d.sunrise)),
-              sunset: days.map(d => iso(d.sunset)),
-            },
-            _provider: 'openweathermap',
-          });
-        } catch (e) { reject(new Error('Failed to parse OpenWeatherMap data')); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(10000, () => req.destroy(new Error('Timed out fetching OpenWeatherMap weather')));
-  });
+async function getWeatherOWM(lat, lon, apiKey) {
+  const url = `https://api.openweathermap.org/data/3.0/onecall?lat=${lat}&lon=${lon}` +
+    `&units=imperial&exclude=minutely,alerts&appid=${encodeURIComponent(apiKey)}`;
+  const res = await fetchWithTimeout(url, { timeoutMs: 10000, timeoutMessage: 'Timed out fetching OpenWeatherMap weather' });
+  let j;
+  try { j = await res.json(); }
+  catch { throw new Error('Failed to parse OpenWeatherMap data'); }
+  if (j.cod && String(j.cod) !== '200') throw new Error(j.message || 'OpenWeatherMap error');
+  const cur = j.current || {};
+  const hours = (j.hourly || []).slice(0, 48);
+  const days = (j.daily || []).slice(0, 16);
+  const iso = t => new Date(t * 1000).toISOString().slice(0, 16);
+  const isoDate = t => new Date(t * 1000).toISOString().slice(0, 10);
+  return {
+    current: {
+      temperature_2m: cur.temp,
+      weather_code: owmToWmo(cur.weather?.[0]?.id ?? 800),
+      wind_speed_10m: cur.wind_speed,
+      wind_gusts_10m: cur.wind_gust,
+      apparent_temperature: cur.feels_like,
+      relative_humidity_2m: cur.humidity,
+      uv_index: cur.uvi,
+      is_day: (cur.dt >= cur.sunrise && cur.dt < cur.sunset) ? 1 : 0,
+    },
+    hourly: {
+      time: hours.map(h => iso(h.dt)),
+      temperature_2m: hours.map(h => h.temp),
+      weather_code: hours.map(h => owmToWmo(h.weather?.[0]?.id ?? 800)),
+      precipitation_probability: hours.map(h => Math.round((h.pop || 0) * 100)),
+      apparent_temperature: hours.map(h => h.feels_like),
+      uv_index: hours.map(h => h.uvi),
+      is_day: hours.map(h => (h.dt >= (j.current?.sunrise||0) && h.dt < (j.current?.sunset||0)) ? 1 : 0),
+    },
+    daily: {
+      time: days.map(d => isoDate(d.dt)),
+      weather_code: days.map(d => owmToWmo(d.weather?.[0]?.id ?? 800)),
+      temperature_2m_max: days.map(d => d.temp?.max),
+      temperature_2m_min: days.map(d => d.temp?.min),
+      precipitation_probability_max: days.map(d => Math.round((d.pop || 0) * 100)),
+      sunrise: days.map(d => iso(d.sunrise)),
+      sunset: days.map(d => iso(d.sunset)),
+    },
+    _provider: 'openweathermap',
+  };
 }
 
 // Provider-aware weather fetch used by both the API and the email briefing, so they
@@ -6996,18 +6977,14 @@ function nwsTextToWmo(text) {
 // weather widget across every device permanently stuck on "Loading
 // weather…" until the server process itself is restarted, since nothing
 // ever times out to let the normal per-poll retry take over.
-function httpGetJSON(url, timeoutMs = 10000) {
-  return new Promise((resolve, reject) => {
-    const req = (url.startsWith('http://') ? http : https).get(url, { family: 4, headers: { 'User-Agent': 'PiazzaHQ/1.0 (family calendar display)', 'Accept': 'application/geo+json' } }, (r) => {
-      if (r.statusCode >= 300 && r.statusCode < 400 && r.headers.location) {
-        return httpGetJSON(r.headers.location, timeoutMs).then(resolve, reject);
-      }
-      let d = ''; r.on('data', c => d += c);
-      r.on('end', () => { try { resolve(JSON.parse(d)); } catch { reject(new Error('Bad JSON from ' + url)); } });
-    });
-    req.on('error', reject);
-    req.setTimeout(timeoutMs, () => req.destroy(new Error(`Timed out after ${timeoutMs}ms: ${url}`)));
+// fetch() follows redirects on its own, so this no longer needs to recurse.
+async function httpGetJSON(url, timeoutMs = 10000) {
+  const res = await fetchWithTimeout(url, {
+    headers: { 'User-Agent': 'PiazzaHQ/1.0 (family calendar display)', 'Accept': 'application/geo+json' },
+    timeoutMs,
   });
+  try { return await res.json(); }
+  catch { throw new Error('Bad JSON from ' + url); }
 }
 // Fetches from the US National Weather Service (weather.gov) and normalizes to the
 // Open-Meteo shape. Keyless, but US-only. Two-step: points -> gridpoint forecast.
@@ -7220,6 +7197,18 @@ function reconcileWeatherToday(w, lat, lon) {
 }
 
 // always agree on the source. Falls back to keyless Open-Meteo on any failure.
+//
+// Cached in memory, same pattern as getRadarFrames() just below — a real
+// report (2026-09-13) that weather "took a while to load" traced back to
+// there being NO caching at all here: every single call, from any widget,
+// on any device, on every page load or periodic refresh, triggered a brand
+// new outbound round-trip fetching 16 days of hourly+daily data, even
+// though forecast data doesn't meaningfully change minute to minute and the
+// client's own fastest refresh interval is 5 minutes anyway. Keyed on
+// rounded lat/lon (not the raw floats) so two callers for "the same place"
+// reliably share one cache entry instead of missing on float noise.
+const _weatherCache = new Map(); // "lat,lon" -> { data, at }
+const WEATHER_CACHE_MS = 5 * 60 * 1000;
 async function getWeatherResolved(lat, lon) {
   // lat/lon arrive as strings from every real caller (Express req.query,
   // the SQLite settings fallback) — coerced to real numbers once here so
@@ -7232,6 +7221,10 @@ async function getWeatherResolved(lat, lon) {
   // failure chain).
   lat = Number(lat);
   lon = Number(lon);
+  const cacheKey = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+  const cached = _weatherCache.get(cacheKey);
+  if (cached && (Date.now() - cached.at) < WEATHER_CACHE_MS) return cached.data;
+
   const provider = getSetting('weather_provider') || 'open-meteo';
   const apiKey = getSetting('weather_api_key') || '';
   let w;
@@ -7244,7 +7237,9 @@ async function getWeatherResolved(lat, lon) {
   } else {
     w = await getWeather(lat, lon);
   }
-  return reconcileWeatherToday(w, lat, lon);
+  const resolved = reconcileWeatherToday(w, lat, lon);
+  _weatherCache.set(cacheKey, { data: resolved, at: Date.now() });
+  return resolved;
 }
 
 // ── Weather Radar (RainViewer, free, no API key — see radar widget) ─────────
@@ -7261,41 +7256,35 @@ async function getWeatherResolved(lat, lon) {
 // (including RainViewer's own official examples) fetches tiles client-side.
 let radarFramesCache = null;
 let radarFramesCacheAt = 0;
-function getRadarFrames() {
+async function getRadarFrames() {
   const now = Date.now();
   if (radarFramesCache && (now - radarFramesCacheAt) < 2 * 60 * 1000) {
-    return Promise.resolve(radarFramesCache);
+    return radarFramesCache;
   }
-  return new Promise((resolve, reject) => {
-    const req = https.get('https://api.rainviewer.com/public/weather-maps.json', { family: 4 }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', chunk => data += chunk);
-      apiRes.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          // 'past' is up to the last 2 hours of OBSERVED radar (10-min steps)
-          // — that 2-hour window is RainViewer's own hard ceiling for this
-          // free tier, not a limit set here. 'nowcast', when present, is a
-          // short-term (roughly 30–60 min) EXTRAPOLATION forward from now,
-          // not a full weather-model forecast — tagged separately so the
-          // client can label it differently if it wants to, rather than
-          // presenting it as equally-measured data.
-          const past = (parsed.radar && parsed.radar.past) || [];
-          const nowcast = (parsed.radar && parsed.radar.nowcast) || [];
-          const frames = [
-            ...past.map(f => ({ time: f.time, path: f.path, kind: 'observed' })),
-            ...nowcast.map(f => ({ time: f.time, path: f.path, kind: 'forecast' })),
-          ];
-          const result = { host: parsed.host, frames };
-          radarFramesCache = result;
-          radarFramesCacheAt = now;
-          resolve(result);
-        } catch { reject(new Error('Failed to parse RainViewer data')); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(10000, () => req.destroy(new Error('Timed out fetching RainViewer radar frames')));
+  const res = await fetchWithTimeout('https://api.rainviewer.com/public/weather-maps.json', {
+    timeoutMs: 10000,
+    timeoutMessage: 'Timed out fetching RainViewer radar frames',
   });
+  let parsed;
+  try { parsed = await res.json(); }
+  catch { throw new Error('Failed to parse RainViewer data'); }
+  // 'past' is up to the last 2 hours of OBSERVED radar (10-min steps)
+  // — that 2-hour window is RainViewer's own hard ceiling for this
+  // free tier, not a limit set here. 'nowcast', when present, is a
+  // short-term (roughly 30–60 min) EXTRAPOLATION forward from now,
+  // not a full weather-model forecast — tagged separately so the
+  // client can label it differently if it wants to, rather than
+  // presenting it as equally-measured data.
+  const past = (parsed.radar && parsed.radar.past) || [];
+  const nowcast = (parsed.radar && parsed.radar.nowcast) || [];
+  const frames = [
+    ...past.map(f => ({ time: f.time, path: f.path, kind: 'observed' })),
+    ...nowcast.map(f => ({ time: f.time, path: f.path, kind: 'forecast' })),
+  ];
+  const result = { host: parsed.host, frames };
+  radarFramesCache = result;
+  radarFramesCacheAt = now;
+  return result;
 }
 app.get('/api/radar-frames', async (req, res) => {
   try {
@@ -7326,23 +7315,29 @@ app.get('/api/weather', async (req, res) => {
 
 // ── Air Quality / Pollen / UV proxy (Open-Meteo, free, no API key) ───────────
 // Reuses the same lat/lon already saved for Weather — no separate location setup.
-function getAirQuality(lat, lon) {
-  return new Promise((resolve, reject) => {
-    const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}` +
-      `&current=us_aqi,pm2_5,pm10,uv_index` +
-      `&hourly=grass_pollen,birch_pollen,ragweed_pollen` +
-      `&timezone=auto&forecast_days=1`;
-    const req = https.get(url, { family: 4 }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', chunk => data += chunk);
-      apiRes.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch { reject(new Error('Failed to parse air quality data')); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(10000, () => req.destroy(new Error('Timed out fetching air quality data')));
-  });
+// Override only in tests (PIAZZA_AIRQUALITY_URL); unset everywhere real —
+// same pattern as OPENMETEO_BASE/NOMINATIM_BASE above.
+const AIRQUALITY_BASE = process.env.PIAZZA_AIRQUALITY_URL || 'https://air-quality-api.open-meteo.com';
+// Cached the same way getWeatherResolved() is — the client only ever polls
+// this every 30 min (AQI/pollen/UV change slowly), so a 15-min server
+// cache can never make a response staler than what the client already
+// tolerates, while still cutting real, redundant upstream calls.
+const _airQualityCache = new Map(); // "lat,lon" -> { data, at }
+const AIR_QUALITY_CACHE_MS = 15 * 60 * 1000;
+async function getAirQuality(lat, lon) {
+  const cacheKey = `${Number(lat).toFixed(4)},${Number(lon).toFixed(4)}`;
+  const cached = _airQualityCache.get(cacheKey);
+  if (cached && (Date.now() - cached.at) < AIR_QUALITY_CACHE_MS) return cached.data;
+  const url = `${AIRQUALITY_BASE}/v1/air-quality?latitude=${lat}&longitude=${lon}` +
+    `&current=us_aqi,pm2_5,pm10,uv_index` +
+    `&hourly=grass_pollen,birch_pollen,ragweed_pollen` +
+    `&timezone=auto&forecast_days=1`;
+  const res = await fetchWithTimeout(url, { timeoutMs: 10000, timeoutMessage: 'Timed out fetching air quality data' });
+  let parsed;
+  try { parsed = await res.json(); }
+  catch { throw new Error('Failed to parse air quality data'); }
+  _airQualityCache.set(cacheKey, { data: parsed, at: Date.now() });
+  return parsed;
 }
 function aqiCategory(aqi) {
   if (aqi == null) return { label: 'Unknown', color: '#9aa6c0' };
@@ -7417,76 +7412,76 @@ const NOMINATIM_BASE = process.env.PIAZZA_NOMINATIM_URL || 'https://nominatim.op
 // widget place-name search to resolve anything — same class of bug as
 // fetchUrl()'s, just never applied here. Forces IPv4 and times out a
 // stalled connection instead of hanging forever.
-function geocodeAddress(query) {
+async function geocodeAddress(query) {
   const cached = _geocodeCache.get(query);
-  if (cached && (Date.now() - cached.at) < GEOCODE_CACHE_MS) return Promise.resolve(cached);
-  return new Promise((resolve, reject) => {
-    const url = `${NOMINATIM_BASE}/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
-    const req = (url.startsWith('http://') ? http : https).get(url, { family: 4, headers: { 'User-Agent': 'PiazzaHQ/1.0' } }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', c => data += c);
-      apiRes.on('end', () => {
-        try {
-          const results = JSON.parse(data);
-          if (!results.length) return reject(new Error(`Could not find "${query}"`));
-          const result = { lat: parseFloat(results[0].lat), lon: parseFloat(results[0].lon), label: results[0].display_name, at: Date.now() };
-          _geocodeCache.set(query, result);
-          resolve(result);
-        } catch { reject(new Error('Failed to parse geocoding response')); }
-      });
-    });
-    req.on('error', reject);
-    // PIAZZA_GEOCODE_TIMEOUT_MS overrides the default (tests only; unset in
-    // prod) — lets a test exercise a genuine timeout in well under a second.
-    req.setTimeout(Number(process.env.PIAZZA_GEOCODE_TIMEOUT_MS) || 10000, () => req.destroy(new Error(`Timed out looking up "${query}"`)));
+  if (cached && (Date.now() - cached.at) < GEOCODE_CACHE_MS) return cached;
+  const url = `${NOMINATIM_BASE}/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
+  // PIAZZA_GEOCODE_TIMEOUT_MS overrides the default (tests only; unset in
+  // prod) — lets a test exercise a genuine timeout in well under a second.
+  const res = await fetchWithTimeout(url, {
+    headers: { 'User-Agent': 'PiazzaHQ/1.0' },
+    timeoutMs: Number(process.env.PIAZZA_GEOCODE_TIMEOUT_MS) || 10000,
+    timeoutMessage: `Timed out looking up "${query}"`,
   });
+  let results;
+  try { results = await res.json(); }
+  catch { throw new Error('Failed to parse geocoding response'); }
+  if (!results.length) throw new Error(`Could not find "${query}"`);
+  const result = { lat: parseFloat(results[0].lat), lon: parseFloat(results[0].lon), label: results[0].display_name, at: Date.now() };
+  _geocodeCache.set(query, result);
+  return result;
 }
 // OSRM's public demo router — free, no key, no signup. Road-network typical
 // travel time; does NOT account for live traffic conditions.
-function getOsrmDuration(origin, destination, mode) {
+// Cached the same way getWeatherResolved() is, keyed on the route (not just
+// location — mode matters too, driving vs. walking are different routes).
+// The client polls this every 5 min, so a matching 5-min cache can't make a
+// response any staler than what it already shows — it just avoids hitting
+// OSRM/Google again for every device/tab asking about the same commute
+// inside that window.
+const _travelTimeCache = new Map(); // "olat,olon|dlat,dlon|mode|provider" -> { data, at }
+const TRAVEL_TIME_CACHE_MS = 5 * 60 * 1000;
+// Override only in tests (PIAZZA_OSRM_URL); unset everywhere real.
+const OSRM_BASE = process.env.PIAZZA_OSRM_URL || 'https://router.project-osrm.org';
+function travelCacheKey(origin, destination, mode, provider) {
+  return `${origin.lat},${origin.lon}|${destination.lat},${destination.lon}|${mode}|${provider}`;
+}
+async function getOsrmDuration(origin, destination, mode) {
+  const cacheKey = travelCacheKey(origin, destination, mode, 'osrm');
+  const cached = _travelTimeCache.get(cacheKey);
+  if (cached && (Date.now() - cached.at) < TRAVEL_TIME_CACHE_MS) return cached.data;
   const profile = mode === 'walking' ? 'foot' : mode === 'bicycling' ? 'bike' : 'driving';
-  const url = `https://router.project-osrm.org/route/v1/${profile}/${origin.lon},${origin.lat};${destination.lon},${destination.lat}?overview=false`;
-  return new Promise((resolve, reject) => {
-    const req = https.get(url, { family: 4 }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', c => data += c);
-      apiRes.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          const route = parsed.routes && parsed.routes[0];
-          if (!route) return reject(new Error('No route found between those two addresses'));
-          resolve({ durationMin: Math.round(route.duration / 60), distanceMiles: Math.round(route.distance / 1609.34 * 10) / 10, trafficAware: false });
-        } catch { reject(new Error('Failed to parse routing response')); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(10000, () => req.destroy(new Error('Timed out fetching a route from OSRM')));
-  });
+  const url = `${OSRM_BASE}/route/v1/${profile}/${origin.lon},${origin.lat};${destination.lon},${destination.lat}?overview=false`;
+  const res = await fetchWithTimeout(url, { timeoutMs: 10000, timeoutMessage: 'Timed out fetching a route from OSRM' });
+  let parsed;
+  try { parsed = await res.json(); }
+  catch { throw new Error('Failed to parse routing response'); }
+  const route = parsed.routes && parsed.routes[0];
+  if (!route) throw new Error('No route found between those two addresses');
+  const result = { durationMin: Math.round(route.duration / 60), distanceMiles: Math.round(route.distance / 1609.34 * 10) / 10, trafficAware: false };
+  _travelTimeCache.set(cacheKey, { data: result, at: Date.now() });
+  return result;
 }
 // Google's Distance Matrix API — needs the user's own key, but gives a
 // traffic-aware duration ("in current traffic") the same way Google Maps
 // itself would show for right now.
-function getGoogleDuration(origin, destination, mode, apiKey) {
+async function getGoogleDuration(origin, destination, mode, apiKey) {
+  const cacheKey = travelCacheKey(origin, destination, mode, 'google');
+  const cached = _travelTimeCache.get(cacheKey);
+  if (cached && (Date.now() - cached.at) < TRAVEL_TIME_CACHE_MS) return cached.data;
   const gMode = mode === 'walking' ? 'walking' : mode === 'bicycling' ? 'bicycling' : 'driving';
   const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin.lat},${origin.lon}&destinations=${destination.lat},${destination.lon}` +
     `&mode=${gMode}&departure_time=now&key=${encodeURIComponent(apiKey)}`;
-  return new Promise((resolve, reject) => {
-    const req = https.get(url, { family: 4 }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', c => data += c);
-      apiRes.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          const el = parsed.rows && parsed.rows[0] && parsed.rows[0].elements && parsed.rows[0].elements[0];
-          if (!el || el.status !== 'OK') return reject(new Error('Google could not find a route between those addresses'));
-          const seconds = (el.duration_in_traffic || el.duration).value;
-          resolve({ durationMin: Math.round(seconds / 60), distanceMiles: Math.round(el.distance.value / 1609.34 * 10) / 10, trafficAware: !!el.duration_in_traffic });
-        } catch { reject(new Error('Failed to parse Google response')); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(10000, () => req.destroy(new Error('Timed out fetching a route from Google')));
-  });
+  const res = await fetchWithTimeout(url, { timeoutMs: 10000, timeoutMessage: 'Timed out fetching a route from Google' });
+  let parsed;
+  try { parsed = await res.json(); }
+  catch { throw new Error('Failed to parse Google response'); }
+  const el = parsed.rows && parsed.rows[0] && parsed.rows[0].elements && parsed.rows[0].elements[0];
+  if (!el || el.status !== 'OK') throw new Error('Google could not find a route between those addresses');
+  const seconds = (el.duration_in_traffic || el.duration).value;
+  const result = { durationMin: Math.round(seconds / 60), distanceMiles: Math.round(el.distance.value / 1609.34 * 10) / 10, trafficAware: !!el.duration_in_traffic };
+  _travelTimeCache.set(cacheKey, { data: result, at: Date.now() });
+  return result;
 }
 app.get('/api/travel-time', async (req, res) => {
   const origin = (req.query.origin || '').trim();
@@ -7509,19 +7504,14 @@ app.get('/api/travel-time', async (req, res) => {
 // ── On This Day proxy (Wikipedia REST API, free, no key) ─────────────────────
 // Cached once per calendar day (local date) since the content is the same all day.
 let onThisDayCache = { dateKey: null, data: null };
-function fetchJsonWithUA(url) {
-  return new Promise((resolve, reject) => {
-    const req = https.get(url, { family: 4, headers: { 'User-Agent': 'PiazzaHQApp/1.0 (self-hosted family wall display; contact via project repo)' } }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', c => data += c);
-      apiRes.on('end', () => {
-        if (apiRes.statusCode !== 200) return reject(new Error(`HTTP ${apiRes.statusCode}`));
-        try { resolve(JSON.parse(data)); } catch { reject(new Error('Failed to parse response')); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(10000, () => req.destroy(new Error('Timed out fetching from Wikipedia')));
+async function fetchJsonWithUA(url) {
+  const res = await fetchWithTimeout(url, {
+    headers: { 'User-Agent': 'PiazzaHQApp/1.0 (self-hosted family wall display; contact via project repo)' },
+    timeoutMs: 10000,
+    timeoutMessage: 'Timed out fetching from Wikipedia',
   });
+  if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+  try { return await res.json(); } catch { throw new Error('Failed to parse response'); }
 }
 // Picks n random items from an array without mutating it (Fisher-Yates partial shuffle).
 function sampleRandom(arr, n) {
@@ -7970,64 +7960,32 @@ app.post('/api/feeds/:id/sync', async (req, res) => {
 // PIAZZA_FETCH_TIMEOUT_MS overrides the default (tests only — lets a test
 // exercise a genuine timeout in milliseconds instead of waiting out the real
 // 20s default; unset in prod).
-function fetchUrl(urlStr, timeoutMs = Number(process.env.PIAZZA_FETCH_TIMEOUT_MS) || 20000) {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL(urlStr);
-    const lib = parsed.protocol === 'https:' ? https : http;
-    const req = lib.get(urlStr, {
-      family: 4,
-      headers: {
-        'User-Agent': 'PiazzaHQ/1.0',
-        // Some calendar hosts (e.g. iCloud) serve different/empty content to
-        // requests that don't look like they're asking for calendar data —
-        // an explicit Accept header makes this request look more like what a
-        // real calendar client sends. We advertise the compression schemes we
-        // can decode below; iCloud in particular always gzips its .ics feeds.
-        'Accept': 'text/calendar, text/plain, */*',
-        'Accept-Encoding': 'gzip, deflate, br',
-      },
-    }, (res) => {
-      // Follow redirects
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        // Resolve relative redirect targets against the current URL
-        const next = new URL(res.headers.location, urlStr).toString();
-        res.resume(); // discard the redirect body so the socket frees up
-        return resolve(fetchUrl(next, timeoutMs));
-      }
-
-      // Collect the raw body as binary, since a compressed response is bytes,
-      // not text — decoding to a string first would corrupt it.
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => {
-        let buf = Buffer.concat(chunks);
-        // Transparently decompress based on what the server says it sent.
-        // Node's https.get does NOT auto-decompress, so without this an
-        // iCloud feed (always gzip) arrives as unreadable compressed bytes
-        // and the parser sees no BEGIN:VCALENDAR.
-        const encoding = (res.headers['content-encoding'] || '').toLowerCase();
-        try {
-          if (encoding === 'gzip') buf = zlib.gunzipSync(buf);
-          else if (encoding === 'deflate') buf = zlib.inflateSync(buf);
-          else if (encoding === 'br') buf = zlib.brotliDecompressSync(buf);
-        } catch (e) {
-          return reject(new Error(`Failed to decompress ${encoding} response: ${e.message}`));
-        }
-        const body = buf.toString('utf8');
-
-        // Treat non-2xx as a real failure instead of silently parsing whatever
-        // error page/body came back as "0 events found".
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          return reject(new Error(
-            `Calendar server returned HTTP ${res.statusCode}${body ? ': ' + body.slice(0, 200) : ''}`
-          ));
-        }
-        resolve(body);
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(timeoutMs, () => req.destroy(new Error(`Timed out after ${timeoutMs}ms fetching ${urlStr}`)));
+async function fetchUrl(urlStr, timeoutMs = Number(process.env.PIAZZA_FETCH_TIMEOUT_MS) || 20000) {
+  // Redirects and gzip/deflate/br decompression are both handled by fetch()
+  // itself now — no manual redirect-following or zlib step needed the way
+  // the old http.get()-based version required (iCloud in particular always
+  // gzips its .ics feeds).
+  const res = await fetchWithTimeout(urlStr, {
+    headers: {
+      'User-Agent': 'PiazzaHQ/1.0',
+      // Some calendar hosts (e.g. iCloud) serve different/empty content to
+      // requests that don't look like they're asking for calendar data —
+      // an explicit Accept header makes this request look more like what a
+      // real calendar client sends.
+      'Accept': 'text/calendar, text/plain, */*',
+    },
+    timeoutMs,
+    timeoutMessage: `Timed out after ${timeoutMs}ms fetching ${urlStr}`,
   });
+  let body;
+  try { body = await res.text(); }
+  catch (e) { throw new Error(`Failed to read calendar response: ${e.message}`); }
+  // Treat non-2xx as a real failure instead of silently parsing whatever
+  // error page/body came back as "0 events found".
+  if (!res.ok) {
+    throw new Error(`Calendar server returned HTTP ${res.status}${body ? ': ' + body.slice(0, 200) : ''}`);
+  }
+  return body;
 }
 
 function parseICS(icsText, feedId, feedColor, timeZone) {
@@ -9112,7 +9070,6 @@ const _activeNotifications = new Map(); // key -> { key, kind, title, body, url,
 const NOTIF_KINDS = [
   { id: 'ha-alert', label: 'Home Assistant alerts' },
   { id: 'weather-alert', label: 'Severe weather alerts' },
-  { id: 'kiosk-recovered', label: 'Kiosk auto-recovery' },
 ];
 function getNotifPrefs() {
   let stored = {};
@@ -9239,29 +9196,6 @@ async function checkWeatherAlerts() {
 }
 setInterval(checkWeatherAlerts, 10 * 60 * 1000);
 setTimeout(checkWeatherAlerts, 25 * 1000); // stagger from checkHaAlerts' own 20s boot kick
-
-// A third producer into the same pipeline, this one from OUTSIDE the Node
-// process entirely: scripts/kiosk-watchdog.js (a bash+systemd-timer thing,
-// not app code) posts here after it detects and recovers a frozen/crashed
-// kiosk Chromium, so that recovery shows up on-screen/phone through the
-// exact same channel HA alerts and weather alerts already use, rather than
-// happening invisibly. Loopback-only in practice (the watchdog only ever
-// runs on this same device against its own localhost:3000), but not
-// enforced server-side — same trust level as the rest of this LAN-facing app.
-app.post('/api/kiosk-watchdog/report', (req, res) => {
-  const restarted = !!(req.body && req.body.restarted);
-  const giveUp = !!(req.body && req.body.giveUp);
-  const reason = (req.body && req.body.reason === 'crashed') ? 'crashed' : 'hung';
-  const reasonText = reason === 'crashed' ? 'stopped running' : 'stopped responding';
-  const title = giveUp ? 'Display needs attention' : 'Display auto-recovered';
-  const body = giveUp
-    ? `The kiosk display ${reasonText} repeatedly and auto-recovery gave up after 3 tries in 30 minutes — it may need a manual look.`
-    : restarted
-      ? `The kiosk display ${reasonText} and was automatically restarted.`
-      : `The kiosk display ${reasonText}, but the automatic restart didn't take — it may need a manual look.`;
-  raiseNotification({ kind: 'kiosk-recovered', key: `kiosk-recovered:${Date.now()}`, title, body });
-  res.json({ ok: true });
-});
 
 app.get('/api/phone-alerts', (req, res) => {
   const license = getSetting('update_license_key') || '';
@@ -9568,38 +9502,26 @@ const ICLOUD_BOOTSTRAP_HOSTS = ['p23', 'p52', 'p97', 'p113', 'p143', 'p161', 'p1
 const _icloudTransient = (e) =>
   /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|timed out|socket hang up|network|getaddrinfo/i
     .test(String((e && e.message) || e));
-function icloudStreamRequest(url, bodyObj) {
-  return new Promise((resolve, reject) => {
-    let u; try { u = new URL(url); } catch { return reject(new Error('bad iCloud url')); }
-    const lib = u.protocol === 'http:' ? http : https;
-    const payload = Buffer.from(JSON.stringify(bodyObj || {}), 'utf8');
-    const req = lib.request({
-      hostname: u.hostname, port: u.port || (u.protocol === 'http:' ? 80 : 443), path: u.pathname + u.search, method: 'POST',
-      headers: {
-        'Content-Type': 'text/plain;charset=UTF-8', 'Content-Length': payload.length,
-        'User-Agent': 'PiazzaHQ/1.0', 'Origin': 'https://www.icloud.com', 'Accept': '*/*',
-      },
-      agent: false,
-    }, (res) => {
-      const chunks = [];
-      res.on('data', (c) => { chunks.push(c); });
-      res.on('end', () => {
-        let buf = Buffer.concat(chunks);
-        const enc = (res.headers['content-encoding'] || '').toLowerCase();
-        try {
-          if (enc === 'gzip') buf = zlib.gunzipSync(buf);
-          else if (enc === 'deflate') buf = zlib.inflateSync(buf);
-          else if (enc === 'br') buf = zlib.brotliDecompressSync(buf);
-        } catch {}
-        let json = null;
-        try { json = JSON.parse(buf.toString('utf8')); } catch {}
-        resolve({ statusCode: res.statusCode, headers: res.headers, json });
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(20000, () => req.destroy(new Error('iCloud request timed out')));
-    req.write(payload); req.end();
+// 330 (Apple's own partition-redirect status, not a real HTTP redirect code)
+// and the x-apple-mme-host header it carries are read directly by the caller
+// (icloudStreamFollow) — fetch() doesn't treat 330 as something to auto-follow,
+// so that hop-chasing logic is untouched here.
+async function icloudStreamRequest(url, bodyObj) {
+  let u; try { u = new URL(url); } catch { throw new Error('bad iCloud url'); }
+  const res = await fetchWithTimeout(u, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/plain;charset=UTF-8',
+      'User-Agent': 'PiazzaHQ/1.0', 'Origin': 'https://www.icloud.com', 'Accept': '*/*',
+    },
+    body: JSON.stringify(bodyObj || {}),
+    timeoutMs: 20000,
+    timeoutMessage: 'iCloud request timed out',
   });
+  const text = await res.text().catch(() => '');
+  let json = null;
+  try { json = JSON.parse(text); } catch {}
+  return { statusCode: res.status, headers: Object.fromEntries(res.headers.entries()), json };
 }
 const _icloudRoot = (host) => /^https?:\/\//i.test(host) ? host.replace(/\/+$/, '') : 'https://' + host;
 // One start host, chasing 330 + X-Apple-MMe-Host to the album's real partition.
@@ -11131,35 +11053,22 @@ app.put('/api/layouts/:orientation', (req, res) => {
 // write this app needs — nothing else here creates/edits/deletes Todoist
 // data). Note: Todoist deprecated the old REST v2 API (api.todoist.com/rest/v2/...).
 // The current API lives under /api/v1/ and wraps list responses as { results: [...], next_cursor }.
-function todoistGet(token, path) {
-  return new Promise((resolve, reject) => {
-    const req = https.get({
-      family: 4,
-      hostname: 'api.todoist.com',
-      path,
-      headers: { 'Authorization': `Bearer ${token}` }
-    }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', c => data += c);
-      apiRes.on('end', () => {
-        if (apiRes.statusCode === 401 || apiRes.statusCode === 403) {
-          return reject({ status: 401, message: 'Invalid Todoist token' });
-        }
-        if (apiRes.statusCode >= 400) {
-          return reject({ status: 500, message: `Todoist returned status ${apiRes.statusCode}` });
-        }
-        try {
-          const parsed = JSON.parse(data);
-          // New API wraps results: { results: [...], next_cursor }. Treat bare arrays as already-unwrapped.
-          resolve(Array.isArray(parsed) ? parsed : (parsed.results || []));
-        } catch (e) {
-          reject({ status: 500, message: 'Failed to parse Todoist response' });
-        }
-      });
+async function todoistGet(token, path) {
+  let res;
+  try {
+    res = await fetchWithTimeout(`https://api.todoist.com${path}`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+      timeoutMs: 10000,
+      timeoutMessage: 'Timed out contacting Todoist',
     });
-    req.on('error', err => reject({ status: 500, message: err.message }));
-    req.setTimeout(10000, () => req.destroy(new Error('Timed out contacting Todoist')));
-  });
+  } catch (e) { throw { status: 500, message: e.message }; }
+  if (res.status === 401 || res.status === 403) throw { status: 401, message: 'Invalid Todoist token' };
+  if (res.status >= 400) throw { status: 500, message: `Todoist returned status ${res.status}` };
+  let parsed;
+  try { parsed = await res.json(); }
+  catch { throw { status: 500, message: 'Failed to parse Todoist response' }; }
+  // New API wraps results: { results: [...], next_cursor }. Treat bare arrays as already-unwrapped.
+  return Array.isArray(parsed) ? parsed : (parsed.results || []);
 }
 
 // POST helper for the one write operation this app makes to Todoist —
@@ -11167,33 +11076,21 @@ function todoistGet(token, path) {
 // HTTP method; a real request body was never needed for /close (Todoist's
 // endpoint takes the task id from the URL path alone), so this stays a
 // simple no-body POST rather than a more general "send any payload" helper.
-function todoistPost(token, path) {
-  return new Promise((resolve, reject) => {
-    const apiReq = https.request({
-      family: 4,
-      hostname: 'api.todoist.com',
-      path,
+async function todoistPost(token, path) {
+  let res;
+  try {
+    res = await fetchWithTimeout(`https://api.todoist.com${path}`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Length': 0 },
-    }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', c => data += c);
-      apiRes.on('end', () => {
-        if (apiRes.statusCode === 401 || apiRes.statusCode === 403) {
-          return reject({ status: 401, message: 'Invalid Todoist token' });
-        }
-        if (apiRes.statusCode >= 400) {
-          return reject({ status: 500, message: `Todoist returned status ${apiRes.statusCode}` });
-        }
-        // A successful close returns 204 No Content — nothing to parse, and
-        // trying to JSON.parse an empty body would throw for no reason.
-        resolve(true);
-      });
+      headers: { 'Authorization': `Bearer ${token}` },
+      timeoutMs: 10000,
+      timeoutMessage: 'Timed out contacting Todoist',
     });
-    apiReq.on('error', err => reject({ status: 500, message: err.message }));
-    apiReq.setTimeout(10000, () => apiReq.destroy(new Error('Timed out contacting Todoist')));
-    apiReq.end();
-  });
+  } catch (e) { throw { status: 500, message: e.message }; }
+  if (res.status === 401 || res.status === 403) throw { status: 401, message: 'Invalid Todoist token' };
+  if (res.status >= 400) throw { status: 500, message: `Todoist returned status ${res.status}` };
+  // A successful close returns 204 No Content — nothing to parse, and
+  // trying to JSON.parse an empty body would throw for no reason.
+  return true;
 }
 
 // GET /api/todoist/tasks?project_id=XXXX  (project_id optional — omit for all projects)
@@ -11262,46 +11159,30 @@ let _haHealth = null; // { ok: boolean, at: epochMs } | null
 function haRequestWith(baseUrl, token, pathAndQuery, method = 'GET', body = null, opts = {}) {
   const configured = !!(baseUrl && token);
   const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 8000;
-  const p = new Promise((resolve, reject) => {
-    if (!baseUrl || !token) return reject({ status: 400, message: 'Home Assistant isn\'t configured yet — add a URL and token in Settings' });
+  const p = (async () => {
+    if (!baseUrl || !token) throw { status: 400, message: 'Home Assistant isn\'t configured yet — add a URL and token in Settings' };
     let target;
-    try { target = new URL(baseUrl.replace(/\/+$/, '') + pathAndQuery); } catch { return reject({ status: 400, message: 'Invalid Home Assistant URL' }); }
-    const transport = target.protocol === 'https:' ? https : http;
+    try { target = new URL(baseUrl.replace(/\/+$/, '') + pathAndQuery); } catch { throw { status: 400, message: 'Invalid Home Assistant URL' }; }
     const bodyStr = body ? JSON.stringify(body) : null;
     const headers = { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' };
-    if (bodyStr) { headers['Content-Type'] = 'application/json'; headers['Content-Length'] = Buffer.byteLength(bodyStr); }
-    const r = transport.request({
-      hostname: target.hostname,
-      port: target.port || (target.protocol === 'https:' ? 443 : 80),
-      path: target.pathname + target.search,
-      method,
-      headers,
-    }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', c => data += c);
-      apiRes.on('end', () => {
-        if (apiRes.statusCode === 401 || apiRes.statusCode === 403) {
-          return reject({ status: 401, message: 'Home Assistant rejected the token — check it\'s still valid' });
-        }
-        if (apiRes.statusCode === 404) {
-          return reject({ status: 404, message: 'Entity not found' });
-        }
-        if (apiRes.statusCode >= 400) {
-          return reject({ status: 502, message: `Home Assistant returned status ${apiRes.statusCode}` });
-        }
-        // A successful service call can return an empty body (204-shaped 200) or a
-        // JSON array of the entities it affected — either is fine, only genuinely
-        // malformed JSON (when a body was actually sent back) is an error.
-        if (!data.trim()) return resolve(null);
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject({ status: 502, message: 'Could not parse Home Assistant\'s response' }); }
-      });
-    });
-    r.on('error', (err) => reject({ status: 502, message: `Could not reach Home Assistant: ${err.message}` }));
-    r.setTimeout(timeoutMs, () => r.destroy(new Error('Home Assistant request timed out')));
-    if (bodyStr) r.write(bodyStr);
-    r.end();
-  });
+    if (bodyStr) headers['Content-Type'] = 'application/json';
+    let res;
+    try {
+      res = await fetchWithTimeout(target, { method, headers, body: bodyStr, timeoutMs, timeoutMessage: 'Home Assistant request timed out' });
+    } catch (e) { throw { status: 502, message: `Could not reach Home Assistant: ${e.message}` }; }
+    if (res.status === 401 || res.status === 403) {
+      throw { status: 401, message: 'Home Assistant rejected the token — check it\'s still valid' };
+    }
+    if (res.status === 404) throw { status: 404, message: 'Entity not found' };
+    if (res.status >= 400) throw { status: 502, message: `Home Assistant returned status ${res.status}` };
+    const data = await res.text();
+    // A successful service call can return an empty body (204-shaped 200) or a
+    // JSON array of the entities it affected — either is fine, only genuinely
+    // malformed JSON (when a body was actually sent back) is an error.
+    if (!data.trim()) return null;
+    try { return JSON.parse(data); }
+    catch { throw { status: 502, message: 'Could not parse Home Assistant\'s response' }; }
+  })();
   // Only "HA is configured but we couldn't reach/authenticate it" is a health
   // signal — the not-configured reject above isn't. A token/permission error
   // (status 401) counts as unhealthy; so does any transport failure.
@@ -12115,23 +11996,20 @@ const STOCK_INDICES = [
 // Yahoo's endpoint rejects non-browser User-Agents, so this uses its own fetch
 // (rather than the shared fetchUrl helper, which sends a generic UA fine for
 // every other source we talk to) to avoid touching code other features depend on.
-function fetchYahooUrl(urlStr) {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL(urlStr);
-    const lib = parsed.protocol === 'https:' ? https : http;
-    lib.get(urlStr, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      },
-    }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return resolve(fetchYahooUrl(res.headers.location));
-      }
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => resolve({ status: res.statusCode, body: data }));
-    }).on('error', reject);
+// Real bug fixed here in the same pass as the fetch() migration: this never
+// had a timeout at all (unlike every other fetcher in this file) — a stalled
+// Yahoo connection hung the stocks widget forever instead of just failing.
+// Redirects are handled by fetch() itself now too.
+async function fetchYahooUrl(urlStr) {
+  const res = await fetchWithTimeout(urlStr, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    },
+    timeoutMs: 10000,
+    timeoutMessage: 'Timed out fetching from Yahoo Finance',
   });
+  const body = await res.text();
+  return { status: res.status, body };
 }
 
 async function fetchYahooQuote(symbol) {
