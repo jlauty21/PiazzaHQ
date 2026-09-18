@@ -9508,16 +9508,32 @@ const _icloudTransient = (e) =>
 // so that hop-chasing logic is untouched here.
 async function icloudStreamRequest(url, bodyObj) {
   let u; try { u = new URL(url); } catch { throw new Error('bad iCloud url'); }
-  const res = await fetchWithTimeout(u, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'text/plain;charset=UTF-8',
-      'User-Agent': 'PiazzaHQ/1.0', 'Origin': 'https://www.icloud.com', 'Accept': '*/*',
-    },
-    body: JSON.stringify(bodyObj || {}),
-    timeoutMs: 20000,
-    timeoutMessage: 'iCloud request timed out',
-  });
+  let res;
+  try {
+    res = await fetchWithTimeout(u, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain;charset=UTF-8',
+        'User-Agent': 'PiazzaHQ/1.0', 'Origin': 'https://www.icloud.com', 'Accept': '*/*',
+      },
+      body: JSON.stringify(bodyObj || {}),
+      timeoutMs: 20000,
+      timeoutMessage: 'iCloud request timed out',
+    });
+  } catch (e) {
+    // Real bug, found live (2026-09-18): fetch() throws a generic "fetch
+    // failed" with the actual DNS/connection reason nested in e.cause —
+    // left as-is, _icloudTransient() below (which pattern-matches on
+    // e.message) never recognized ENOTFOUND/etc. as transient, so it never
+    // fell through to the bootstrap hosts. A MODERN "Copy Link" token's
+    // first-guess partition host is *expected* not to resolve (see
+    // sharedAlbumBaseHost()'s own comment) — that's supposed to be exactly
+    // the transient case the fallback list exists for, but the generic
+    // message silently defeated it, so every modern-token album failed
+    // outright instead of trying the next host. Unwrap the real cause.
+    const cause = e && e.cause;
+    throw new Error(cause && cause.message ? cause.message : e.message);
+  }
   const text = await res.text().catch(() => '');
   let json = null;
   try { json = JSON.parse(text); } catch {}
