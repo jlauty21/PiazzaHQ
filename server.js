@@ -6528,7 +6528,14 @@ function slaveWriteGuard(req, res, next) {
                     // confirmed live) it just fails outright with "No host configured to
                     // forward this edit to" instead of doing anything at all.
                     /^\/api\/update-backups\/[^/]+\/[^/]+\/restore$/.test(p) || // same — restores CODE from THIS device's own backup dir
-                    p.startsWith('/api/auth');          // local login/PIN
+                    p.startsWith('/api/auth') ||        // local login/PIN
+                    // This device's OWN license key, not the host's — unlike most proxied
+                    // writes, a mirror legitimately holds its own independently-verified
+                    // license key (see LOCAL_ONLY_SETTINGS' own comment on
+                    // update_license_key) and can have its own "other devices on this
+                    // license" to browse/revoke — proxying to the host would act on the
+                    // HOST's license instead of whichever one this device actually presents.
+                    p.startsWith('/api/license-devices');
   if (localOnly) return next();
   // Settings writes are split: device-local keys stay here; shared keys proxy to host.
   if (p.startsWith('/api/settings')) return proxySettingsWrite(req, res, next);
@@ -10441,6 +10448,13 @@ app.get('/api/screens', (req, res) => {
       online: (now - (s.last_seen || 0)) < SCREEN_ONLINE_MS,
       last_seen: s.last_seen || 0,
       is_remote: !!s.is_remote,
+      // Self-reported by a slave during its own check-in (see
+      // /api/screen-checkin) — never set for the host's own local screen,
+      // since that check-in never has a meaningful "address" to report
+      // (it's this same process talking to itself). Captured a while ago
+      // but never actually shown anywhere; real feedback (#32) asked for
+      // exactly this kind of "which physical box is this" identifier.
+      remote_addr: s.remote_addr || '',
     };
   });
   res.json(screens);
@@ -14167,6 +14181,63 @@ app.post('/api/resolve-host-conflict', async (req, res) => {
   }
   db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('host_conflict_cache', '')`).run();
   res.json({ ok: true });
+});
+
+// USER-FACING: Multi-Device settings' "Other devices on this license" list —
+// proactively browsing every device the mothership has ever seen present
+// this license's key (not just an active conflict popup — retired hardware
+// shows up here too), and a way to remove one directly, without waiting on
+// the emailed host-claim link or the developer's help. Real feedback
+// (#31/#32): someone moved hosts and had no way to see or clear out the old
+// device themselves. Proxies to the mothership's own device-facing,
+// license-key-authenticated routes — same credential every check-in already
+// presents, nothing new to configure.
+app.get('/api/license-devices', async (req, res) => {
+  const serverUrl = resolveUpdateServerUrl();
+  const licenseKey = getSetting('update_license_key') || '';
+  if (!serverUrl) return res.status(400).json({ error: 'No update server configured.' });
+  if (!licenseKey) return res.status(400).json({ error: 'No license key configured on this device.' });
+  try {
+    const r = await fetchWithTimeout(`${serverUrl}/api/v1/license-devices`, {
+      headers: { 'x-license-key': licenseKey },
+      timeoutMs: 10000,
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) return res.status(r.status).json(body);
+    // The app has no other way to know this device's own id (it's a server-
+    // side identity concept the phone app never otherwise needs) — included
+    // here so the Multi-Device UI can label "this device" and hide the
+    // remove button on its own row, matching the same rule enforced below.
+    res.json({ ...body, ownDeviceId: updateSetting('screen_device_id_cache', '') || '' });
+  } catch (e) {
+    res.status(502).json({ error: 'Could not reach the update server: ' + e.message });
+  }
+});
+app.post('/api/license-devices/:deviceId/revoke', async (req, res) => {
+  const serverUrl = resolveUpdateServerUrl();
+  const licenseKey = getSetting('update_license_key') || '';
+  if (!serverUrl) return res.status(400).json({ error: 'No update server configured.' });
+  if (!licenseKey) return res.status(400).json({ error: 'No license key configured on this device.' });
+  // The UI shouldn't offer this for the device's own row at all, but enforce
+  // it here too rather than trusting the client alone — removing yourself
+  // would just re-register on the next check-in anyway, so this is purely
+  // about not letting a stray/scripted call confuse someone.
+  const ownId = updateSetting('screen_device_id_cache', '') || '';
+  if (req.params.deviceId === ownId) {
+    return res.status(400).json({ error: "That's this device's own entry — nothing to remove." });
+  }
+  try {
+    const r = await fetchWithTimeout(`${serverUrl}/api/v1/license-devices/${encodeURIComponent(req.params.deviceId)}/revoke`, {
+      method: 'POST',
+      headers: { 'x-license-key': licenseKey },
+      timeoutMs: 10000,
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) return res.status(r.status).json(body);
+    res.json(body);
+  } catch (e) {
+    res.status(502).json({ error: 'Could not reach the update server: ' + e.message });
+  }
 });
 
 // USER-FACING: is there an update available from the central server?

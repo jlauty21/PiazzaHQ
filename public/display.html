@@ -2552,12 +2552,19 @@
     .ha-swatch { width:calc(var(--ha-font) * 1.1); height:calc(var(--ha-font) * 1.1); border-radius:50%;
       border:2px solid color-mix(in srgb, var(--text) 38%, transparent); cursor:pointer; touch-action:manipulation; padding:0; }
     .ha-swatch:disabled { opacity:0.4; }
-    /* ── Home Assistant: sensor sparkline ── */
-    .ha-sparkline { width:80%; max-width:calc(var(--ha-font) * 8); height:calc(var(--ha-font) * 1.5);
-      margin-top:calc(var(--ha-font) * 0.25); }
+    /* ── Home Assistant: sensor sparkline ──
+       Taller than just the line itself (2.1em vs the old 1.5em) to leave
+       room below for the peak/trough value labels and hour ticks. */
+    .ha-sparkline { width:80%; max-width:calc(var(--ha-font) * 8); height:calc(var(--ha-font) * 2.1);
+      margin:calc(var(--ha-font) * 0.25) auto 0; } /* auto sides: .w-entitystatus is display:block, so a max-width-capped graph otherwise hugs the left edge under a centered value */
     .ha-spark-svg { width:100%; height:100%; display:block; overflow:visible; }
     .ha-spark-line { fill:none; stroke:var(--accent, #7ec8e3); stroke-width:1.5; vector-effect:non-scaling-stroke; }
     .ha-spark-fill { fill:var(--accent, #7ec8e3); opacity:0.14; }
+    .ha-spark-note { font-size:7px; font-weight:600; fill:var(--muted); }
+    .ha-spark-note.peak { fill:var(--accent2, var(--accent)); font-weight:700; }
+    .ha-spark-dot { fill:var(--accent2, var(--accent)); }
+    .ha-spark-tick { stroke:var(--muted); opacity:0.4; }
+    .ha-spark-tick-label { font-size:6px; fill:var(--muted); }
     /* ── Home Assistant alert banner ──
        Position / size / style are per-screen (screens.alert_banner_*),
        applied by applyAlertBannerConfig() as data-attrs on #ha-alert-banner. */
@@ -10805,6 +10812,10 @@ function renderEntityStatusAdvancedSettings(w) {
       <label>Show Unit ${infoBtn("Title and font size are set in the basic settings panel.")}</label>
       <input type="checkbox" id="was-ha-showunit" ${w.haShowUnit !== false ? 'checked' : ''}>
     </div>
+    <div class="was-toggle-row">
+      <label>Show Trend Graph ${infoBtn("The 24-hour line graph under a numeric sensor's value. Sensor entities only.")}</label>
+      <input type="checkbox" id="was-ha-showsparkline" ${w.haShowSparkline !== false ? 'checked' : ''}>
+    </div>
   `;
 }
 function wireEntityStatusAdvancedSettings(w) {
@@ -10841,6 +10852,12 @@ function wireEntityStatusAdvancedSettings(w) {
   const showUnit = document.getElementById('was-ha-showunit');
   if (showUnit) showUnit.addEventListener('change', (e) => {
     w.haShowUnit = e.target.checked;
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  });
+  const showSparkline = document.getElementById('was-ha-showsparkline');
+  if (showSparkline) showSparkline.addEventListener('change', (e) => {
+    w.haShowSparkline = e.target.checked;
     rerenderSingleWidget(w.id);
     scheduleLayoutSave();
   });
@@ -15539,7 +15556,7 @@ function buildNewWidgetDefaults(type) {
   else if (type === 'tasksCombined') { w.w = 32; w.h = 55; w.projectIds = []; w.projectNames = {}; }
   else if (type === 'text') { w.w = 30; w.h = 12; w.textContent = 'Your text'; w.textPreset = 'plain'; w.textFontPx = 28; w.textWeight = 'normal'; w.textAlign = 'left'; w.textFontFamily = 'Inter'; }
   else if (type === 'decoration') { w.w = 14; w.h = 14; w.decorEmoji = '🌿'; w.decorFontPx = 60; w.decorOpacity = 100; w.decorRotation = 0; }
-  else if (type === 'entitystatus') { w.w = 20; w.h = 16; w.haEntityId = ''; w.haLabel = ''; w.haLabelAutoFor = ''; w.haFontPx = 20; w.haShowUnit = true; }
+  else if (type === 'entitystatus') { w.w = 20; w.h = 16; w.haEntityId = ''; w.haLabel = ''; w.haLabelAutoFor = ''; w.haFontPx = 20; w.haShowUnit = true; w.haShowSparkline = true; }
   else if (type === 'smarthomeDashboard') { w.w = 40; w.h = 40; w.haEntityIds = []; w.haAreaIds = []; w.haComboGroups = []; w.haDashTitle = ''; w.haDashFontPx = 16; w.haGroupByRoom = true; w.haDashView = 'grid'; }
   else if (type === 'groupcontrol') { w.w = 20; w.h = 16; w.gcTitle = ''; w.gcEntityIds = []; w.gcAreaIds = []; w.gcFontPx = 20; }
   return w;
@@ -17082,7 +17099,7 @@ function renderEntityStatus(widget) {
     : domain === 'cover' ? ' ha-climate-layout'
     : domain === 'lock' ? ' ha-trigger-layout'
     : domain === 'media_player' ? ' ha-climate-layout' : '';
-  return `<div class="w-entitystatus${layoutClass}" style="${style}">${renderHaEntityControl(w.haEntityId, data, label, w.haShowUnit !== false, wAttrs, true)}</div>`;
+  return `<div class="w-entitystatus${layoutClass}" style="${style}">${renderHaEntityControl(w.haEntityId, data, label, w.haShowUnit !== false, wAttrs, w.haShowSparkline !== false)}</div>`;
 }
 
 // ── Group Control widget ────────────────────────────────────────────────────
@@ -17546,7 +17563,11 @@ async function callHaGroupAction(entityIds) {
 // for numeric sensors in Entity Status widgets) with a small inline SVG of the
 // last 24h. History is fetched once per entity and cached ~10 min so re-renders
 // don't re-hit the server; the periodic layout refresh picks up new data.
-const _haSparkCache = new Map(); // entityId -> { svg, fetchedAt }
+// Cached as raw points, not a pre-rendered SVG string — tick density is
+// decided per DOM element from its actual width (buildSparklineSVG's pxWidth
+// option), so two differently-sized widgets showing the same entity need
+// their own render even though they share one fetch.
+const _haSparkCache = new Map(); // entityId -> { points, fetchedAt }
 const HA_SPARK_TTL = 10 * 60 * 1000;
 
 // ── Notification banner (HA alerts today, other kinds later) ──
@@ -17784,42 +17805,131 @@ function showDemoEnded() {
   // just sit on a dead instance.
   setTimeout(() => { try { location.href = home; } catch {} }, 4500);
 }
-function buildSparklineSVG(points) {
+// Picks the densest hour interval (4h, then 6h, then 8h) whose tick labels
+// won't crowd each other given the sparkline's actual rendered pixel width —
+// a narrower widget (smaller Font Size setting) falls back to sparser ticks
+// automatically; a genuinely tiny one falls back to just the two endpoints.
+function pickSparkTickHours(pxWidth, t0, t1) {
+  const approxLabelPx = 34; // "11 PM"-ish worst case at the tick-label font size, plus breathing room
+  for (const h of [4, 6, 8]) {
+    const stepMs = h * 3600 * 1000;
+    const n = Math.floor((t1 - t0) / stepMs) + 1;
+    if (n < 2) continue;
+    if (pxWidth / (n - 1) >= approxLabelPx) return h;
+  }
+  return null;
+}
+function fmtSparkVal(v) {
+  const r = Math.round(v * 10) / 10;
+  return Number.isInteger(r) ? String(r) : r.toFixed(1);
+}
+// opts: { unit, pxWidth } — unit is appended to the peak/trough labels (e.g.
+// "°"), pxWidth is the sparkline element's actual rendered width, used only
+// to decide tick density (see pickSparkTickHours above).
+function buildSparklineSVG(points, opts) {
   if (!points || points.length < 2) return '';
+  const unit = (opts && opts.unit) || '';
+  const pxWidth = (opts && opts.pxWidth) || 0;
+  // HA history only records CHANGES, so the last point is when the sensor last
+  // moved — not "now". A steady sensor (a battery, a door contact) would end
+  // hours ago, stretching its few points across the whole width and making
+  // the right-hand time/"now" label wrong. Hold the last value out to now —
+  // it IS the sensor's current state until it changes. Found on real data.
+  const nowMs = (opts && opts.nowMs) || Date.now();
+  const lastPt = points[points.length - 1];
+  if (nowMs - lastPt.t > 10 * 60 * 1000) points = points.concat([{ t: nowMs, v: lastPt.v }]);
   const vs = points.map(p => p.v);
   let min = Math.min(...vs), max = Math.max(...vs);
   if (min === max) { min -= 1; max += 1; }
-  const W = 100, H = 26, pad = 2;
+  const W = 100, H = 36, padX = 3, padTop = 3, padBottom = 11;
+  const plotH = H - padTop - padBottom;
   const t0 = points[0].t, t1 = points[points.length - 1].t;
   const span = (t1 - t0) || 1;
-  const xy = points.map(p => {
-    const x = pad + (p.t - t0) / span * (W - 2 * pad);
-    const y = H - pad - (p.v - min) / (max - min) * (H - 2 * pad);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  });
-  const line = xy.join(' ');
-  const area = `${pad},${H - pad} ${line} ${(W - pad)},${H - pad}`;
+  const xy = points.map(p => ({
+    x: padX + (p.t - t0) / span * (W - 2 * padX),
+    y: padTop + plotH - (p.v - min) / (max - min) * plotH,
+    v: p.v,
+  }));
+  let peakI = 0, troughI = 0;
+  xy.forEach((p, i) => { if (p.v > xy[peakI].v) peakI = i; if (p.v < xy[troughI].v) troughI = i; });
+  const peak = xy[peakI], trough = xy[troughI];
+  const line = xy.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  const area = `${padX},${padTop + plotH} ${line} ${(W - padX)},${padTop + plotH}`;
+
+  // Flips each label above/below its dot depending on how close to the top
+  // edge it sits, and clamps its text-anchor near either end so it doesn't
+  // run off the plot.
+  const valueLabel = (p, val, cls) => {
+    const anchor = p.x < 15 ? 'start' : p.x > W - 15 ? 'end' : 'middle';
+    const dy = p.y < padTop + 8 ? 9 : -4;
+    return `<text x="${p.x.toFixed(1)}" y="${(p.y + dy).toFixed(1)}" text-anchor="${anchor}" class="ha-spark-note ${cls}">${fmtSparkVal(val)}${unit}</text>`;
+  };
+
+  const tickHours = pickSparkTickHours(pxWidth, t0, t1);
+  const tickY = padTop + plotH + 3;
+  const labelY = tickY + 6;
+  const fmtHour = t => new Date(t).toLocaleTimeString([], { hour: 'numeric' }).replace(' ', '');
+  let ticksSvg;
+  if (tickHours) {
+    const stepMs = tickHours * 3600 * 1000;
+    const parts = [];
+    for (let tt = t0; tt <= t1 + 1; tt += stepMs) {
+      const x = padX + (tt - t0) / span * (W - 2 * padX);
+      const anchor = x < 10 ? 'start' : x > W - 10 ? 'end' : 'middle';
+      parts.push(`<line x1="${x.toFixed(1)}" y1="${(padTop + plotH).toFixed(1)}" x2="${x.toFixed(1)}" y2="${tickY.toFixed(1)}" class="ha-spark-tick"/>
+        <text x="${x.toFixed(1)}" y="${labelY.toFixed(1)}" text-anchor="${anchor}" class="ha-spark-tick-label">${fmtHour(tt)}</text>`);
+    }
+    ticksSvg = parts.join('');
+  } else {
+    // Too narrow for even the sparsest interval — just label the two ends.
+    // Relative ("23h ago" / "now"), not clock times: a ~24h window starts and
+    // ends at nearly the same hour of day, so real clock labels here both read
+    // e.g. "8PM" — found on real 24h data, where it was meaningless.
+    const spanH = Math.max(1, Math.round((t1 - t0) / 3600000));
+    ticksSvg = `<text x="${padX}" y="${labelY.toFixed(1)}" text-anchor="start" class="ha-spark-tick-label">${spanH}h ago</text>
+      <text x="${(W - padX)}" y="${labelY.toFixed(1)}" text-anchor="end" class="ha-spark-tick-label">now</text>`;
+  }
+
   return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="ha-spark-svg">
     <polygon points="${area}" class="ha-spark-fill"/>
     <polyline points="${line}" class="ha-spark-line"/>
+    <circle cx="${peak.x.toFixed(1)}" cy="${peak.y.toFixed(1)}" r="1.6" class="ha-spark-dot"/>
+    <circle cx="${trough.x.toFixed(1)}" cy="${trough.y.toFixed(1)}" r="1.6" class="ha-spark-dot" opacity="0.55"/>
+    ${valueLabel(peak, max, 'peak')}
+    ${valueLabel(trough, min, '')}
+    ${ticksSvg}
   </svg>`;
 }
 async function wireHaSparklines() {
   const els = document.querySelectorAll('.ha-sparkline[data-entity-id]:not([data-spark-done])');
   for (const el of els) {
-    el.setAttribute('data-spark-done', '1');
+    if (el.hasAttribute('data-spark-done')) continue; // already filled by an earlier same-entity iteration below
     const id = el.dataset.entityId;
+    let points;
     const cached = _haSparkCache.get(id);
-    if (cached && (Date.now() - cached.fetchedAt) < HA_SPARK_TTL) { el.innerHTML = cached.svg; continue; }
-    try {
-      const r = await fetch(`/api/ha/history/${encodeURIComponent(id)}?hours=24`);
-      const j = await r.json();
-      const svg = (j && Array.isArray(j.points)) ? buildSparklineSVG(j.points) : '';
-      _haSparkCache.set(id, { svg, fetchedAt: Date.now() });
-      // The element may have been replaced by a re-render since the fetch
-      // started — re-select by entity id and fill whatever's current.
-      document.querySelectorAll(`.ha-sparkline[data-entity-id="${CSS.escape(id)}"]`).forEach(cur => { cur.innerHTML = svg; cur.setAttribute('data-spark-done', '1'); });
-    } catch { /* leave the placeholder empty */ }
+    if (cached && (Date.now() - cached.fetchedAt) < HA_SPARK_TTL) {
+      points = cached.points;
+    } else {
+      try {
+        const r = await fetch(`/api/ha/history/${encodeURIComponent(id)}?hours=24`);
+        const j = await r.json();
+        points = (j && Array.isArray(j.points)) ? j.points : [];
+        _haSparkCache.set(id, { points, fetchedAt: Date.now() });
+      } catch { points = null; }
+    }
+    if (!points) { el.setAttribute('data-spark-done', '1'); continue; } // leave the placeholder empty
+    const unit = (state.haEntities && state.haEntities[id] && state.haEntities[id].unit) || '';
+    // Fill every current instance of this entity's sparkline in one pass — a
+    // re-render since the fetch started may have replaced the element we
+    // started from, and two differently-sized widgets showing the same
+    // entity legitimately want different tick density, so each instance is
+    // rendered against its own actual width rather than sharing one cached
+    // SVG string the way this used to work.
+    document.querySelectorAll(`.ha-sparkline[data-entity-id="${CSS.escape(id)}"]:not([data-spark-done])`).forEach(cur => {
+      const pxWidth = cur.getBoundingClientRect().width || 0;
+      cur.innerHTML = buildSparklineSVG(points, { unit, pxWidth });
+      cur.setAttribute('data-spark-done', '1');
+    });
   }
 }
 function wireEntityStatusTaps() {

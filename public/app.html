@@ -5677,6 +5677,9 @@ async function loadScreens() {
                     : '')
                 : (s.is_remote ? ' · version unknown (update to see this)' : '')
             }</div>
+            ${(s.remote_addr || s.last_seen) ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${
+              [s.remote_addr, s.last_seen ? 'last seen ' + new Date(s.last_seen).toLocaleString() : ''].filter(Boolean).join(' · ')
+            }</div>` : ''}
           </div>
           ${isBehind ? `<button class="icon-btn screen-push-btn" data-id="${s.device_id}" data-name="${(s.name||'').replace(/"/g,'&quot;')}" title="Push update to this screen">⬆️</button>` : ''}
           <button class="icon-btn screen-rename-btn" data-id="${s.device_id}" data-name="${(s.name||'').replace(/"/g,'&quot;')}" title="Rename">✏️</button>
@@ -7781,7 +7784,7 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
       }
       if (def.type === 'entitystatus') {
         newWidget.w = 20; newWidget.h = 16;
-        newWidget.haEntityId = ''; newWidget.haLabel = ''; newWidget.haLabelAutoFor = ''; newWidget.haFontPx = 20; newWidget.haShowUnit = true;
+        newWidget.haEntityId = ''; newWidget.haLabel = ''; newWidget.haLabelAutoFor = ''; newWidget.haFontPx = 20; newWidget.haShowUnit = true; newWidget.haShowSparkline = true;
       }
       if (def.type === 'smarthomeDashboard') {
         newWidget.w = 40; newWidget.h = 40;
@@ -10948,6 +10951,10 @@ async function drawWidgetSettingsPanel() {
         <label style="margin-bottom:0">Show Unit</label>
         <input type="checkbox" id="ha-show-unit" ${w.haShowUnit !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show Trend Graph</label>
+        <input type="checkbox" id="ha-show-sparkline" ${w.haShowSparkline !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
       <div class="settings-row">
         <label>Font Size (px)</label>
         <div class="range-row">
@@ -12942,6 +12949,9 @@ async function drawWidgetSettingsPanel() {
     }
     if ($('ha-show-unit')) {
       $('ha-show-unit').addEventListener('change', (e) => { w.haShowUnit = e.target.checked; });
+    }
+    if ($('ha-show-sparkline')) {
+      $('ha-show-sparkline').addEventListener('change', (e) => { w.haShowSparkline = e.target.checked; });
     }
     if ($('ha-font-range')) {
       $('ha-font-range').addEventListener('input', (e) => {
@@ -16396,6 +16406,12 @@ async function renderSettings() {
       </div>
     </div>
 
+    <div class="section-header">Other Devices On This License</div>
+    <div class="settings-card">
+      <p style="font-size:11px;color:var(--muted);padding:14px 16px 0;margin:0 0 12px">Every device that has ever checked in with this household's license key — not just displays running right now. Useful for spotting old hardware still holding a slot, or two devices both claiming to be the host.</p>
+      <div id="md-other-devices-body" style="padding:0 16px 14px">Loading…</div>
+    </div>
+
     <div class="section-header">App Preferences</div>
     <div class="settings-card">
       <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
@@ -17262,7 +17278,53 @@ async function renderSettings() {
         role.value = 'host'; toggle();
       } catch (e) { showToast('Promotion failed'); }
     });
+
+    renderOtherDevicesBody();
   })();
+  // Separate top-level function (not nested in wireMultiDevice's IIFE) so the
+  // revoke handler below can call it again to refresh the list in place,
+  // without re-running all of wireMultiDevice's other one-time wiring.
+  async function renderOtherDevicesBody() {
+    const body = $('md-other-devices-body');
+    if (!body) return;
+    body.innerHTML = 'Loading…';
+    const r = await apiFetch('/api/license-devices');
+    if (!r || r.error) {
+      body.innerHTML = `<p style="font-size:12px;color:var(--muted)">${escapeHtml((r && r.error) || 'Could not load — this device may not have a license key configured yet.')}</p>`;
+      return;
+    }
+    const devices = r.devices || [];
+    if (!devices.length) {
+      body.innerHTML = '<p style="font-size:12px;color:var(--muted)">No devices on file for this license yet.</p>';
+      return;
+    }
+    body.innerHTML = devices.map(d => {
+      const isSelf = d.deviceId === r.ownDeviceId;
+      const roleLabel = d.role === 'host' ? (d.isRecognizedHost ? 'Host' : 'Host — conflicting') : 'Display';
+      const lastSeen = d.lastSeen ? new Date(d.lastSeen).toLocaleString() : 'never';
+      const sub = [d.ip, d.version ? 'v' + d.version : '', 'last seen ' + lastSeen].filter(Boolean).join(' · ');
+      return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--border)">
+        <div style="min-width:0">
+          <div style="font-weight:600;font-size:13px">${escapeHtml(d.name || d.deviceId)} <span style="font-weight:400;color:${d.role==='host' && !d.isRecognizedHost ? '#e0433a' : 'var(--muted)'}">· ${roleLabel}</span></div>
+          <div style="font-size:11px;color:var(--muted)">${escapeHtml(sub)}</div>
+        </div>
+        ${isSelf
+          ? '<span style="font-size:11px;color:var(--muted);flex-shrink:0">This device</span>'
+          : `<button class="icon-btn del" data-revoke-id="${escapeHtml(d.deviceId)}" data-revoke-name="${escapeHtml(d.name || d.deviceId)}" title="Remove from this license">🗑️</button>`
+        }
+      </div>`;
+    }).join('');
+    body.querySelectorAll('[data-revoke-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.revokeId, name = btn.dataset.revokeName;
+        if (!confirm(`Remove "${name}" from this license?\n\nOnly do this for hardware you've actually retired or don't recognize — a device still genuinely in use will just get flagged again the next time it checks in.`)) return;
+        const r = await apiFetch(`/api/license-devices/${encodeURIComponent(id)}/revoke`, { method: 'POST' });
+        if (r && r.error) { showToast('Could not remove: ' + r.error); return; }
+        showToast(`Removed "${name}"`);
+        renderOtherDevicesBody();
+      });
+    });
+  }
 
   // Transform the flat settings sections into a collapsible accordion (with an
   // Advanced group that can be shown/hidden). Done as a DOM pass so all the inputs
