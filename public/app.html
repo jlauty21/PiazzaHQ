@@ -1405,6 +1405,11 @@ const RELEASE_NOTES = {
     'New: the wall display can now notice when its own screen freezes up and restart itself automatically, with a notification when it happens.',
     'Fixed: calendar feeds, place-name location search, and several other features could fail or hang ("Host Unreachable") on networks with partial IPv6 connectivity.',
   ],
+  '1.87.5': [
+    'Fixed: replies from the developer on a Feedback & Ideas thread weren\'t reaching your device — they\'ll now show up normally, including any that seemed to go missing before.',
+    'Fixed: replying to the developer could make the conversation box appear to collapse when you tapped in to type, on iPhone.',
+    'Fixed: a display could get stuck showing a white screen on boot even after updating, if it was set up before the fix for that first shipped.',
+  ],
 };
 
 // Beta-suffix-aware version compare — same scheme as the mothership server's
@@ -17077,10 +17082,20 @@ async function renderSettings() {
       requestAnimationFrame(toBottom);
 
       // Keep the whole view (and the input bar) sized to the space the
-      // on-screen keyboard leaves — the "messaging app" behaviour.
+      // on-screen keyboard leaves — the "messaging app" behaviour. Must also
+      // track vv.offsetTop, not just vv.height: this overlay is
+      // position:fixed with top:0, which pins it to the LAYOUT viewport.
+      // On iOS Safari, focusing the input scrolls the page so the keyboard
+      // doesn't cover it, which shifts the VISUAL viewport's offsetTop down
+      // — height-only tracking left the box shrunk to the keyboard-open
+      // height but still anchored at the old top:0, so its top portion
+      // scrolled out of view while it shrank, reading as the whole message
+      // area collapsing. Re-pinning top to vv.offsetTop keeps the overlay
+      // matched to what's actually on screen.
       const vv = window.visualViewport;
       const fit = () => {
-        ov.style.height = (vv ? vv.height : window.innerHeight) + 'px';
+        if (vv) { ov.style.height = vv.height + 'px'; ov.style.top = vv.offsetTop + 'px'; }
+        else { ov.style.height = window.innerHeight + 'px'; }
         toBottom();
       };
       fit();

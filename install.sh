@@ -547,6 +547,35 @@ add_line_if_absent() {
   fi
 }
 
+upgrade_or_add_kiosk_line() {
+  # $1 = file, $2 = the fully-wrapped line to end up with, $3 = the kiosk
+  # command fragment to search for. Distinct from add_line_if_absent()
+  # above because a plain "grep -qF -- '--kiosk'" match can't tell an old,
+  # unwrapped chromium line from this wrapped one — both contain "--kiosk".
+  # Matching on the wrapper script's name instead would dodge that, but
+  # then a stale line would never be found "absent" from a normal
+  # add_line_if_absent() search on "--kiosk" either, and a naive re-run
+  # keyed on the wrapper name would just APPEND the new line alongside the
+  # old one — two Chromiums launching on boot. This edits the stale line in
+  # place instead, so a re-run of this script genuinely repairs an install
+  # left over from before the wait-for-server wrapper existed.
+  local file="$1" wrapped_line="$2" kiosk_cmd="$3"
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  if grep -qF -- "wait-for-server-and-launch-kiosk.sh" "$file" 2>/dev/null; then
+    skip "autostart already wraps the kiosk launch ($(basename "$file"))"
+  elif grep -qF -- "--kiosk" "$file" 2>/dev/null; then
+    local tmp; tmp="$(mktemp)"
+    grep -vF -- "--kiosk" "$file" > "$tmp" || true
+    printf '%s\n' "$wrapped_line" >> "$tmp"
+    mv "$tmp" "$file"
+    ok "Upgraded stale kiosk line to the wait-for-server wrapper ($(basename "$file"))"
+  else
+    printf '%s\n' "$wrapped_line" >> "$file"
+    ok "Added to $(basename "$file"): ${DIM}${wrapped_line}${RST}"
+  fi
+}
+
 if [[ "$SESSION_TYPE" == "x11" ]]; then
   # Restore any system-default autostart lines (like @lxpanel and
   # @pcmanfm --desktop) that are missing from the personal one. A personal
@@ -603,8 +632,8 @@ if [[ "$SESSION_TYPE" == "x11" ]]; then
   if [[ -n "$CURSOR_AUTOSTART_LINE" ]]; then
     add_line_if_absent "$LXDE_AUTOSTART" "@${CURSOR_AUTOSTART_LINE%% &}" "unclutter"
   fi
-  add_line_if_absent "$LXDE_AUTOSTART" \
-    "@${PROJECT_DIR}/scripts/wait-for-server-and-launch-kiosk.sh ${KIOSK_CMD}" "--kiosk"
+  upgrade_or_add_kiosk_line "$LXDE_AUTOSTART" \
+    "@${PROJECT_DIR}/scripts/wait-for-server-and-launch-kiosk.sh ${KIOSK_CMD}" "$KIOSK_CMD"
   configured_kiosk=1
 elif [[ -d "$LABWC_DIR" || ! -f "$WAYFIRE_INI" ]]; then
   # labwc autostart is a shell script of background commands.
@@ -622,8 +651,8 @@ elif [[ -d "$LABWC_DIR" || ! -f "$WAYFIRE_INI" ]]; then
   # accepting connections before launching Chromium — a fixed sleep here used to
   # cause a white-screen-until-F5 on any boot slower than the guessed delay (see
   # scripts/wait-for-server-and-launch-kiosk.sh for the full story).
-  add_line_if_absent "$LABWC_DIR/autostart" \
-    "${PROJECT_DIR}/scripts/wait-for-server-and-launch-kiosk.sh ${KIOSK_CMD} &" "--kiosk"
+  upgrade_or_add_kiosk_line "$LABWC_DIR/autostart" \
+    "${PROJECT_DIR}/scripts/wait-for-server-and-launch-kiosk.sh ${KIOSK_CMD} &" "$KIOSK_CMD"
   configured_kiosk=1
 fi
 if [[ "$SESSION_TYPE" != "x11" && -f "$WAYFIRE_INI" ]]; then

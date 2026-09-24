@@ -4090,12 +4090,24 @@ async function centralRequest(method, pathAndQuery, bodyObj) {
   } catch { return null; }
 }
 
+// The id a feedback thread is actually filed under server-side — see the identical
+// resolution (and the full explanation) in forwardFeedbackToCentral() above: the
+// mothership joins feedback.device_id against licenseActivations.device_id, which
+// only has entries keyed by screen_device_id_cache (what fetchUpdateInfo() sends),
+// never by DEVICE_ID. The three routes below used to query with bare DEVICE_ID —
+// a different id namespace entirely — so a device could never find its OWN
+// feedback threads and every developer reply sat permanently invisible, no matter
+// how long the device polled. Must stay in lockstep with the submit-side id.
+function feedbackDeviceId() {
+  return getSetting('screen_device_id_cache') || DEVICE_ID || '';
+}
+
 // APP endpoint: fetch any developer replies to this device's feedback.
 app.get('/api/feedback-replies', async (req, res) => {
   const key = resolveFeedbackKey();
   const allParam = (req.query.all === '1' || req.query.all === 'true') ? '&all=1' : '';
   const out = await centralRequest('GET',
-    `/api/v1/feedback-replies?device=${encodeURIComponent(DEVICE_ID || '')}&key=${encodeURIComponent(key)}${allParam}`);
+    `/api/v1/feedback-replies?device=${encodeURIComponent(feedbackDeviceId())}&key=${encodeURIComponent(key)}${allParam}`);
   res.json(out || { threads: [] });
 });
 
@@ -4104,14 +4116,14 @@ app.post('/api/feedback-replies/:id', async (req, res) => {
   const text = (req.body && req.body.text || '').trim();
   if (!text) return res.status(400).json({ error: 'Message required' });
   const out = await centralRequest('POST', `/api/v1/feedback-replies/${encodeURIComponent(req.params.id)}`,
-    { text, device: DEVICE_ID || '', key: resolveFeedbackKey() });
+    { text, device: feedbackDeviceId(), key: resolveFeedbackKey() });
   res.json(out || { error: 'Could not reach the server.' });
 });
 
 // APP endpoint: mark a thread's developer replies as seen.
 app.post('/api/feedback-replies/:id/seen', async (req, res) => {
   await centralRequest('POST', `/api/v1/feedback-replies/${encodeURIComponent(req.params.id)}/seen`,
-    { device: DEVICE_ID || '', key: resolveFeedbackKey() });
+    { device: feedbackDeviceId(), key: resolveFeedbackKey() });
   res.json({ ok: true });
 });
 // each annotated with its hidden state and a stable key, so the Events tab can
@@ -13617,6 +13629,70 @@ function restartPlain(logLabel) {
   }, 800);
 }
 
+// A wait-for-server wrapper (scripts/wait-for-server-and-launch-kiosk.sh) was
+// added to fix a boot-time white-screen race — Chromium launching before the
+// server was accepting connections — but it only ever gets WIRED into a
+// user's actual autostart file by a full install.sh run. A routine self-
+// update syncs the wrapper SCRIPT itself just fine ('scripts' is in
+// UPDATE_CODE_ITEMS), but never touches autostart, so a device that was
+// already running when the wrapper shipped can stay stuck on its old,
+// unwrapped kiosk line indefinitely. This repairs that in place on every
+// self-update, without re-running any of install.sh's heavier detection
+// (session type, cursor tool, Chromium binary — no apt-get here, ever, and
+// no interactivity): it only looks for an existing "--kiosk" line that
+// isn't already wrapped, and rewrites just that line, preserving whatever
+// binary/flags/URL the user already had. Never touches wayfire.ini —
+// install.sh itself never auto-writes that one either (INI editing needs a
+// human), so a wayfire user's line, if stale, stays a manual fix.
+function refreshKioskAutostartLine() {
+  const home = os.homedir();
+  const waitScript = path.join(__dirname, 'scripts', 'wait-for-server-and-launch-kiosk.sh');
+  if (!fs.existsSync(waitScript)) return;
+
+  // lxsession's autostart lives under a session-name subdirectory that isn't
+  // a safe constant to assume (confirmed on real hardware — see install.sh's
+  // own comment on this) — read the real name the same way it does, falling
+  // back to the same default.
+  let lxsessionName = 'LXDE-pi';
+  try {
+    const lightdmConf = fs.readFileSync('/etc/lightdm/lightdm.conf', 'utf8');
+    const m = lightdmConf.match(/^\s*user-session\s*=\s*(\S+)/m);
+    if (m) lxsessionName = m[1].trim();
+  } catch {}
+
+  const candidates = [
+    { file: path.join(home, '.config', 'labwc', 'autostart'), style: 'shell' },
+    { file: path.join(home, '.config', 'lxsession', lxsessionName, 'autostart'), style: 'lxsession' },
+  ];
+
+  for (const { file, style } of candidates) {
+    try {
+      if (!fs.existsSync(file)) continue;
+      const original = fs.readFileSync(file, 'utf8');
+      let changed = false;
+      const rewritten = original.split('\n').map((line) => {
+        if (!line.includes('--kiosk') || line.includes('wait-for-server-and-launch-kiosk.sh')) return line;
+        changed = true;
+        if (style === 'lxsession') {
+          // "@chromium --kiosk ... url" -> "@<waitScript> chromium --kiosk ... url"
+          return `@${waitScript} ${line.replace(/^@/, '')}`;
+        }
+        // labwc: a shell script of background commands — the line may end in
+        // " &"; keep that at the very end so it still backgrounds correctly.
+        const hadTrailingBg = /\s*&\s*$/.test(line);
+        const body = line.replace(/\s*&\s*$/, '');
+        return `${waitScript} ${body}${hadTrailingBg ? ' &' : ''}`;
+      });
+      if (!changed) continue;
+      fs.writeFileSync(file + '.piazzahq-preupdate-bak', original);
+      fs.writeFileSync(file, rewritten.join('\n'));
+      console.log(`Update: rewrapped stale kiosk autostart line in ${file} (backup: ${path.basename(file)}.piazzahq-preupdate-bak)`);
+    } catch (e) {
+      console.error(`Update: kiosk autostart refresh failed for ${file} (continuing anyway) — ${e.message}`);
+    }
+  }
+}
+
 // Shared installer: given a staged zip on disk, validate it, back up the current
 // code, swap in the new code (preserving user data), then restart (see
 // restartToApply() — systemd on Linux, a supervised handoff on Windows).
@@ -13716,6 +13792,17 @@ function installFromZip(zipPath, res) {
         execFileSync('npm', ['install', '--omit=dev'], { cwd: __dirname, timeout: 180000, stdio: 'pipe' });
       } catch (e) {
         console.error('Update: npm install failed (continuing anyway) — ' + (e.stderr ? e.stderr.toString().slice(-300) : e.message));
+      }
+    }
+
+    // 5b2. Best-effort kiosk-autostart repair — see refreshKioskAutostartLine()
+    // above for why. Pi only: Windows and containers have no kiosk-autostart
+    // concept at all, so DEPLOYMENT === 'pi' (not just !IS_WIN) is the right gate.
+    if (DEPLOYMENT === 'pi') {
+      try {
+        refreshKioskAutostartLine();
+      } catch (e) {
+        console.error('Update: kiosk autostart refresh failed (continuing anyway) — ' + e.message);
       }
     }
 
