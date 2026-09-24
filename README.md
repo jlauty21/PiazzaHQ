@@ -19,6 +19,9 @@ Everything runs locally on your own hardware. The optional central server is
 only used to check for updates and relay feedback — your calendars, photos and
 settings never leave your device.
 
+Piazza HQ is free, supported by optional donations — nothing is locked behind a
+payment.
+
 ## Ways to run it
 
 | Platform | How | Notes |

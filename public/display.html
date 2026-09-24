@@ -3272,8 +3272,8 @@
 <div id="license-required-overlay" style="display:none">
   <div class="setup-needed-inner">
     <div class="setup-needed-logo">PIAZZA HQ</div>
-    <h1>A license is required to continue</h1>
-    <p>Your free trial period has ended. Visit this address from your phone or any browser on the same network to add a license key:</p>
+    <h1>Your license key needs renewing</h1>
+    <p>Your license key has expired. Visit this address from your phone or any browser on the same network to add a license key:</p>
     <div class="setup-needed-url" id="license-required-url">—</div>
     <div class="setup-needed-qr-wrap" id="license-required-qr-wrap" style="display:none">
       <div class="qr-container" id="license-required-qr" data-size="160"></div>
@@ -20106,7 +20106,7 @@ function checkTrialNotice() {
       const today = now.toISOString().slice(0, 10);
       if (localStorage.getItem('trial_notice_dismissed_on') === today) { el.style.display = 'none'; return; }
       el.innerHTML = `
-        <div class="tn-text"><div class="tn-title">Piazza HQ</div>Your free trial ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'}. Visit piazzahq.com to continue.</div>
+        <div class="tn-text"><div class="tn-title">Piazza HQ</div>Your license key expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'}. Visit piazzahq.com to renew it.</div>
         <div class="tn-close" onclick="dismissTrialNotice()">✕</div>`;
       el.style.display = 'flex';
       return;

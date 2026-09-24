@@ -10818,7 +10818,7 @@ app.post('/api/screen-checkin', (req, res) => {
         if (currentCount >= limits.maxDevices) {
           return res.status(403).json({
             ok: false,
-            error: `This trial/free account is limited to ${limits.maxDevices} screen${limits.maxDevices === 1 ? '' : 's'}. Activate a license to add more.`,
+            error: `This account is limited to ${limits.maxDevices} screen${limits.maxDevices === 1 ? '' : 's'}.`,
           });
         }
       }
@@ -11074,7 +11074,7 @@ app.put('/api/layouts/:orientation', (req, res) => {
       const previousCount = existingRow ? (JSON.parse(existingRow.widgets || '[]').length || 0) : 0;
       if (widgets.length > limits.maxWidgets && widgets.length > previousCount) {
         return res.status(403).json({
-          error: `This trial/free account is limited to ${limits.maxWidgets} widgets. Activate a license to add more.`,
+          error: `This account is limited to ${limits.maxWidgets} widgets.`,
         });
       }
     }

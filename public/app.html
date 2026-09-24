@@ -1128,7 +1128,7 @@
     <div style="display:flex;flex-direction:column;gap:8px">
       <button id="hc-claim-btn" class="settings-save" style="margin:0">Make this device the main one</button>
       <button id="hc-slave-btn" class="settings-save" style="margin:0;background:var(--card);border:1px solid var(--border);color:var(--text)">This is a second screen for the same setup</button>
-      <button id="hc-trial-btn" class="settings-save" style="margin:0;background:var(--card);border:1px solid var(--border);color:var(--text)">Keep this one on the free trial instead</button>
+      <button id="hc-trial-btn" class="settings-save" style="margin:0;background:var(--card);border:1px solid var(--border);color:var(--text)">Keep this one on a free license instead</button>
     </div>
     <button id="hc-dismiss-btn" style="width:100%;margin-top:14px;background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;padding:6px">Decide later</button>
     <div id="hc-status" style="margin-top:10px;font-size:13px;text-align:center;color:var(--muted)"></div>
@@ -1409,6 +1409,10 @@ const RELEASE_NOTES = {
     'Fixed: replies from the developer on a Feedback & Ideas thread weren\'t reaching your device — they\'ll now show up normally, including any that seemed to go missing before.',
     'Fixed: replying to the developer could make the conversation box appear to collapse when you tapped in to type, on iPhone.',
     'Fixed: a display could get stuck showing a white screen on boot even after updating, if it was set up before the fix for that first shipped.',
+  ],
+  '1.87.6': [
+    'Improved: "Other devices on this license" now lives inside Settings → Multi-Device, right next to the host and display controls.',
+    'Plus minor app refinements.',
   ],
 };
 
@@ -2161,7 +2165,6 @@ const SETTINGS_SEARCH_SYNONYMS = {
   update: ['version & license', 'current version', 'auto-push updates'],
   version: ['version & license', 'current version'],
   license: ['version & license', 'license key', 'account status'],
-  billing: ['version & license', 'account status'],
   account: ['account status', 'license key'],
 
   backup: ['backup'],
@@ -16409,12 +16412,12 @@ async function renderSettings() {
         </p>
         <p style="font-size:11px;color:var(--muted);margin-top:10px;border-top:1px solid var(--border);padding-top:10px;padding-bottom:14px">This device is the host. Connected displays appear in the <b>Devices</b> tab, where you can assign each one a layout profile.</p>
       </div>
-    </div>
 
-    <div class="section-header">Other Devices On This License</div>
-    <div class="settings-card">
-      <p style="font-size:11px;color:var(--muted);padding:14px 16px 0;margin:0 0 12px">Every device that has ever checked in with this household's license key — not just displays running right now. Useful for spotting old hardware still holding a slot, or two devices both claiming to be the host.</p>
-      <div id="md-other-devices-body" style="padding:0 16px 14px">Loading…</div>
+      <div style="border-top:1px solid var(--border);margin-top:4px">
+        <div style="font-size:13px;font-weight:600;padding:14px 16px 0">Other devices on this license</div>
+        <p style="font-size:11px;color:var(--muted);padding:6px 16px 0;margin:0 0 12px">Every device that has ever checked in with this household's license key — not just displays running right now. Useful for spotting old hardware still holding a slot, or two devices both claiming to be the host.</p>
+        <div id="md-other-devices-body" style="padding:0 16px 14px">Loading…</div>
+      </div>
     </div>
 
     <div class="section-header">App Preferences</div>
@@ -17474,7 +17477,7 @@ async function renderSettings() {
       }
       const serverUrl = (s.update_server_url || '').trim().replace(/\/$/, '');
       const activateHtml = (statusRaw !== 'active' && serverUrl)
-        ? `<br><a href="${serverUrl}/#pricing" target="_blank" rel="noopener" style="color:var(--accent);font-size:12px">Manage your license →</a>`
+        ? `<br><a href="${serverUrl}/#get-started" target="_blank" rel="noopener" style="color:var(--accent);font-size:12px">Manage your license →</a>`
         : '';
       // Same 7-day grace period the wall display itself enforces (see
       // checkLicenseBlock() in display.html) — surfaced here too, so
@@ -18949,7 +18952,7 @@ function runSetupWizard(s0) {
       if (checkResult && checkResult.valid === false) {
         status.style.color = '#ff8585';
         status.innerHTML = 'We don\u2019t recognize that license key \u2014 double-check it in Settings \u2192 Version & License on your main device.'
-          + '<br><br>Don\u2019t have an account yet? <a href="https://piazzahq.com/#pricing" target="_blank" rel="noopener" style="color:var(--accent,#4A6CF7)">Get a license key \u2192</a>'
+          + '<br><br>Don\u2019t have an account yet? <a href="https://piazzahq.com/#get-started" target="_blank" rel="noopener" style="color:var(--accent,#4A6CF7)">Get a free key \u2192</a>'
           + '<br>Setting up your very first device? <a href="#" id="wiz-goto-host-link" style="color:var(--accent,#4A6CF7)">Go back and choose Host instead \u2192</a>';
         const gotoHostLink = document.getElementById('wiz-goto-host-link');
         // Reuses the existing wiz-back button's own click handler (which
@@ -19422,7 +19425,7 @@ function checkHostConflict(s) {
   };
   document.getElementById('hc-claim-btn').addEventListener('click', () => resolve('claim', 'Setting this device as the main one…'));
   document.getElementById('hc-slave-btn').addEventListener('click', () => resolve('slave', 'Saving…'));
-  document.getElementById('hc-trial-btn').addEventListener('click', () => resolve('trial', 'Switching to the free trial…'));
+  document.getElementById('hc-trial-btn').addEventListener('click', () => resolve('trial', 'Switching to a free license…'));
   document.getElementById('hc-dismiss-btn').addEventListener('click', () => {
     document.getElementById('host-conflict-modal').style.display = 'none';
   });
