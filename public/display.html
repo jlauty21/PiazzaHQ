@@ -2942,7 +2942,7 @@
     .w-shopping .sl-head { font-size:calc(var(--sl-font) * 1.2 * var(--ui-scale,1)); font-weight:700; letter-spacing:1px;
       text-transform:uppercase; padding-bottom:calc(6px * var(--ui-scale,1)); flex-shrink:0;
       border-bottom:1px solid var(--border); margin-bottom:calc(8px * var(--ui-scale,1)); color:var(--accent); }
-    .w-shopping .sl-items { display:flex; flex-direction:column; gap:calc(7px * var(--ui-scale,1)); overflow:hidden; flex:1; min-height:0; }
+    .w-shopping .sl-items { display:flex; flex-direction:column; gap:var(--sl-gap, calc(7px * var(--ui-scale,1))); overflow:hidden; flex:1; min-height:0; }
     .w-shopping .sl-item { display:flex; align-items:center; gap:calc(8px * var(--ui-scale,1)); font-size:calc(var(--sl-font) * var(--ui-scale,1));
       cursor:pointer; -webkit-tap-highlight-color:transparent; transition:opacity 0.1s; padding:2px 0; }
     .w-shopping .sl-item:active { opacity:0.55; }
@@ -10577,7 +10577,13 @@ async function openWidgetAdvancedPanel(id) {
     wireTodoAdvancedSettings(w);
   } else if (w.type === 'shoppinglist') {
     title.textContent = 'Shopping List Settings';
-    body.innerHTML = renderShoppingAdvancedSettings(w);
+    body.innerHTML = '<p class="was-hint">Loading…</p>';
+    let lists = [];
+    try { lists = await (await fetch('/api/shopping-lists')).json(); } catch {}
+    if (!Array.isArray(lists)) lists = [];
+    if (document.getElementById('widget-advanced-panel').style.display === 'none') return;
+    if (String(selectedWidgetId) !== String(id)) return;
+    body.innerHTML = renderShoppingAdvancedSettings(w, lists);
     wireShoppingAdvancedSettings(w);
   } else if (w.type === 'chorechart') {
     title.textContent = 'Chore Chart Settings';
@@ -12325,9 +12331,18 @@ function wireTodoAdvancedSettings(w) {
   });
 }
 
-function renderShoppingAdvancedSettings(w) {
+function renderShoppingAdvancedSettings(w, lists) {
   const fontPx = w.shoppingFontPx || 15;
+  const chosen = shoppingListForWidget(w, lists);
+  const listPicker = (lists && lists.length) ? `
+    <div class="was-row">
+      <label>Which List ${infoBtn("Add more lists, like Costco or Pharmacy, in the app under Family Hub → Shopping. Each Shopping List widget shows one list.")}</label>
+      <select id="sl-list-select">
+        ${lists.map(l => `<option value="${l.id}" ${chosen && chosen.id === l.id ? 'selected' : ''}>${escapeHtmlD(l.name)}</option>`).join('')}
+      </select>
+    </div>` : '';
   return `
+    ${listPicker}
     <div class="was-row">
       <label>Title</label>
       <input type="text" id="sl-title" value="${escapeHtmlD(w.shoppingTitle||'Shopping List')}">
@@ -12343,9 +12358,19 @@ function renderShoppingAdvancedSettings(w) {
       <label>Show checked-off items ${infoBtn("Tap an item right on the display to check it off, or add/manage items from Family Hub or the app.")}</label>
       <input type="checkbox" id="sl-showdone" ${w.shoppingShowDone!==false?'checked':''}>
     </div>
+    <div class="was-toggle-row">
+      <label>Shrink text to fit the whole list ${infoBtn("When the list is longer than the widget, the text shrinks until every item shows. A list that already fits keeps the font size above.")}</label>
+      <input type="checkbox" id="sl-autofit" ${w.shoppingAutoFit!==false?'checked':''}>
+    </div>
   `;
 }
 function wireShoppingAdvancedSettings(w) {
+  const listSel = document.getElementById('sl-list-select');
+  if (listSel) listSel.addEventListener('change', (e) => {
+    w.shoppingListId = parseInt(e.target.value, 10);
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  });
   const titleInput = document.getElementById('sl-title');
   if (titleInput) titleInput.addEventListener('input', (e) => {
     w.shoppingTitle = e.target.value;
@@ -12362,6 +12387,12 @@ function wireShoppingAdvancedSettings(w) {
   const showDone = document.getElementById('sl-showdone');
   if (showDone) showDone.addEventListener('change', (e) => {
     w.shoppingShowDone = e.target.checked;
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  });
+  const autoFit = document.getElementById('sl-autofit');
+  if (autoFit) autoFit.addEventListener('change', (e) => {
+    w.shoppingAutoFit = e.target.checked;
     rerenderSingleWidget(w.id);
     scheduleLayoutSave();
   });
@@ -16446,12 +16477,22 @@ function showInfoPopup(id) {
 // it); this now mirrors the Chore Chart/To-Do pattern exactly: optimistic
 // update against the same PUT /api/shopping-items/:id endpoint the Family
 // Hub and app already use, revert-on-failure via showDisplayToast().
+// Which shopping list a widget shows: its own shoppingListId, or the default
+// (first) list when it has none — or when the list it was pointed at has since
+// been deleted. null only if lists haven't loaded (or the host predates lists).
+function shoppingListForWidget(w, lists) {
+  lists = lists || [];
+  return lists.find(l => l.id === Number(w && w.shoppingListId)) || lists[0] || null;
+}
 function renderShoppingListWidget(widget) {
   const w = widget || {};
   const slFontPx = w.shoppingFontPx || 15;
   const slStyle = `--sl-font:calc(${slFontPx}px * var(--ui-scale,1))`;
-  const title = w.shoppingTitle || 'Shopping List';
-  const allItems = state.shoppingItems || [];
+  const list = shoppingListForWidget(w, state.shoppingLists);
+  const title = w.shoppingTitle || (list && list.name) || 'Shopping List';
+  // Items with no list_id (a host that predates lists) count as belonging to
+  // whichever list is showing, so nothing disappears during a mixed-version update.
+  const allItems = (state.shoppingItems || []).filter(it => it.list_id == null || !list || Number(it.list_id) === list.id);
   const items = (w.shoppingShowDone === false) ? allItems.filter(it => !it.done) : allItems;
   if (!items.length) {
     return `<div class="w-shopping" style="${slStyle}"><div class="sl-head">${escapeHtmlD(title)}</div><div class="no-data">List's empty 🎉</div></div>`;
@@ -16470,7 +16511,54 @@ function renderShoppingListWidget(widget) {
 // widget above (and reusing its showDisplayToast() for the failure case),
 // against PUT /api/shopping-items/:id, the same endpoint the Family Hub and
 // app's own Shopping tab already use. No photo-required equivalent here.
+// Shopping List auto-fit: shrink-only. Starts at the widget's own configured
+// font size and steps down ~6% at a time until the whole list fits its box,
+// with a floor so a huge list doesn't collapse into unreadable specks. A list
+// that already fits is left exactly as configured, so turning this on never
+// changes how an existing, non-overflowing widget looks. Deliberately NOT the
+// ratio/grow-to-fill approach of the (currently disabled) weather/clock
+// auto-fit above — height-only iterative shrink is the one variant that
+// doesn't depend on getting a scale ratio right.
+const SL_AUTOFIT_MIN_SCALE = 0.3;
+function autoFitShoppingWidget(widgetEl, w) {
+  const root = widgetEl.querySelector('.w-shopping');
+  const list = root && root.querySelector('.sl-items');
+  if (!root || !list) return;
+  const startPx = w.shoppingFontPx || 15;
+  let px = startPx;
+  // The row gap shrinks with the text (--sl-gap); at full size it works out to
+  // exactly the original 7px, so an untouched widget looks identical.
+  const apply = () => {
+    root.style.setProperty('--sl-font', `calc(${px.toFixed(2)}px * var(--ui-scale,1))`);
+    root.style.setProperty('--sl-gap', `calc(${(7 * px / startPx).toFixed(2)}px * var(--ui-scale,1))`);
+  };
+  apply();
+  let guard = 40;
+  while (list.scrollHeight > list.clientHeight + 1 && guard-- > 0) {
+    px *= 0.94;
+    if (px <= startPx * SL_AUTOFIT_MIN_SCALE) { px = startPx * SL_AUTOFIT_MIN_SCALE; apply(); break; }
+    apply();
+  }
+}
+let _shoppingFitObserver = null;
+function fitShoppingWidgets() {
+  if (_shoppingFitObserver) _shoppingFitObserver.disconnect();
+  _shoppingFitObserver = new ResizeObserver((entries) => {
+    entries.forEach(entry => {
+      const w = state.layout.find(x => String(x.id) === String(entry.target.dataset.widgetId));
+      if (w && w.shoppingAutoFit !== false) autoFitShoppingWidget(entry.target, w);
+    });
+  });
+  document.querySelectorAll('.widget[data-widget-id]').forEach(el => {
+    const w = state.layout.find(x => String(x.id) === String(el.dataset.widgetId));
+    if (w && w.type === 'shoppinglist' && w.shoppingAutoFit !== false) {
+      autoFitShoppingWidget(el, w); // applied directly so the first paint is already fit
+      _shoppingFitObserver.observe(el); // and again on any later resize (drag-resizing in Live Edit)
+    }
+  });
+}
 function wireShoppingWidgetTaps() {
+  fitShoppingWidgets();
   document.querySelectorAll('.w-shopping .sl-item[data-item-id]').forEach(el => {
     if (el._tapWired) return;
     el._tapWired = true;
@@ -18654,9 +18742,14 @@ async function fetchTodoForLayout() {
 async function fetchShoppingListForLayout() {
   if (!state.layout.some(w => w.type === 'shoppinglist')) return; // skip work if no widget is in use
   try {
-    const r = await fetch('/api/shopping-list');
+    // ?list=all: every list's items in one fetch (each carries its list_id), so
+    // several widgets can each show a different list. A host that predates lists
+    // ignores the param and returns its one list, which the widget accepts as-is.
+    const [r, lr] = await Promise.all([fetch('/api/shopping-list?list=all'), fetch('/api/shopping-lists').catch(() => null)]);
     state.shoppingItems = await r.json();
-  } catch { state.shoppingItems = state.shoppingItems || []; }
+    if (lr && lr.ok) { const l = await lr.json(); state.shoppingLists = Array.isArray(l) ? l : []; }
+    else state.shoppingLists = state.shoppingLists || [];
+  } catch { state.shoppingItems = state.shoppingItems || []; state.shoppingLists = state.shoppingLists || []; }
 }
 
 async function fetchEvents() {

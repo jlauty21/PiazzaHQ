@@ -112,6 +112,11 @@
   #install-hint .dismiss { background:none; color:var(--muted); padding:6px; }
 
   /* Shopping List view */
+  #shopping-list-bar { display:flex; align-items:center; gap:8px; padding:12px 16px 0; flex-shrink:0; }
+  #shopping-list-select { flex:1; min-width:0; background:var(--card); color:var(--text); border:1px solid var(--muted);
+    border-radius:10px; padding:8px 10px; font-size:14px; }
+  #shopping-list-bar button { background:none; border:1px solid var(--muted); color:var(--muted); border-radius:10px;
+    padding:8px 10px; font-size:13px; cursor:pointer; flex-shrink:0; }
   #shopping-toolbar { display:flex; align-items:center; gap:10px; padding:14px 16px 10px; flex-shrink:0; }
   #shopping-toolbar .store-label { font-size:12px; color:var(--muted); flex-shrink:0; }
   #shopping-store-select { flex:1; max-width:160px; background:var(--card); color:var(--text); border:1px solid var(--muted);
@@ -307,6 +312,12 @@
         </div>
 
         <div id="view-shopping" class="subview">
+          <div id="shopping-list-bar">
+            <select id="shopping-list-select"></select>
+            <button id="shopping-list-new-btn" title="Add a list">＋ List</button>
+            <button id="shopping-list-rename-btn" title="Rename this list">Rename</button>
+            <button id="shopping-list-delete-btn" title="Delete this list">🗑️</button>
+          </div>
           <div id="shopping-toolbar">
             <span class="store-label">Buy links search:</span>
             <select id="shopping-store-select">
@@ -750,16 +761,60 @@ function buyUrlFor(itemText, store) {
 
 let shoppingItems = [];
 let shoppingStore = 'walmart';
+let shoppingLists = [];
+let shoppingListId = null; // which list this tab is showing; remembered across visits
+try { shoppingListId = Number(localStorage.getItem('hub_shopping_list')) || null; } catch {}
 
 async function loadShoppingList() {
   try {
-    const [items, settings] = await Promise.all([api('/api/shopping-list'), api('/api/settings')]);
-    shoppingItems = items || [];
+    const [lists, settings] = await Promise.all([api('/api/shopping-lists'), api('/api/settings')]);
+    shoppingLists = Array.isArray(lists) ? lists : [];
     shoppingStore = (settings && settings.shopping_store) || 'walmart';
+    const cur = shoppingLists.find(l => l.id === shoppingListId) || shoppingLists[0] || null;
+    shoppingListId = cur ? cur.id : null;
+    const items = await api('/api/shopping-list' + (cur ? '?list=' + cur.id : ''));
+    shoppingItems = Array.isArray(items) ? items : [];
   } catch { shoppingItems = []; }
+  renderShoppingListBar();
   $('shopping-store-select').value = shoppingStore;
   renderShoppingItems();
 }
+function renderShoppingListBar() {
+  const sel = $('shopping-list-select');
+  sel.innerHTML = shoppingLists.map(l => `<option value="${l.id}" ${l.id === shoppingListId ? 'selected' : ''}>${escapeHtml(l.name)}${l.open_count ? ' (' + l.open_count + ')' : ''}</option>`).join('');
+  $('shopping-list-delete-btn').style.display = shoppingLists.length > 1 ? '' : 'none';
+}
+function setShoppingList(id) {
+  shoppingListId = id;
+  try { localStorage.setItem('hub_shopping_list', String(id)); } catch {}
+  loadShoppingList();
+}
+$('shopping-list-select').addEventListener('change', (e) => setShoppingList(parseInt(e.target.value)));
+$('shopping-list-new-btn').addEventListener('click', async () => {
+  const name = (prompt('Name for the new list (e.g. Costco):') || '').trim();
+  if (!name) return;
+  try {
+    const r = await api('/api/shopping-lists', { method: 'POST', body: JSON.stringify({ name }) });
+    if (r && r.id) setShoppingList(r.id);
+  } catch {}
+});
+$('shopping-list-rename-btn').addEventListener('click', async () => {
+  const cur = shoppingLists.find(l => l.id === shoppingListId);
+  if (!cur) return;
+  const name = (prompt('Rename this list:', cur.name) || '').trim();
+  if (!name || name === cur.name) return;
+  try { await api(`/api/shopping-lists/${cur.id}`, { method: 'PUT', body: JSON.stringify({ name }) }); } catch {}
+  loadShoppingList();
+});
+$('shopping-list-delete-btn').addEventListener('click', async () => {
+  const cur = shoppingLists.find(l => l.id === shoppingListId);
+  if (!cur) return;
+  if (!confirm(`Delete "${cur.name}" and everything on it?`)) return;
+  try { await api(`/api/shopping-lists/${cur.id}`, { method: 'DELETE' }); } catch {}
+  shoppingListId = null;
+  try { localStorage.removeItem('hub_shopping_list'); } catch {}
+  loadShoppingList();
+});
 
 function renderShoppingItems() {
   const wrap = $('shopping-items-wrap');
@@ -815,15 +870,15 @@ async function addShoppingItem() {
   if (!text) return;
   input.value = '';
   try {
-    const r = await api('/api/shopping-list', { method: 'POST', body: JSON.stringify({ text }) });
+    const r = await api('/api/shopping-list', { method: 'POST', body: JSON.stringify({ text, list_id: shoppingListId }) });
     if (r && r.id) { shoppingItems.push(r); renderShoppingItems(); }
   } catch {}
 }
 
 $('shopping-clear-btn').addEventListener('click', async () => {
   if (!shoppingItems.some(i => i.done)) return;
-  if (!confirm('Clear every checked-off item?')) return;
-  await api('/api/shopping-list/clear-done', { method: 'POST' });
+  if (!confirm('Clear every checked-off item on this list?')) return;
+  await api('/api/shopping-list/clear-done' + (shoppingListId ? '?list=' + shoppingListId : ''), { method: 'POST' });
   loadShoppingList();
 });
 

@@ -1414,6 +1414,12 @@ const RELEASE_NOTES = {
     'Improved: "Other devices on this license" now lives inside Settings → Multi-Device, right next to the host and display controls.',
     'Plus minor app refinements.',
   ],
+  '1.87.7': [
+    'New: multiple shopping lists — keep a separate list for the regular grocery store, Costco, the pharmacy, and more. Add and switch lists from Family Hub → Shopping, then choose which list each Shopping List widget shows.',
+    'New: the Shopping List widget can shrink its text so a long list always fits (on by default — turn it off in the widget\'s settings).',
+    'Improved: Shopping List widgets now show up on mirror displays too.',
+    'Plus minor app refinements.',
+  ],
 };
 
 // Beta-suffix-aware version compare — same scheme as the mothership server's
@@ -3647,7 +3653,7 @@ async function renderFavoritesTab() {
   if (needs.has('kids')) fetches.push(apiFetch('/api/chore-chart').then(r => data.chart = r).catch(() => { data.chart = null; }));
   if (needs.has('rewards')) fetches.push(apiFetch('/api/rewards').then(r => data.rewards = r).catch(() => { data.rewards = []; }));
   if (needs.has('screens')) fetches.push(apiFetch('/api/screens').then(r => data.screens = r).catch(() => { data.screens = []; }));
-  if (needs.has('shopping')) fetches.push(apiFetch('/api/shopping-list').then(r => data.shopping = r).catch(() => { data.shopping = []; }));
+  if (needs.has('shopping')) fetches.push(apiFetch('/api/shopping-list?list=all').then(r => data.shopping = r).catch(() => { data.shopping = []; }));
   if (needs.has('weather')) fetches.push(apiFetch('/api/weather').then(r => data.weather = r).catch(() => { data.weather = null; }));
   if (needs.has('ha_entities')) fetches.push(apiFetch('/api/ha/entities').then(r => data.haEntities = Array.isArray(r) ? r : []).catch(() => { data.haEntities = []; }));
   if (needs.has('events')) {
@@ -10365,7 +10371,17 @@ async function drawWidgetSettingsPanel() {
     `;
   } else if (w.type === 'shoppinglist') {
     const slFontPx = w.shoppingFontPx || 15;
+    const slLists = await apiFetch('/api/shopping-lists').catch(() => []);
+    const slChosen = (Array.isArray(slLists) ? slLists : []).find(l => l.id === Number(w.shoppingListId)) || (Array.isArray(slLists) ? slLists[0] : null);
+    const slListPicker = (Array.isArray(slLists) && slLists.length) ? `
+      <div class="settings-row">
+        <label>Which List ${infoBtn("Add more lists, like Costco or Pharmacy, from Family Hub → Shopping. Each Shopping List widget shows one list.")}</label>
+        <select class="form-input" id="sl-list-select">
+          ${slLists.map(l => `<option value="${l.id}" ${slChosen && slChosen.id === l.id ? 'selected' : ''}>${escapeHtml(l.name)}</option>`).join('')}
+        </select>
+      </div>` : '';
     typeSpecificHtml = `
+      ${slListPicker}
       <div class="settings-row">
         <label>Title</label>
         <input class="form-input" id="sl-title" value="${escapeHtml(w.shoppingTitle||'Shopping List')}">
@@ -10380,6 +10396,10 @@ async function drawWidgetSettingsPanel() {
       <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
         <label style="margin-bottom:0">Show checked-off items</label>
         <input type="checkbox" id="sl-showdone" ${w.shoppingShowDone!==false?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Shrink text to fit the whole list ${infoBtn("When the list is longer than the widget, the text shrinks until every item shows. A list that already fits keeps the font size above.")}</label>
+        <input type="checkbox" id="sl-autofit" ${w.shoppingAutoFit!==false?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
       <p style="font-size:11px;color:var(--muted);margin-top:6px">Tap an item right on the display to check it off, or add/manage items from Family Hub (/hub) or the "🛒 Shopping" settings below.</p>
     `;
@@ -12098,12 +12118,14 @@ async function drawWidgetSettingsPanel() {
   }
 
   if (w.type === 'shoppinglist') {
+    if ($('sl-list-select')) $('sl-list-select').addEventListener('change', (e) => { w.shoppingListId = parseInt(e.target.value); });
     if ($('sl-title')) $('sl-title').addEventListener('input', (e) => { w.shoppingTitle = e.target.value; });
     if ($('sl-font-range')) $('sl-font-range').addEventListener('input', (e) => {
       w.shoppingFontPx = parseInt(e.target.value);
       $('sl-font-val').textContent = w.shoppingFontPx + 'px';
     });
     if ($('sl-showdone')) $('sl-showdone').addEventListener('change', (e) => { w.shoppingShowDone = e.target.checked; });
+    if ($('sl-autofit')) $('sl-autofit').addEventListener('change', (e) => { w.shoppingAutoFit = e.target.checked; });
   }
 
   if (w.type === 'chorechart') {
@@ -13808,13 +13830,30 @@ function buyUrlFor(itemText, store) {
   }
 }
 
+// Which shopping list the tab is showing — remembered across visits.
+let _shopSelectedList = null;
 async function renderShoppingTab() {
   const content = $('content');
-  let items = [], settings = {};
-  try { [items, settings] = await Promise.all([apiFetch('/api/shopping-list'), apiFetch('/api/settings')]); } catch {}
+  let lists = [], items = [], settings = {};
+  try { [lists, settings] = await Promise.all([apiFetch('/api/shopping-lists'), apiFetch('/api/settings')]); } catch {}
+  if (!Array.isArray(lists)) lists = [];
+  let sel = _shopSelectedList;
+  try { if (sel == null) sel = Number(localStorage.getItem('shopping_selected_list')) || null; } catch {}
+  const cur = lists.find(l => l.id === sel) || lists[0] || null;
+  _shopSelectedList = cur ? cur.id : null;
+  try { items = await apiFetch('/api/shopping-list' + (cur ? '?list=' + cur.id : '')); } catch {}
+  if (!Array.isArray(items)) items = [];
   const store = (settings && settings.shopping_store) || 'walmart';
   content.innerHTML = `
     <div style="padding:14px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+        <select class="form-input" id="shop-list-select" style="flex:1;min-width:140px">
+          ${lists.map(l => `<option value="${l.id}" ${cur && cur.id === l.id ? 'selected' : ''}>${escapeHtml(l.name)}${l.open_count ? ' (' + l.open_count + ')' : ''}</option>`).join('')}
+        </select>
+        <button type="button" id="shop-list-new-btn" class="ghost small" title="Add a list">＋ New list</button>
+        <button type="button" id="shop-list-rename-btn" class="ghost small" title="Rename this list">Rename</button>
+        ${lists.length > 1 ? '<button type="button" id="shop-list-delete-btn" class="icon-btn del small" title="Delete this list">🗑️</button>' : ''}
+      </div>
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
         <label style="font-size:13px;color:var(--muted);flex-shrink:0">Buy links search</label>
         <select class="form-input" id="shop-store-select" style="width:auto">
@@ -13839,14 +13878,47 @@ async function renderShoppingTab() {
         <input class="form-input" id="shop-newitem-input" placeholder="Add an item…" style="flex:1">
         <button type="button" id="shop-newitem-btn" style="background:var(--accent);border:none;border-radius:10px;padding:0 16px;color:#fff;font-size:14px;font-weight:600;cursor:pointer">Add</button>
       </div>
-      <p style="font-size:11px;color:var(--muted);margin-top:14px">Also available as its own installable app at <b>/hub</b> (Shopping tab), and as a wall-display widget from the Layout tab.</p>
+      <p style="font-size:11px;color:var(--muted);margin-top:14px">Also available as its own installable app at <b>/hub</b> (Shopping tab), and as a wall-display widget from the Layout tab — each widget shows one list.</p>
     </div>
   `;
-  wireShoppingListManager(store);
+  wireShoppingListManager(store, cur);
 }
-function wireShoppingListManager(store) {
+function wireShoppingListManager(store, cur) {
   const wrap = $('shop-items');
   if (!wrap) return;
+  const listId = cur ? cur.id : undefined;
+
+  if ($('shop-list-select')) $('shop-list-select').addEventListener('change', (e) => {
+    _shopSelectedList = parseInt(e.target.value);
+    try { localStorage.setItem('shopping_selected_list', String(_shopSelectedList)); } catch {}
+    renderShoppingTab();
+  });
+  if ($('shop-list-new-btn')) $('shop-list-new-btn').addEventListener('click', async () => {
+    const name = (prompt('Name for the new list (e.g. Costco):') || '').trim();
+    if (!name) return;
+    const r = await apiFetch('/api/shopping-lists', { method: 'POST', body: JSON.stringify({ name }) });
+    if (r && r.error) { showToast('❌ ' + r.error); return; }
+    _shopSelectedList = r.id;
+    try { localStorage.setItem('shopping_selected_list', String(r.id)); } catch {}
+    renderShoppingTab();
+  });
+  if ($('shop-list-rename-btn')) $('shop-list-rename-btn').addEventListener('click', async () => {
+    if (!cur) return;
+    const name = (prompt('Rename this list:', cur.name) || '').trim();
+    if (!name || name === cur.name) return;
+    const r = await apiFetch(`/api/shopping-lists/${cur.id}`, { method: 'PUT', body: JSON.stringify({ name }) });
+    if (r && r.error) { showToast('❌ ' + r.error); return; }
+    renderShoppingTab();
+  });
+  if ($('shop-list-delete-btn')) $('shop-list-delete-btn').addEventListener('click', async () => {
+    if (!cur) return;
+    if (!confirm(`Delete "${cur.name}" and everything on it?`)) return;
+    const r = await apiFetch(`/api/shopping-lists/${cur.id}`, { method: 'DELETE' });
+    if (r && r.error) { showToast('❌ ' + r.error); return; }
+    _shopSelectedList = null;
+    try { localStorage.removeItem('shopping_selected_list'); } catch {}
+    renderShoppingTab();
+  });
 
   if ($('shop-store-select')) $('shop-store-select').addEventListener('change', async (e) => {
     await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify({ shopping_store: e.target.value }) });
@@ -13859,7 +13931,7 @@ function wireShoppingListManager(store) {
     const input = $('shop-newitem-input');
     const text = input.value.trim();
     if (!text) return;
-    const r = await apiFetch('/api/shopping-list', { method: 'POST', body: JSON.stringify({ text }) });
+    const r = await apiFetch('/api/shopping-list', { method: 'POST', body: JSON.stringify({ text, list_id: listId }) });
     if (r && r.error) { showToast('❌ ' + r.error); return; }
     input.value = '';
     renderShoppingTab();
@@ -13877,8 +13949,8 @@ function wireShoppingListManager(store) {
   }));
 
   if ($('shop-clear-btn')) $('shop-clear-btn').addEventListener('click', async () => {
-    if (!confirm('Clear every checked-off item?')) return;
-    await apiFetch('/api/shopping-list/clear-done', { method: 'POST' });
+    if (!confirm('Clear every checked-off item on this list?')) return;
+    await apiFetch('/api/shopping-list/clear-done' + (listId !== undefined ? '?list=' + listId : ''), { method: 'POST' });
     renderShoppingTab();
   });
 }
@@ -16085,8 +16157,8 @@ async function renderSettings() {
           <p style="margin:14px 0 0"><b>8.</b> Tap the Shortcut's name/settings at the top → <b>Add to Siri</b> → record a trigger phrase, e.g. "add to shopping list." When Siri asks what to add, answering with just the item name (not a full sentence) keeps your list entries clean — whatever you say is exactly what gets added, word for word.</p>
         </div>
         <p style="font-size:12px;color:var(--muted);margin-top:14px">
-          Want a different list? Change <code>list=shopping</code> in step 4 to a To-Do
-          list's exact name instead. Alexa also works, using the same underlying
+          Want a different list? Change <code>list=shopping</code> in step 4 to the exact name of
+          another Shopping list (like Costco) or a To-Do list instead. Alexa also works, using the same underlying
           endpoint but a separate setup — needs its own public HTTPS endpoint and an
           Alexa Developer Console skill (endpoint: <code style="word-break:break-all">${window.location.origin}/api/alexa</code>).
         </p>

@@ -873,10 +873,19 @@ db.exec(`
     created_at   TEXT DEFAULT (datetime('now'))
   );
 
-  -- Shopping list: a single running list (unlike to-do lists above, which can be
-  -- many) — matches how most families actually keep one shared grocery list.
+  -- Shopping lists: one or more named lists (regular grocery vs Costco, etc.),
+  -- same idea as to-do lists above. Every install starts with one default list
+  -- (seeded by the migration below) so existing single-list setups keep working
+  -- untouched. shopping_items.list_id is added by that same migration for
+  -- databases that predate lists.
   -- "Buy" links (see /api/shopping-list) are built client-side, no backend
   -- involvement — just a store-search URL with the item text as the query.
+  CREATE TABLE IF NOT EXISTS shopping_lists (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,
+    sort_order   INTEGER DEFAULT 0,
+    created_at   TEXT DEFAULT (datetime('now'))
+  );
   CREATE TABLE IF NOT EXISTS shopping_items (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     text         TEXT NOT NULL,
@@ -1026,6 +1035,17 @@ if (!columnExists('events', 'end_date')) {
   db.exec(`ALTER TABLE events ADD COLUMN end_date TEXT`);
   console.log('Migrated: added end_date column to events');
 }
+// Multiple shopping lists. Existing single-list databases: every existing item
+// lands on list 1, which is seeded as the default "Shopping List" — nothing an
+// existing install sees changes until a second list is actually created.
+if (!columnExists('shopping_items', 'list_id')) {
+  db.exec(`ALTER TABLE shopping_items ADD COLUMN list_id INTEGER DEFAULT 1`);
+  console.log('Migrated: added list_id column to shopping_items');
+}
+if (!db.prepare(`SELECT 1 FROM shopping_lists LIMIT 1`).get()) {
+  db.prepare(`INSERT INTO shopping_lists (id, name, sort_order) VALUES (1, 'Shopping List', 0)`).run();
+}
+db.prepare(`UPDATE shopping_items SET list_id = 1 WHERE list_id IS NULL`).run();
 // CalDAV push bookkeeping — see the "CalDAV (push local events out to iCloud)"
 // section. caldav_url is the deterministic remote object URL an edit re-PUTs to
 // and a delete DELETEs; caldav_push_error being non-null flags a row for the
@@ -2187,7 +2207,7 @@ function markHostEditing(ms = 8000) { HOST_EDITING_UNTIL = Date.now() + ms; }
 // 'screens' is included so that assigning a profile to a remote slave bumps the
 // version — the slave's watcher then re-syncs (and re-registers, learning its new
 // assigned profile) within seconds instead of waiting for the slow timer.
-const SHARED_TOPICS = new Set(['events', 'photos', 'settings', 'photo-settings', 'feeds', 'displays', 'layout', 'screens', 'chores', 'todos', 'favorites', 'reminders', 'profiles', 'messages', 'cameras', 'meals', 'flight_watch']);
+const SHARED_TOPICS = new Set(['events', 'photos', 'settings', 'photo-settings', 'feeds', 'displays', 'layout', 'screens', 'chores', 'todos', 'shopping', 'favorites', 'reminders', 'profiles', 'messages', 'cameras', 'meals', 'flight_watch']);
 
 function broadcastUpdate(topic, displayId) {
   if (SHARED_TOPICS.has(topic)) HOST_DATA_VERSION = Date.now();
@@ -2516,6 +2536,10 @@ function requireAuth(req, res, next) {
     { method: 'DELETE', path: '/api/todo-lists' },
     { method: 'PUT', path: '/api/todo-items' },
     { method: 'DELETE', path: '/api/todo-items' },
+    { method: 'GET', path: '/api/shopping-lists' },
+    { method: 'POST', path: '/api/shopping-lists' },
+    { method: 'PUT', path: '/api/shopping-lists' },
+    { method: 'DELETE', path: '/api/shopping-lists' },
     { method: 'GET', path: '/api/shopping-list' },
     { method: 'POST', path: '/api/shopping-list' },
     { method: 'PUT', path: '/api/shopping-items' },
@@ -2901,22 +2925,89 @@ app.delete('/api/todo-items/:id', (req, res) => {
 });
 
 // ── Shopping list ────────────────────────────────────────────────────────────
-// Deliberately a single flat list (no separate lists table like to-dos above) —
-// matches how most families keep one shared running grocery list, not several.
 // "Buy" links to store search pages are built entirely client-side (see hub.html
 // and the wall-display widget) from the item text — no product matching, no
 // scraping, no API keys, just a plain search-URL per store.
+//
+// Multiple lists: like to-dos, shopping can now have several named lists
+// (regular grocery vs Costco). Every call that predates lists — GET/POST
+// /api/shopping-list and POST .../clear-done with no list given — acts on the
+// DEFAULT list (the first one), so older clients (a mirror or hub tab still on
+// an earlier version) behave exactly as they did with a single list.
+function defaultShoppingListId() {
+  const r = db.prepare(`SELECT id FROM shopping_lists ORDER BY sort_order, id LIMIT 1`).get();
+  if (r) return r.id;
+  return Number(db.prepare(`INSERT INTO shopping_lists (name, sort_order) VALUES ('Shopping List', 0)`).run().lastInsertRowid);
+}
+// A request-supplied list id → a real list id, the default when none was
+// given, or null when one was given that doesn't exist.
+function resolveShoppingListId(v) {
+  if (v === undefined || v === null || v === '') return defaultShoppingListId();
+  const r = db.prepare(`SELECT id FROM shopping_lists WHERE id = ?`).get(Number(v));
+  return r ? r.id : null;
+}
+app.get('/api/shopping-lists', (req, res) => {
+  defaultShoppingListId(); // guarantees at least one list exists
+  res.json(db.prepare(`
+    SELECT sl.id, sl.name, sl.sort_order,
+           (SELECT COUNT(*) FROM shopping_items si WHERE si.list_id = sl.id AND si.done = 0) AS open_count
+    FROM shopping_lists sl ORDER BY sl.sort_order, sl.id`).all());
+});
+app.post('/api/shopping-lists', (req, res) => {
+  const name = demoCleanText(String((req.body && req.body.name) || '').trim(), 60);
+  if (!name) return res.status(400).json({ error: 'A list name is required.' });
+  const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM shopping_lists`).get();
+  const info = db.prepare(`INSERT INTO shopping_lists (name, sort_order) VALUES (?, ?)`).run(name, (maxOrder.m || 0) + 1);
+  broadcastUpdate('shopping');
+  res.status(201).json({ id: Number(info.lastInsertRowid), name });
+});
+app.put('/api/shopping-lists/:id', (req, res) => {
+  const list = db.prepare(`SELECT id FROM shopping_lists WHERE id = ?`).get(req.params.id);
+  if (!list) return res.status(404).json({ error: 'List not found.' });
+  if (req.body.name !== undefined) {
+    const name = demoCleanText(String(req.body.name).trim(), 60);
+    if (!name) return res.status(400).json({ error: 'A list name is required.' });
+    db.prepare(`UPDATE shopping_lists SET name = ? WHERE id = ?`).run(name, req.params.id);
+  }
+  if (req.body.sort_order !== undefined) {
+    db.prepare(`UPDATE shopping_lists SET sort_order = ? WHERE id = ?`).run(Number(req.body.sort_order) || 0, req.params.id);
+  }
+  broadcastUpdate('shopping');
+  res.json({ ok: true });
+});
+app.delete('/api/shopping-lists/:id', (req, res) => {
+  const list = db.prepare(`SELECT id FROM shopping_lists WHERE id = ?`).get(req.params.id);
+  if (!list) return res.status(404).json({ error: 'List not found.' });
+  // Never delete the last remaining list — there's always somewhere for the
+  // default (un-targeted) add to land.
+  const count = db.prepare(`SELECT COUNT(*) AS n FROM shopping_lists`).get().n;
+  if (count <= 1) return res.status(409).json({ error: 'You need at least one shopping list.' });
+  db.prepare(`DELETE FROM shopping_items WHERE list_id = ?`).run(req.params.id);
+  db.prepare(`DELETE FROM shopping_lists WHERE id = ?`).run(req.params.id);
+  broadcastUpdate('shopping');
+  res.json({ ok: true });
+});
+// ?list=<id> → that list's items; ?list=all → every list's items (each row
+// carries its list_id — what the wall display uses so several widgets can each
+// show a different list from one fetch); no param → the default list.
 app.get('/api/shopping-list', (req, res) => {
-  res.json(db.prepare(`SELECT * FROM shopping_items ORDER BY done, sort_order, id`).all());
+  if (req.query.list === 'all') {
+    return res.json(db.prepare(`SELECT * FROM shopping_items ORDER BY done, sort_order, id`).all());
+  }
+  const listId = resolveShoppingListId(req.query.list);
+  if (listId === null) return res.status(404).json({ error: 'List not found.' });
+  res.json(db.prepare(`SELECT * FROM shopping_items WHERE list_id = ? ORDER BY done, sort_order, id`).all(listId));
 });
 app.post('/api/shopping-list', (req, res) => {
   const text = demoCleanText((req.body.text || '').trim(), 120);
   if (!text) return res.status(400).json({ error: 'Item text is required.' });
-  const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM shopping_items`).get();
-  const info = db.prepare(`INSERT INTO shopping_items (text, sort_order) VALUES (?, ?)`)
-    .run(text, (maxOrder.m || 0) + 1);
+  const listId = resolveShoppingListId(req.body.list_id);
+  if (listId === null) return res.status(404).json({ error: 'List not found.' });
+  const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM shopping_items WHERE list_id = ?`).get(listId);
+  const info = db.prepare(`INSERT INTO shopping_items (list_id, text, sort_order) VALUES (?, ?, ?)`)
+    .run(listId, text, (maxOrder.m || 0) + 1);
   broadcastUpdate('shopping');
-  res.status(201).json({ id: info.lastInsertRowid, text, done: 0 });
+  res.status(201).json({ id: info.lastInsertRowid, list_id: listId, text, done: 0 });
 });
 app.put('/api/shopping-items/:id', (req, res) => {
   const item = db.prepare(`SELECT * FROM shopping_items WHERE id = ?`).get(req.params.id);
@@ -2940,8 +3031,11 @@ app.delete('/api/shopping-items/:id', (req, res) => {
   res.json({ ok: true });
 });
 // Clears every checked-off item at once — the "I put it all away" button.
+// Scoped to one list (?list=<id> or body.list_id; the default list if neither).
 app.post('/api/shopping-list/clear-done', (req, res) => {
-  const r = db.prepare(`DELETE FROM shopping_items WHERE done = 1`).run();
+  const listId = resolveShoppingListId(req.query.list !== undefined ? req.query.list : (req.body && req.body.list_id));
+  if (listId === null) return res.status(404).json({ error: 'List not found.' });
+  const r = db.prepare(`DELETE FROM shopping_items WHERE done = 1 AND list_id = ?`).run(listId);
   broadcastUpdate('shopping');
   res.json({ ok: true, removed: r.changes });
 });
@@ -3011,12 +3105,22 @@ function addVoiceItem(text, listName) {
   if (!text) return { error: 'No item text provided.', status: 400 };
   listName = (listName || 'shopping').trim();
 
-  if (listName.toLowerCase() === 'shopping') {
-    const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM shopping_items`).get();
-    const info = db.prepare(`INSERT INTO shopping_items (text, sort_order) VALUES (?, ?)`)
-      .run(text, (maxOrder.m || 0) + 1);
+  // "shopping" (the default, and what existing Shortcuts send) → the default
+  // shopping list. Otherwise a shopping list with that name wins over a to-do
+  // list of the same name, so "add milk to the Costco list" lands on a Costco
+  // SHOPPING list when there is one.
+  let shopListId = null;
+  if (listName.toLowerCase() === 'shopping') shopListId = defaultShoppingListId();
+  else {
+    const sl = db.prepare(`SELECT id FROM shopping_lists WHERE LOWER(name) = LOWER(?)`).get(listName);
+    if (sl) shopListId = sl.id;
+  }
+  if (shopListId !== null) {
+    const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM shopping_items WHERE list_id = ?`).get(shopListId);
+    const info = db.prepare(`INSERT INTO shopping_items (list_id, text, sort_order) VALUES (?, ?, ?)`)
+      .run(shopListId, text, (maxOrder.m || 0) + 1);
     broadcastUpdate('shopping');
-    return { ok: true, list: 'shopping', id: info.lastInsertRowid, text };
+    return { ok: true, list: listName.toLowerCase() === 'shopping' ? 'shopping' : listName, id: info.lastInsertRowid, text };
   }
   const list = db.prepare(`SELECT id FROM todo_lists WHERE LOWER(name) = LOWER(?)`).get(listName);
   if (!list) return { error: `No list named "${listName}".`, status: 404 };
@@ -5990,6 +6094,11 @@ function buildSyncSnapshot() {
       allowance_ledger: tableRows('allowance_ledger'),
       todo_lists: tableRows('todo_lists'),
       todo_items: tableRows('todo_items'),
+      // Shopping lists + items. Neither was in the snapshot before, so a Shopping
+      // widget on a mirror had nothing to show. Guarded with `if (T.x)` on the
+      // receiving side, so a mirror on an older version simply ignores these.
+      shopping_lists: tableRows('shopping_lists'),
+      shopping_items: tableRows('shopping_items'),
       // Added in 1.80.1 — a mirror's calendar widget could have "Show Sticker
       // Badges" checked (the widget config lives in `layouts`, which DID sync)
       // and still show nothing, because the sticker data itself never made it
@@ -6147,6 +6256,8 @@ const applySyncSnapshot = db.transaction((snap) => {
   // was always empty, since list/item data never made it into the sync at all.
   if (T.todo_lists) replaceTable('todo_lists', T.todo_lists);
   if (T.todo_items) replaceTable('todo_items', T.todo_items);
+  if (T.shopping_lists) replaceTable('shopping_lists', T.shopping_lists);
+  if (T.shopping_items) replaceTable('shopping_items', T.shopping_items);
   // See buildSyncSnapshot()'s matching comment — these three were missing
   // entirely, so a mirror's sticker badges, reward catalog, and redemption
   // history/balances all silently stayed empty regardless of layout settings.
