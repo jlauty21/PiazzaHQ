@@ -9449,13 +9449,15 @@ app.post('/api/ha-alerts/dismiss', (req, res) => {
 // server on every page load. Purely a local cache of what the server told us —
 // LOCAL_ONLY, never synced to a slave screen, since each screen refreshes its
 // own copy independently on the same schedule.
-// A license is only genuinely valid while 'active' (paid, no expiry while
-// so), or 'trial' with a real, still-future expiry — every trial gets a
-// concrete access_through date stamped at creation, never open-ended.
-// 'none', 'past_due', 'canceled', or a trial whose date has passed are all
+// A license is genuinely valid while 'active' (paid) or 'free' (a signup —
+// unconditionally full-access, no expiry, exactly like 'active') — or, for a
+// license created before that free/active split existed, the older 'trial'
+// status with a real, still-future expiry (every one of those got a concrete
+// access_through date stamped at creation, never open-ended). 'none',
+// 'past_due', 'canceled', or a legacy trial whose date has passed are all
 // equally "no valid license" for this purpose.
 function isLicenseValid(status, trialUntil) {
-  if (status === 'active') return true;
+  if (status === 'active' || status === 'free') return true;
   if (status === 'trial' && trialUntil) {
     const d = new Date(trialUntil);
     return !isNaN(d) && d > new Date();

@@ -1423,6 +1423,9 @@ const RELEASE_NOTES = {
   '1.87.8': [
     'Fixed: some widgets — including Daily Quote, Air Quality, the Message Board, Reminders, and Flight Map — and photo/image uploads could fail with an error on a device that has an App PIN set. Both now work correctly with a PIN in place.',
   ],
+  '1.87.9': [
+    'Fixed: a free account could incorrectly start showing "license needed" warnings and, after a week, lock the display. Free accounts are unlimited and never expire — this was a bug in how the app checked that, not a real limit.',
+  ],
 };
 
 // Beta-suffix-aware version compare — same scheme as the mothership server's
@@ -17542,9 +17545,11 @@ async function renderSettings() {
       if (!statusRaw) return; // never checked in with the mothership yet — nothing to show
       const STATUS_META = {
         active:   { label: 'Active',                color: 'var(--good, #3ec97a)' },
+        free:     { label: 'Free',                  color: 'var(--good, #3ec97a)' },
         past_due: { label: 'Payment past due',       color: '#e0a030' },
         canceled: { label: 'Canceled',                color: 'var(--danger, #ff5d5d)' },
-        none:     { label: 'No license — free trial', color: 'var(--muted)' },
+        none:     { label: 'No license key yet — still free', color: 'var(--muted)' },
+        trial:    { label: 'Trial (legacy)',        color: 'var(--muted)' },
       };
       const meta = STATUS_META[statusRaw] || { label: statusRaw, color: 'var(--muted)' };
       const accessThrough = s.trial_until_cache || '';
