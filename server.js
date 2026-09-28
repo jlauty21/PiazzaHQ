@@ -2573,6 +2573,52 @@ function requireAuth(req, res, next) {
     // as Live Editing above); the route itself is Windows-only + localhost-
     // only and does nothing but close the local kiosk browser.
     { method: 'POST', path: '/api/kiosk/exit' },
+
+    // Found doing the same systematic check the METAR/TAF fix above called
+    // for ("every such endpoint... not just the one reported") — this time
+    // triggered by a real report that the Daily Quote widget showed
+    // "Unauthorized" on a PIN-protected device. Grepped every literal
+    // fetch('/api/...') call in display.html against this list: these were
+    // ALL missing too, meaning Air Quality, Cameras (including adding/
+    // editing one in Live Edit), Displays lookup, event push-target choice,
+    // Flight Watch/Flight Map, Home Assistant areas, Handwriting input,
+    // hiding a calendar event, the Message Board, the alert-banner
+    // notifications, On This Day, family Profiles (per-person event
+    // colour), Reminders, Saved Layouts, and even the running-version check
+    // itself were all likely silently broken on any device with a PIN set —
+    // same "physical/local access IS the trust boundary" design as
+    // everything else on this list, just never actually reachable.
+    { method: 'GET', path: '/api/daily-quote' },
+    { method: 'GET', path: '/api/version' },
+    { method: 'GET', path: '/api/air-quality' },
+    { method: 'GET', path: '/api/camera/service' },
+    { method: 'GET', path: '/api/cameras' },
+    { method: 'POST', path: '/api/cameras' },
+    { method: 'PUT', path: '/api/cameras' },
+    { method: 'DELETE', path: '/api/cameras' },
+    { method: 'GET', path: '/api/displays' },
+    { method: 'GET', path: '/api/event-targets' },
+    { method: 'GET', path: '/api/flight-watch' },
+    { method: 'GET', path: '/api/flightmap/basemap' },   // prefix also covers .../basemap.json
+    { method: 'GET', path: '/api/flightmap/state' },      // prefix also covers .../state?<key>
+    { method: 'GET', path: '/api/flightmap/states' },     // prefix also covers .../states.json
+    { method: 'GET', path: '/api/ha/areas' },
+    { method: 'GET', path: '/api/handwriting-settings' },
+    { method: 'POST', path: '/api/handwriting/recognize' },
+    { method: 'POST', path: '/api/hidden-events' },
+    { method: 'GET', path: '/api/messages' },
+    { method: 'POST', path: '/api/messages' },
+    { method: 'PUT', path: '/api/messages' },
+    { method: 'DELETE', path: '/api/messages' },
+    { method: 'GET', path: '/api/notifications/active' },
+    { method: 'POST', path: '/api/notifications/dismiss' },
+    { method: 'GET', path: '/api/on-this-day' },
+    { method: 'GET', path: '/api/profiles' },
+    { method: 'GET', path: '/api/reminders' },
+    { method: 'POST', path: '/api/reminders' },   // prefix also covers POST .../reminders/icon-image
+    { method: 'PUT', path: '/api/reminders' },
+    { method: 'DELETE', path: '/api/reminders' },
+    { method: 'GET', path: '/api/saved-layouts' },
   ];
   const isPublic = publicRoutes.some(r =>
     req.method === r.method && fullPath.startsWith(r.path)

@@ -1420,6 +1420,9 @@ const RELEASE_NOTES = {
     'Improved: Shopping List widgets now show up on mirror displays too.',
     'Plus minor app refinements.',
   ],
+  '1.87.8': [
+    'Fixed: some widgets — including Daily Quote, Air Quality, the Message Board, Reminders, and Flight Map — and photo/image uploads could fail with an error on a device that has an App PIN set. Both now work correctly with a PIN in place.',
+  ],
 };
 
 // Beta-suffix-aware version compare — same scheme as the mothership server's
@@ -4808,8 +4811,12 @@ async function renderPhotos() {
     fd.append('photo', file);
     fd.append('label', label);
     $('upload-zone').innerHTML = '<div class="emoji">⏳</div><p>Uploading…</p>';
-    const res = await fetch('/api/photos', { method: 'POST', body: fd });
-    const data = await res.json();
+    // A plain fetch() here never sent the session token, so this silently
+    // 401'd ("Upload failed: Unauthorized") on any device with a PIN set —
+    // same bug class as the reminder-icon/custom-theme uploads below.
+    // apiFetch() already handles a FormData body correctly (it just skips
+    // setting Content-Type, same as the working chore-photo upload).
+    const data = await apiFetch('/api/photos', { method: 'POST', body: fd });
     if (data.error) { showToast('Upload failed: ' + data.error); }
     else { showToast('Photo uploaded ✓'); }
     renderPhotos();
@@ -8364,8 +8371,9 @@ function renderManageRemindersFormView(id) {
     fd.append('image', file);
     showToast('Uploading…');
     try {
-      const res = await fetch('/api/reminders/icon-image', { method: 'POST', body: fd });
-      const data = await res.json();
+      // See /api/photos' upload handler above — same "plain fetch() never
+      // sends the session token" bug.
+      const data = await apiFetch('/api/reminders/icon-image', { method: 'POST', body: fd });
       if (data.error) { showToast('Upload failed: ' + data.error); return; }
       _mrPendingIconImage = data.filename;
       $('mr-f-icon-preview').style.backgroundImage = `url('/uploads/${data.filename}')`;
@@ -16706,8 +16714,8 @@ async function renderSettings() {
       const fd = new FormData();
       fd.append('image', file);
       showToast('Uploading…');
-      const res = await fetch('/api/custom-theme/background', { method: 'POST', body: fd });
-      const data = await res.json();
+      // See /api/photos' upload handler above — same bug.
+      const data = await apiFetch('/api/custom-theme/background', { method: 'POST', body: fd });
       if (data.error) showToast('Upload failed: ' + data.error);
       else showToast('Background uploaded ✓');
       renderSettings();
@@ -16726,8 +16734,8 @@ async function renderSettings() {
         const fd = new FormData();
         fd.append('image', file);
         showToast('Uploading…');
-        const res = await fetch(`/api/custom-theme/decoration/${input.dataset.slot}`, { method: 'POST', body: fd });
-        const data = await res.json();
+        // See /api/photos' upload handler above — same bug.
+        const data = await apiFetch(`/api/custom-theme/decoration/${input.dataset.slot}`, { method: 'POST', body: fd });
         if (data.error) showToast('Upload failed: ' + data.error);
         else showToast('Decoration uploaded ✓');
         renderSettings();
