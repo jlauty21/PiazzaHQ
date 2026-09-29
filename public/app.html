@@ -1429,6 +1429,21 @@ const RELEASE_NOTES = {
   '1.87.10': [
     'Bug fixes and improvements.',
   ],
+  '1.87.11': [
+    'New: let Home Assistant control this display. Settings → Home Assistant Control gives you two ways to do it — generate a token to wire into Home Assistant\'s rest_command and trigger a screen\'s power or layout (light/dark theme included) from any automation, or connect it to your MQTT broker and a Power switch plus a Layout picker just appear in Home Assistant on their own, no YAML required.',
+    'Fixed: the web interface could stop responding from other devices after the Pi had been running for a while, with a reboot the only way to get it back. Found and fixed the underlying cause — it\'s now caught and cleaned up automatically.',
+    'Plus various other bug fixes and improvements.',
+  ],
+  '1.89.0-beta.22': [
+    'New: let Home Assistant control this display — Settings → Home Assistant Control generates a token you wire into Home Assistant\'s rest_command to turn a screen on/off or switch to a saved layout (light/dark theme included) from any automation.',
+  ],
+  '1.89.0-beta.23': [
+    'Fixed: the web interface could stop responding from other devices after running for a while, needing a reboot to come back. A slow connection leak is now caught and cleaned up automatically.',
+    'New: Home Assistant Control now also supports MQTT — if you already run a broker (like the Mosquitto add-on), turn it on in Settings and a Power switch (per screen) and Layout select (per display) just appear in Home Assistant, no YAML needed.',
+  ],
+  '1.89.0-beta.24': [
+    'Bug fixes and improvements.',
+  ],
 };
 
 // Beta-suffix-aware version compare — same scheme as the mothership server's
@@ -1982,7 +1997,7 @@ async function duplicateDisplayById(id, name) {
 // opening one closes the others. "Advanced" sections are tucked behind a toggle.
 const SETTINGS_ICONS = {
   'General':'🏠', 'Display':'🖥️', 'Photo Widget Defaults':'🖼️', 'Features & Family Hub':'✨', 'Weather':'☀️', 'Calendar Sync':'🔄', 'Todoist':'✅', 'To-Do Lists':'📝',
-  'Stocks':'📈', 'News':'📰', 'Daily Briefing':'✉️', 'Feedback & Ideas':'💬', 'Version & License':'⬆️', 'Security':'🔒', 'Multi-Device':'🖥️', 'Home Assistant':'🏠', 'Severe Weather Alerts':'⚠️', 'App Preferences':'📱', 'Beta Checklist':'✅',
+  'Stocks':'📈', 'News':'📰', 'Daily Briefing':'✉️', 'Feedback & Ideas':'💬', 'Version & License':'⬆️', 'Security':'🔒', 'Multi-Device':'🖥️', 'Home Assistant':'🏠', 'Home Assistant Control':'🏠', 'Severe Weather Alerts':'⚠️', 'App Preferences':'📱', 'Beta Checklist':'✅',
   'Support the Project':'☕',
   'Push to iCloud Calendar':'📅', 'Push to Google Calendar':'📅', 'Handwriting input':'✍️',
   'Family profiles':'👥',
@@ -2033,7 +2048,7 @@ const BOTTOM_ANCHORED_SECTIONS = ['Feedback & Ideas', 'Support the Project'];
 // transformSettingsToAccordion) whenever /api/version reports demo mode.
 const DEMO_HIDDEN_SETTINGS_SECTIONS = new Set([
   'Custom Theme', 'Calendar Sync', 'Push to iCloud Calendar', 'Push to Google Calendar',
-  'Handwriting input', 'Todoist', 'Home Assistant', 'Voice Control (Siri Shortcuts)',
+  'Handwriting input', 'Todoist', 'Home Assistant', 'Home Assistant Control', 'Voice Control (Siri Shortcuts)',
   'Daily Briefing', 'Security', 'Feedback & Ideas', 'Multi-Device', 'Version & License',
   'Update Backups', 'Beta Checklist', 'Backup',
 ]);
@@ -16116,6 +16131,95 @@ async function renderSettings() {
       </div>
     </div>
 
+    <div class="section-header">Home Assistant Control</div>
+    <div class="settings-card">
+      <p style="font-size:13px;color:var(--muted);margin:0 0 14px">The reverse direction from the Home Assistant card above: let Home Assistant (or any automation tool that can make an HTTP request) trigger actions here — turn a TV/monitor on or off, or switch a display to a saved layout (which also switches its light/dark theme, since each saved layout stores its own). Generates a long-lived token; wire it into Home Assistant's <code>rest_command:</code> once.</p>
+      ${s.device_role === 'slave' ? `<p style="font-size:12px;color:#e0a339;margin:0 0 14px;background:var(--card);border:1px solid var(--border);border-radius:9px;padding:10px 12px">You're viewing Settings on a <b>mirror</b>. Point Home Assistant at your <b>host</b> Pi's address instead of this one's — these actions read and write the host's own data.</p>` : ''}
+      <div class="settings-row">
+        <label>Automation Token ${infoBtn("Regenerating immediately breaks any Home Assistant automation already using the old token — update it there too. This token only allows TV/monitor power and layout switching; it can't read data or change any other setting.")}</label>
+        <div style="display:flex;gap:10px;align-items:center">
+          <input class="form-input" id="s-automation-token" type="password" value="${s.automation_token||''}" placeholder="Not generated yet" readonly style="opacity:.8">
+          <button id="s-automation-token-show-btn" type="button" style="background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:12px 16px;font-size:13px;cursor:pointer;white-space:nowrap">👁</button>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:12px">
+          <button id="s-automation-token-gen-btn" type="button" style="background:var(--accent);border:none;border-radius:10px;color:#fff;padding:12px 18px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">${s.automation_token ? 'Regenerate' : 'Generate Token'}</button>
+          ${s.automation_token ? `<button id="s-automation-token-revoke-btn" type="button" style="background:transparent;border:1px solid var(--danger,#e85454);color:var(--danger,#e85454);border-radius:10px;padding:12px 18px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">Revoke</button>` : ''}
+        </div>
+      </div>
+      <div class="settings-row" id="s-automation-instructions" style="display:${s.automation_token ? 'block' : 'none'}">
+        <div class="acc-section" data-acc="ha-rest-setup">
+          <button class="acc-head" data-acc-toggle="ha-rest-setup">
+            <span class="acc-ic">📋</span>
+            <span class="acc-text"><span class="acc-label">Setting this up in Home Assistant</span><span class="acc-sub">4 steps — rest_command: YAML</span></span>
+            <span class="acc-caret">▸</span>
+          </button>
+          <div class="acc-body" data-acc-body="ha-rest-setup" style="display:none">
+            <div style="font-size:13px;color:var(--text);line-height:1.8;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px">
+              <p style="margin:0 0 6px"><b>1.</b> Add a <code>rest_command:</code> block like this to Home Assistant's <code>configuration.yaml</code> (replace <code>&lt;host-pi-ip&gt;</code> with your host Pi's actual LAN address — this page's own address only works if you're viewing it from the host itself). No easy way to open that file yet? The <b>File Editor</b> or <b>Studio Code Server</b> add-on (Settings → Add-ons → Add-on Store) gives you one:</p>
+              <div style="background:var(--bg,#0f1420);border-radius:8px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;font-family:monospace;font-size:12px">rest_command:
+  piazzahq_screen_off:
+    url: "http://&lt;host-pi-ip&gt;:${escapeHtml(window.location.port || '3000')}/api/screens/${escapeHtml(s.screen_device_id_cache||'YOUR_DEVICE_ID')}/tv/power-off"
+    method: POST
+    headers:
+      Authorization: "Bearer ${escapeHtml(s.automation_token||'YOUR_TOKEN')}"
+  piazzahq_screen_on:
+    url: "http://&lt;host-pi-ip&gt;:${escapeHtml(window.location.port || '3000')}/api/screens/${escapeHtml(s.screen_device_id_cache||'YOUR_DEVICE_ID')}/tv/power-on"
+    method: POST
+    headers:
+      Authorization: "Bearer ${escapeHtml(s.automation_token||'YOUR_TOKEN')}"</div>
+              <p style="margin:14px 0 6px"><b>2.</b> Call it from any automation — a Person entity leaving home, a sleep-tracker sensor, a time trigger — via the <code>rest_command.piazzahq_screen_off</code> / <code>_on</code> action. This example targets <b>this screen</b> (device id shown below); use a different screen's own device id from Settings → Multi-Device to target it instead.</p>
+              <p style="margin:14px 0 6px"><b>3.</b> To switch layouts (and theme) instead: same idea, but POST to <code>/api/saved-layouts/&lt;layout-id&gt;/apply</code> with a JSON body of <code>{"display": "&lt;display-slug&gt;"}</code> and the same Authorization header. Find each saved layout's id and a display's slug from the Layout tab's Layout Library and Multi-Device screen list.</p>
+              <p style="margin:14px 0 6px"><b>4.</b> Restart Home Assistant (Settings → System → Restart) — a new <code>rest_command:</code> block doesn't take effect until it does.</p>
+              <p style="margin:14px 0 0;font-size:12px;color:var(--muted)">This screen's own device id (used in the example above): <code>${escapeHtml(s.screen_device_id_cache||'(not set yet)')}</code></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-row" style="border-top:1px solid var(--border);padding-top:14px;margin-top:6px">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+          <input type="checkbox" id="s-mqtt-enabled" ${s.mqtt_enabled==='1'?'checked':''} style="width:18px;height:18px;flex:0 0 auto">
+          <span>MQTT (no YAML, entities auto-appear) ${infoBtn("An alternative to the rest_command setup above, for households that already run an MQTT broker (the Mosquitto add-on is the common one). Piazza HQ connects to it directly and publishes Home Assistant MQTT Discovery entities — a Power switch per screen with TV control set up, and a Layout select per display — so nothing needs to be typed into Home Assistant's YAML at all. Both doors can be on at once if you want; they don't conflict.")}</span>
+        </label>
+        <div id="s-mqtt-fields" style="display:${s.mqtt_enabled==='1'?'flex':'none'};flex-direction:column;gap:12px;margin-top:12px">
+          <div>
+            <label>Broker URL ${infoBtn("e.g. mqtt://homeassistant.local:1883 for the Mosquitto broker add-on, or mqtts://… for a TLS broker on port 8883.")}</label>
+            <input class="form-input" id="s-mqtt-url" value="${(s.mqtt_broker_url||'').replace(/"/g,'&quot;')}" placeholder="mqtt://homeassistant.local:1883" autocomplete="off">
+          </div>
+          <div style="display:flex;gap:12px">
+            <div style="flex:1">
+              <label>Username <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+              <input class="form-input" id="s-mqtt-username" value="${(s.mqtt_username||'').replace(/"/g,'&quot;')}" autocomplete="off">
+            </div>
+            <div style="flex:1">
+              <label>Password <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+              <input class="form-input" id="s-mqtt-password" type="password" value="${(s.mqtt_password||'').replace(/"/g,'&quot;')}" autocomplete="off">
+            </div>
+          </div>
+          <div>
+            <label>Discovery prefix ${infoBtn("Only needs changing if Home Assistant's own MQTT integration is set to something other than its default.")}</label>
+            <input class="form-input" id="s-mqtt-prefix" value="${(s.mqtt_discovery_prefix||'').replace(/"/g,'&quot;')}" placeholder="homeassistant" autocomplete="off">
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <button id="s-mqtt-test-btn" type="button" style="background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:9px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">Test Connection</button>
+            <button id="s-mqtt-save-btn" type="button" style="background:var(--accent);border:none;border-radius:9px;color:#fff;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">Save</button>
+            <span id="s-mqtt-status" style="font-size:13px"></span>
+          </div>
+          <div class="acc-section" data-acc="ha-mqtt-setup">
+            <button class="acc-head" data-acc-toggle="ha-mqtt-setup">
+              <span class="acc-ic">💡</span>
+              <span class="acc-text"><span class="acc-label">Setup tips</span><span class="acc-sub">getting a broker, finding the entities</span></span>
+              <span class="acc-caret">▸</span>
+            </button>
+            <div class="acc-body" data-acc-body="ha-mqtt-setup" style="display:none">
+              <p style="font-size:12px;color:var(--muted);margin:0 0 6px">Don't have a broker yet? Settings → Add-ons → Add-on Store → search "Mosquitto broker" is the easiest way to get one — free, official, a few clicks to install.</p>
+              <p style="font-size:12px;color:var(--muted);margin:0">Once connected, a Power switch (per screen with TV control set up) and a Layout select (per display) appear in Home Assistant on their own — no restart needed there, MQTT Discovery picks them up automatically. Look under Settings → Devices & Services → MQTT if you don't see them right away. Same honest limitation as the rest_command door above: these can tell a screen to turn on/off or switch layouts, but can't reliably report whether a TV is actually currently on (most TV remotes have no "are you on" signal to ask).</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="section-header">Severe Weather Alerts</div>
     <div class="settings-card">
       <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
@@ -17440,6 +17544,11 @@ async function renderSettings() {
   // The Daily Briefing's fields are themselves a nested accordion — wire it so its
   // sub-sections expand/collapse independently (like the Advanced group).
   wireAccordion('briefing-accordion');
+  // Home Assistant Control's setup walkthroughs are collapsed by default (closed
+  // on every render) to keep the section short — the token/fields above stay
+  // visible, only the "how do I wire this up" prose hides behind a toggle.
+  wireAccordion('s-automation-instructions');
+  if ($('s-mqtt-fields')) wireAccordion('s-mqtt-fields');
 
   // Settings search: build the index from the accordion structure just
   // created above, then wire the search box. Must run after
@@ -18464,6 +18573,98 @@ async function renderSettings() {
         showToast('Voice token revoked');
         await renderSettingsKeepPlace(); // re-render so the button row reflects "no token" state
       } catch { showToast('Could not revoke — try again'); }
+    });
+  }
+
+  // ── Home Assistant control (reverse): automation token ────────────────────
+  // Same generate/show/revoke shape as the Voice Token block just above —
+  // server-generated, shown once on creation, re-rendered via
+  // renderSettingsKeepPlace() so the instructions block and button labels
+  // stay in sync with whether a token currently exists.
+  if ($('s-automation-token-show-btn')) {
+    $('s-automation-token-show-btn').addEventListener('click', () => {
+      const input = $('s-automation-token');
+      input.type = input.type === 'password' ? 'text' : 'password';
+    });
+  }
+  if ($('s-automation-token-gen-btn')) {
+    $('s-automation-token-gen-btn').addEventListener('click', async () => {
+      const willReplace = !!$('s-automation-token').value;
+      if (willReplace && !confirm('This breaks any Home Assistant automation already using the current token until you update it there too. Continue?')) return;
+      $('s-automation-token-gen-btn').disabled = true;
+      try {
+        const r = await apiFetch('/api/automation-token/generate', { method: 'POST' });
+        if (r && r.token) {
+          await renderSettingsKeepPlace();
+          const freshInput = $('s-automation-token');
+          if (freshInput) { freshInput.value = r.token; freshInput.type = 'text'; } // show once, easiest moment to copy
+          showToast('Automation token generated');
+        }
+      } catch { showToast('Could not generate a token — try again'); }
+    });
+  }
+  if ($('s-automation-token-revoke-btn')) {
+    $('s-automation-token-revoke-btn').addEventListener('click', async () => {
+      if (!confirm('This immediately breaks any Home Assistant automation using the current token. Continue?')) return;
+      try {
+        await apiFetch('/api/automation-token', { method: 'DELETE' });
+        $('s-automation-token').value = '';
+        $('s-automation-instructions').style.display = 'none';
+        showToast('Automation token revoked');
+        await renderSettingsKeepPlace();
+      } catch { showToast('Could not revoke — try again'); }
+    });
+  }
+
+  // ── Home Assistant control (reverse): MQTT ─────────────────────────────────
+  if ($('s-mqtt-enabled')) {
+    $('s-mqtt-enabled').addEventListener('change', (e) => {
+      $('s-mqtt-fields').style.display = e.target.checked ? 'flex' : 'none';
+    });
+  }
+  if ($('s-mqtt-test-btn')) {
+    $('s-mqtt-test-btn').addEventListener('click', async () => {
+      const btn = $('s-mqtt-test-btn');
+      const statusEl = $('s-mqtt-status');
+      btn.disabled = true;
+      statusEl.textContent = 'Testing…';
+      statusEl.style.color = 'var(--muted)';
+      try {
+        const r = await apiFetch('/api/mqtt/test', {
+          method: 'POST',
+          body: JSON.stringify({
+            brokerUrl: $('s-mqtt-url').value.trim(),
+            username: $('s-mqtt-username').value.trim(),
+            password: $('s-mqtt-password').value,
+          }),
+        });
+        if (r && r.ok) { statusEl.textContent = '✓ Connected'; statusEl.style.color = 'var(--good,#3ec97a)'; }
+        else { statusEl.textContent = '✗ ' + ((r && r.error) || 'Could not connect'); statusEl.style.color = 'var(--danger,#e85454)'; }
+      } catch { statusEl.textContent = '✗ Could not reach this device'; statusEl.style.color = 'var(--danger,#e85454)'; }
+      btn.disabled = false;
+    });
+  }
+  if ($('s-mqtt-save-btn')) {
+    $('s-mqtt-save-btn').addEventListener('click', async () => {
+      const btn = $('s-mqtt-save-btn');
+      const statusEl = $('s-mqtt-status');
+      btn.disabled = true;
+      try {
+        await apiFetch('/api/settings', {
+          method: 'PUT',
+          body: JSON.stringify({
+            mqtt_enabled: $('s-mqtt-enabled').checked ? '1' : '0',
+            mqtt_broker_url: $('s-mqtt-url').value.trim(),
+            mqtt_username: $('s-mqtt-username').value.trim(),
+            mqtt_password: $('s-mqtt-password').value,
+            mqtt_discovery_prefix: $('s-mqtt-prefix').value.trim(),
+          }),
+        });
+        statusEl.textContent = 'Saved — connecting…';
+        statusEl.style.color = 'var(--muted)';
+        showToast('MQTT settings saved');
+      } catch { showToast('Could not save — try again'); }
+      btn.disabled = false;
     });
   }
 

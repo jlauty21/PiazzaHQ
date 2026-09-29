@@ -16,6 +16,14 @@ const nodemailer = require('nodemailer');
 let tvDrivers = { DRIVERS: {} };
 try { tvDrivers = require('./tv-control'); }
 catch (e) { console.error('TV control module failed to load (TV control will be unavailable): ' + e.message); }
+// Home Assistant control, MQTT direction — same defensive load as tv-control
+// just above. mqttBridge itself defensively no-ops if the `mqtt` package
+// isn't installed (Windows self-update can't fetch a new dependency; see
+// mqtt-bridge.js's own header comment), so this require failing outright
+// would only ever mean the FILE itself is missing, not the package inside it.
+let mqttBridge = null;
+try { mqttBridge = require('./mqtt-bridge'); }
+catch (e) { console.error('MQTT bridge module failed to load (MQTT control will be unavailable): ' + e.message); }
 
 // ── Shared outbound HTTP client (fetch() + AbortController) ──────────────────
 // Every internet-facing fetcher in this file used to hand-roll its own
@@ -1976,7 +1984,7 @@ const RESTORE_SAFETY_BACKUP = dataPath('.pre-restore-backup'); // snapshot of da
 // installFromZip) so the auto-rollback guard, the manual restore endpoint,
 // and the zip-download endpoint below all agree on exactly what "the code"
 // means, rather than each maintaining their own copy that could drift.
-const UPDATE_CODE_ITEMS = ['server.js', 'templates.js', 'tv-control.js', 'public', 'package.json', 'scripts',
+const UPDATE_CODE_ITEMS = ['server.js', 'templates.js', 'tv-control.js', 'mqtt-bridge.js', 'public', 'package.json', 'scripts',
                    'install.sh', 'setup-remote-access.sh', 'hide-cursor.sh', 'README.md', 'BETA_CHECKLIST.md',
                    'LICENSE']; // legal terms — unlike CHANGELOG.md/HANDOFF.md (dev-facing docs, no
                                // stakes either way), an installed device should actually receive
@@ -2169,18 +2177,63 @@ app.get('/api/live', (req, res) => {
   const client = { res, displayId: display ? display.id : null, screenId };
   sseClients.add(client);
 
+  // TCP keepalive so the OS itself eventually notices and tears down a
+  // connection whose peer vanished without a clean FIN/RST — a phone that
+  // drops off Wi-Fi mid-range or roams between APs, the common real-world
+  // case. Without this, such a socket can sit open indefinitely with
+  // nothing at the OS level ever telling Node it's gone. This bounds that
+  // to the kernel's own keepalive timeout (not instant, but finite —
+  // "eventually reclaimed" beats "never," which is what the app-level
+  // backpressure check just below exists to catch faster anyway).
+  try { req.socket.setKeepAlive(true, 15000); } catch {}
+
   // Heartbeat keeps the connection alive through proxies/timeouts (e.g. Cloudflare
   // Tunnel, Tailscale). Each tick also refreshes the screen's last_seen: as long as
   // the connection is alive, the write succeeds and the screen stays "online". This
   // fixes screens showing offline despite a working connection — previously
   // last_seen was only set once at connect time and then went stale.
+  //
+  // Real leak, found live: `sseClients` only ever shrank via req.on('close')
+  // below — a write failure here cleared this OWN interval (stopping the
+  // pings) but never removed `client` from the Set, so a connection that
+  // died in a way 'close' never fired for (see the keepalive comment above)
+  // stayed in `sseClients` forever, each one holding an open socket/fd.
+  // Every device with the app or display open keeps one of these connections
+  // going indefinitely, so on a household with several phones roaming in and
+  // out of range over "a while," this was a slow, unbounded leak toward
+  // eventually exhausting the process's file descriptors — at which point
+  // NEW incoming connections (the web interface, from any device) start
+  // failing, while everything already running (including this server's own
+  // short-lived outbound update-check requests) keeps working, since those
+  // don't need the exhausted capacity. A reboot "fixing it" (fresh process,
+  // empty Set) was the tell.
   const heartbeat = setInterval(() => {
     try {
-      res.write(': ping\n\n');
+      // res.write() returns false when Node's own send buffer is backed up
+      // — for a 12-byte ping written every 25s, that only happens when the
+      // OS isn't actually draining data to the peer at all (silence, not an
+      // error) — exactly the "gone dark, no FIN/RST" case the keepalive
+      // above is also aimed at, caught here much faster than waiting on the
+      // kernel's own keepalive timeout. One slow tick is normal network
+      // jitter; three in a row (~75s of confirmed non-delivery) means
+      // nobody's actually receiving these anymore.
+      const delivered = res.write(': ping\n\n');
+      client.stalledTicks = delivered ? 0 : (client.stalledTicks || 0) + 1;
       if (screenId) {
         db.prepare(`UPDATE screens SET last_seen = ? WHERE device_id = ?`).run(Date.now(), screenId);
       }
-    } catch { clearInterval(heartbeat); }
+      if (client.stalledTicks >= 3) {
+        clearInterval(heartbeat);
+        sseClients.delete(client);
+        try { req.socket.destroy(); } catch {} // force 'close' to fire so nothing else is left dangling
+      }
+    } catch {
+      // The clean, fast path: a write that throws outright (ECONNRESET,
+      // etc.) — fixed to actually remove `client` from sseClients now,
+      // not just stop pinging it (see this block's own comment above).
+      clearInterval(heartbeat);
+      sseClients.delete(client);
+    }
   }, 25000);
 
   req.on('close', () => {
@@ -2390,6 +2443,24 @@ const ALWAYS_AUTH_ROUTES = [
   { method: 'POST', path: '/api/install-server' },
 ];
 
+// Constant-time bearer-token compare — shared by every automation entry
+// point that authenticates itself this way (voice/add-item's own inline
+// version predates this and is left as-is; this is for anything added
+// after it, so the pattern isn't hand-copied a third time). Rejects a
+// length mismatch without a fast exit, same reasoning as voice/add-item's
+// own comment on this: a wrong-length guess shouldn't measurably return
+// faster than a right-length one, even though the token's entropy already
+// makes real timing-based brute force impractical.
+function timingSafeTokenMatch(presented, configured) {
+  const presentedBuf = Buffer.from(presented);
+  const configuredBuf = Buffer.from(configured);
+  if (presentedBuf.length !== configuredBuf.length) {
+    crypto.timingSafeEqual(configuredBuf, configuredBuf); // dummy same-length compare
+    return false;
+  }
+  return crypto.timingSafeEqual(presentedBuf, configuredBuf);
+}
+
 // Middleware: protect /app and /api/* (but NOT / display or /api/events GET for display polling)
 function requireAuth(req, res, next) {
   const pin = getPin();
@@ -2470,6 +2541,26 @@ function requireAuth(req, res, next) {
   // route's own comment), so both methods need the exemption, not just POST.
   if ((req.method === 'GET' || req.method === 'POST') && fullPath === '/api/voice/add-item') return next();
   if (req.method === 'POST' && fullPath === '/api/alexa') return next();
+  // Home Assistant (or any automation) controlling a small, explicit set of
+  // device-control routes with its own bearer token — same "authenticates
+  // itself instead of a PIN session" idea as Alexa/Shortcuts just above, but
+  // these two routes are DUAL-USE (the in-app UI calls them too, under a
+  // normal PIN session — Devices tab TV controls, the Layout Switcher
+  // widget), so this can't just blindly exempt-and-trust like Alexa does.
+  // The token is verified right here: only a VALID one bypasses the PIN. No
+  // token, a wrong token, or none generated yet all fall through to the
+  // exact same PIN-session logic below as before this existed — zero
+  // behavior change for the in-app UI either way.
+  const AUTOMATION_CONTROL_ROUTES = [
+    { method: 'POST', re: /^\/api\/screens\/[^/]+\/tv\/[^/]+$/ },
+    { method: 'POST', re: /^\/api\/saved-layouts\/[^/]+\/apply$/ },
+  ];
+  if (AUTOMATION_CONTROL_ROUTES.some(r => req.method === r.method && r.re.test(fullPath))) {
+    const configuredToken = getSetting('automation_token');
+    const authHeader = req.headers['authorization'] || '';
+    const presented = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    if (configuredToken && presented && timingSafeTokenMatch(presented, configuredToken)) return next();
+  }
   if (!pin) return next(); // PIN not configured — open
 
   // Display page reads these without auth
@@ -3104,6 +3195,68 @@ app.post('/api/voice-token/generate', (req, res) => {
 app.delete('/api/voice-token', (req, res) => {
   db.prepare(`DELETE FROM settings WHERE key = 'voice_token'`).run();
   res.json({ ok: true });
+});
+
+// ── Home Assistant control (reverse direction): automation token ───────────
+// Same shape as the Siri Shortcuts voice_token just above — a long-lived,
+// server-generated bearer token, stored as a normal setting, that lets an
+// external automation (Home Assistant's rest_command, or any curl-capable
+// tool) call a small, explicitly-listed set of device-control routes without
+// an interactive PIN session. See the requireAuth() exemption below for
+// exactly which routes this unlocks — deliberately narrow: TV/monitor power
+// and saved-layout apply (which also switches theme), nothing else.
+app.post('/api/automation-token/generate', (req, res) => {
+  const token = crypto.randomBytes(24).toString('hex');
+  db.prepare(`INSERT INTO settings (key, value) VALUES ('automation_token', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(token);
+  res.json({ token });
+});
+app.delete('/api/automation-token', (req, res) => {
+  db.prepare(`DELETE FROM settings WHERE key = 'automation_token'`).run();
+  res.json({ ok: true });
+});
+
+// ── Home Assistant control (reverse direction): MQTT ────────────────────────
+// Staged follow-up to the automation-token/REST door just above — same two
+// underlying actions (TV/monitor power, saved-layout+theme apply), reached
+// instead through the household's own MQTT broker with HA MQTT Discovery,
+// so entities just appear with no YAML. See mqtt-bridge.js for the actual
+// connection/discovery/command logic; this is just status + a one-shot
+// connection test for the Settings UI, same role /api/ha's own connection
+// check plays for the outbound integration above.
+app.get('/api/mqtt-status', (req, res) => {
+  res.json({
+    available: !!mqttBridge && mqttBridge.isAvailable(),
+    configured: getSetting('mqtt_enabled') === '1' && !!getSetting('mqtt_broker_url'),
+    connected: !!mqttBridge && mqttBridge.isConnected(),
+  });
+});
+app.post('/api/mqtt/test', (req, res) => {
+  let mqttLib; try { mqttLib = require('mqtt'); } catch { mqttLib = null; }
+  if (!mqttLib) return res.status(503).json({ ok: false, error: 'The mqtt package isn\'t installed on this device yet — apply the latest update, then try again.' });
+  const { brokerUrl, username, password } = req.body || {};
+  if (!brokerUrl) return res.status(400).json({ ok: false, error: 'Broker URL is required.' });
+  // A throwaway client, fully separate from the real persistent one in
+  // mqtt-bridge.js — this only ever tests whatever's currently typed in the
+  // form (which may not be saved yet), and always tears itself down before
+  // responding, success or failure, so a test never leaks a connection
+  // alongside the real one.
+  let settled = false;
+  const testClient = mqttLib.connect(brokerUrl, {
+    username: username || undefined, password: password || undefined,
+    clientId: `piazzahq_test_${crypto.randomBytes(4).toString('hex')}`,
+    connectTimeout: 8000, reconnectPeriod: 0,
+  });
+  const finish = (ok, error) => {
+    if (settled) return;
+    settled = true;
+    try { testClient.end(true); } catch {}
+    if (ok) res.json({ ok: true });
+    else res.status(400).json({ ok: false, error: error || 'Could not connect.' });
+  };
+  testClient.on('connect', () => finish(true));
+  testClient.on('error', (e) => finish(false, e.message));
+  setTimeout(() => finish(false, 'Connection timed out.'), 9000);
 });
 
 // Strips natural command phrasing off the front and back of a spoken/typed
@@ -5909,6 +6062,14 @@ app.put('/api/settings', (req, res) => {
   if ('flightmap_enabled' in req.body || 'flightmap_source' in req.body || 'flightmap_poll_seconds' in req.body) {
     try { startFlightPolling(); } catch {}
     try { if (flightmapWanted()) { ensureBasemap().catch(() => {}); ensureStatesBasemap().catch(() => {}); } } catch {}
+  }
+  // MQTT (Home Assistant control): any broker-connection field changing
+  // should reconnect now with the new values, not wait for a restart —
+  // startMqttBridgeIfConfigured() tears down any existing connection first
+  // (see mqtt-bridge.js's stop()), so this is safe to call repeatedly.
+  if ('mqtt_enabled' in req.body || 'mqtt_broker_url' in req.body || 'mqtt_username' in req.body ||
+      'mqtt_password' in req.body || 'mqtt_discovery_prefix' in req.body) {
+    try { startMqttBridgeIfConfigured(); } catch (e) { console.error('[mqtt-bridge] restart:', e.message); }
   }
   // Severe weather alerts: turning it on (or changing location/severity)
   // should show up now, not up to 10 minutes from now — same fast-recheck
@@ -10470,6 +10631,39 @@ app.post('/api/saved-layouts', (req, res) => {
 
 // Apply a saved layout. mode='current' overwrites an existing display (its
 // arrangement AND theme); mode='new' creates a fresh display from the preset.
+// Core of "apply a saved layout to a live display" (mode:'current' below),
+// factored out so both the HTTP route and the MQTT bridge's layout `select`
+// entity (see mqtt-bridge.js) call the exact same logic rather than one of
+// them re-implementing it. Returns { ok:true, display_id } on success, or
+// { ok:false, status, error } — never throws, so a caller with no HTTP
+// response to write to (the MQTT bridge) doesn't need its own try/catch
+// around DB errors it can't otherwise anticipate.
+function applySavedLayoutToDisplay(presetId, displaySlugOrId) {
+  const preset = db.prepare(`SELECT * FROM saved_layouts WHERE id = ?`).get(presetId);
+  if (!preset) return { ok: false, status: 404, error: 'Saved layout not found' };
+  // Same hardening as PUT /api/layouts/:orientation, and for the identical
+  // reason — resolveDisplay() falls back to "the first display in the
+  // database" for ANY unresolved slug (empty, missing, or simply not
+  // matching), which is fine for a read but means a write with a bad slug
+  // silently overwrites some OTHER, unrelated display instead of failing.
+  // This is the DESTINATION of an apply — getting it wrong here is exactly
+  // the "layouts got swapped" failure mode this was built to rule out.
+  if (!displaySlugOrId) return { ok: false, status: 400, error: 'A target display slug is required.' };
+  const disp = resolveDisplay(displaySlugOrId);
+  if (!disp || (disp.slug !== displaySlugOrId && String(disp.id) !== String(displaySlugOrId))) {
+    return { ok: false, status: 404, error: 'Target display not found' };
+  }
+  const tx = db.transaction(() => {
+    db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'landscape', ?)`).run(disp.id, preset.widgets_landscape);
+    db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'portrait', ?)`).run(disp.id, preset.widgets_portrait);
+    db.prepare(`UPDATE displays SET theme = ? WHERE id = ?`).run(preset.theme || '', disp.id);
+  });
+  tx();
+  broadcastUpdate('displays');
+  broadcastUpdate('layout', disp.id);
+  return { ok: true, display_id: disp.id };
+}
+
 app.post('/api/saved-layouts/:id/apply', (req, res) => {
   const preset = db.prepare(`SELECT * FROM saved_layouts WHERE id = ?`).get(req.params.id);
   if (!preset) return res.status(404).json({ error: 'Saved layout not found' });
@@ -10484,27 +10678,9 @@ app.post('/api/saved-layouts/:id/apply', (req, res) => {
   }
 
   // mode === 'current' (default): overwrite the target display
-  // Same hardening as PUT /api/layouts/:orientation, and for the identical
-  // reason — resolveDisplay() falls back to "the first display in the
-  // database" for ANY unresolved slug (empty, missing, or simply not
-  // matching), which is fine for a read but means a write with a bad slug
-  // silently overwrites some OTHER, unrelated display instead of failing.
-  // This is the DESTINATION of an apply — getting it wrong here is exactly
-  // the "layouts got swapped" failure mode this was built to rule out.
-  if (!display) return res.status(400).json({ error: 'A target display slug is required.' });
-  const disp = resolveDisplay(display);
-  if (!disp || (disp.slug !== display && String(disp.id) !== String(display))) {
-    return res.status(404).json({ error: 'Target display not found' });
-  }
-  const tx = db.transaction(() => {
-    db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'landscape', ?)`).run(disp.id, preset.widgets_landscape);
-    db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'portrait', ?)`).run(disp.id, preset.widgets_portrait);
-    db.prepare(`UPDATE displays SET theme = ? WHERE id = ?`).run(preset.theme || '', disp.id);
-  });
-  tx();
-  broadcastUpdate('displays');
-  broadcastUpdate('layout', disp.id);
-  res.json({ ok: true, display_id: disp.id });
+  const result = applySavedLayoutToDisplay(req.params.id, display);
+  if (!result.ok) return res.status(result.status).json({ error: result.error });
+  res.json({ ok: true, display_id: result.display_id });
 });
 
 // Full detail for ONE live display — both orientations' widgets + theme, in
@@ -14198,6 +14374,21 @@ function fetchUpdateInfo() {
       let data = '';
       r.on('data', c => data += c);
       r.on('end', () => {
+        // Real gap, found live: this used to parse+resolve ANY response that
+        // happened to be valid JSON, with no status-code check at all —
+        // registerTrialLicense() right below already gets this right
+        // (`r.statusCode >= 200 && r.statusCode < 300`), this just never
+        // matched it. An error body like {"error":"..."} parses fine and has
+        // no licenseStatus field, so isLicenseValid(undefined, undefined)
+        // silently returned false — a transient server-side hiccup (a rate
+        // limit, a brief 5xx) would get treated exactly like "you have no
+        // license" and start the grace-period countdown for real. Rejecting
+        // here instead routes it through periodicUpdateCheck()'s existing
+        // catch, which already correctly leaves no_license_since untouched
+        // on any failure to reach the server at all.
+        if (r.statusCode < 200 || r.statusCode >= 300) {
+          return reject(new Error(`Update server returned HTTP ${r.statusCode}.`));
+        }
         try {
           const parsed = JSON.parse(data);
           _lastCrash = null; // reported — don't repeat it on the next check-in
@@ -14747,6 +14938,25 @@ app.get('/hub', demoLeaseGate, (req, res) => sendCorePage(res, path.join(__dirna
 // On Windows only, an 'error' listener rides out a transient EADDRINUSE —
 // which is the norm right after a self-update, when the outgoing process is
 // still releasing the port and there's no systemd to restart into.
+// Boots (or reboots, e.g. right after a relevant settings change) the MQTT
+// bridge — a thin call-through to mqtt-bridge.js with the small context it
+// needs injected, so that module itself never touches `db` or the
+// device-control functions directly (see its own header comment for why).
+// No-ops entirely on a mirror: the host already owns every screen's TV
+// control and layout-apply logic (runTvAction proxies to the right Pi
+// itself, same as always), so a mirror opening its own second, competing
+// connection to the same broker would just be redundant, not additive.
+function startMqttBridgeIfConfigured() {
+  if (!mqttBridge || isSlave()) return;
+  mqttBridge.start({
+    db, getSetting,
+    runTvAction, applySavedLayoutToDisplay,
+    deviceId: DEVICE_ID,
+    appVersion: APP_VERSION,
+    log: (msg) => console.log(msg),
+  });
+}
+
 function startServer(attempt = 0) {
   httpServer = app.listen(PORT, '0.0.0.0', () => {
     try { attachCameraWsProxy(httpServer); } catch (e) { console.error('camera ws proxy:', e.message); }
@@ -14760,6 +14970,10 @@ function startServer(attempt = 0) {
       try { startFlightPolling(); } catch (e) { console.error('[flightmap] start:', e.message); }
       try { if (flightmapWanted()) { ensureBasemap().catch(() => {}); ensureStatesBasemap().catch(() => {}); } } catch {}
     }, 3000);
+    // MQTT (Home Assistant control): deferred the same beat as the other
+    // optional subsystems above, so a broker connection attempt never
+    // delays the "running at" line / first requests either.
+    setTimeout(() => { try { startMqttBridgeIfConfigured(); } catch (e) { console.error('[mqtt-bridge] start:', e.message); } }, 3500);
     console.log(`Piazza HQ running at http://localhost:${PORT}`);
     console.log(`  Display : http://localhost:${PORT}/`);
     console.log(`  Control : http://localhost:${PORT}/app`);

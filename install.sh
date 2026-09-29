@@ -270,6 +270,13 @@ WorkingDirectory=${PROJECT_DIR}
 ExecStart=${NODE_BIN} ${PROJECT_DIR}/server.js
 Restart=always
 RestartSec=5
+# Headroom for the live-push (SSE) connection each display/control-app tab
+# keeps open — the OS default (often 1024) is tighter than it looks once a
+# household has several devices and one leaks slowly over days (see the
+# /api/live cleanup fix in server.js). This doesn't fix a leak by itself,
+# it just buys much more runway before one turns into "the web interface
+# stopped responding, needs a reboot."
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
