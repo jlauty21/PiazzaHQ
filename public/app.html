@@ -1444,6 +1444,13 @@ const RELEASE_NOTES = {
   '1.89.0-beta.24': [
     'Bug fixes and improvements.',
   ],
+  '1.90.0-beta.2': [
+    'New: a third way to connect Home Assistant — a native integration installed through HACS, with its own real setup screen (enter this device\'s address and an automation token, click connect). No YAML, no broker. See Settings → Home Assistant Control for the "Add to Home Assistant" button.',
+  ],
+  '1.87.12': [
+    'New: a third way to connect Home Assistant — a native integration installed through HACS, with its own real setup screen (enter this device\'s address and an automation token, click connect). No YAML, no broker. See Settings → Home Assistant Control for the "Add to Home Assistant" button.',
+    'Plus various other bug fixes and improvements.',
+  ],
 };
 
 // Beta-suffix-aware version compare — same scheme as the mothership server's
@@ -16217,6 +16224,13 @@ async function renderSettings() {
             </div>
           </div>
         </div>
+      </div>
+
+      <div class="settings-row" style="border-top:1px solid var(--border);padding-top:14px;margin-top:6px">
+        <label>Native Integration (HACS) ${infoBtn("A third way to connect, alongside rest_command and MQTT above — a real Home Assistant integration with its own setup screen: enter this device's address and the automation token above, click connect, done. Same two actions (TV/monitor power, saved-layout apply) as the other two doors — don't run more than one door for the same device at once, or you'll get duplicate entities.")}</label>
+        <p style="font-size:12px;color:var(--muted);margin:8px 0 12px">No YAML, no broker — installed through HACS, Home Assistant's community add-on store. Needs HACS itself installed in Home Assistant first (<a href="https://hacs.xyz" target="_blank" rel="noopener" style="color:var(--accent)">hacs.xyz</a>).</p>
+        <a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=jlauty21&repository=piazzahq-homeassistant&category=integration" target="_blank" rel="noopener" style="display:inline-block;text-decoration:none;background:var(--accent);border:none;border-radius:10px;color:#fff;padding:12px 18px;font-size:13px;font-weight:600;white-space:nowrap">Add to Home Assistant</a>
+        <p style="font-size:11px;color:var(--muted);margin:10px 0 0">Opens Home Assistant's own site, which hands off to your instance's HACS to add the repository. You'll still generate an automation token above and enter it when Home Assistant asks for it.</p>
       </div>
     </div>
 

@@ -2554,6 +2554,13 @@ function requireAuth(req, res, next) {
   const AUTOMATION_CONTROL_ROUTES = [
     { method: 'POST', re: /^\/api\/screens\/[^/]+\/tv\/[^/]+$/ },
     { method: 'POST', re: /^\/api\/saved-layouts\/[^/]+\/apply$/ },
+    // Read-only discovery for the same token — lets an external client (the
+    // Home Assistant custom integration's config flow, or a curious curl)
+    // find valid screen/display/layout ids on its own instead of requiring
+    // them typed in by hand, the way the rest_command YAML door still does.
+    { method: 'GET', re: /^\/api\/automation\/screens$/ },
+    { method: 'GET', re: /^\/api\/automation\/displays$/ },
+    { method: 'GET', re: /^\/api\/automation\/saved-layouts$/ },
   ];
   if (AUTOMATION_CONTROL_ROUTES.some(r => req.method === r.method && r.re.test(fullPath))) {
     const configuredToken = getSetting('automation_token');
@@ -3214,6 +3221,26 @@ app.post('/api/automation-token/generate', (req, res) => {
 app.delete('/api/automation-token', (req, res) => {
   db.prepare(`DELETE FROM settings WHERE key = 'automation_token'`).run();
   res.json({ ok: true });
+});
+
+// Read-only discovery under the same automation_token, for a client that
+// needs to find valid ids on its own (the HA custom integration's config
+// flow) rather than have them typed in by hand. Same queries mqtt-bridge.js
+// already uses for its own discovery (publishSwitches/publishSelects) —
+// deliberately reused verbatim rather than re-derived, so all three doors
+// agree on exactly what counts as "a screen with TV control" or "a saved
+// layout" without risk of drifting apart.
+app.get('/api/automation/screens', (req, res) => {
+  const rows = db.prepare(`SELECT device_id, name FROM screens WHERE tv_control_type != ''`).all();
+  res.json(rows);
+});
+app.get('/api/automation/displays', (req, res) => {
+  const rows = db.prepare(`SELECT slug, name FROM displays ORDER BY sort_order ASC, id ASC`).all();
+  res.json(rows);
+});
+app.get('/api/automation/saved-layouts', (req, res) => {
+  const rows = db.prepare(`SELECT id, name FROM saved_layouts ORDER BY created_at DESC, id DESC`).all();
+  res.json(rows);
 });
 
 // ── Home Assistant control (reverse direction): MQTT ────────────────────────
