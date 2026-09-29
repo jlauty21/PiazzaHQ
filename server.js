@@ -2717,6 +2717,16 @@ function requireAuth(req, res, next) {
     { method: 'PUT', path: '/api/reminders' },
     { method: 'DELETE', path: '/api/reminders' },
     { method: 'GET', path: '/api/saved-layouts' },
+
+    // Missed by the sweeps above and only found by loading display.html against a
+    // PIN-protected instance: with a PIN set these three returned 401 to the
+    // (login-less) wall display, so it fell back to default orientation/rotation/
+    // theme, showed an empty meal plan, and stopped checking in. Same "physical/
+    // local access IS the trust boundary" design as everything else on this list;
+    // screen-checkin still goes through the device-limit check in its handler.
+    { method: 'GET', path: '/api/display-config' },
+    { method: 'GET', path: '/api/meals' },
+    { method: 'POST', path: '/api/screen-checkin' },
   ];
   const isPublic = publicRoutes.some(r =>
     req.method === r.method && fullPath.startsWith(r.path)
@@ -5992,6 +6002,27 @@ app.delete('/api/flight-watch/:id', (req, res) => {
 
 // ── Settings API ─────────────────────────────────────────────────────────────
 
+// Setting keys that hold a credential, a PIN, a private URL or personal
+// contact info. Matched on the key name; see GET /api/settings below.
+const SENSITIVE_SETTING_RE = /(^app_pin|_pin$|_pin_previous$|token|password|_pass$|secret|hmac|_key$|^license_key$|_url$|email|username|_user$)/i;
+
+// True when this request would have passed requireAuth() on its own merits
+// (no PIN configured, a mirror presenting the host PIN, or a live session) —
+// as opposed to being let through only because the route is public.
+function settingsReadIsAuthed(req) {
+  const pin = getPin();
+  if (!pin) return true;
+  const hostPin = req.headers['x-host-pin'];
+  if (hostPin !== undefined) {
+    if (hostPin === pin) return true;
+    const prev = db.prepare(`SELECT value FROM settings WHERE key = 'app_pin_previous'`).get();
+    if (prev && prev.value && hostPin === prev.value) return true;
+  }
+  // validToken() throws on a malformed token (timingSafeEqual length check);
+  // on this public route that just means "not authenticated", not an error.
+  try { return validToken(req.headers['x-session-token'] || req.query._token); } catch { return false; }
+}
+
 // GET /api/settings
 app.get('/api/settings', (req, res) => {
   // Deliberately no-store: this endpoint is read immediately after writes in
@@ -6005,6 +6036,18 @@ app.get('/api/settings', (req, res) => {
   res.set('Cache-Control', 'no-store');
   const rows = db.prepare(`SELECT key, value FROM settings`).all();
   const settings = Object.fromEntries(rows.map(r => [r.key, r.value]));
+  // This route is on requireAuth()'s publicRoutes list (the wall display,
+  // /hub and /kids read it with no login), so with a PIN set it answers
+  // ANYONE who can reach the port — and it used to return the whole settings
+  // table, including app_pin itself and every stored credential. Callers
+  // that can't prove they hold the PIN get the same response minus anything
+  // secret-shaped. Redaction is by name pattern rather than an allowlist so a
+  // newly added display setting never silently goes missing on the wall.
+  if (!settingsReadIsAuthed(req)) {
+    for (const k of Object.keys(settings)) {
+      if (SENSITIVE_SETTING_RE.test(k)) delete settings[k];
+    }
+  }
   res.json(settings);
 });
 

@@ -1447,6 +1447,12 @@ const RELEASE_NOTES = {
   '1.90.0-beta.2': [
     'New: a third way to connect Home Assistant — a native integration installed through HACS, with its own real setup screen (enter this device\'s address and an automation token, click connect). No YAML, no broker. See Settings → Home Assistant Control for the "Add to Home Assistant" button.',
   ],
+  '1.87.13': [
+    'New: a Set PIN button in Settings → Security.',
+    'Fixed: setting a PIN from Settings → Security could fail to save.',
+    'Fixed: with a PIN set, the wall display could lose part of its configuration (orientation, theme, meal plan).',
+    'Security and reliability improvements.',
+  ],
   '1.87.12': [
     'New: a third way to connect Home Assistant — a native integration installed through HACS, with its own real setup screen (enter this device\'s address and an automation token, click connect). No YAML, no broker. See Settings → Home Assistant Control for the "Add to Home Assistant" button.',
     'Plus various other bug fixes and improvements.',
@@ -16511,6 +16517,8 @@ async function renderSettings() {
           placeholder="${s.app_pin ? 'PIN is set — leave blank to keep it' : 'No PIN set — leave blank for none'}" autocomplete="new-password">
         <input class="form-input" id="s-pin-confirm" type="password" inputmode="numeric"
           placeholder="Confirm PIN" autocomplete="new-password" style="margin-top:8px;display:none">
+        <div id="s-pin-hint" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+        <button type="button" class="btn btn-primary" id="s-pin-save-btn" style="display:none;margin-top:8px">Set PIN</button>
         ${s.app_pin ? `<button type="button" id="s-pin-remove-btn" style="background:none;border:none;color:var(--danger);font-size:12px;font-weight:600;cursor:pointer;padding:6px 0;margin-top:2px">Remove PIN protection</button>` : ''}
       </div>
     </div>
@@ -19008,8 +19016,14 @@ async function renderSettings() {
 
   if ($('s-pin')) {
     $('s-pin').addEventListener('input', () => {
-      $('s-pin-confirm').style.display = $('s-pin').value.trim() ? 'block' : 'none';
+      const typing = !!$('s-pin').value.trim();
+      $('s-pin-confirm').style.display = typing ? 'block' : 'none';
+      $('s-pin-save-btn').style.display = typing ? 'block' : 'none';
     });
+    // Enter in either box submits, same as pressing Set PIN.
+    for (const id of ['s-pin', 's-pin-confirm']) {
+      $(id).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('s-pin-save-btn').click(); } });
+    }
   }
   if ($('s-pin-remove-btn')) {
     $('s-pin-remove-btn').addEventListener('click', async () => {
@@ -19035,55 +19049,78 @@ async function renderSettings() {
     });
   }
 
-  $('settings-save-btn').addEventListener('click', async () => {
-    // The PIN is handled here only, on an explicit button press — see
-    // saveAllSettings()'s comment for why it's excluded from auto-save.
+  // Sets the app PIN on its own. Used by the "Set PIN" button, Enter in either
+  // PIN box, and the main Save Settings button — the PIN is deliberately NOT
+  // part of the debounced auto-save (see saveAllSettings()'s comment): a
+  // half-typed PIN must never get saved. Returns 'none' (nothing typed),
+  // 'mismatch', 'error', or 'set'.
+  async function saveAppPin() {
     const pinVal = $('s-pin').value.trim();
     const pinConfirmVal = $('s-pin-confirm').value.trim();
     const pinHint = $('s-pin-hint');
-    if (pinVal !== '') {
-      // Confirm-PIN check — added after a real report: someone set a PIN
-      // for the first time, and while the actual mistyped-PIN theory
-      // turned out not to be it (see the token-establishment fix below,
-      // which was the real cause), typing a PIN blind with no confirmation
-      // step was still a genuine gap worth closing on its own, here and
-      // anywhere else a PIN gets set (see the setup wizard's own PIN step).
-      if (pinVal !== pinConfirmVal) {
-        pinHint.textContent = "PINs don't match — try again.";
-        pinHint.style.color = '#ff8585';
-        $('s-pin-confirm').focus();
-        return;
-      }
-      pinHint.style.color = '';
-      pinHint.textContent = 'Set a PIN to protect the app when accessed remotely. The display is always public.';
-      await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify({ app_pin: pinVal }) });
-      // Real bug fixed here: setting a PIN takes effect immediately on the
-      // SERVER (requireAuth reads it fresh on every request), but this
-      // browser's own session never automatically became authenticated —
-      // sessionToken was still null, since typing into this field is not
-      // the same thing as logging in with it. The very next API call this
-      // page made (saveAllSettings(), a few lines below) would then get
-      // rejected with 401 by the person's OWN current session, immediately
-      // after they'd just set the PIN — kicking them out of the app they
-      // were sitting in, moments after saving. Establishing a real session
-      // right here, using the PIN that was just set, closes that gap
-      // before anything else gets a chance to fail.
-      try {
-        const loginRes = await fetch('/api/auth/login', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pin: pinVal }),
-        });
-        const loginData = await loginRes.json();
-        if (loginData && loginData.ok && loginData.token) {
-          sessionToken = loginData.token;
-          authGeneration++; // any request already in flight from before this point gets ignored on 401 — see apiFetch()'s own comment
-          localStorage.setItem('pi_cal_token', sessionToken);
-        }
-      } catch {} // best-effort — if this fails, saveAllSettings() below will surface it via the normal 401 handling, not silently
-      $('s-pin').value = '';
-      $('s-pin-confirm').value = '';
-      $('s-pin-confirm').style.display = 'none';
+    if (pinVal === '') return 'none';
+    // Confirm-PIN check — typing a PIN blind with no confirmation step was a
+    // genuine gap (see also the setup wizard's own PIN step).
+    if (pinVal !== pinConfirmVal) {
+      pinHint.textContent = "PINs don't match — try again.";
+      pinHint.style.color = '#ff8585';
+      $('s-pin-confirm').focus();
+      return 'mismatch';
     }
+    pinHint.style.color = '';
+    pinHint.textContent = 'Set a PIN to protect the app when accessed remotely. The display is always public.';
+    const res = await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify({ app_pin: pinVal }) });
+    if (res && res.__authFailed) return 'error'; // apiFetch already handled the invalid session
+    if (res && res.error) {
+      pinHint.textContent = res.error;
+      pinHint.style.color = '#ff8585';
+      return 'error';
+    }
+    // Real bug fixed here: setting a PIN takes effect immediately on the
+    // SERVER (requireAuth reads it fresh on every request), but this
+    // browser's own session never automatically became authenticated —
+    // sessionToken was still null, since typing into this field is not
+    // the same thing as logging in with it. The very next API call this
+    // page made would then get rejected with 401 by the person's OWN
+    // current session, immediately after they'd just set the PIN —
+    // kicking them out of the app they were sitting in, moments after
+    // saving. Establishing a real session right here, using the PIN that
+    // was just set, closes that gap before anything else gets a chance
+    // to fail.
+    try {
+      const loginRes = await fetch('/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: pinVal }),
+      });
+      const loginData = await loginRes.json();
+      if (loginData && loginData.ok && loginData.token) {
+        sessionToken = loginData.token;
+        authGeneration++; // any request already in flight from before this point gets ignored on 401 — see apiFetch()'s own comment
+        localStorage.setItem('pi_cal_token', sessionToken);
+      }
+    } catch {} // best-effort — if this fails, the next request surfaces it via the normal 401 handling, not silently
+    $('s-pin').value = '';
+    $('s-pin-confirm').value = '';
+    $('s-pin-confirm').style.display = 'none';
+    $('s-pin-save-btn').style.display = 'none';
+    return 'set';
+  }
+
+  $('s-pin-save-btn').addEventListener('click', async () => {
+    const btn = $('s-pin-save-btn');
+    btn.disabled = true;
+    try {
+      if (await saveAppPin() === 'set') {
+        showToast('PIN set ✓');
+        await renderSettingsKeepPlace(); // placeholder + Remove button reflect the new state now
+      }
+    } finally { btn.disabled = false; }
+  });
+
+  $('settings-save-btn').addEventListener('click', async () => {
+    const pinResult = await saveAppPin();
+    if (pinResult === 'mismatch' || pinResult === 'error') return;
+    const pinJustSet = pinResult === 'set';
     // Real design flaw fixed here: this field is deliberately never
     // pre-filled with the actual PIN (a password field showing the real
     // secret back would defeat the point of it) — but that meant "blank"
@@ -19097,6 +19134,10 @@ async function renderSettings() {
     if (_settingsAutoSaveTimer) { clearTimeout(_settingsAutoSaveTimer); _settingsAutoSaveTimer = null; }
     await saveAllSettings();
     $('bf-email-pass').value = '';
+    // Same as the remove-PIN button below: re-render so the field's placeholder
+    // and the "Remove PIN protection" button reflect the new state now, not the
+    // next time Settings is opened (it kept saying "No PIN set" until then).
+    if (pinJustSet) await renderSettingsKeepPlace();
   });
 
   $('bf-preview-btn').addEventListener('click', () => {
