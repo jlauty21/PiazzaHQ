@@ -570,7 +570,32 @@ upgrade_or_add_kiosk_line() {
   mkdir -p "$(dirname "$file")"
   touch "$file"
   if grep -qF -- "wait-for-server-and-launch-kiosk.sh" "$file" 2>/dev/null; then
-    skip "autostart already wraps the kiosk launch ($(basename "$file"))"
+    # Naming the wrapper isn't enough - the path in front of it has to still
+    # exist. A renamed/moved project folder (an old ~/pi-calendar install) left
+    # boot lines pointing at nothing, and this used to call them "already
+    # wrapped", so the kiosk silently never launched after a reboot.
+    local want stale p
+    want="${wrapped_line%%wait-for-server-and-launch-kiosk.sh*}wait-for-server-and-launch-kiosk.sh"
+    want="${want#@}"
+    stale=""
+    while IFS= read -r p; do
+      [[ -n "$p" && "$p" != "$want" && ! -e "$p" ]] && stale+="$p"$'\n'
+    done < <(grep -oE '/[^[:space:]"]*wait-for-server-and-launch-kiosk\.sh' "$file" | sort -u)
+    # A hand-made systemd unit that already launches the kiosk means repairing a
+    # dead autostart line would start the browser twice on the next reboot.
+    if [[ -n "$stale" ]] && grep -lE '^[[:space:]]*ExecStart=.*chromium.*--kiosk' /etc/systemd/system/*.service >/dev/null 2>&1; then
+      warn "A systemd unit already launches the kiosk - leaving the dead wrapper path in $(basename "$file") alone (repairing it would start the browser twice)."
+      stale=""
+    fi
+    if [[ -n "$stale" ]]; then
+      while IFS= read -r p; do
+        [[ -z "$p" ]] && continue
+        sed -i "s#${p}#${want}#g" "$file"
+      done <<< "$stale"
+      ok "Repointed a dead kiosk wrapper path in $(basename "$file") -> ${want}"
+    else
+      skip "autostart already wraps the kiosk launch ($(basename "$file"))"
+    fi
   elif grep -qF -- "--kiosk" "$file" 2>/dev/null; then
     local tmp; tmp="$(mktemp)"
     grep -vF -- "--kiosk" "$file" > "$tmp" || true
@@ -684,8 +709,15 @@ echo
 # display for maintenance — no racing an auto-relaunching browser.
 say "Installing the 'kiosk' control command"
 if [[ -f "$PROJECT_DIR/scripts/kiosk" ]]; then
-  sudo install -m 0755 "$PROJECT_DIR/scripts/kiosk" /usr/local/bin/kiosk
-  ok "Installed — run: kiosk off | on | toggle | restart | status"
+  # A SYMLINK to the project's own copy, not a copy of it. This used to be a
+  # one-time `install` of a copy: every later fix to scripts/kiosk (a self-update
+  # replaces the project folder, but nothing can touch this root-owned file)
+  # never reached the command people actually type - a real Pi was still running
+  # a months-old `kiosk` when a fix for it shipped. Re-running the installer on
+  # such a Pi replaces the old copy with the link.
+  chmod +x "$PROJECT_DIR/scripts/kiosk" 2>/dev/null || true
+  sudo ln -sfn "$PROJECT_DIR/scripts/kiosk" /usr/local/bin/kiosk
+  ok "Installed (linked to the project, so updates apply automatically) — run: kiosk off | on | toggle | restart | status"
 else
   warn "scripts/kiosk not found in the project; skipping."
 fi

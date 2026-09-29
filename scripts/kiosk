@@ -109,6 +109,45 @@ discover_display_env() {
   [[ -z "${XAUTHORITY:-}" && -f "$HOME/.Xauthority" ]] && export XAUTHORITY="$HOME/.Xauthority"
 }
 
+# Every process below $1 in the process tree, deepest first (so a parent is
+# never killed before the children it would otherwise leave orphaned).
+descendants() {
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null); do
+    descendants "$c"
+    echo "$c"
+  done
+}
+
+# Our own ancestors (this script, the shell that ran it, the keybind/terminal
+# that launched that, ...). Never signalled - see kill_tree().
+protected_pids() {
+  local p="$$"
+  while [[ -n "$p" && "$p" -gt 1 ]]; do
+    echo "$p"
+    p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+  done
+}
+
+# Signal one Chromium process and everything beneath it - by walking the TREE,
+# never by process group. On an X11/lxsession Pi the kiosk is started by the
+# session itself, so Chromium's process GROUP is the *desktop session's* group:
+# signalling it ("kill -- -PGID", what this used to do) takes down lxsession,
+# the window manager and the panel too, ends the session, and leaves the Pi at
+# the login screen with nothing to bring the kiosk back (reproduced on a Pi 3B+
+# running Trixie/X11, 2026-09-29). Walking children explicitly reaches every
+# zygote/GPU/utility/renderer process without touching anything outside the
+# browser, and anything that is one of our own ancestors is skipped outright.
+kill_tree() {
+  local sig="$1" root="$2" p protect
+  protect=" $(protected_pids | tr '
+' ' ') "
+  for p in $(descendants "$root") "$root"; do
+    [[ "$protect" == *" $p "* ]] && continue
+    kill -"$sig" "$p" 2>/dev/null || true
+  done
+}
+
 is_running() {
   pgrep -f "$KIOSK_MATCH" >/dev/null 2>&1
 }
@@ -119,40 +158,29 @@ kiosk_off() {
     # Kill the WHOLE kiosk Chromium process tree, not just the one process
     # matching --kiosk. A real incident (2026-09-12) traced a display that
     # got progressively less stable across repeated auto-recoveries back to
-    # this exact line: `pkill -f "$KIOSK_MATCH"` only matches processes whose
-    # OWN command line contains "--kiosk" literally — true for the top-level
-    # browser process, but NOT for any of its children (Chromium's zygote,
-    # GPU, utility, and renderer processes each get their own distinct
-    # --type=... flags, never a copy of the parent's argv). So every prior
-    # "kiosk off"/"kiosk restart" — manual or watchdog-triggered — killed
-    # only the front door and left the entire rest of that instance's
-    # process tree running as orphans, competing for the same limited RAM/
-    # CPU with whatever got launched next. Confirmed on real hardware: the
-    # stale process/tab count grew with every single restart cycle.
+    # `pkill -f "$KIOSK_MATCH"` only matching processes whose OWN command
+    # line contains "--kiosk" - the top-level browser process, but NOT its
+    # children (zygote, GPU, utility and renderer processes each carry their
+    # own --type=... flags, never a copy of the parent's argv). Every prior
+    # "kiosk off"/"kiosk restart" therefore killed only the front door and
+    # left the rest of that instance's tree running as orphans, competing for
+    # the same limited RAM/CPU with whatever got launched next.
     #
-    # The fix: Chromium's subprocesses inherit the browser process's own
-    # process GROUP (confirmed on real hardware — every zygote/GPU/utility/
-    # renderer process shared the exact same PGID as the main process; only
-    # the separate crashpad-handler monitors sit outside it, which is fine,
-    # they're inert without something to watch). Signaling the whole group
-    # in one shot reaches all of them regardless of how many there are or
-    # what flags they carry.
-    while read -r pid; do
-      [[ -z "$pid" ]] && continue
-      pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
-      [[ -z "$pgid" ]] && continue
-      kill -TERM -- "-$pgid" 2>/dev/null || true
-    done < <(pgrep -f "$KIOSK_MATCH")
+    # That was first fixed by signalling the browser's process GROUP, which
+    # reaches every child in one shot - but on an X11/lxsession Pi the group
+    # is the desktop session's own, so it killed the session too (see
+    # kill_tree()). This walks the tree instead: children first, then the
+    # parent, SIGTERM then SIGKILL, and never our own ancestors.
+    for pid in $(pgrep -f "$KIOSK_MATCH"); do
+      kill_tree TERM "$pid"
+    done
     sleep 1
     # Safety net: anything that ignored SIGTERM (or was already mid-crash
-    # and unresponsive to it) gets SIGKILL — this is exactly the failure
+    # and unresponsive to it) gets SIGKILL - this is exactly the failure
     # mode that let orphans survive before, so don't leave it to chance.
-    while read -r pid; do
-      [[ -z "$pid" ]] && continue
-      pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
-      [[ -z "$pgid" ]] && continue
-      kill -KILL -- "-$pgid" 2>/dev/null || true
-    done < <(pgrep -f "$KIOSK_MATCH")
+    for pid in $(pgrep -f "$KIOSK_MATCH"); do
+      kill_tree KILL "$pid"
+    done
     # Pause the cursor-hider so the desktop is usable.
     pkill -x unclutter 2>/dev/null || true
     # NOT pkill -x here: "unclutter-xfixes" is 16 characters, one over Linux's

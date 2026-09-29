@@ -8890,6 +8890,9 @@ async function syncAllFeeds() {
   for (const feed of feeds) {
     try { await syncFeed(feed); }
     catch (e) { console.error(`Feed sync failed for "${feed.name}":`, e.message); }
+    // Let queued HTTP requests (the display's, mostly) run between feeds instead
+    // of a whole sync monopolising the event loop.
+    await new Promise((r) => setImmediate(r));
   }
   if (feeds.length) broadcastUpdate('events');
 }
@@ -8907,8 +8910,23 @@ function scheduleNextSync() {
   }, getSyncIntervalMs());
 }
 scheduleNextSync();
-// Also sync on startup after a short delay
-setTimeout(syncAllFeeds, 3000);
+// Also sync on startup - but WHEN depends on whether there is anything to show
+// yet. A brand-new install has no events, so it syncs almost immediately (3s). A
+// device that already holds synced events (every reboot and every self-update)
+// waits 90s: the first sync parses and expands thousands of recurring events on
+// the main thread while the kiosk browser is launching and compiling a 1.2 MB
+// page on a 1 GB Pi, and measured on a Pi 3B+ that contention was the whole
+// "white screen for ~26 seconds after a reboot" (first paint takes ~5s when the
+// Pi is idle). The display shows the stored events meanwhile; broadcastUpdate
+// refreshes it when the sync lands. PIAZZA_BOOT_SYNC_DELAY_SEC overrides.
+function chooseBootSyncDelayMs(hasSyncedEvents, envValue) {
+  const override = parseInt(envValue, 10);
+  if (Number.isFinite(override) && override >= 0) return override * 1000;
+  return hasSyncedEvents ? 90 * 1000 : 3000;
+}
+setTimeout(syncAllFeeds, chooseBootSyncDelayMs(
+  !!db.prepare(`SELECT 1 FROM ical_events LIMIT 1`).get(),
+  process.env.PIAZZA_BOOT_SYNC_DELAY_SEC));
 
 // ── Pushing local events out to external calendars (iCloud + Google) ────────
 // Everything above about calendars is the PULL side: subscribe to a published
@@ -14049,6 +14067,65 @@ function restartPlain(logLabel) {
 // binary/flags/URL the user already had. Never touches wayfire.ini —
 // install.sh itself never auto-writes that one either (INI editing needs a
 // human), so a wayfire user's line, if stale, stays a manual fix.
+// Name of an admin-created systemd unit that already launches the kiosk
+// browser (e.g. a hand-made pi-kiosk.service), or null. If one exists, a boot
+// line that is currently DEAD must be left dead: repairing it would make the
+// browser start twice on the next reboot - once from the unit, once from the
+// autostart file. Wrapping a line that already works is unaffected.
+function findSystemdKioskUnit(dir = '/etc/systemd/system') {
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.service')) continue;
+      let text = '';
+      try { text = fs.readFileSync(path.join(dir, f), 'utf8'); } catch { continue; }
+      if (/^\s*ExecStart=.*chromium.*--kiosk/m.test(text)) return f;
+    }
+  } catch {}
+  return null;
+}
+
+// Pure text transform for ONE autostart file (kept free of fs/os so it can be
+// unit-tested by itself). Two repairs, both keyed on a line that launches the
+// kiosk ("--kiosk"):
+//   1. unwrapped   -> wrap it in the wait-for-server script (the original fix);
+//   2. wrapped, but the wrapper path it names no longer exists -> repoint it at
+//      the current wrapper. A line that merely CONTAINS the wrapper's filename
+//      used to count as fixed, so a Pi whose project folder was renamed or moved
+//      (an old "pi-calendar" install is the real-world case) kept a boot line
+//      pointing at nothing forever: the kiosk never launched on reboot and no
+//      update ever noticed. A wrapper path that exists but differs from ours is
+//      left alone - that may be someone's deliberate second checkout.
+// pathExists is injected (fs.existsSync in production).
+// opts.repairDeadPaths === false skips repair 2 (see findSystemdKioskUnit).
+function rewriteKioskAutostartText(original, style, waitScript, pathExists, opts) {
+  const repairDead = !opts || opts.repairDeadPaths !== false;
+  const WRAPPER = 'wait-for-server-and-launch-kiosk.sh';
+  const wrapperPathRe = /\/[^\s"'`]*wait-for-server-and-launch-kiosk\.sh/g;
+  let changed = false;
+  const rewritten = original.split('\n').map((line) => {
+    if (!line.includes('--kiosk')) return line;
+    if (line.includes(WRAPPER)) {
+      let fixed = line;
+      for (const p of new Set(line.match(wrapperPathRe) || [])) {
+        if (repairDead && p !== waitScript && !pathExists(p)) fixed = fixed.split(p).join(waitScript);
+      }
+      if (fixed !== line) changed = true;
+      return fixed;
+    }
+    changed = true;
+    if (style === 'lxsession') {
+      // "@chromium --kiosk ... url" -> "@<waitScript> chromium --kiosk ... url"
+      return `@${waitScript} ${line.replace(/^@/, '')}`;
+    }
+    // labwc: a shell script of background commands - the line may end in
+    // " &"; keep that at the very end so it still backgrounds correctly.
+    const hadTrailingBg = /\s*&\s*$/.test(line);
+    const body = line.replace(/\s*&\s*$/, '');
+    return `${waitScript} ${body}${hadTrailingBg ? ' &' : ''}`;
+  });
+  return { text: rewritten.join('\n'), changed };
+}
+
 function refreshKioskAutostartLine() {
   const home = os.homedir();
   const waitScript = path.join(__dirname, 'scripts', 'wait-for-server-and-launch-kiosk.sh');
@@ -14069,29 +14146,28 @@ function refreshKioskAutostartLine() {
     { file: path.join(home, '.config', 'labwc', 'autostart'), style: 'shell' },
     { file: path.join(home, '.config', 'lxsession', lxsessionName, 'autostart'), style: 'lxsession' },
   ];
+  // The session lightdm names is not always the one that ends up running (a Pi
+  // switched between X11 and Wayland keeps every session's file; a real Pi 3B+
+  // had four). Repair each one that exists so the fix can't miss the live one.
+  try {
+    const lxRoot = path.join(home, '.config', 'lxsession');
+    for (const d of fs.readdirSync(lxRoot)) {
+      const file = path.join(lxRoot, d, 'autostart');
+      if (!candidates.some((c) => c.file === file) && fs.existsSync(file)) candidates.push({ file, style: 'lxsession' });
+    }
+  } catch {}
 
+  const otherLauncher = findSystemdKioskUnit();
+  if (otherLauncher) console.log(`Update: ${otherLauncher} already launches the kiosk - leaving any dead autostart wrapper path alone so the browser does not start twice.`);
   for (const { file, style } of candidates) {
     try {
       if (!fs.existsSync(file)) continue;
       const original = fs.readFileSync(file, 'utf8');
-      let changed = false;
-      const rewritten = original.split('\n').map((line) => {
-        if (!line.includes('--kiosk') || line.includes('wait-for-server-and-launch-kiosk.sh')) return line;
-        changed = true;
-        if (style === 'lxsession') {
-          // "@chromium --kiosk ... url" -> "@<waitScript> chromium --kiosk ... url"
-          return `@${waitScript} ${line.replace(/^@/, '')}`;
-        }
-        // labwc: a shell script of background commands — the line may end in
-        // " &"; keep that at the very end so it still backgrounds correctly.
-        const hadTrailingBg = /\s*&\s*$/.test(line);
-        const body = line.replace(/\s*&\s*$/, '');
-        return `${waitScript} ${body}${hadTrailingBg ? ' &' : ''}`;
-      });
+      const { text, changed } = rewriteKioskAutostartText(original, style, waitScript, fs.existsSync, { repairDeadPaths: !otherLauncher });
       if (!changed) continue;
       fs.writeFileSync(file + '.piazzahq-preupdate-bak', original);
-      fs.writeFileSync(file, rewritten.join('\n'));
-      console.log(`Update: rewrapped stale kiosk autostart line in ${file} (backup: ${path.basename(file)}.piazzahq-preupdate-bak)`);
+      fs.writeFileSync(file, text);
+      console.log(`Update: repaired kiosk autostart line in ${file} (backup: ${path.basename(file)}.piazzahq-preupdate-bak)`);
     } catch (e) {
       console.error(`Update: kiosk autostart refresh failed for ${file} (continuing anyway) — ${e.message}`);
     }
