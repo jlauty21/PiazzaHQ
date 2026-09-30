@@ -18590,11 +18590,22 @@ window.handleAutoFitPhotoLoad = function(img, filename, blurEl) {
 // full-screen photo layout, or the old Tab-key blank background) reads this
 // same counter with its own modulo against its own photo list — so one timer
 // correctly drives all of them, rather than each needing its own.
+let _slideTimerMs = 0; // interval the running shared timer was built for (0 = not running)
+// Safe to call any time photo settings might have changed (page load, the
+// photo-settings SSE topic, the periodic settings refresh): it starts the timer
+// if slideshow was just switched on, stops it if switched off, re-times it if the
+// interval changed, and otherwise leaves the running timer (and its countdown)
+// alone. It used to run once at page load only, so turning the slideshow on -
+// or changing its interval - from the app did nothing on a display that was
+// already open until that display reloaded.
 function startSlideshowTimer() {
-  if (slideTimer) clearInterval(slideTimer);
   const ps = state.photoSettings || {};
-  if (ps.slideshow !== '1') return; // global slideshow toggle is off — no cycling
-  const iv = Math.max(5, parseInt(ps.slideshow_interval || 30)) * 1000;
+  const wantMs = ps.slideshow === '1' ? Math.max(5, parseInt(ps.slideshow_interval || 30) || 30) * 1000 : 0;
+  if (wantMs === _slideTimerMs && (wantMs === 0 || slideTimer)) return;
+  if (slideTimer) { clearInterval(slideTimer); slideTimer = null; }
+  _slideTimerMs = wantMs;
+  if (!wantMs) return; // global slideshow toggle is off - no cycling
+  const iv = wantMs;
   slideTimer = setInterval(() => {
     const total = (state.photos || []).length;
     if (!total) return;
@@ -20948,6 +20959,15 @@ function connectLiveUpdates() {
     } else if (topic === 'settings') {
       const sRes = await fetch('/api/settings');
       state.settings = await sRes.json();
+      // A mirror gets host changes through its sync, which announces only the
+      // generic topics (this one included) - never 'photo-settings'. Re-read the
+      // photo settings here too so a slideshow switched on/off or re-timed on the
+      // host reaches a mirror's open display promptly instead of at the next
+      // 5-minute refresh. The render calls further down pick up the new values.
+      try {
+        state.photoSettings = await fetch('/api/photo-settings').then(r => r.json());
+        startSlideshowTimer();
+      } catch {}
       checkSetupOverlay();
       applyTextColor();
       applyFontFamily();
@@ -20988,6 +21008,7 @@ function connectLiveUpdates() {
     } else if (topic === 'photo-settings') {
       const psRes = await fetch('/api/photo-settings');
       state.photoSettings = await psRes.json();
+      startSlideshowTimer();
       applyBackground();
       renderLayout();
     } else if (topic === 'layout') {
@@ -21280,6 +21301,7 @@ async function init() {
     const [sRes,psRes] = await Promise.all([fetch('/api/settings'),fetch('/api/photo-settings')]);
     state.settings = await sRes.json();
     state.photoSettings = await psRes.json();
+    startSlideshowTimer();
     await resolveAssignedProfile();   // catch host profile reassignments even if SSE missed it
     await fetchLayout(currentOrientation);
     await fetchTasksForLayout();

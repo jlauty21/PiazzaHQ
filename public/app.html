@@ -1447,6 +1447,9 @@ const RELEASE_NOTES = {
   '1.90.0-beta.2': [
     'New: a third way to connect Home Assistant — a native integration installed through HACS, with its own real setup screen (enter this device\'s address and an automation token, click connect). No YAML, no broker. See Settings → Home Assistant Control for the "Add to Home Assistant" button.',
   ],
+  '1.87.15': [
+    'Fixed: the photo slideshow now starts, stops and changes speed as soon as you change it in Settings, instead of only after the display restarts. A mirror screen also picks up slideshow changes from the main device right away.',
+  ],
   '1.87.14': [
     'Fixed: the display could sit on a white screen for a long time after a reboot on small Raspberry Pis. Calendar feeds now wait a minute and a half after start-up to sync when your events are already stored, and the start-up check waits for the desktop and fixes a window that is not fullscreen.',
     'Fixed: restarting the kiosk from the command line could log the desktop out, and the kiosk command itself could be an out-of-date copy that updates never refreshed.',
