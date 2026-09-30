@@ -3477,6 +3477,18 @@ function syncPerWidgetPhotoTimers() {
 }
 let currentOrientation = null;
 
+// Tell the local server once this page has really put a frame on screen. Two animation frames, because
+// requestAnimationFrame only fires while the browser is compositing the window: a page that runs but is
+// stuck blank (or never ran at all) stays silent, and the kiosk launcher's paint watchdog then reloads it.
+let _paintedSent = false;
+function reportPainted() {
+  if (_paintedSent) return;
+  _paintedSent = true;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    try { fetch('/api/display/painted', { method: 'POST', keepalive: true }).catch(() => {}); } catch {}
+  }));
+}
+
 // ── Orientation ──────────────────────────────────────────────────────────────
 // The display's render config (orientation override + in-browser rotation),
 // loaded from /api/display-config at startup. Defaults keep the old auto behavior.
@@ -21216,6 +21228,7 @@ async function init() {
   }
   try { applyBackground(); } catch {}
   startSlideshowTimer();
+  try { reportPainted(); } catch {}
 
   // Clock ticks every second
   setInterval(tickClock, 1000);

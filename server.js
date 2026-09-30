@@ -2585,6 +2585,9 @@ function requireAuth(req, res, next) {
     { method: 'GET', path: '/api/live' },
     { method: 'GET', path: '/api/news' },
     { method: 'GET', path: '/api/stocks' },
+    // The kiosk's "I drew a frame" signal and the launcher's read of it. Loopback-only inside the handlers.
+    { method: 'POST', path: '/api/display/painted' },
+    { method: 'GET', path: '/api/display/state' },
 
     // Widget-data endpoints display.html calls directly (same never-
     // authenticated context as everything else on this list) — found while
@@ -2788,6 +2791,30 @@ app.post('/api/auth/logout', (req, res) => {
     try { sessionDeleteStmt.run(token.split('.')[0]); } catch {}
   }
   res.json({ ok: true });
+});
+
+// ── Display "painted" signal ─────────────────────────────────────────────────
+// The kiosk launcher (scripts/wait-for-server-and-launch-kiosk.sh) needs to know whether the browser's display
+// page actually drew something: a boot that ends on a blank white screen looks, to the server, exactly like a
+// healthy one. The page POSTs here once it has put a frame on screen (two animation frames after its first render,
+// so a window that is not being composited never reports). Only the kiosk browser on this device counts
+// (loopback, no proxy headers); the launcher compares the count with the one it saw at launch. boot_id changes
+// when the server restarts, so a restart can't be mistaken for "no paint".
+const DISPLAY_STATE = { bootId: crypto.randomBytes(4).toString('hex'), paintedCount: 0, lastPaintedAt: 0 };
+function displayReqIsLocal(req) {
+  const a = String(req.socket.remoteAddress || '').replace(/^::ffff:/i, '');
+  const loopback = a === '::1' || /^127\./.test(a);
+  const proxied = ['cf-connecting-ip', 'cf-ray', 'x-forwarded-for', 'x-forwarded-host', 'forwarded', 'x-real-ip', 'true-client-ip'].some((h) => req.headers[h] !== undefined);
+  return loopback && !proxied;
+}
+app.post('/api/display/painted', (req, res) => {
+  if (displayReqIsLocal(req)) { DISPLAY_STATE.paintedCount++; DISPLAY_STATE.lastPaintedAt = Date.now(); }
+  res.json({ ok: true });
+});
+app.get('/api/display/state', (req, res) => {
+  if (!displayReqIsLocal(req)) return res.status(404).json({ error: 'Not found' });
+  res.set('Cache-Control', 'no-store');
+  res.json({ boot_id: DISPLAY_STATE.bootId, painted_count: DISPLAY_STATE.paintedCount, last_painted_at: DISPLAY_STATE.lastPaintedAt });
 });
 
 // GET /api/auth/status
@@ -6928,6 +6955,7 @@ function slaveWriteGuard(req, res, next) {
                     // confirmed live) it just fails outright with "No host configured to
                     // forward this edit to" instead of doing anything at all.
                     /^\/api\/update-backups\/[^/]+\/[^/]+\/restore$/.test(p) || // same — restores CODE from THIS device's own backup dir
+                    p.startsWith('/api/display/') ||    // this device's own kiosk browser reporting that it drew (must not be forwarded to the host)
                     p.startsWith('/api/auth') ||        // local login/PIN
                     // This device's OWN license key, not the host's — unlike most proxied
                     // writes, a mirror legitimately holds its own independently-verified

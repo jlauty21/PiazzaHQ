@@ -1447,6 +1447,9 @@ const RELEASE_NOTES = {
   '1.90.0-beta.2': [
     'New: a third way to connect Home Assistant — a native integration installed through HACS, with its own real setup screen (enter this device\'s address and an automation token, click connect). No YAML, no broker. See Settings → Home Assistant Control for the "Add to Home Assistant" button.',
   ],
+  '1.87.17': [
+    'Fixed: a display that stayed blank (white) after a reboot on some Raspberry Pis, especially with the newer desktop. The Pi now notices an empty page and loads it itself about a minute after start-up. Also fixes the mouse pointer not hiding on the newer desktop.',
+  ],
   '1.87.16': [
     'Fixed: the display could stay blank (white) after a reboot when the network was not ready yet. It now draws immediately and does not wait on any outside website.',
   ],

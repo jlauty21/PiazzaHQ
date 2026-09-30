@@ -207,7 +207,14 @@ kiosk_on() {
   discover_display_env
   local bin; bin="$(chromium_bin)"
   # Launch detached so it survives this shell/SSH session ending.
-  nohup "$bin" $KIOSK_FLAGS "$URL" >/dev/null 2>&1 &
+  # Only a Wayland display and no X display (no Xwayland): newer Chromium defaults to X11 and refuses to start
+  # ("Missing X server or $DISPLAY"), leaving no browser at all. Tell it to use Wayland.
+  local extra_flags=""
+  if [[ -n "${WAYLAND_DISPLAY:-}" && -z "${DISPLAY:-}" ]]; then extra_flags="--ozone-platform=wayland"; fi
+  # Wayland desktop with Xwayland too (labwc): run through Xwayland so the pointer hider, fullscreen guard and F5 reload
+  # can reach the browser (see wait-for-server-and-launch-kiosk.sh). PI_CALENDAR_NATIVE_WAYLAND=1 opts out.
+  if [[ -n "${WAYLAND_DISPLAY:-}" && -n "${DISPLAY:-}" && "${PI_CALENDAR_NATIVE_WAYLAND:-0}" != "1" ]]; then extra_flags="--ozone-platform=x11"; fi
+  nohup "$bin" $KIOSK_FLAGS $extra_flags "$URL" >/dev/null 2>&1 &
   disown 2>/dev/null || true
   # Restart the cursor-hider too (ignore if not installed). Prefer the Wayland-
   # capable xfixes build if present; fall back to classic unclutter on X11.

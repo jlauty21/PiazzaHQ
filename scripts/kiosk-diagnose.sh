@@ -41,6 +41,15 @@ main="$(pgrep -f -- '--kiosk' 2>/dev/null | head -1)"
 [[ -n "$main" ]] && echo "main command line: $(tr '\0' ' ' < "/proc/$main/cmdline" 2>/dev/null | cut -c1-400)"
 tops="$(ps -eo args 2>/dev/null | grep -E '(^|/)chromium(-browser)?( |$)' | grep -v -- '--type=' | grep -vc grep || true)"
 echo "top-level browser processes: ${tops:-0}   (exactly 1 expected; 2 or more means two browsers are fighting for the screen)"
+# What the display tab actually holds, asked through the browser's local debug port. "blank ... about:blank" = the tab
+# never loaded the page (the white-screen-at-boot case); "page ... [Piazza HQ Display]" = it loaded.
+DTOOL="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)/kiosk-devtools.js"
+if command -v node >/dev/null 2>&1 && [ -f "$DTOOL" ]; then
+  echo "display tab: $(node "$DTOOL" status 2>&1 | head -1)"
+else
+  echo "display tab: (not checked - needs node and scripts/kiosk-devtools.js)"
+fi
+MEMAV="$(free -m 2>/dev/null | awk '/^Mem/{print $7}')"; [ -n "$MEMAV" ] && echo "memory available: ${MEMAV} MB   (recent out-of-memory kills: $(dmesg 2>/dev/null | grep -ci -E 'out of memory|killed process'))"
 
 section "How the browser is launched at boot"
 found=0
@@ -60,7 +69,13 @@ for f in "$HOME"/.config/labwc/autostart "$HOME"/.config/lxsession/*/autostart "
 done
 [[ $found -eq 0 ]] && echo "no autostart file contains a kiosk line"
 echo "systemd units that launch a browser:"; systemctl list-unit-files --no-legend 2>/dev/null | grep -iE 'kiosk|chromium' | sed 's/^/    /' || true
-[[ -f /tmp/piazzahq-kiosk-launch.log ]] && { echo "last launch log (/tmp/piazzahq-kiosk-launch.log):"; tail -8 /tmp/piazzahq-kiosk-launch.log | sed 's/^/    /'; } || echo "launch log: none (the launcher has not run since this boot, or this is an older version)"
+[[ -f /tmp/piazzahq-kiosk-launch.log ]] && { echo "this boot's launch log (/tmp/piazzahq-kiosk-launch.log):"; tail -16 /tmp/piazzahq-kiosk-launch.log | sed 's/^/    /'; } || echo "launch log: none (the launcher has not run since this boot, or this is an older version)"
+# The same events for the last several boots (survives reboots; each line is tagged [boot id]).
+HISTF="${PI_CALENDAR_KIOSK_HISTORY:-${XDG_STATE_HOME:-$HOME/.local/state}/piazzahq/kiosk-launch-history.log}"
+if [[ -f "$HISTF" ]]; then
+  echo "earlier boots (from $HISTF, newest last):"
+  tail -40 "$HISTF" | sed 's/^/    /'
+fi
 
 section "The 'kiosk' command"
 kpath="$(command -v kiosk 2>/dev/null || true)"
