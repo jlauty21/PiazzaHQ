@@ -1447,6 +1447,10 @@ const RELEASE_NOTES = {
   '1.90.0-beta.2': [
     'New: a third way to connect Home Assistant — a native integration installed through HACS, with its own real setup screen (enter this device\'s address and an automation token, click connect). No YAML, no broker. See Settings → Home Assistant Control for the "Add to Home Assistant" button.',
   ],
+  '1.87.18': [
+    'New: rotating chores. When you add or edit a chore, switch on "Take turns" and pick the people: one of them has the chore each day and it moves to the next person the next time it comes up. Give each of your chores a different "Starts with" and everyone has a different chore every night, with no reassigning.',
+    'New: a Web Page widget (in the Utility group) that shows a page you point it at, such as a simple page you host yourself. Use the Zoom and Scroll sliders to show just the part of the page you want. It runs in a locked-down box so it cannot touch the rest of the app. Big sites like Canvas usually refuse to be shown this way.',
+  ],
   '1.87.17': [
     'Fixed: a display that stayed blank (white) after a reboot on some Raspberry Pis, especially with the newer desktop. The Pi now notices an empty page and loads it itself about a minute after start-up. Also fixes the mouse pointer not hiding on the newer desktop.',
   ],
@@ -1542,6 +1546,8 @@ let selectedColor = COLORS[0];
 let allEvents = [];
 
 const $ = id => document.getElementById(id);
+// Only plain web addresses are usable in a Web Page widget (the display enforces this too).
+function wpUrlOk(v){ try { const u = new URL(String(v).trim()); return (u.protocol === 'http:' || u.protocol === 'https:') && !!u.hostname; } catch { return false; } }
 function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 // Shared clipboard-copy helper — every "copy link" button in this app should
@@ -7194,6 +7200,7 @@ const WIDGET_DEFS = [
   { type:'radar',    label:'Weather Radar', icon:'🌩️' },
   { type:'travel', label:'Travel Time', icon:'🚗' },
   { type:'qrcode', label:'QR Code', icon:'▦' },
+  { type:'webpage', label:'Web Page', icon:'🌐' },
   { type:'layoutswitcher', label:'Layout Switcher', icon:'🔀' },
   { type:'timer', label:'Timer', icon:'⏱️' },
   { type:'onthisday', label:'On This Day', icon:'📜' },
@@ -7216,7 +7223,7 @@ const WIDGET_CATEGORIES = [
   { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel','flightmap'] },
   { id:'photos',   label:'Photos',   icon:'🖼️', types:['photo'] },
   { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan'] },
-  { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode','layoutswitcher'] },
+  { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode','webpage','layoutswitcher'] },
   { id:'decor',    label:'Decor',    icon:'🌿', types:['decoration'] },
   { id:'smarthome', label:'Smart Home', icon:'🏠', types:['entitystatus','smarthomeDashboard','groupcontrol','camera'] },
 ];
@@ -7814,6 +7821,9 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
         newWidget.w = 30; newWidget.h = 30; newWidget.radarTitle = 'Radar'; newWidget.radarFontPx = 16;
         newWidget.radarLat = ''; newWidget.radarLon = ''; newWidget.radarZoom = 6;
         newWidget.radarAnimate = false; newWidget.radarFrameCount = 6; newWidget.radarOpacity = 80; newWidget.radarShowTime = true;
+      }
+      if (def.type === 'webpage') {
+        newWidget.w = 30; newWidget.h = 40; newWidget.wpUrl = ''; newWidget.wpTitle = ''; newWidget.wpRefreshMin = 0; newWidget.wpFontPx = 14;
       }
       if (def.type === 'qrcode') {
         newWidget.w = 20; newWidget.h = 24; newWidget.qrPreset = 'text'; newWidget.qrContent = ''; newWidget.qrTitle = ''; newWidget.qrFontPx = 14;
@@ -10699,6 +10709,42 @@ async function drawWidgetSettingsPanel() {
       </div>
       <p style="font-size:11px;color:var(--muted);margin-top:6px">Uses free road-network routing by default (no live traffic). For traffic-aware times, add a Google Maps API key in Settings → Travel Time.</p>
     `;
+  } else if (w.type === 'webpage') {
+    const wpMins = parseInt(w.wpRefreshMin, 10) || 0;
+    const wpOpt = (v, label) => `<option value="${v}" ${wpMins === v ? 'selected' : ''}>${label}</option>`;
+    const wpNum = (v, lo, hi, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };
+    const wpZoomV = wpNum(w.wpZoom, 25, 300, 100), wpYV = wpNum(w.wpScrollY, 0, 10000, 0);
+    typeSpecificHtml = `
+      <div class="settings-row">
+        <label>Web address</label>
+        <input class="form-input" id="wp-url" value="${escapeHtml(w.wpUrl||'')}" placeholder="https://example.com/page" autocapitalize="none" spellcheck="false">
+        <div id="wp-url-hint" style="font-size:11px;color:var(--muted);margin-top:4px">${w.wpUrl && !wpUrlOk(w.wpUrl) ? 'That is not a web address. It has to start with http:// or https://' : 'Starts with http:// or https://'}</div>
+      </div>
+      <div class="settings-row">
+        <label>Title (optional)</label>
+        <input class="form-input" id="wp-title" value="${escapeHtml(w.wpTitle||'')}" placeholder="e.g. Homework this week">
+      </div>
+      <div class="settings-row">
+        <label>Reload the page</label>
+        <select class="form-input" id="wp-refresh">${wpOpt(0, 'Never')}${wpOpt(5, 'Every 5 minutes')}${wpOpt(15, 'Every 15 minutes')}${wpOpt(60, 'Every hour')}</select>
+      </div>
+      <div class="settings-row">
+        <label>Zoom</label>
+        <div class="range-row">
+          <input type="range" id="wp-zoom" min="25" max="300" step="5" value="${wpZoomV}">
+          <span class="range-val" id="wp-zoom-val">${wpZoomV}%</span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label>Scroll down</label>
+        <div class="range-row">
+          <input type="range" id="wp-scroll-y" min="0" max="6000" step="25" value="${Math.min(6000, wpYV)}">
+          <span class="range-val" id="wp-scroll-y-val">${wpYV}px</span>
+        </div>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:4px">Zoom and scroll move the page inside the box; they do not reload it. A page's own scroll position cannot be read from here, so set how far down to start with the slider.</p>
+      <p style="font-size:11px;color:var(--muted);margin-top:4px">Shows the page inside a sandboxed box: it can run its own scripts but cannot touch this app. Works best with simple pages you host yourself that need no sign-in. Many large sites (Canvas, school portals) refuse to be shown inside another page. If your page loads a data file from its own server, that server must send an Access-Control-Allow-Origin header for it - or put the data straight into the page. If the display is on https, the address has to be https too.</p>
+    `;
   } else if (w.type === 'qrcode') {
     const preset = w.qrPreset || 'text';
     const fontPx = w.qrFontPx || 14;
@@ -12336,6 +12382,19 @@ async function drawWidgetSettingsPanel() {
     if ($('tv-font-range')) $('tv-font-range').addEventListener('input', (e) => {
       w.travelFontPx = parseInt(e.target.value);
       $('tv-font-val').textContent = w.travelFontPx + 'px';
+    });
+  }
+
+  if (w.type === 'webpage') {
+    if ($('wp-url')) $('wp-url').addEventListener('input', (e) => {
+      w.wpUrl = e.target.value.trim();
+      const hint = $('wp-url-hint');
+      if (hint) hint.textContent = (w.wpUrl && !wpUrlOk(w.wpUrl)) ? 'That is not a web address. It has to start with http:// or https://' : 'Starts with http:// or https://';
+    });
+    if ($('wp-title')) $('wp-title').addEventListener('input', (e) => { w.wpTitle = e.target.value; });
+    if ($('wp-refresh')) $('wp-refresh').addEventListener('change', (e) => { w.wpRefreshMin = parseInt(e.target.value, 10) || 0; });
+    [['wp-zoom', 'wpZoom', '%'], ['wp-scroll-y', 'wpScrollY', 'px']].forEach(([id, key, unit]) => {
+      if ($(id)) $(id).addEventListener('input', (e) => { w[key] = parseInt(e.target.value, 10) || 0; $(id + '-val').textContent = w[key] + unit; });
     });
   }
 
@@ -14082,7 +14141,7 @@ async function renderChoresTab() {
       <div style="flex:1;min-width:0">
         <div style="font-weight:600">${escapeHtml(c.title)}${c.bonus ? ' 🎁' : ''}</div>
         <div style="font-size:12px;color:var(--muted)">
-          ${c.bonus ? 'Bonus — shared pool' : `${assigneeLabel(c.assignee)} · ${freqLabel(c)}${c.at_time ? ' · ' + c.at_time : ''}${c.carryover ? ' · carries over' : ''}`}${c.celebrate ? '' : ' · no celebration'}${c.pay_amount ? ` · 💰 $${Number(c.pay_amount).toFixed(2)}` : ''}${c.photo_required ? ' · 📷 photo required' : ''}
+          ${c.bonus ? 'Bonus — shared pool' : `${c.rotate && c.freq !== 'once' ? '🔄 Takes turns: ' : ''}${assigneeLabel(c.assignee)} · ${freqLabel(c)}${c.at_time ? ' · ' + c.at_time : ''}${c.carryover ? ' · carries over' : ''}`}${c.celebrate ? '' : ' · no celebration'}${c.pay_amount ? ` · 💰 $${Number(c.pay_amount).toFixed(2)}` : ''}${c.photo_required ? ' · 📷 photo required' : ''}
         </div>
       </div>
       <button class="icon-btn chore-edit" data-id="${c.id}" title="Edit">✏️</button>
@@ -14583,6 +14642,16 @@ function openChoreEditor(chore) {
     <div id="chore-normal-fields" style="display:${chore.bonus?'none':'block'}">
     <label class="lbl" style="margin-top:12px">Who? ${infoBtn("Tap \"Everyone\" or pick one or more specific kids.")}</label>
     <div id="chore-who" style="display:flex;flex-wrap:wrap;gap:8px">${whoOpts}</div>
+    <div id="chore-rotate-block">
+      <label class="toggle-row" style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding:10px 12px;background:var(--card);border:1px solid var(--border);border-radius:10px">
+        <span>🔄 Take turns <span style="color:var(--muted);font-weight:400">— a different person each day</span> ${infoBtn("Instead of giving this chore to everyone picked, ONE of them has it each day, and it moves to the next person the next time the chore comes up. Set up each chore once and it keeps cycling by itself. Give each of your chores a different \"Starts with\" so everyone has something different every night.")}</span>
+        <input type="checkbox" id="chore-rotate" ${chore.rotate?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </label>
+      <div id="chore-rotate-start-wrap" style="display:${chore.rotate?'block':'none'}">
+        <label class="lbl" style="margin-top:10px">Starts with <span style="color:var(--muted);font-weight:400">— whose turn it is today</span></label>
+        <div id="chore-rotate-start" style="display:flex;flex-wrap:wrap;gap:8px"></div>
+      </div>
+    </div>
     <label class="lbl" style="margin-top:12px">When?</label>    <select class="form-input" id="chore-freq">
       <option value="daily" ${chore.freq==='daily'?'selected':''}>Every day</option>
       <option value="weekly" ${chore.freq==='weekly'?'selected':''}>Certain days of the week</option>
@@ -14641,6 +14710,20 @@ function openChoreEditor(chore) {
     } catch { showToast('❌ Upload failed'); }
     $('chore-photo-btn').textContent = '📷 Upload photo';
   });
+  // Take turns: "Starts with" offers the people picked above (everyone when "Everyone" is picked); never a person who is not in the cycle.
+  let selStart = String(chore.rotate_start || '');
+  const rotateCandidates = () => selAssignees.has('all') ? kids : kids.filter(k => selAssignees.has(String(k.id)));
+  const syncRotate = () => {
+    const once = $('chore-freq').value === 'once';
+    $('chore-rotate-block').style.display = once ? 'none' : 'block';
+    const on = $('chore-rotate').checked && !once;
+    $('chore-rotate-start-wrap').style.display = on ? 'block' : 'none';
+    const cands = rotateCandidates();
+    if (!cands.some(k => String(k.id) === selStart)) selStart = cands.length ? String(cands[0].id) : '';
+    $('chore-rotate-start').innerHTML = cands.map(k => `<button type="button" class="start-pick" data-v="${k.id}" style="padding:8px 14px;border-radius:20px;border:1px solid var(--border);background:${String(k.id)===selStart?'var(--accent)':'var(--card)'};color:var(--text);cursor:pointer">${escapeHtml(k.name)}</button>`).join('');
+    $('chore-rotate-start').querySelectorAll('.start-pick').forEach(b => b.addEventListener('click', () => { selStart = b.dataset.v; syncRotate(); }));
+  };
+  $('chore-rotate').addEventListener('change', syncRotate);
   document.querySelectorAll('#chore-who .who-pick').forEach(b => b.addEventListener('click', () => {
     const v = b.dataset.v;
     if (v === 'all') {
@@ -14653,6 +14736,7 @@ function openChoreEditor(chore) {
     document.querySelectorAll('#chore-who .who-pick').forEach(x => {
       x.style.background = selAssignees.has(x.dataset.v) ? 'var(--accent)' : 'var(--card)';
     });
+    syncRotate();
   }));
   document.querySelectorAll('#freq-weekly .day-pick').forEach(b => b.addEventListener('click', () => {
     const d = b.dataset.v;
@@ -14662,7 +14746,9 @@ function openChoreEditor(chore) {
   $('chore-freq').addEventListener('change', e => {
     $('freq-weekly').style.display = e.target.value === 'weekly' ? 'flex' : 'none';
     $('freq-once').style.display = e.target.value === 'once' ? 'block' : 'none';
+    syncRotate();
   });
+  syncRotate();
   $('chore-bonus').addEventListener('change', e => {
     $('chore-normal-fields').style.display = e.target.checked ? 'none' : 'block';
   });
@@ -14681,6 +14767,8 @@ function openChoreEditor(chore) {
       notes: $('chore-notes').value.trim(),
       photo_required: $('chore-photo-required').checked,
       bonus: $('chore-bonus').checked,
+      rotate: $('chore-rotate').checked && freq !== 'once' && !$('chore-bonus').checked,
+      rotate_start: Number(selStart) || 0,
     };
     try {
       if (isNew) await apiFetch('/api/chores', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });

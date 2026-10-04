@@ -2798,6 +2798,14 @@
        the ambiguity entirely. */
     .w-qrcode .qr-container { line-height:0; width:calc(var(--qr-size) * var(--ui-scale,1)); height:calc(var(--qr-size) * var(--ui-scale,1)); }
     .w-qrcode .qr-container img, .w-qrcode .qr-container canvas { display:block; width:100%; height:100%; }
+    /* Web Page widget: a page the household hosts, in a sandboxed frame */
+    .w-webpage { position:relative; width:100%; height:100%; display:flex; flex-direction:column; --wp-font:14px; }
+    .w-webpage .wp-title { font-size:calc(var(--wp-font) * var(--ui-scale,1)); font-weight:600; margin-bottom:6px; color:var(--text); }
+    .w-webpage .wp-view { position:relative; flex:1; min-height:0; overflow:hidden; border-radius:8px; background:#fff; }
+    .w-webpage .wp-frame { position:absolute; left:0; top:0; width:100%; height:100%; border:0; background:#fff; transform-origin:0 0; }
+    .w-webpage .wp-msg { flex:1; display:flex; align-items:center; justify-content:center; text-align:center; padding:12px; color:var(--text2, var(--muted)); font-size:calc(14px * var(--ui-scale,1)); }
+    .w-webpage .wp-fail { position:absolute; inset:0; background:rgba(0,0,0,0.78); color:#fff; border-radius:8px; }
+    .w-webpage .wp-fail[hidden] { display:none; }
 
     /* ── Timer widget ── */
     .w-timer { align-items:center; justify-content:center; text-align:center; --timer-font: 32px; }
@@ -4307,11 +4315,29 @@ function renderLayout() {
     const id = el.dataset.widgetId;
     if (id) preservedRadarEls.set(id, el);
   });
-  canvas.innerHTML = '';
+  // Same idea for Web Page widgets: a live frame must not be torn down and reloaded every time something unrelated
+  // (a calendar sync, a weather poll) makes the layout redraw, so keep the element while its address/title/refresh are unchanged.
+  const preservedWebEls = new Map();
+  canvas.querySelectorAll('.widget-webpage[data-widget-id]').forEach(el => { const id = el.dataset.widgetId; if (id) preservedWebEls.set(id, el); });
+  // A frame's page is destroyed the moment its element is taken out of the document - even if it is put straight back
+  // (found in a real browser: reusing the element alone still reloaded the page on every redraw). So frames that will
+  // be reused are never detached: clear everything EXCEPT them, and don't re-append them below. Layering is by explicit
+  // z-index, so their position among the siblings in the DOM does not matter.
+  const keepWebEls = new Set();
+  (state.layout || []).forEach(w => {
+    if (w.type !== 'webpage') return;
+    const c = preservedWebEls.get(String(w.id));
+    if (c && c.dataset.wpFingerprint === webPageFingerprint(w)) keepWebEls.add(c);
+  });
+  Array.from(canvas.childNodes).forEach(n => { if (!keepWebEls.has(n)) canvas.removeChild(n); });
 
   state.layout.forEach((w, i) => {
     let el = null;
     let reused = false;
+    if (w.type === 'webpage') {
+      const candidate = preservedWebEls.get(String(w.id));
+      if (candidate && candidate.dataset.wpFingerprint === webPageFingerprint(w)) { el = candidate; reused = true; preservedWebEls.delete(String(w.id)); }
+    }
     if (w.type === 'radar') {
       const candidate = preservedRadarEls.get(String(w.id));
       if (candidate && candidate.dataset.radarFingerprint === radarFingerprint(w)) {
@@ -4330,10 +4356,12 @@ function renderLayout() {
         if (timeEl) timeEl.style.display = (w.radarShowTime !== false) ? 'block' : 'none';
       }
     }
+    if (reused && w.type === 'webpage') { const f = el.querySelector('.wp-frame'); if (f) f.style.cssText = webPageFrameStyle(w); }
     if (!el) el = document.createElement('div');
     el.className = 'widget widget-' + w.type + (w.photoFullscreenBg ? ' fullscreen-bg' : '');
     el.dataset.widgetId = w.id || '';
     if (w.type === 'radar') el.dataset.radarFingerprint = radarFingerprint(w);
+    if (w.type === 'webpage') el.dataset.wpFingerprint = webPageFingerprint(w);
     if (w.photoFullscreenBg) {
       // Full-screen background: a rendering-time-only override, deliberately
       // never touches the widget's own stored x/y/w/h/z — turning this off
@@ -4420,7 +4448,7 @@ function renderLayout() {
       try { el.innerHTML = renderWidget(w); }
       catch (e) { console.error('renderWidget failed for', w.type, w.id, e); el.innerHTML = ''; }
     }
-    canvas.appendChild(el);
+    if (el.parentNode !== canvas) canvas.appendChild(el);   // a kept web page frame is already in place: moving it would reload its page
   });
 
   // Any radar element still left in preservedRadarEls at this point belongs
@@ -4429,6 +4457,7 @@ function renderLayout() {
   // against a now-fully-detached element. Clean both up explicitly rather
   // than relying on initRadarWidgets() to ever notice, since a removed
   // widget produces no `.radar-map[data-radar-id]` element for it to find.
+  preservedWebEls.forEach((el, id) => { const t = webPageTimers.get(id); if (t) { clearInterval(t); webPageTimers.delete(id); } });
   preservedRadarEls.forEach((el, id) => {
     const timer = radarAnimTimers.get(id);
     if (timer) { clearInterval(timer); radarAnimTimers.delete(id); }
@@ -4459,6 +4488,7 @@ function renderLayout() {
   // text never spills into adjacent day boxes. rAF ensures layout has been computed.
   requestAnimationFrame(() => { adaptCalendarEventFontSizes(); fitCalendarCells(); });
   requestAnimationFrame(renderQRCodes);
+  requestAnimationFrame(initWebPages);
   requestAnimationFrame(initRadarWidgets);
   requestAnimationFrame(wireChoreChartTaps);
   requestAnimationFrame(wireMessageBoardTaps);
@@ -4673,6 +4703,7 @@ function renderWidget(w) {
     case 'entitystatus': return renderEntityStatus(w);
     case 'groupcontrol': return renderGroupControl(w);
     case 'qrcode': return renderQRCode(w);
+    case 'webpage': return renderWebPage(w);
     case 'timer': return renderTimer(w);
     case 'onthisday': return renderOnThisDay(w);
     case 'dailyquote': return renderDailyQuote(w);
@@ -10232,7 +10263,7 @@ async function deleteWidget(id) {
 // separately-built settings UI ported field-for-field from app.html's own
 // drawWidgetSettingsPanel(), not a generic renderer. Add to this list only
 // alongside actually building that type's render/wire functions.
-const WIDGET_ADVANCED_TYPES = ['minical', 'weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast', 'todo', 'shoppinglist', 'chorechart', 'chorelb', 'countdown', 'radar', 'qrcode', 'timer', 'moonphase', 'airquality', 'onthisday', 'dailyquote', 'metar', 'clock', 'date', 'news', 'stocks', 'travel', 'sports', 'text', 'decoration', 'upcoming', 'today', 'agenda', 'photo', 'tasks', 'tasksCombined', 'entitystatus', 'smarthomeDashboard', 'groupcontrol', 'messageboard', 'mealplan', 'camera', 'flightmap'];
+const WIDGET_ADVANCED_TYPES = ['webpage', 'minical', 'weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast', 'todo', 'shoppinglist', 'chorechart', 'chorelb', 'countdown', 'radar', 'qrcode', 'timer', 'moonphase', 'airquality', 'onthisday', 'dailyquote', 'metar', 'clock', 'date', 'news', 'stocks', 'travel', 'sports', 'text', 'decoration', 'upcoming', 'today', 'agenda', 'photo', 'tasks', 'tasksCombined', 'entitystatus', 'smarthomeDashboard', 'groupcontrol', 'messageboard', 'mealplan', 'camera', 'flightmap'];
 
 function openWidgetSettingsPanel(id) {
   const w = state.layout.find(x => String(x.id) === String(id));
@@ -10629,6 +10660,10 @@ async function openWidgetAdvancedPanel(id) {
     title.textContent = 'Weather Radar Settings';
     body.innerHTML = renderRadarAdvancedSettings(w);
     wireRadarAdvancedSettings(w);
+  } else if (w.type === 'webpage') {
+    title.textContent = 'Web Page Settings';
+    body.innerHTML = renderWebPageAdvancedSettings(w);
+    wireWebPageAdvancedSettings(w);
   } else if (w.type === 'qrcode') {
     title.textContent = 'QR Code Settings';
     body.innerHTML = renderQRCodeAdvancedSettings(w);
@@ -15538,6 +15573,7 @@ const WIDGET_DEFS = [
   { type:'radar',    label:'Weather Radar', icon:'🌩️' },
   { type:'travel', label:'Travel Time', icon:'🚗' },
   { type:'qrcode', label:'QR Code', icon:'▦' },
+  { type:'webpage', label:'Web Page', icon:'🌐' },
   { type:'timer', label:'Timer', icon:'⏱️' },
   { type:'onthisday', label:'On This Day', icon:'📜' },
   { type:'dailyquote', label:'Daily Quote', icon:'💬' },
@@ -15556,7 +15592,7 @@ const WIDGET_CATEGORIES = [
   { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel','flightmap'] },
   { id:'photos',   label:'Photos',   icon:'🖼️', types:['photo'] },
   { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan'] },
-  { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode'] },
+  { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode','webpage'] },
   { id:'decor',    label:'Decor',    icon:'🌿', types:['decoration'] },
   { id:'smarthome', label:'Smart Home', icon:'🏠', types:['entitystatus','smarthomeDashboard','groupcontrol','camera'] },
 ];
@@ -15595,6 +15631,7 @@ function buildNewWidgetDefaults(type) {
   else if (type === 'moonphase') { w.w = 22; w.h = 22; w.mpFontPx = 20; w.mpShowIllum = true; w.mpShowAge = false; }
   else if (type === 'airquality') { w.w = 26; w.h = 32; w.aqFontPx = 18; w.aqShowUV = true; w.aqShowPollen = true; }
   else if (type === 'radar') { w.w = 30; w.h = 30; w.radarTitle = 'Radar'; w.radarFontPx = 16; w.radarLat = ''; w.radarLon = ''; w.radarZoom = 6; w.radarAnimate = false; w.radarFrameCount = 6; w.radarOpacity = 80; w.radarShowTime = true; }
+  else if (type === 'webpage') { w.w = 30; w.h = 40; w.wpUrl = ''; w.wpTitle = ''; w.wpRefreshMin = 0; w.wpFontPx = 14; }
   else if (type === 'qrcode') { w.w = 20; w.h = 24; w.qrPreset = 'text'; w.qrContent = ''; w.qrTitle = ''; w.qrFontPx = 14; }
   else if (type === 'timer') { w.w = 22; w.h = 18; w.timerTitle = 'Timer'; w.timerMinutes = 5; w.timerFontPx = 32; }
   else if (type === 'onthisday') { w.w = 30; w.h = 40; w.otdFontPx = 15; w.otdMaxItems = 4; }
@@ -18143,6 +18180,128 @@ function qrContentFor(w) {
     return `WIFI:T:${w.qrEncryption || 'WPA'};S:${esc(w.qrSSID)};P:${esc(w.qrPassword || '')};;`;
   }
   return (w.qrContent || '').trim();
+}
+// ── Web Page widget ──────────────────────────────────────────────────────────────────────────────────────────────
+// Shows a page the household hosts (or any simple page that allows being framed) inside the layout. The frame is
+// sandboxed with only allow-scripts: the page can run its own code, but it gets an opaque origin, so it cannot read
+// this app's cookies, storage or settings or call its API. Many big sites (Canvas, most school portals) refuse to be
+// framed and need a sign-in; those show the browser's own "refused to connect" inside the box, which is expected.
+const webPageTimers = new Map();   // widget id -> refresh interval
+// Only plain web addresses: never javascript:, data:, file:, blob: and the like. Returns the cleaned address or ''.
+function webPageUrl(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s || s.length > 2000) return '';
+  let u;
+  try { u = new URL(s); } catch { return ''; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+  if (!u.hostname) return '';
+  return u.href;
+}
+// Why the frame cannot be shown at all, or '' if it can. An https display cannot show an http page (mixed content).
+function webPageBlockedReason(url, pageProtocol) {
+  if (!url) return 'Add a web address in the widget settings.';
+  if (pageProtocol === 'https:' && url.indexOf('http://') === 0) return 'This display is on https, so it can only show https pages. Use an https address for this page.';
+  return '';
+}
+function webPageFingerprint(w) { return [webPageUrl(w.wpUrl), parseInt(w.wpRefreshMin, 10) || 0, w.wpTitle || ''].join('|'); }
+// Zoom and "scroll position". A page from another site cannot be scrolled or measured from here, so both are done to the frame
+// itself: the frame is made as big as the chosen part of the page needs (the box divided by the zoom, plus the amount scrolled
+// down), then scaled and shifted so that part fills the box. There is no sideways scroll: the frame is as wide as the box, so a
+// page that adapts to its width fits, and Zoom handles a page built for a fixed width. Anything outside the box is clipped by .wp-view. These numbers are kept out of
+// webPageFingerprint on purpose, so moving a slider never reloads the page.
+function webPageView(w) {
+  const num = (v, lo, hi, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };
+  return { zoom: num(w.wpZoom, 25, 300, 100) / 100, y: num(w.wpScrollY, 0, 10000, 0) };
+}
+function webPageFrameStyle(w) {
+  const v = webPageView(w || {});
+  return `width:calc(100% / ${v.zoom});height:calc(100% / ${v.zoom} + ${v.y}px);transform:scale(${v.zoom}) translate(0px,-${v.y}px)`;
+}
+// Apply a changed zoom / scroll to the frame that is already on screen: no re-render, so the page is not reloaded.
+function applyWebPageView(w) {
+  const frame = document.querySelector(`#canvas .widget[data-widget-id="${CSS.escape(String(w.id))}"] .wp-frame`);
+  if (frame) frame.style.cssText = webPageFrameStyle(w);
+}
+function renderWebPage(widget) {
+  const w = widget || {};
+  const url = webPageUrl(w.wpUrl);
+  const typed = String(w.wpUrl == null ? '' : w.wpUrl).trim();
+  const why = (typed && !url) ? 'That is not a usable web address. It has to start with http:// or https://.' : webPageBlockedReason(url, location.protocol);
+  const title = w.wpTitle ? `<div class="wp-title">${escapeHtmlD(w.wpTitle)}</div>` : '';
+  const style = `--wp-font:${w.wpFontPx || 14}px`;
+  if (why) return `<div class="w-webpage" style="${style}">${title}<div class="wp-msg">${escapeHtmlD(why)}</div></div>`;
+  return `<div class="w-webpage" style="${style}">${title}<div class="wp-view"><iframe class="wp-frame" src="${escapeHtmlD(url)}" style="${webPageFrameStyle(w)}" sandbox="allow-scripts" referrerpolicy="no-referrer" title="${escapeHtmlD(w.wpTitle || 'Web page')}"></iframe></div><div class="wp-msg wp-fail" hidden>This page didn't load. Check the address, or the site may not allow being shown here.</div></div>`;
+}
+// After every render: watch each frame for a page that never arrives, and run the optional refresh.
+function initWebPages() {
+  const live = new Set();
+  document.querySelectorAll('.widget-webpage[data-widget-id]').forEach((el) => {
+    const id = el.dataset.widgetId; live.add(id);
+    const frame = el.querySelector('.wp-frame');
+    if (!frame || frame.dataset.wired === '1') return;     // reused element: already wired
+    frame.dataset.wired = '1';
+    const fail = el.querySelector('.wp-fail');
+    const arm = () => { if (fail) fail.hidden = true; clearTimeout(frame._wpT); frame._wpT = setTimeout(() => { if (fail) fail.hidden = false; }, 25000); };
+    frame.addEventListener('load', () => { clearTimeout(frame._wpT); if (fail) fail.hidden = true; });
+    arm();
+    const w = (state.layout || []).find((x) => String(x.id) === id) || {};
+    const mins = parseInt(w.wpRefreshMin, 10) || 0;
+    const old = webPageTimers.get(id); if (old) { clearInterval(old); webPageTimers.delete(id); }
+    if (mins > 0) webPageTimers.set(id, setInterval(() => { try { arm(); frame.src = frame.src; } catch {} }, mins * 60000));
+  });
+  for (const [id, t] of webPageTimers) if (!live.has(id)) { clearInterval(t); webPageTimers.delete(id); }
+}
+function renderWebPageAdvancedSettings(w) {
+  const mins = parseInt(w.wpRefreshMin, 10) || 0;
+  const opt = (v, label) => `<option value="${v}" ${mins === v ? 'selected' : ''}>${label}</option>`;
+  return `
+    <div class="was-row">
+      <label>Web address</label>
+      <input type="text" id="wp-url" value="${escapeHtmlD(w.wpUrl || '')}" placeholder="https://example.com/page" autocapitalize="none" spellcheck="false">
+    </div>
+    <p class="was-hint" id="wp-url-hint" style="margin-top:-6px">${escapeHtmlD(w.wpUrl && !webPageUrl(w.wpUrl) ? 'That is not a web address. It has to start with http:// or https://' : 'Starts with http:// or https://')}</p>
+    <div class="was-row">
+      <label>Title (optional)</label>
+      <input type="text" id="wp-title" value="${escapeHtmlD(w.wpTitle || '')}" placeholder="e.g. Homework this week">
+    </div>
+    <div class="was-row">
+      <label>Reload the page</label>
+      <select id="wp-refresh">${opt(0, 'Never')}${opt(5, 'Every 5 minutes')}${opt(15, 'Every 15 minutes')}${opt(60, 'Every hour')}</select>
+    </div>
+    <div class="was-row">
+      <label>Zoom <span id="wp-zoom-val">${Math.round(webPageView(w).zoom * 100)}%</span></label>
+      <input type="range" id="wp-zoom" min="25" max="300" step="5" value="${Math.round(webPageView(w).zoom * 100)}">
+    </div>
+    <div class="was-row">
+      <label>Scroll down <span id="wp-scroll-y-val">${webPageView(w).y}px</span></label>
+      <input type="range" id="wp-scroll-y" min="0" max="6000" step="25" value="${Math.min(6000, webPageView(w).y)}">
+    </div>
+    <p class="was-hint">Zoom and scroll move the page inside the box; they do not reload it. The box cannot read where a page is scrolled to, so set it here.</p>
+    <p class="was-hint">Shows the page inside a sandboxed box: it can run its own scripts but cannot touch this app. Works best with simple pages you host yourself that need no sign-in. Many large sites (Canvas, school portals) refuse to be shown inside another page. If your page loads a data file from its own server, that server must send an Access-Control-Allow-Origin header for it - or put the data straight into the page.</p>
+  `;
+}
+function wireWebPageAdvancedSettings(w) {
+  const url = document.getElementById('wp-url');
+  if (url) url.addEventListener('change', (e) => {
+    w.wpUrl = e.target.value.trim();
+    const hint = document.getElementById('wp-url-hint');
+    if (hint) hint.textContent = (w.wpUrl && !webPageUrl(w.wpUrl)) ? 'That is not a web address. It has to start with http:// or https://' : 'Starts with http:// or https://';
+    rerenderSingleWidget(w.id); scheduleLayoutSave();      // on commit, not per keystroke: every change reloads the page
+  });
+  const title = document.getElementById('wp-title');
+  if (title) title.addEventListener('change', (e) => { w.wpTitle = e.target.value; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
+  const refresh = document.getElementById('wp-refresh');
+  if (refresh) refresh.addEventListener('change', (e) => { w.wpRefreshMin = parseInt(e.target.value, 10) || 0; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
+  // Sliders: applied to the frame in place while dragging (no reload), saved with the layout.
+  [['wp-zoom', 'wpZoom', '%'], ['wp-scroll-y', 'wpScrollY', 'px']].forEach(([id, key, unit]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('input', (e) => {
+      w[key] = parseInt(e.target.value, 10) || 0;
+      const out = document.getElementById(id + '-val'); if (out) out.textContent = w[key] + unit;
+      applyWebPageView(w); scheduleLayoutSave();
+    });
+  });
 }
 function renderQRCode(widget) {
   const w = widget || {};

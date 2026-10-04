@@ -1366,6 +1366,15 @@ if (!columnExists('chores', 'notes')) {
   db.exec(`ALTER TABLE chores ADD COLUMN notes TEXT DEFAULT ''`);
   console.log('Migrated: added notes column to chores');
 }
+// "Take turns" chores: with rotate on, the people in 'assignee' are a cycle and ONE of them gets the chore each day it applies, moving to
+// the next person each time. rotate_start = the kid id that has it on rotate_anchor (a YYYY-MM-DD day); every other date is worked out
+// from those two (see choreRotationKidId), so nothing is stored per day and nothing has to "advance".
+if (!columnExists('chores', 'rotate')) {
+  db.exec(`ALTER TABLE chores ADD COLUMN rotate INTEGER DEFAULT 0`);
+  db.exec(`ALTER TABLE chores ADD COLUMN rotate_start INTEGER DEFAULT 0`);
+  db.exec(`ALTER TABLE chores ADD COLUMN rotate_anchor TEXT DEFAULT ''`);
+  console.log('Migrated: added rotate / rotate_start / rotate_anchor columns to chores');
+}
 if (!columnExists('chore_instances', 'pay_amount')) {
   db.exec(`ALTER TABLE chore_instances ADD COLUMN pay_amount REAL DEFAULT 0`);
   console.log('Migrated: added pay_amount column to chore_instances');
@@ -2854,13 +2863,49 @@ function choreAppliesOn(chore, dateStr) {
 //   'all'              -> every kid
 //   '3'                -> a single kid id (legacy/simple case)
 //   '3,5,7'            -> a specific subset of kids (comma-separated ids)
-function choreKidIds(chore) {
+function choreKidIds(chore, dateStr) {
+  let ids;
   if (chore.assignee === 'all') {
-    return db.prepare(`SELECT id FROM kids ORDER BY sort_order, id`).all().map(r => r.id);
+    ids = db.prepare(`SELECT id FROM kids ORDER BY sort_order, id`).all().map(r => r.id);
+  } else {
+    ids = String(chore.assignee || '')
+      .split(',').map(s => parseInt(s.trim())).filter(Number.isFinite);
   }
-  const ids = String(chore.assignee || '')
-    .split(',').map(s => parseInt(s.trim())).filter(Number.isFinite);
+  // Take turns: just the one person whose turn it is on this date.
+  if (chore.rotate && chore.freq !== 'once' && dateStr) {
+    const kidsInOrder = db.prepare(`SELECT id FROM kids ORDER BY sort_order, id`).all().map(r => r.id);
+    const cycle = kidsInOrder.filter(k => ids.includes(k));   // the cycle always runs in the kids' own order
+    const one = choreRotationKidId(chore, dateStr, cycle);
+    return one == null ? [] : [one];
+  }
   return ids;
+}
+// How many days a chore applies on in [fromStr, toStr), negative if toStr is before fromStr. Whole weeks are counted by arithmetic so a
+// date years away costs the same as tomorrow.
+function choreApplicableDaysBefore(chore, fromStr, toStr) {
+  if (fromStr === toStr) return 0;
+  if (fromStr > toStr) return -choreApplicableDaysBefore(chore, toStr, fromStr);
+  const utc = (iso) => { const [y, m, d] = iso.split('-').map(Number); return Date.UTC(y, m - 1, d); };
+  const days = Math.round((utc(toStr) - utc(fromStr)) / 86400000);
+  const codes = chore.freq === 'weekly' ? String(chore.byday || '').split(',').map(x => x.trim()).filter(Boolean) : [];
+  if (!codes.length) return days;                        // every day (daily, or weekly with no days picked = every day)
+  const WD = ['SU','MO','TU','WE','TH','FR','SA'];
+  const weeks = Math.floor(days / 7);
+  let count = weeks * codes.filter((c, i) => WD.includes(c) && codes.indexOf(c) === i).length;
+  for (let i = 0; i < days % 7; i++) {
+    if (codes.includes(WD[new Date(utc(fromStr) + (weeks * 7 + i) * 86400000).getUTCDay()])) count++;
+  }
+  return count;
+}
+// Which of the cycle's people (kid ids, in order) has a take-turns chore on dateStr: the start person on the anchor day, then the next
+// person for each day the chore applies on since. Worked out from the date alone, so a skipped day or a restart cannot shift it.
+function choreRotationKidId(chore, dateStr, kidIds) {
+  const n = kidIds.length;
+  if (!n) return null;
+  let start = kidIds.indexOf(Number(chore.rotate_start));
+  if (start < 0) start = 0;
+  const k = choreApplicableDaysBefore(chore, chore.rotate_anchor || dateStr, dateStr);
+  return kidIds[(((start + k) % n) + n) % n];
 }
 // Ensures instance rows exist for a given date across all active chores, so the
 // kid/parent/wall views all read consistent state. Also pulls forward unfinished
@@ -2871,7 +2916,7 @@ function materializeChoreInstances(dateStr) {
   const tx = db.transaction(() => {
     for (const c of chores) {
       if (!choreAppliesOn(c, dateStr)) continue;
-      for (const kidId of choreKidIds(c)) ins.run(c.id, kidId, dateStr, c.pay_amount || 0);
+      for (const kidId of choreKidIds(c, dateStr)) ins.run(c.id, kidId, dateStr, c.pay_amount || 0);
     }
   });
   tx();
@@ -3547,13 +3592,14 @@ app.post('/api/chores', (req, res) => {
   if (!b.title || !b.title.trim()) return res.status(400).json({ error: 'Title required' });
   const max = db.prepare(`SELECT MAX(sort_order) m FROM chores`).get().m || 0;
   const r = db.prepare(`INSERT INTO chores
-    (title, icon, assignee, freq, byday, on_date, at_time, carryover, celebrate, pay_amount, notes, photo_required, bonus, sort_order)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (title, icon, assignee, freq, byday, on_date, at_time, carryover, celebrate, pay_amount, notes, photo_required, bonus, sort_order, rotate, rotate_start, rotate_anchor)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       demoCleanText(b.title.trim(), 120), b.icon || '✅', String(b.assignee || 'all'),
       b.freq || 'daily', b.byday || '', b.on_date || '', b.at_time || '',
       b.carryover ? 1 : 0, (b.celebrate === false || b.celebrate === 0) ? 0 : 1,
       Number(b.pay_amount) || 0, demoCleanText((b.notes || '').trim(), 500),
-      b.photo_required ? 1 : 0, b.bonus ? 1 : 0, max + 1);
+      b.photo_required ? 1 : 0, b.bonus ? 1 : 0, max + 1,
+      b.rotate ? 1 : 0, Number(b.rotate_start) || 0, b.rotate ? localDateStr() : '');
   broadcastUpdate('chores');
   res.status(201).json(db.prepare(`SELECT * FROM chores WHERE id = ?`).get(r.lastInsertRowid));
 });
@@ -3561,8 +3607,17 @@ app.put('/api/chores/:id', (req, res) => {
   const c = db.prepare(`SELECT * FROM chores WHERE id = ?`).get(req.params.id);
   if (!c) return res.status(404).json({ error: 'Not found' });
   const b = req.body || {};
+  // Take turns. The anchor ("this person has it today") is reset only when something that decides who-has-it-when actually changed, so
+  // editing a title or the pay on a rotating chore never moves the cycle. When it does change, today's and later unfinished rows are
+  // dropped so they are made again for the right person.
+  const newRotate = (b.rotate ?? c.rotate) ? 1 : 0;
+  const newStart = b.rotate_start !== undefined ? (Number(b.rotate_start) || 0) : c.rotate_start;
+  const newAssignee = String(b.assignee ?? c.assignee), newFreq = b.freq ?? c.freq, newByday = b.byday ?? c.byday;
+  const cycleChanged = newRotate !== (c.rotate ? 1 : 0) || (newRotate && (newStart !== c.rotate_start || newAssignee !== c.assignee || newFreq !== c.freq || newByday !== c.byday));
+  const newAnchor = !newRotate ? '' : (cycleChanged ? localDateStr() : c.rotate_anchor);
+  if (cycleChanged) db.prepare(`DELETE FROM chore_instances WHERE chore_id = ? AND date >= ? AND done = 0`).run(c.id, localDateStr());
   db.prepare(`UPDATE chores SET title=?, icon=?, assignee=?, freq=?, byday=?, on_date=?, at_time=?,
-              carryover=?, celebrate=?, pay_amount=?, notes=?, photo_required=?, bonus=?, active=? WHERE id=?`)
+              carryover=?, celebrate=?, pay_amount=?, notes=?, photo_required=?, bonus=?, active=?, rotate=?, rotate_start=?, rotate_anchor=? WHERE id=?`)
     .run(
       b.title !== undefined ? demoCleanText(b.title, 120) : c.title, b.icon ?? c.icon, String(b.assignee ?? c.assignee),
       b.freq ?? c.freq, b.byday ?? c.byday, b.on_date ?? c.on_date, b.at_time ?? c.at_time,
@@ -3571,7 +3626,7 @@ app.put('/api/chores/:id', (req, res) => {
       (b.notes !== undefined ? demoCleanText((b.notes || '').trim(), 500) : c.notes),
       (b.photo_required ?? c.photo_required) ? 1 : 0,
       (b.bonus ?? c.bonus) ? 1 : 0,
-      (b.active ?? c.active) ? 1 : 0, c.id);
+      (b.active ?? c.active) ? 1 : 0, newRotate, newStart, newAnchor, c.id);
   broadcastUpdate('chores');
   res.json(db.prepare(`SELECT * FROM chores WHERE id = ?`).get(c.id));
 });
