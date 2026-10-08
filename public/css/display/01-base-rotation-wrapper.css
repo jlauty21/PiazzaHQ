@@ -1,0 +1,1229 @@
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0e1a; --text: #e8edf5;
+      --accent: #4A90D9; --accent2: #7ec8e3;
+      --border: rgba(255,255,255,0.08); --surface: rgba(10,14,26,0.55);
+    }
+    /* --muted derives from --text (rather than a fixed gray) so secondary text like
+       timestamps and labels automatically stays legible whether a widget's text color
+       is light or dark — recalculated automatically anywhere --text is overridden,
+       since custom properties cascade like any other inherited CSS value. */
+    :root, .widget { --muted: color-mix(in srgb, var(--text) 55%, transparent); }
+
+    html, body { width:100%; height:100%; background:var(--bg); color:var(--text);
+      font-family:var(--global-font-family, var(--theme-font-family, 'DM Sans', sans-serif)); overflow:hidden;
+      /* A wall display never wants the browser's edge-swipe "back"/"forward"
+         gesture — on a laptop trackpad or a touchscreen it hijacks a
+         rightward widget drag as history navigation. */
+      overscroll-behavior:none; }
+
+    /* Hide the mouse cursor on the actual wall display — this is OS/session-proof
+       (works on Wayland/labwc where unclutter often fails). In PREVIEW (phone/desktop)
+       we keep the cursor, since the body.preview class is present there. */
+    html:not(.preview), html:not(.preview) * { cursor: none !important; }
+
+    /* ── Rotation wrapper ──
+       Wraps all display layers so the entire view can be rotated in-browser
+       (no OS-level screen rotation needed). Default: fills the viewport with no
+       transform. When rotated 90/270, JS sizes it to the swapped dimensions and
+       this transform spins it about the viewport center. A transformed ancestor
+       becomes the containing block for its fixed-position descendants, so the
+       photo/canvas layers (inset:0) correctly fill the wrapper's box. */
+    #rotate-wrap {
+      position:fixed; top:0; left:0;
+      width:100vw; height:100vh;
+      transform-origin:center center;
+    }
+    /* Preview mode: the wrapper is a fixed-size canvas (the TV's real resolution)
+       that gets transform-scaled to fit the phone. It MUST stay position:fixed and
+       the page MUST be locked to the viewport — otherwise the 4K-wide wrapper makes
+       the document 4K wide, the mobile browser fits that whole width to the screen,
+       and the scaled content ends up tiny in a corner (the bug we kept hitting). */
+    html.preview, body.preview {
+      width:100vw; height:100vh; max-width:100vw; max-height:100vh;
+      margin:0; padding:0; overflow:hidden; position:fixed; inset:0;
+    }
+    body.preview #rotate-wrap { position:fixed; top:0; left:0; }
+    body.preview #rotate-wrap > * { position:absolute !important; }
+    body.preview #photo-bg,
+    body.preview #photo-fade-overlays,
+    body.preview #photo-overlay,
+    body.preview #theme-bg,
+    body.preview #theme-fx,
+    body.preview #canvas { inset:0 !important; }
+
+    /* ── Photo layers ── */
+    #photo-bg {
+      position:fixed; inset:0; z-index:0;
+      background-size:cover; background-position:center;
+      transition:opacity 1.2s ease; opacity:0;
+      --photo-opacity: 1;
+    }
+    #photo-bg.show { opacity:var(--photo-opacity); }
+    #photo-fade-overlays { position:fixed; inset:0; z-index:0; pointer-events:none; }
+    #photo-overlay { position:fixed; inset:0; z-index:1; pointer-events:none; background:rgba(10,14,26,0.6); }
+
+    /* ── Themed background (generated scenes, no image files) ──
+       #theme-bg sits beneath everything and paints a gradient/pattern scene keyed
+       off body[data-theme]. #theme-fx sits above it for animated particles. Both
+       are inert when no theme is set. */
+    #theme-bg { position:fixed; inset:0; z-index:-1; }
+    #theme-fx { position:fixed; inset:0; z-index:1; pointer-events:none; overflow:hidden; }
+
+    /* Control-URL info overlay (per-Pi): a small card showing the address to
+       control THIS screen. Positioned in a chosen corner; hidden by default. */
+    #info-overlay {
+      position:fixed; z-index:5; pointer-events:none;
+      background:rgba(10,14,26,0.72); color:#e8edf5;
+      border:1px solid rgba(255,255,255,0.15); border-radius:10px;
+      padding:10px 14px; font-size:14px; line-height:1.4;
+      max-width:42vw; backdrop-filter:blur(3px);
+    }
+    #info-overlay .io-label { font-size:11px; letter-spacing:1px; text-transform:uppercase;
+      color:#8b93a7; margin-bottom:3px; }
+    #info-overlay .io-url { font-weight:600; word-break:break-all; }
+    #info-overlay .io-url-2 { font-weight:500; opacity:0.85; margin-top:3px; font-size:13px; }
+    #info-overlay .io-tag { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#8b93a7;
+      border:1px solid rgba(255,255,255,0.2); border-radius:4px; padding:1px 5px; margin-left:6px; }
+    #info-overlay .io-name { font-size:12px; color:#8b93a7; margin-top:3px; }
+    /* Each URL line sits next to its own QR code — text stays scannable (the
+       primary use case when someone's just glancing at the corner), the QR
+       is there for anyone who'd rather scan than type. White background on
+       the QR specifically, same as the QR widget's own .qr-card, since a
+       dark-on-dark code wouldn't scan reliably against this overlay's own
+       translucent dark background. */
+    #info-overlay .io-url-row { display:flex; align-items:center; gap:8px; margin-top:6px; }
+    #info-overlay .io-url-row:first-of-type { margin-top:2px; }
+    #info-overlay .io-url-row .io-url, #info-overlay .io-url-row .io-url-2 { margin-top:0; flex:1; }
+
+    /* Screen Switcher — sits above widgets (z-index:2) but well
+       below Live Edit's own UI (40+), so it never competes with active
+       editing. Same pointer-events pattern as #info-overlay: the outer
+       container doesn't block touches to whatever's underneath it, only
+       the buttons themselves opt back in. */
+    #floating-switcher {
+      /* Position, flex-direction, and align-items are all fully dynamic
+         now — see applyFloatingSwitcherPosition(), called on every render
+         — since which edge (top/bottom/left/right) is configurable. This
+         rule intentionally only sets what's NEVER edge-dependent. Leaving
+         a static bottom/left here (as an earlier version of this rule
+         did) would be a real bug once positioning is dynamic: clearing an
+         inline style back to '' falls through to whatever the stylesheet
+         says, not to "no position at all" — so a top-edge render would
+         end up with both an inline top AND this rule's own bottom active
+         simultaneously, stretching the element across the gap between
+         them instead of positioning it at the edge. */
+      position:fixed; z-index:8; pointer-events:none; display:flex; gap:10px;
+    }
+    #floating-switcher .fls-btn {
+      pointer-events:auto; display:flex; align-items:center; justify-content:center;
+      width:52px; height:52px; border-radius:50%; flex-shrink:0; font-size:24px;
+      font-family:inherit; border:1px solid rgba(255,255,255,0.25); cursor:pointer;
+      box-shadow:0 2px 12px rgba(0,0,0,0.4); transition:transform 0.1s ease;
+    }
+    #floating-switcher .fls-btn:active { transform:scale(0.92); }
+
+    /* Bar style — a thin strip spanning the FULL edge, not a centered
+       cluster. Unlike circles (each button carries its own background,
+       the container stays fully invisible/pass-through), the container
+       itself is the visible bar here — background, blur, and a single
+       border on whichever side faces inward — so pointer-events flips to
+       auto on the container too, otherwise touches on the bar's own
+       background (the gaps between buttons) would fall through to
+       whatever widget sits behind it, which would look broken for
+       something with a solid, visible surface. */
+    #floating-switcher.fls-style-bar {
+      pointer-events:auto; background:rgba(10,14,26,0.88); backdrop-filter:blur(6px);
+      border:1px solid rgba(255,255,255,0.1); padding:0 18px;
+    }
+    #floating-switcher.fls-style-bar.fls-edge-bottom { border-width:1px 0 0 0; }
+    #floating-switcher.fls-style-bar.fls-edge-top { border-width:0 0 1px 0; }
+    #floating-switcher.fls-style-bar.fls-edge-left { border-width:0 1px 0 0; padding:18px 0; }
+    #floating-switcher.fls-style-bar.fls-edge-right { border-width:0 0 0 1px; padding:18px 0; }
+
+    #floating-switcher .fls-bar-btn {
+      pointer-events:auto; display:flex; align-items:center; justify-content:center;
+      width:42px; height:42px; border-radius:10px; flex-shrink:0;
+      font-size:18px; font-weight:600; font-family:inherit; color:#e8edf5;
+      border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.06);
+      cursor:pointer; transition:background 0.15s ease, transform 0.1s ease, width 0.2s ease;
+    }
+    #floating-switcher .fls-bar-btn:active { transform:scale(0.94); }
+    #floating-switcher .fls-bar-btn .icon-face { display:block; }
+    #floating-switcher .fls-bar-btn .name-face { display:none; white-space:nowrap; }
+
+    /* Names mode: the icon-square becomes an auto-width text pill —
+       smaller, regular-weight type instead of one bold glyph. */
+    #floating-switcher.fls-mode-names .fls-bar-btn {
+      width:auto; height:38px; padding:0 16px;
+      font-size:14px; font-weight:500; border-radius:8px;
+    }
+    #floating-switcher.fls-mode-names .fls-bar-btn .icon-face { display:none; }
+    #floating-switcher.fls-mode-names .fls-bar-btn .name-face { display:block; }
+
+    /* Left/right + names: rotated text instead of a widened bar, so it
+       stays exactly as thin on every edge as icon mode — the reason bar
+       style is worth choosing at all is to hug the edge tightly, and
+       widening on two of its four edges would undercut that. Reads
+       bottom-to-top (writing-mode: vertical-rl flows top-to-bottom by
+       default; the 180deg flip reverses it) — kept the same direction on
+       both left and right rather than mirroring them, one rotation to
+       reason about instead of two. Approved directly against a live
+       mockup before building this. */
+    #floating-switcher.fls-edge-left.fls-mode-names .fls-bar-btn,
+    #floating-switcher.fls-edge-right.fls-mode-names .fls-bar-btn {
+      width:42px; height:auto; min-height:42px; padding:10px 0;
+    }
+    #floating-switcher.fls-edge-left.fls-mode-names .name-face,
+    #floating-switcher.fls-edge-right.fls-mode-names .name-face {
+      writing-mode:vertical-rl; transform:rotate(180deg);
+    }
+    /* Tap to reveal — optional, off by default (see floating_switcher_reveal
+       schema comment). Reuses the EXACT fade pattern already used by
+       #edit-mode-trigger and #back-to-app-link (opacity/transition/
+       pointer-events, a .shown class toggled by toggleQuickAccessReveal() on
+       the same tap, same 4-second window) rather than a new mechanism —
+       one thing to keep consistent instead of three. The :not(.shown)
+       overrides give just enough specificity to beat the default
+       pointer-events:auto already set on buttons and the bar container
+       without needing !important; once .shown is present, :not(.shown)
+       simply stops matching and those original rules apply again on
+       their own — no separate "shown" pointer-events rule needed. */
+    #floating-switcher.fls-reveal-tap { opacity:0; transition:opacity 0.25s; }
+    #floating-switcher.fls-reveal-tap.shown { opacity:1; }
+    #floating-switcher.fls-reveal-tap:not(.shown) { pointer-events:none; }
+    #floating-switcher.fls-reveal-tap:not(.shown) .fls-btn,
+    #floating-switcher.fls-reveal-tap:not(.shown) .fls-bar-btn { pointer-events:none; }
+    #info-overlay .io-qr { flex:0 0 auto; line-height:0; background:#fff; border-radius:4px; padding:3px; }
+    #info-overlay .io-qr canvas, #info-overlay .io-qr img { display:block; width:100%; height:100%; }
+    #info-overlay.corner-tl { top:18px; left:18px; }
+    #info-overlay.corner-tr { top:18px; right:18px; }
+    #info-overlay.corner-bl { bottom:18px; left:18px; }
+    #info-overlay.corner-br { bottom:18px; right:18px; }
+    /* Brief, self-dismissing feedback for a chore-chart tap that couldn't go
+       through directly (currently just the photo-required case) — a wall
+       display has no other way to explain why nothing happened. */
+    .cc-toast {
+      position:fixed; bottom:32px; left:50%; transform:translateX(-50%);
+      background:rgba(10,14,26,0.9); color:#e8edf5; border:1px solid rgba(255,255,255,0.15);
+      border-radius:10px; padding:12px 20px; font-size:15px; z-index:50;
+      opacity:1; transition:opacity 0.4s;
+    }
+    .cc-toast-out { opacity:0; }
+    .cc-toast-undo {
+      margin-left:14px; background:rgba(255,255,255,0.14); color:#e8edf5;
+      border:1px solid rgba(255,255,255,0.25); border-radius:8px;
+      padding:5px 12px; font-size:14px; font-weight:600; cursor:pointer;
+    }
+    /* Direct-editing UI (Phase 3) — deliberately understated: this should
+       read as "available if you go looking for it," not as a permanent
+       fixture cluttering the display the other 99% of the time it's just
+       being looked at, not touched. */
+    #back-to-app-link {
+      position:fixed; top:14px; left:14px; z-index:65;
+      background:rgba(10,14,26,0.85); color:#e8edf5; text-decoration:none;
+      font-size:13px; font-weight:600; padding:8px 14px; border-radius:10px;
+      border:1px solid rgba(255,255,255,0.2); backdrop-filter:blur(3px);
+      opacity:0; transition:opacity 0.25s; pointer-events:none;
+    }
+    #back-to-app-link.shown { opacity:1; pointer-events:auto; }
+    /* Windows kiosk exit — same tap-to-reveal treatment; top-right so it
+       doesn't sit on top of the pencil (bottom-right) or Back to App
+       (top-left). display:none until KIOSK_EXIT flips it on at boot. */
+    #kiosk-exit-btn {
+      position:fixed; top:14px; right:14px; z-index:65;
+      background:rgba(10,14,26,0.85); color:#e8edf5;
+      font-size:13px; font-weight:600; padding:8px 14px; border-radius:10px;
+      border:1px solid rgba(255,255,255,0.2); backdrop-filter:blur(3px);
+      cursor:pointer; opacity:0; transition:opacity 0.25s; pointer-events:none;
+    }
+    #kiosk-exit-btn.shown { opacity:1; pointer-events:auto; }
+    #edit-mode-trigger {
+      position:absolute; bottom:18px; right:18px; z-index:60;
+      width:52px; height:52px; border-radius:50%; border:none;
+      background:rgba(10,14,26,0.82); color:#e8edf5; font-size:22px;
+      box-shadow:0 4px 16px rgba(0,0,0,0.4); backdrop-filter:blur(3px);
+      opacity:0; transition:opacity 0.25s; pointer-events:none;
+    }
+    #edit-mode-trigger.shown { opacity:1; pointer-events:auto; }
+    /* Deliberately a floating pill (margin + rounded corners), not a
+       full-bleed bar flush with the screen edges — reads clearly as
+       temporary editing chrome sitting ON TOP of the canvas, rather than
+       something that's actually part of it. A full-bleed bar looked like
+       part of the display itself, which made it easy to mistake "this
+       widget is covered right now" for "this widget's actual layout
+       changed" — genuinely two different things, but visually identical
+       with the old full-width treatment. Doesn't reposition any widget
+       (deliberately — a real "never cover anything" fix would need either
+       live device testing to verify safely, or a more invasive change to
+       how the canvas maps widget percentages to pixels; this is the safe,
+       verifiable-without-a-device improvement instead of a riskier guess
+       at that larger fix). */
+    #edit-mode-bar {
+      position:absolute; top:14px; left:14px; right:14px; z-index:60;
+      background:rgba(10,14,26,0.92); color:#e8edf5; backdrop-filter:blur(3px);
+      display:flex; align-items:center; justify-content:space-between;
+      padding:12px 18px; font-size:15px; border-radius:14px;
+      box-shadow:0 8px 24px -8px rgba(0,0,0,0.6);
+    }
+    /* By explicit request: a position choice (top/bottom, a persisted
+       per-screen setting) and an independent manual-collapse toggle
+       (transient, resets to expanded each time Live Editing is freshly
+       turned on) — together, so the bar is both movable and dismissible
+       rather than just one or the other. */
+    #edit-mode-bar.edit-bar-bottom { top:auto; bottom:14px; }
+    #edit-mode-label-group { display:flex; align-items:center; gap:10px; min-width:0; }
+    #edit-mode-collapse-btn {
+      background:rgba(255,255,255,0.12) !important; color:#e8edf5 !important;
+      width:32px; height:32px; padding:0 !important; border-radius:50% !important;
+      font-size:19px; font-weight:700; flex-shrink:0; line-height:1;
+    }
+    /* Collapsed: shrinks to just the collapse button itself (now acting as
+       the expand trigger), anchored to the right edge — everything else in
+       the bar hides rather than the bar disappearing entirely, so it's
+       still immediately reachable with one tap, never fully gone. */
+    #edit-mode-bar.edit-bar-collapsed {
+      left:auto; right:14px; width:auto; padding:8px; gap:0;
+    }
+    #edit-mode-bar.edit-bar-collapsed #edit-mode-label,
+    #edit-mode-bar.edit-bar-collapsed #edit-mode-screen-settings-btn,
+    #edit-mode-bar.edit-bar-collapsed #edit-mode-add-btn,
+    #edit-mode-bar.edit-bar-collapsed #edit-mode-done {
+      display:none;
+    }
+    #edit-mode-bar.edit-bar-collapsed #edit-mode-collapse-btn { font-size:15px; }
+    #edit-mode-bar button {
+      background:#3ec97a; color:#062; border:none; border-radius:8px;
+      padding:8px 20px; font-size:15px; font-weight:600;
+    }
+    /* The ➕ Add Widget button sits between the label and Done — a plainer,
+       more compact circular icon button so it doesn't compete visually with
+       Done (the bar's one "primary" action) for attention. */
+    #edit-mode-add-btn {
+      background:rgba(255,255,255,0.12) !important; color:#e8edf5 !important;
+      width:36px; height:36px; padding:0 !important; border-radius:50% !important;
+      font-size:17px; flex-shrink:0; margin-right:10px;
+    }
+    /* Same plain icon-button treatment as the ➕ button above, for the same
+       reason — a screen-level settings action, not the bar's one "primary"
+       action (Done). */
+    #edit-mode-screen-settings-btn {
+      background:rgba(255,255,255,0.12) !important; color:#e8edf5 !important;
+      width:36px; height:36px; padding:0 !important; border-radius:50% !important;
+      font-size:16px; flex-shrink:0; margin-right:10px;
+    }
+
+    /* Add-widget picker overlay — a simple, large-tap-target category/type
+       grid, opened from the ➕ button. Data-driven from WIDGET_DEFS/
+       WIDGET_CATEGORIES in the script below (ported from app.html's own
+       arrays of the same name) rather than duplicating the widget list as
+       separate hand-written markup. */
+    #widget-picker-overlay {
+      position:fixed; inset:0; z-index:70; background:rgba(6,9,18,0.97);
+      display:flex; flex-direction:column; color:#e8edf5;
+    }
+    #widget-picker-header {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:16px 20px; font-size:18px; font-weight:700;
+      border-bottom:1px solid rgba(255,255,255,0.12); flex-shrink:0;
+    }
+    #widget-picker-close {
+      background:rgba(255,255,255,0.12); color:#e8edf5; border:none;
+      width:36px; height:36px; border-radius:50%; font-size:16px;
+    }
+    #widget-picker-body { flex:1; overflow-y:auto; padding:12px 16px 24px; }
+    /* Screen Settings panel (the ⚙️ button in Live Edit) — same visual
+       shape as #widget-picker-overlay above (this is the actual bug: the
+       markup was written to mirror that panel's structure, but this CSS
+       rule was never added, so the overlay had no position/size/background
+       at all — display:flex on an unstyled div just made it an invisible
+       block sitting in normal document flow, not a full-screen overlay).
+       z-index 75, not 70 (matching the widget picker's own), so the two
+       panels have an unambiguous stacking order if either could ever be
+       open at the same time as the other, even though normal use never
+       has both open together. */
+    #screen-settings-overlay {
+      position:fixed; inset:0; z-index:75; background:rgba(6,9,18,0.97);
+      display:flex; flex-direction:column; color:#e8edf5;
+    }
+    #screen-settings-header {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:16px 20px; font-size:18px; font-weight:700;
+      border-bottom:1px solid rgba(255,255,255,0.12); flex-shrink:0;
+    }
+    #screen-settings-close {
+      background:rgba(255,255,255,0.12); color:#e8edf5; border:none;
+      width:36px; height:36px; border-radius:50%; font-size:16px;
+    }
+    #screen-settings-body { flex:1; overflow-y:auto; padding:12px 16px 24px; }
+    /* Event detail modal — see the HTML comment above its markup for why
+       this is a centered card rather than a full-screen overlay like
+       Screen Settings above. Uses the globally-scoped --muted/--border
+       (defined on :root) rather than --text2, which is only defined
+       within .widget and wouldn't resolve correctly here. */
+    #event-detail-overlay {
+      position:fixed; inset:0; z-index:90;
+      background:rgba(4,6,12,0.75); backdrop-filter:blur(2px);
+      display:flex; align-items:center; justify-content:center; padding:24px;
+    }
+    #event-detail-card {
+      background:#12172a; color:#e8edf5; border-radius:16px; padding:24px;
+      max-width:440px; width:100%; max-height:80vh; overflow-y:auto;
+      position:relative; box-shadow:0 20px 60px -12px rgba(0,0,0,0.7);
+    }
+    #event-detail-close {
+      position:absolute; top:14px; right:14px; background:rgba(255,255,255,0.1);
+      color:#e8edf5; border:none; width:32px; height:32px; border-radius:50%;
+      font-size:15px;
+    }
+    #event-detail-colorbar { width:48px; height:5px; border-radius:3px; margin-bottom:14px; }
+    #event-detail-title { font-size:22px; font-weight:700; margin-bottom:10px; padding-right:36px; line-height:1.3; }
+    #event-detail-time { font-size:15px; color:var(--muted); margin-bottom:4px; }
+    #event-detail-location { font-size:14px; color:var(--muted); margin-bottom:4px; }
+    #event-detail-location::before { content:"📍 "; }
+    #event-detail-source { font-size:13px; color:var(--muted); margin-bottom:16px; }
+    #event-detail-notes {
+      font-size:14px; line-height:1.5; white-space:pre-wrap;
+      border-top:1px solid var(--border); padding-top:14px;
+    }
+    #event-detail-delete {
+      margin-top:16px; width:100%; padding:11px; border-radius:10px; border:none;
+      font-size:14px; font-weight:600; background:rgba(255,80,80,0.16); color:#ff9b9b;
+    }
+    #event-detail-delete:disabled { opacity:0.5; }
+    #event-detail-hide {
+      margin-top:16px; width:100%; padding:11px; border-radius:10px; border:none;
+      font-size:14px; font-weight:600; background:rgba(255,255,255,0.1); color:#e8edf5;
+    }
+    #event-detail-hide:disabled { opacity:0.5; }
+    #event-detail-hide-series {
+      margin-top:8px; width:100%; padding:8px; border-radius:10px; border:none;
+      font-size:13px; font-weight:500; background:transparent; color:var(--muted);
+      text-decoration:underline;
+    }
+    #event-detail-hide-series:disabled { opacity:0.5; }
+    [data-event-key] { cursor:pointer; }
+    /* Long-press a day cell on a calendar widget to add an event (see
+       wireCalCellLongPress / openEventAddSheet). Card styling mirrors
+       #event-detail-card so the two calendar sheets feel like one thing. */
+    .mc-cell[data-date] { cursor:pointer; }
+    #event-add-overlay {
+      position:fixed; inset:0; z-index:91;
+      background:rgba(4,6,12,0.75); backdrop-filter:blur(2px);
+      display:flex; align-items:center; justify-content:center; padding:24px;
+    }
+    #event-add-card {
+      background:#12172a; color:#e8edf5; border-radius:16px; padding:24px;
+      max-width:440px; width:100%; max-height:85vh; overflow-y:auto;
+      position:relative; box-shadow:0 20px 60px -12px rgba(0,0,0,0.7);
+    }
+    #event-add-close {
+      position:absolute; top:14px; right:14px; background:rgba(255,255,255,0.1);
+      color:#e8edf5; border:none; width:32px; height:32px; border-radius:50%;
+      font-size:15px;
+    }
+    #event-add-heading { font-size:20px; font-weight:700; margin-bottom:16px; padding-right:36px; }
+    .ea-row { margin-bottom:14px; }
+    .ea-row > label { display:block; font-size:13px; color:#a8b2c4; margin-bottom:6px; }
+    .ea-row.ea-inline > label { display:flex; align-items:center; gap:8px; font-size:15px; color:#e8edf5; margin-bottom:0; }
+    .ea-row.ea-inline input[type="checkbox"] { width:20px; height:20px; }
+    #event-add-card input[type="text"],
+    #event-add-card input[type="date"],
+    #event-add-card input[type="time"],
+    #event-add-card select {
+      width:100%; box-sizing:border-box; padding:11px 12px; font-size:15px;
+      border-radius:10px; border:1px solid rgba(255,255,255,0.15);
+      background:rgba(255,255,255,0.05); color:#e8edf5;
+    }
+    #event-add-card select option { background:#12172a; color:#e8edf5; }
+    #ea-time-row .ea-time-fields { display:flex; align-items:center; gap:8px; }
+    #ea-time-row .ea-time-fields input { flex:1; }
+    #ea-time-row .ea-time-fields span { color:#a8b2c4; font-size:13px; }
+    .ea-hint { font-size:11px; color:#8892a4; margin-top:5px; }
+    .ea-title-wrap { display:flex; gap:8px; align-items:stretch; }
+    .ea-title-wrap input { flex:1; }
+    #ea-write-btn {
+      flex:0 0 auto; width:46px; border-radius:10px; border:1px solid rgba(255,255,255,0.15);
+      background:rgba(255,255,255,0.05); font-size:18px; line-height:1;
+    }
+    #ea-pad-row label { display:flex; align-items:center; justify-content:space-between; }
+    .ea-pad-mini {
+      font-size:11px; font-weight:600; padding:4px 10px; border-radius:7px;
+      border:1px solid rgba(255,255,255,0.15); background:rgba(255,255,255,0.06); color:#e8edf5;
+    }
+    #ea-pad {
+      width:100%; height:150px; display:block; border-radius:10px; touch-action:none;
+      border:1px dashed rgba(255,255,255,0.25); background:rgba(255,255,255,0.04); cursor:crosshair;
+    }
+    .ea-pad-actions { display:flex; gap:10px; margin-top:10px; }
+    .ea-pad-actions button {
+      flex:1; padding:10px; border-radius:9px; font-size:13px; font-weight:600; border:none;
+    }
+    #ea-pad-cancel { background:rgba(255,255,255,0.1); color:#e8edf5; }
+    #ea-pad-done { background:#4A90D9; color:#fff; }
+    .ea-error {
+      font-size:13px; color:#ff9b9b; background:rgba(255,80,80,0.12);
+      border-radius:8px; padding:8px 10px; margin-bottom:12px;
+    }
+    .ea-actions { display:flex; gap:10px; margin-top:18px; }
+    .ea-actions button {
+      flex:1; padding:12px; border-radius:10px; font-size:14px; font-weight:600; border:none;
+    }
+    #ea-cancel { background:rgba(255,255,255,0.1); color:#e8edf5; }
+    #ea-save { background:#4A90D9; color:#fff; }
+    #ea-save:disabled { opacity:0.5; }
+    /* Family Message Board — add-a-note sheet (mirrors #event-add-overlay). */
+    #mb-add-overlay {
+      position:fixed; inset:0; z-index:91;
+      background:rgba(4,6,12,0.75); backdrop-filter:blur(2px);
+      display:none; align-items:center; justify-content:center; padding:24px;
+    }
+    #mb-add-card {
+      background:#12172a; color:#e8edf5; border-radius:16px; padding:24px;
+      max-width:440px; width:100%; position:relative;
+      box-shadow:0 20px 60px -12px rgba(0,0,0,0.7);
+    }
+    #mb-add-close {
+      position:absolute; top:14px; right:14px; background:rgba(255,255,255,0.1);
+      color:#e8edf5; border:none; width:32px; height:32px; border-radius:50%; font-size:15px;
+    }
+    #mb-add-heading { font-size:20px; font-weight:700; margin-bottom:16px; padding-right:36px; }
+    #mb-add-text {
+      width:100%; box-sizing:border-box; padding:11px 12px; font-size:16px;
+      border-radius:10px; border:1px solid rgba(255,255,255,0.15);
+      background:rgba(255,255,255,0.05); color:#e8edf5; resize:none;
+      font-family:inherit; line-height:1.4;
+    }
+    #mb-add-cancel { background:rgba(255,255,255,0.1); color:#e8edf5; }
+    #mb-add-save { background:#4A90D9; color:#fff; }
+    #mb-add-save:disabled { opacity:0.5; }
+    .wp-category {
+      margin-bottom:8px; border-radius:10px; overflow:hidden;
+      background:rgba(255,255,255,0.04);
+    }
+    .wp-category-head {
+      display:flex; align-items:center; gap:12px; padding:14px 16px;
+      font-size:16px; font-weight:600; cursor:pointer;
+    }
+    .wp-category-head .wp-cat-icon { font-size:20px; }
+    .wp-category-head .wp-cat-chevron { margin-left:auto; opacity:0.5; transition:transform 0.15s; }
+    .wp-category.open .wp-cat-chevron { transform:rotate(90deg); }
+    .wp-type-grid {
+      display:none; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr));
+      gap:10px; padding:0 12px 14px;
+    }
+    .wp-category.open .wp-type-grid { display:grid; }
+    .wp-type-item {
+      display:flex; flex-direction:column; align-items:center; gap:8px;
+      padding:14px 6px; border-radius:10px; background:rgba(255,255,255,0.05);
+      font-size:12px; text-align:center; line-height:1.25;
+    }
+    .wp-type-item .wp-type-icon { font-size:26px; line-height:1; }
+
+    /* Placement banner — replaces the normal Live Editing bar's content
+       while waiting for a tap on the canvas to place the just-picked
+       widget type. Same visual slot/style as #edit-mode-bar so it doesn't
+       introduce a whole new layout position to account for. */
+    #widget-place-banner {
+      position:absolute; top:0; left:0; right:0; z-index:60;
+      background:rgba(10,14,26,0.92); color:#e8edf5; backdrop-filter:blur(3px);
+      display:flex; align-items:center; justify-content:space-between;
+      padding:12px 18px; font-size:15px;
+    }
+    #widget-place-banner #widget-place-cancel {
+      background:rgba(255,255,255,0.12); color:#e8edf5; border:none;
+      border-radius:8px; padding:8px 20px; font-size:15px; font-weight:600;
+    }
+    /* A soft pulse on the canvas itself while in placement mode, so it's
+       unambiguous that the NEXT tap is about to do something (place a
+       widget) rather than the usual select/drag. */
+    body.placing-widget #canvas { cursor:crosshair; }
+    @keyframes placingPulse { 0%,100% { outline-color:rgba(74,144,217,0.25); } 50% { outline-color:rgba(74,144,217,0.7); } }
+    body.placing-widget #rotate-wrap { outline:3px solid rgba(74,144,217,0.5); outline-offset:-3px; animation:placingPulse 1.6s ease-in-out infinite; }
+    /* Active edit mode: a visible frame around the whole display so it's
+       unambiguous the screen is in a different, more permissive state than
+       normal viewing — same spirit as a photo/video editor's own "you are
+       now editing" chrome. */
+    body.edit-mode-active #rotate-wrap { outline:3px solid #3ec97a; outline-offset:-3px; }
+    body.edit-mode-active .widget { cursor:grab; outline:1px dashed rgba(255,255,255,0.25); touch-action:none; }
+    body.edit-mode-active .widget.dragging { cursor:grabbing; outline:2px solid #3ec97a; z-index:40; opacity:0.9; }
+    /* Selected widget gets a solid outline — outline (not border) so it
+       doesn't shift the widget's own box/content, and isn't clipped by the
+       widget's own overflow:hidden the way a child element would be. */
+    body.edit-mode-active .widget.selected { outline:2px solid #4A90D9; }
+
+    /* Phase 4: resize handles — drawn on a separate overlay element (sibling
+       of the widgets, not a child) so they aren't clipped by .widget's own
+       overflow:hidden, and repositioned to track the selected widget on
+       every select/move/resize (see syncEditOverlayToWidget()). */
+    #edit-selection-overlay {
+      position:fixed; z-index:41; pointer-events:none; /* only the handles themselves are interactive */
+    }
+    .edit-resize-handle {
+      /* The actual hit target is 44px (touch-target-size guideline) but the
+         VISIBLE dot stays a smaller 26px circle centered inside it via
+         ::after — a large blue dot on every corner would be visually
+         cluttered, but a target this small was demonstrably too easy to
+         miss on a touchscreen: an imprecise tap landing just outside the
+         old 26px hit area fell through to the widget underneath and
+         started a MOVE instead of a resize, which is exactly the "grabbing
+         a corner sometimes just moves it" bug this fixes. */
+      position:absolute; width:44px; height:44px; margin:-22px;
+      pointer-events:auto; touch-action:none;
+      display:flex; align-items:center; justify-content:center;
+    }
+    .edit-resize-handle::after {
+      content:''; width:26px; height:26px; border-radius:50%;
+      background:#4A90D9; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,0.4);
+    }
+    .erh-nw { top:0; left:0; cursor:nwse-resize; }
+    .erh-ne { top:0; left:100%; cursor:nesw-resize; }
+    .erh-sw { top:100%; left:0; cursor:nesw-resize; }
+    .erh-se { top:100%; left:100%; cursor:nwse-resize; }
+    .erh-n  { top:0; left:50%; cursor:ns-resize; }
+    .erh-s  { top:100%; left:50%; cursor:ns-resize; }
+    .erh-e  { top:50%; left:100%; cursor:ew-resize; }
+    .erh-w  { top:50%; left:0; cursor:ew-resize; }
+
+    /* Phase 4: per-widget settings panel (title/font/delete) — same visual
+       language as #edit-mode-bar above, docked to the opposite edge
+       (bottom) so both can be visible together without overlapping. */
+    #widget-edit-panel {
+      position:absolute; left:0; right:0; bottom:0; z-index:61;
+      background:rgba(10,14,26,0.92); color:#e8edf5; backdrop-filter:blur(3px);
+      padding:14px 18px; display:flex; flex-direction:column; gap:10px; font-size:14px;
+    }
+    .wep-row { display:flex; align-items:center; gap:10px; }
+    .wep-row label { flex-shrink:0; width:78px; opacity:0.75; }
+    .wep-row input[type="text"] {
+      flex:1; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.18);
+      border-radius:6px; color:#e8edf5; padding:9px 11px; font-size:14px;
+    }
+    .wep-row input[type="range"] { flex:1; }
+    #wep-font-val { width:44px; text-align:right; opacity:0.75; flex-shrink:0; }
+    .wep-noopts-text { opacity:0.6; font-style:italic; }
+    .wep-actions { justify-content:flex-end; gap:10px; }
+    #wep-delete-btn {
+      background:rgba(210,58,58,0.85); color:#fff; border:none; border-radius:8px;
+      padding:9px 16px; font-size:14px; font-weight:600;
+    }
+    #wep-advanced-btn {
+      background:rgba(255,255,255,0.12); color:#e8edf5; border:none; border-radius:8px;
+      padding:9px 16px; font-size:14px; font-weight:600;
+    }
+
+    /* Full-featured per-type settings sheet (Calendar, Weather variants for
+       now) — same full-screen visual language as #widget-picker-overlay,
+       reused rather than inventing a third overlay style. */
+    #widget-advanced-panel {
+      position:fixed; inset:0; z-index:71; background:rgba(6,9,18,0.98);
+      display:flex; flex-direction:column; color:#e8edf5;
+    }
+    #widget-advanced-header, .was-panel-header {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:16px 20px; font-size:18px; font-weight:700;
+      border-bottom:1px solid rgba(255,255,255,0.12); flex-shrink:0;
+    }
+    #widget-advanced-close, .was-panel-close {
+      background:rgba(255,255,255,0.12); color:#e8edf5; border:none;
+      width:36px; height:36px; border-radius:50%; font-size:16px;
+    }
+    #widget-advanced-body { flex:1; overflow-y:auto; padding:16px 20px 100px; max-width:640px; margin:0 auto; width:100%; }
+    .was-section-label {
+      font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.6px;
+      color:var(--accent, #4A90D9); margin:22px 0 10px;
+    }
+    .was-section-label:first-child { margin-top:0; }
+    .was-row { margin-bottom:16px; }
+    .was-row label {
+      display:block; font-size:13px; color:rgba(255,255,255,0.75); margin-bottom:8px;
+    }
+    /* Same reusable accordion as app.html (accordionSection()/wireAccordion()
+       there) — colors adapted to THIS panel's own fixed dark palette (literal
+       hex/rgba, since --border/--card/--text/--muted are app.html-only
+       variables that don't exist here) rather than app.html's CSS custom
+       properties. --accent IS available here too (defined at :root, already
+       used by .was-section-label just above), so that one's shared as-is. */
+    .acc-section { border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; overflow: hidden; background: rgba(255,255,255,0.04); }
+    .acc-section.open { border-color: rgba(74,144,217,0.5); }
+    .acc-head {
+      width: 100%; display: flex; align-items: center; gap: 13px; cursor: pointer;
+      background: none; border: none; color: #e8edf5; padding: 16px 16px;
+      font-family: inherit; text-align: left;
+    }
+    .acc-head .acc-ic { font-size: 21px; flex: none; }
+    .acc-head .acc-text { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+    .acc-head .acc-label { font-size: 16px; font-weight: 600; }
+    .acc-head .acc-sub { font-size: 12px; color: rgba(255,255,255,0.6); }
+    .acc-head .acc-caret { color: var(--accent, #4A90D9); font-size: 14px; flex: none; }
+    .acc-body { padding: 0 16px 16px; }
+
+    /* Manage Reminders — a SECOND full-screen sheet, same visual language
+       as #widget-advanced-panel just above (reused rather than a third
+       style), stacked one z-index higher since it opens FROM WITHIN that
+       panel's own Reminders settings. Its own top-level, always-present
+       overlay — deliberately NOT wired from inside
+       renderRemindersAdvancedSettings()/wireRemindersAdvancedSettings(),
+       which rerun every single time ANY widget's settings panel opens.
+       Wiring a persistent modal's own internals from inside a function
+       like that is exactly the mistake that shipped a real bug elsewhere
+       in this app once already (see app.html's Copy Widgets modal
+       history) — every rerun would stack another duplicate listener onto
+       the same never-recreated DOM nodes. This panel's OWN open/close/add/
+       edit/delete logic is wired exactly once, in its own IIFE; the
+       Reminders widget's settings panel only ever calls the shared
+       openManageRemindersPanel() to open it — safe to re-wire every time,
+       since that specific button IS part of the per-render settings HTML. */
+    #manage-reminders-panel {
+      position:fixed; inset:0; z-index:72; background:rgba(6,9,18,0.98);
+      display:flex; flex-direction:column; color:#e8edf5;
+    }
+    #manage-reminders-body { flex:1; overflow-y:auto; padding:16px 20px 100px; max-width:640px; margin:0 auto; width:100%; }
+    .mr-item {
+      display:flex; align-items:center; gap:12px; padding:12px 4px;
+      border-bottom:1px solid rgba(255,255,255,0.08);
+    }
+    .mr-item-icon { font-size:22px; flex-shrink:0; }
+    .mr-item-info { flex:1; min-width:0; }
+    .mr-item-name { font-size:15px; font-weight:600; }
+    .mr-item-schedule { font-size:12px; color:rgba(255,255,255,0.55); margin-top:2px; }
+    .mr-item-actions { display:flex; gap:6px; flex-shrink:0; }
+    .mr-icon-btn {
+      width:32px; height:32px; border-radius:8px; border:none;
+      background:rgba(255,255,255,0.08); color:#e8edf5; font-size:14px;
+    }
+    .mr-icon-btn.mr-delete { background:rgba(227,92,92,0.18); color:#e35c5c; }
+    .mr-form-row { margin-bottom:14px; }
+    .mr-form-row label { display:block; font-size:12.5px; color:rgba(255,255,255,0.7); margin-bottom:6px; }
+    .mr-form-row input[type="text"], .mr-form-row select, .mr-form-row input[type="date"], .mr-form-row input[type="number"] {
+      width:100%; padding:10px 12px; border-radius:8px; border:1px solid rgba(255,255,255,0.15);
+      background:rgba(255,255,255,0.05); color:#e8edf5; font-size:14px;
+    }
+    .mr-dow-row { display:flex; gap:5px; }
+    .mr-dow-btn {
+      flex:1; padding:9px 0; border-radius:8px; border:1px solid rgba(255,255,255,0.15);
+      background:rgba(255,255,255,0.05); color:rgba(255,255,255,0.6); font-size:12px; font-weight:700;
+    }
+    .mr-dow-btn.active { background:rgba(74,144,217,0.3); border-color:var(--accent,#4A90D9); color:#fff; }
+    .was-row select, .was-row input[type="text"], .was-row input[type="number"] {
+      width:100%; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.18);
+      border-radius:8px; color:#e8edf5; padding:11px 12px; font-size:14px; box-sizing:border-box;
+    }
+    .was-range-row { display:flex; align-items:center; gap:12px; }
+    .was-range-row input[type="range"] { flex:1; }
+    .was-range-val { width:52px; text-align:right; opacity:0.75; flex-shrink:0; font-size:13px; }
+    .was-hint { font-size:11px; color:rgba(255,255,255,0.5); margin-top:6px; line-height:1.4; }
+    .was-toggle-row {
+      display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;
+    }
+    .was-toggle-row label { margin-bottom:0; }
+    .was-toggle-row input[type="checkbox"] { width:22px; height:22px; accent-color:var(--accent, #4A90D9); }
+    .was-box {
+      border:1px solid rgba(255,255,255,0.15); border-radius:10px; padding:14px;
+      background:rgba(255,255,255,0.03); margin-bottom:16px;
+    }
+    .was-mini-btn {
+      padding:7px 12px; border-radius:8px; font-size:13px; font-weight:600;
+      border:1px solid rgba(255,255,255,0.15); background:rgba(255,255,255,0.06);
+      color:#e8edf5; cursor:pointer;
+    }
+    /* Info button + popup — same pattern as the app's own settings panels
+       (app.html), restyled for this panel's dark, no-CSS-variable palette
+       rather than reusing app.html's --card/--muted variables, which
+       aren't defined the same way in this file's theme system. */
+    .info-btn {
+      display:inline-block; color:rgba(255,255,255,0.5); font-size:15px; cursor:pointer;
+      margin-left:5px; vertical-align:middle; line-height:1; user-select:none;
+    }
+    .info-btn:active { color:var(--accent, #4A90D9); }
+    #info-popup-modal {
+      position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:9999;
+      display:flex; align-items:center; justify-content:center; padding:24px;
+    }
+    #info-popup-content {
+      background:rgba(20,24,38,0.98); border:1px solid rgba(255,255,255,0.18); border-radius:14px;
+      padding:18px; max-width:420px; max-height:70vh; overflow-y:auto;
+      font-size:13px; line-height:1.6; color:#e8edf5;
+    }
+    #info-popup-close {
+      background:var(--accent, #4A90D9); border:none; border-radius:8px;
+      padding:8px 18px; color:#fff; font-weight:600; font-size:13px; cursor:pointer;
+    }
+    .was-inline-btn {
+      background:var(--accent, #4A90D9); border:none; border-radius:8px; color:#fff;
+      padding:0 16px; height:44px; font-size:14px; font-weight:600; flex-shrink:0;
+    }
+    .was-ticker-chip {
+      display:inline-flex; align-items:center; gap:6px; background:rgba(255,255,255,0.08);
+      border:1px solid rgba(255,255,255,0.18); border-radius:20px; padding:6px 8px 6px 14px;
+      font-size:13px; font-weight:500; color:#e8edf5;
+    }
+    .was-ticker-chip button {
+      background:none; border:none; color:rgba(255,255,255,0.6); font-size:16px;
+      line-height:1; cursor:pointer; padding:0 4px;
+    }
+    .was-ticker-quickadd {
+      background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.18);
+      border-radius:20px; padding:6px 14px; font-size:12px; color:#e8edf5; cursor:pointer;
+    }
+
+    /* Trial-ending notice: small, unobtrusive corner card, same visual language
+       as info-overlay above. Bottom-right by default — deliberately not
+       pointer-events:none like info-overlay, since this one is dismissible. */
+    #trial-notice {
+      position:absolute; z-index:6; bottom:18px; right:18px;
+      background:rgba(10,14,26,0.78); color:#e8edf5;
+      border:1px solid rgba(255,176,32,0.4); border-radius:10px;
+      padding:11px 14px; font-size:13px; line-height:1.4;
+      max-width:min(280px, 70vw); backdrop-filter:blur(3px);
+      display:flex; align-items:flex-start; gap:10px;
+    }
+    #trial-notice .tn-text { flex:1; }
+    #trial-notice .tn-title { font-weight:600; color:#ffd08a; margin-bottom:2px; }
+    #trial-notice .tn-close { cursor:pointer; color:#8b93a7; font-size:16px; line-height:1; padding:2px; flex-shrink:0; }
+    body.blanked #trial-notice { display:none !important; }
+
+    /* Setup-needed overlay: full-screen, deliberately above everything else
+       (z-index higher than anything else on this page) — shown until the
+       control app's own first-run wizard marks setup_complete, so a brand
+       new install doesn't just sit there with no indication of what to do
+       next. Theme-independent (fixed dark background) since it needs to
+       stay readable no matter what theme is otherwise active underneath. */
+    #setup-needed-overlay, #license-required-overlay {
+      position: absolute; inset: 0; z-index: 100;
+      background: linear-gradient(160deg, #1c2027, #0b0d11);
+      color: #f5f5f5; display: flex; align-items: center; justify-content: center;
+      text-align: center; padding: 5vh 6vw;
+    }
+    .setup-needed-inner { max-width: 900px; }
+    .setup-needed-logo { font-size: clamp(14px, 1.6vw, 20px); font-weight: 700; opacity: 0.55; letter-spacing: 0.12em; margin-bottom: clamp(20px, 4vh, 40px); }
+    .setup-needed-inner h1 { font-size: clamp(32px, 5.2vw, 56px); margin: 0 0 clamp(14px, 2vh, 22px); font-weight: 700; letter-spacing: -0.01em; }
+    .setup-needed-inner p { font-size: clamp(16px, 2vw, 24px); opacity: 0.75; margin: 0 0 clamp(20px, 3vh, 30px); line-height: 1.5; }
+    .setup-needed-url {
+      font-size: clamp(22px, 4vw, 44px); font-weight: 700; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+      background: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.16); border-radius: 18px;
+      padding: clamp(16px, 2.4vh, 26px) clamp(24px, 3vw, 40px); display: inline-block;
+      letter-spacing: 0.01em; margin-bottom: clamp(20px, 3vh, 32px); word-break: break-all;
+    }
+    /* White card behind the QR itself — dark-on-dark would barely scan, if
+       at all, and this splash's whole background is a dark gradient. */
+    .setup-needed-qr-wrap { display: flex; justify-content: center; margin: 0 0 clamp(20px, 3vh, 32px); }
+    .setup-needed-qr-wrap .qr-container { background: #fff; border-radius: 14px; padding: 12px; line-height: 0; }
+    .setup-needed-qr-wrap-sm { margin: clamp(10px, 1.6vh, 16px) 0 0; }
+    .setup-needed-qr-wrap-sm .qr-container { padding: 8px; border-radius: 10px; }
+    .setup-needed-url-2-wrap { display: none; margin: 0 0 clamp(20px, 3vh, 32px); }
+    .setup-needed-url-2-label {
+      font-size: clamp(12px, 1.4vw, 16px); font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.1em; opacity: 0.5; font-family: -apple-system, sans-serif;
+      margin-bottom: clamp(6px, 1vh, 10px);
+    }
+    .setup-needed-url-2 {
+      font-size: clamp(15px, 2.2vw, 24px); font-weight: 600; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+      background: rgba(255,255,255,0.05); border: 2px solid rgba(255,255,255,0.1); border-radius: 14px;
+      padding: clamp(10px, 1.6vh, 16px) clamp(18px, 2.4vw, 28px); display: inline-block;
+      letter-spacing: 0.01em; word-break: break-all; opacity: 0.85;
+    }
+    .setup-needed-steps { font-size: clamp(13px, 1.5vw, 17px) !important; opacity: 0.55 !important; margin: 0 !important; max-width: 60ch; margin-left: auto !important; margin-right: auto !important; }
+    body.blanked #setup-needed-overlay, body.blanked #license-required-overlay { display:none !important; }
+    body[data-theme] #photo-overlay { background:transparent; } /* themes supply their own contrast */
+
+    /* July 4th — night sky */
+    body[data-theme="july4"] #theme-bg {
+      background:
+        radial-gradient(circle at 50% 120%, #1b2a6b 0%, #0a1230 55%, #05060f 100%);
+    }
+    body[data-theme="july4"] { --accent:#ff8a94; }
+    body[data-theme="july4"] .mc-cell { background:rgba(58,110,165,0.12); border-color:rgba(58,110,165,0.35); }
+    body[data-theme="july4"] .mc-names, body[data-theme="july4"] .mc-month, body[data-theme="july4"] .mc-year { color:var(--accent); }
+    /* New Year — midnight gold shimmer */
+    body[data-theme="newyear"] #theme-bg {
+      background:
+        radial-gradient(circle at 50% 0%, #2a2350 0%, #141029 50%, #0a0818 100%);
+    }
+    body[data-theme="newyear"] { --accent:#e8c874; }
+    body[data-theme="newyear"] .mc-cell { background:rgba(212,175,55,0.10); border-color:rgba(212,175,55,0.35); }
+    body[data-theme="newyear"] .mc-names, body[data-theme="newyear"] .mc-month, body[data-theme="newyear"] .mc-year { color:var(--accent); }
+    /* Christmas — deep green to red vignette */
+    body[data-theme="christmas"] #theme-bg {
+      background:
+        radial-gradient(circle at 50% 30%, #14532d 0%, #0c3322 55%, #3b0d12 140%);
+    }
+    body[data-theme="christmas"] { --accent:#f0b429; }
+    body[data-theme="christmas"] .mc-cell { background:rgba(45,106,79,0.15); border-color:rgba(45,106,79,0.4); }
+    body[data-theme="christmas"] .mc-names, body[data-theme="christmas"] .mc-month, body[data-theme="christmas"] .mc-year { color:var(--accent); }
+    /* Post-it — cork board */
+    body[data-theme="postit"] #theme-bg {
+      background-color:#c9a36a;
+      background-image:
+        radial-gradient(circle at 20% 30%, rgba(0,0,0,0.12) 0 2px, transparent 3px),
+        radial-gradient(circle at 70% 60%, rgba(0,0,0,0.10) 0 2px, transparent 3px),
+        radial-gradient(circle at 45% 85%, rgba(0,0,0,0.10) 0 2px, transparent 3px),
+        radial-gradient(circle at 88% 20%, rgba(0,0,0,0.10) 0 2px, transparent 3px),
+        linear-gradient(135deg, #cda968, #b88d4e);
+      background-size:140px 140px,180px 180px,160px 160px,200px 200px,100% 100%;
+    }
+    body[data-theme="postit"] { --accent:#c9861a; }
+    /* Dark text — the calendar already gets its own sticky-note styling via JS
+       (calDecor:'postit'); this covers the date/weather widgets, which inherit
+       var(--text) directly and need to read against the tan cork background. */
+    body[data-theme="postit"] { --text:#2b2b2b; }
+    body[data-theme="postit"] .w-text .tx-body { color:#4a3d28; }
+    /* Easter — pastel spring */
+    body[data-theme="easter"] #theme-bg {
+      background:linear-gradient(160deg, #d9f0ff 0%, #ffe5ec 55%, #e8fce9 100%);
+    }
+    body[data-theme="easter"] { --accent:#a8636f; }
+    /* Light theme — dark text is set by the template's textColor, but that only
+       reaches widgets without their own color already; force it here too so
+       everything reads clearly on the pale pastel background. */
+    body[data-theme="easter"] { --text:#3d3a4b; }
+    body[data-theme="easter"] .w-text .tx-body { color:#5c5468; }
+    body[data-theme="easter"] .mc-cell { background:rgba(255,255,255,0.5); border-color:rgba(181,131,141,0.3); }
+    body[data-theme="easter"] .mc-names, body[data-theme="easter"] .mc-month, body[data-theme="easter"] .mc-year { color:var(--accent); }
+    /* Halloween — purple night */
+    body[data-theme="halloween"] #theme-bg {
+      background:radial-gradient(circle at 50% 120%, #3b1457 0%, #1a0a2e 55%, #0a0512 100%);
+    }
+    body[data-theme="halloween"] { --accent:#ff9a52; }
+    body[data-theme="halloween"] .mc-cell { background:rgba(123,44,191,0.14); border-color:rgba(123,44,191,0.4); }
+    body[data-theme="halloween"] .mc-names, body[data-theme="halloween"] .mc-month, body[data-theme="halloween"] .mc-year { color:var(--accent); }
+    /* Autumn — warm dusk */
+    body[data-theme="autumn"] #theme-bg {
+      background:radial-gradient(circle at 50% 0%, #7a3b12 0%, #5a3017 45%, #2e1a0d 100%);
+    }
+    body[data-theme="autumn"] { --accent:#e0a458; }
+    body[data-theme="autumn"] .mc-cell { background:rgba(188,108,37,0.14); border-color:rgba(96,108,56,0.4); }
+    body[data-theme="autumn"] .mc-names, body[data-theme="autumn"] .mc-month, body[data-theme="autumn"] .mc-year { color:var(--accent); }
+    /* Birthday — festive */
+    body[data-theme="birthday"] #theme-bg {
+      background:radial-gradient(circle at 50% 0%, #5a2a6b 0%, #3a1a52 55%, #1a1030 100%);
+    }
+    body[data-theme="birthday"] { --accent:#7dd8f5; }
+    body[data-theme="birthday"] .mc-cell { background:rgba(255,93,143,0.10); border-color:rgba(76,201,240,0.35); }
+    body[data-theme="birthday"] .mc-names, body[data-theme="birthday"] .mc-month, body[data-theme="birthday"] .mc-year { color:var(--accent); }
+    /* Thanksgiving — harvest glow rising from the table */
+    body[data-theme="thanksgiving"] #theme-bg {
+      background:radial-gradient(circle at 50% 100%, #a8571e 0%, #6b3a17 45%, #2c1608 100%);
+    }
+    body[data-theme="thanksgiving"] { --accent:#e0a458; }
+    body[data-theme="thanksgiving"] .mc-cell { background:rgba(194,112,58,0.14); border-color:rgba(122,59,18,0.4); }
+    body[data-theme="thanksgiving"] .mc-names, body[data-theme="thanksgiving"] .mc-month, body[data-theme="thanksgiving"] .mc-year { color:var(--accent); }
+    /* Hanukkah — candlelight gold under a deep blue night */
+    body[data-theme="hanukkah"] #theme-bg {
+      background:radial-gradient(circle at 50% 100%, #f2c94c 0%, #1d3461 45%, #0a1830 100%);
+    }
+    body[data-theme="hanukkah"] { --accent:#f2c94c; }
+    body[data-theme="hanukkah"] .mc-cell { background:rgba(29,52,97,0.18); border-color:rgba(242,201,76,0.4); }
+    body[data-theme="hanukkah"] .mc-names, body[data-theme="hanukkah"] .mc-month, body[data-theme="hanukkah"] .mc-year { color:var(--accent); }
+    /* Minimal — clean dark (matches default) */
+    body[data-theme="minimal"] #theme-bg { background:#0a0e1a; }
+    body[data-theme="minimal"] { --accent:#e8eaf0; }
+
+    /* Valentine — warm romantic reds + pink glow */
+    body[data-theme="valentine"] #theme-bg {
+      background:radial-gradient(circle at 50% 0%, #7a1f33 0%, #4a1222 50%, #2a0a14 100%);
+    }
+    body[data-theme="valentine"] { --accent:#ff9eb5; }
+    body[data-theme="valentine"] .mc-cell { background:rgba(255,143,171,0.12); border-color:rgba(255,143,171,0.35); }
+    body[data-theme="valentine"] .mc-names, body[data-theme="valentine"] .mc-month, body[data-theme="valentine"] .mc-year { color:var(--accent); }
+    /* Spring Garden — light, fresh greens (light theme: dark text via LIGHT_THEMES) */
+    body[data-theme="spring"] #theme-bg {
+      background-color:#eaf6ec;
+      background-image:
+        radial-gradient(ellipse 55% 45% at 100% 100%, rgba(82,183,136,0.22), transparent 70%),
+        radial-gradient(ellipse 50% 40% at 0% 0%, rgba(244,166,192,0.20), transparent 70%),
+        linear-gradient(160deg, #f1faf2 0%, #e3f4e7 60%, #d6efdc 100%);
+    }
+    body[data-theme="spring"] { --accent:#2f6b4f; }
+    body[data-theme="spring"] { --text:#1b3a2b; }
+    body[data-theme="spring"] .mc-cell { background:rgba(255,255,255,0.45); border-color:rgba(82,183,136,0.25); }
+    body[data-theme="spring"] .mc-names, body[data-theme="spring"] .mc-month, body[data-theme="spring"] .mc-year { color:var(--accent); }
+    /* Summer Days — bright ocean blue to sky */
+    body[data-theme="summer"] #theme-bg {
+      background:linear-gradient(180deg, #00b4d8 0%, #0096c7 45%, #0077b6 100%);
+    }
+    body[data-theme="summer"] { --accent:#ffd166; }
+    body[data-theme="summer"] .mc-cell { background:rgba(255,255,255,0.15); border-color:rgba(255,183,3,0.4); }
+    body[data-theme="summer"] .mc-names, body[data-theme="summer"] .mc-month, body[data-theme="summer"] .mc-year { color:var(--accent); }
+    /* Modern Dark — deep charcoal with a subtle violet glow */
+    body[data-theme="moderndark"] #theme-bg {
+      background-color:#0c0e16;
+      background-image:
+        radial-gradient(ellipse 50% 40% at 100% 0%, rgba(124,92,255,0.18), transparent 70%),
+        radial-gradient(ellipse 45% 40% at 0% 100%, rgba(34,211,238,0.12), transparent 70%),
+        linear-gradient(150deg, #12141f 0%, #0c0e16 100%);
+    }
+    body[data-theme="moderndark"] { --accent:#5eead4; }
+    body[data-theme="moderndark"] .mc-cell { background:rgba(124,92,255,0.08); border-color:rgba(34,211,238,0.3); }
+    body[data-theme="moderndark"] .mc-names, body[data-theme="moderndark"] .mc-month, body[data-theme="moderndark"] .mc-year { color:var(--accent); }
+    /* Home Hub — near-black command-center backdrop with a soft top glow so the
+       chore chart and plans pop. */
+    body[data-theme="homehub"] #theme-bg {
+      background-color:#0a0c12;
+      background-image:
+        radial-gradient(ellipse 70% 35% at 50% 0%, rgba(124,92,255,0.16), transparent 70%),
+        linear-gradient(180deg, #121521 0%, #0a0c12 60%);
+    }
+    body[data-theme="homehub"] { --accent:#a78bfa; }
+    /* Give the chore chart a faint panel on this theme so it reads as the centerpiece. */
+    body[data-theme="homehub"] .w-chorechart {
+      background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08);
+      border-radius:calc(14px * var(--ui-scale,1)); padding:calc(14px * var(--ui-scale,1));
+    }
+    /* Aviation — high-altitude twilight sky: deep blue up top fading to a warm
+       horizon glow, like flying toward a sunset. */
+    body[data-theme="aviation"] #theme-bg {
+      background:linear-gradient(180deg, #0d2240 0%, #1c3d63 40%, #3a5f8a 70%, #d98a4a 100%);
+    }
+    body[data-theme="aviation"] { --accent:#ff8c42; }
+    body[data-theme="aviation"] .mc-cell { background:rgba(74,144,217,0.12); border-color:rgba(74,144,217,0.35); }
+    body[data-theme="aviation"] .mc-names, body[data-theme="aviation"] .mc-month, body[data-theme="aviation"] .mc-year { color:var(--accent); }
+    /* Nautical — open ocean: deep navy sky fading through mid-ocean blue into a
+       warm golden glow at the waterline, like late-afternoon sun on the water. */
+    body[data-theme="nautical"] #theme-bg {
+      background:linear-gradient(180deg, #0a2e3d 0%, #123f52 35%, #1c5a73 55%, #3f8fa8 72%, #e8c468 100%);
+    }
+    body[data-theme="nautical"] { --accent:#e8c468; }
+    body[data-theme="nautical"] .mc-cell { background:rgba(63,143,168,0.14); border-color:rgba(63,143,168,0.35); }
+    body[data-theme="nautical"] .mc-names, body[data-theme="nautical"] .mc-month, body[data-theme="nautical"] .mc-year { color:var(--accent); }
+    /* Custom — a plain dark backdrop by default; #theme-bg gets its real
+       background set inline (background-image, the user's own upload) by
+       applyTheme() below, since it's per-user content, not a fixed CSS scene
+       like every other theme here. */
+    body[data-theme="custom"] #theme-bg { background:#1a1a1a; background-size:cover; background-position:center; }
+    /* Flight Deck — dark operational backdrop with a nav-display feel:
+       range rings and a glow centered on the same ownship reference point
+       (bottom-center) the TCAS simulation uses, spaced at 2.5nm increments
+       (7.5vh per nm, matching the simulation's scale) — not just decorative,
+       an actual range reference. Plus a subtle panel around the METAR/TAF
+       widget so it reads as the centerpiece, the way homehub does for its
+       chore chart. */
+    body[data-theme="flightdeck"] #theme-bg {
+      background-color:#0a0d12;
+      background-image:
+        repeating-radial-gradient(circle at 50% 88%, transparent 0, transparent 18.65vh, rgba(91,141,214,0.09) 18.75vh, transparent 18.85vh),
+        radial-gradient(ellipse 55% 45% at 50% 88%, rgba(91,141,214,0.14), transparent 70%),
+        linear-gradient(160deg, #10151f 0%, #0a0d12 100%);
+    }
+    body[data-theme="flightdeck"] { --accent:#f4a300; }
+    body[data-theme="flightdeck"] .mc-cell { background:rgba(91,141,214,0.10); border-color:rgba(91,141,214,0.32); }
+    body[data-theme="flightdeck"] .mc-names, body[data-theme="flightdeck"] .mc-month, body[data-theme="flightdeck"] .mc-year { color:var(--accent); }
+    body[data-theme="flightdeck"] .w-metar {
+      background:rgba(255,255,255,0.03); border:1px solid rgba(244,163,0,0.18);
+      border-radius:calc(12px * var(--ui-scale,1)); padding:calc(13px * var(--ui-scale,1));
+    }
+    /* Minimalist Family — soft sage + warm white, with faint botanical wash.
+       Light theme: dark text is set by the template's textColor. */
+    body[data-theme="minimalfam"] #theme-bg {
+      background-color:#eef1ea;
+      background-image:
+        radial-gradient(ellipse 60% 50% at 0% 100%, rgba(124,138,114,0.22), transparent 70%),
+        radial-gradient(ellipse 55% 45% at 100% 0%, rgba(169,184,160,0.20), transparent 70%),
+        linear-gradient(160deg, #f3f5ef 0%, #e7ece1 60%, #dde4d4 100%);
+    }
+    body[data-theme="minimalfam"] { --accent:#5a6b54; }
+    /* On this light theme, force dark text everywhere (overriding the default light
+       text) so it reads on the pale sage background, and give the calendar cells a
+       soft translucent white instead of the dark default. Widgets stay card-less for
+       the clean, minimal look. */
+    body[data-theme="minimalfam"] { --text:#3a4238; }
+    body[data-theme="minimalfam"] .w-text .tx-body { color:var(--accent); }
+    body[data-theme="minimalfam"] .mc-cell { background:rgba(255,255,255,0.50); border-color:rgba(124,138,114,0.25); }
+    body[data-theme="minimalfam"] .mc-names, body[data-theme="minimalfam"] .mc-month, body[data-theme="minimalfam"] .mc-year { color:var(--accent); }
+
+    /* Chalkboard — dark slate with a faint chalk-dust vignette. Chalk-white text and
+       a handwritten font (Caveat, loaded by applyTheme) across the calendar. */
+    body[data-theme="chalkboard"] #theme-bg {
+      background-color:#2e3331;
+      background-image:
+        radial-gradient(ellipse 80% 60% at 30% 20%, rgba(255,255,255,0.05), transparent 70%),
+        radial-gradient(ellipse 70% 50% at 80% 80%, rgba(255,255,255,0.04), transparent 70%),
+        linear-gradient(165deg, #343a37 0%, #2b302e 55%, #232725 100%);
+    }
+    body[data-theme="chalkboard"] { --accent:#f4f1de; }
+    body[data-theme="chalkboard"] { --text:#f4f1de; }
+    /* Same "explicit override wins, unset falls back to theme default" shape
+       as --accent/--text above — was previously declared directly on
+       .mc-cell.today .mc-daynum below, which silently defeated a per-widget
+       Today Indicator custom color (widget.calTodayColor, set inline on
+       .w-minical — an ancestor of .mc-daynum, but further away than a
+       declaration on .mc-daynum itself). A custom property re-declared on
+       a descendant always wins over one inherited from an ancestor,
+       regardless of !important or specificity — moving it up here makes it
+       a genuine inherited DEFAULT instead, correctly losing to the widget's
+       own inline value when one is set. corkboard has the identical bug
+       below, fixed the same way. */
+    body[data-theme="chalkboard"] { --today-color:#e07a5f; }
+    /* Must live at the theme root, NOT on .mc-ev-pill itself — a declaration
+       directly on the same element that consumes a custom property always
+       wins over one inherited from an ancestor (the per-widget --pill-text
+       set on the widget's own outer element), the identical mistake
+       --today-color above was already fixed for. Caught before shipping. */
+    body[data-theme="chalkboard"] { --pill-text:#f4f1de; }
+    /* Chalk handwriting is this theme's own DEFAULT font, not an unconditional
+       override — folded into the same --global-font-family / --per-widget-font
+       fallback chain every other font rule already uses (see html/body and
+       .w-clock .time below), rather than a separate !important rule competing
+       against it. That competing rule is exactly why neither the global font
+       setting nor a per-widget override had any visible effect on this theme
+       before: !important beats everything, including CSS variables and even
+       direct inline per-widget styles, regardless of specificity. Now: an
+       explicit global or per-widget choice correctly wins even on this theme;
+       leave both unset and it still defaults to the chalk look as before. */
+    body[data-theme="chalkboard"] { --theme-font-family:'Caveat','Comic Sans MS',cursive; }
+    /* Soft chalk-dust text shadow gives the slightly imperfect chalk look. */
+    body[data-theme="chalkboard"] .w-date, body[data-theme="chalkboard"] .w-clock,
+    body[data-theme="chalkboard"] .mc-month, body[data-theme="chalkboard"] .mc-year,
+    body[data-theme="chalkboard"] .mc-daynum, body[data-theme="chalkboard"] .w-text .tx-body {
+      text-shadow:0 0 1px rgba(255,255,255,0.35);
+    }
+    /* Calendar cells are just faint chalk grid lines on the slate, not dark boxes. */
+    body[data-theme="chalkboard"] .mc-cell {
+      background:transparent; border-color:rgba(244,241,222,0.18);
+    }
+    body[data-theme="chalkboard"] .mc-names, body[data-theme="chalkboard"] .mc-month,
+    body[data-theme="chalkboard"] .mc-year { color:var(--accent); }
+    /* Same bug class as the font-family fix above, caught on a second
+       property: .mc-ev-text already cascades its color correctly through
+       var(--text) (see its base rule below), and chalkboard already sets a
+       normal, non-!important --text default — so a forced !important color
+       here was pure redundant harm, silently defeating any per-widget or
+       global Text Color override on calendar event text specifically, the
+       same way the old font rule silently defeated font overrides. Simply
+       not re-declaring color here lets the existing cascade do its job.
+       .mc-ev-pill's title text was a DIFFERENT case — hardcoded #fff at its
+       base rule (deliberately, for contrast against a colored background,
+       not overridable by var(--text) at all under ANY theme) — given its
+       own --pill-text variable below instead, with the same "explicit
+       choice wins, unset defaults to chalk" fallback shape. Background
+       stays forced transparent here as the theme's own baseline look;
+       eventPillBackgroundStyle() (display.html JS) still beats it with a
+       higher-specificity inline !important when an opacity tier actually
+       needs to paint something there. */
+    body[data-theme="chalkboard"] .mc-ev-pill {
+      background:transparent !important;
+    }
+    /* Today: a hand-drawn red chalk circle (matches the reference) — sets the
+       theme's own default color; the actual shape (circle/outline/etc.) is
+       now a widget-level Today Indicator Style choice, see .mc-cell.today
+       rules above. */
+    body[data-theme="chalkboard"] .mc-cell.today .mc-daynum {
+      color:#2e3331;
+    }
+    /* Bump the chalk font up a touch — Caveat reads small at the same px. */
+    body[data-theme="chalkboard"] .w-minical { --cal-font:13px; }
+
+    /* Cork Board — a cork-textured pinboard where each widget is a pinned paper card.
+       The cork is a layered radial-dot texture over a tan base. */
+    body[data-theme="corkboard"] #theme-bg {
+      background-color:#c8a06a;
+      background-image:
+        radial-gradient(circle at 15% 25%, rgba(120,85,45,0.35) 0 1.5px, transparent 2px),
+        radial-gradient(circle at 55% 45%, rgba(120,85,45,0.30) 0 1.5px, transparent 2px),
+        radial-gradient(circle at 80% 70%, rgba(140,100,55,0.30) 0 1.5px, transparent 2px),
+        radial-gradient(circle at 35% 80%, rgba(110,78,42,0.30) 0 1.5px, transparent 2px),
+        radial-gradient(circle at 90% 30%, rgba(120,85,45,0.28) 0 1.5px, transparent 2px),
+        linear-gradient(160deg, #cda673, #bf935c 55%, #b3884f 100%);
+      background-size:90px 90px,70px 70px,110px 110px,80px 80px,60px 60px,100% 100%;
+    }
+    body[data-theme="corkboard"] { --accent:#5a4a38; }
+    body[data-theme="corkboard"] { --text:#3a2f25; }
+    /* Same fix as chalkboard's own --today-color above, and for the exact
+       same reason: this was declared directly on .mc-cell.today .mc-daynum
+       below, which silently defeated a per-widget Today Indicator custom
+       color the same way. */
+    body[data-theme="corkboard"] { --today-color:#d9534f; }
+    /* Each widget becomes a piece of off-white pinned paper with a soft shadow and a
+       slight tilt, like it's tacked to the board. */
+    body[data-theme="corkboard"] .widget {
+      background:#fdfbf3;
+      box-shadow:2px 4px 9px rgba(0,0,0,0.30);
+      border-radius:2px;
+      padding:14px 14px 16px;
+      color:#3a2f25;
+      transform:rotate(-0.8deg);
+    }
+    body[data-theme="corkboard"] .widget:nth-child(even) { transform:rotate(1deg); }
+    body[data-theme="corkboard"] .widget:nth-child(3n)  { transform:rotate(-0.4deg); }
+    /* Pushpin at the top of each paper. */
+    body[data-theme="corkboard"] .widget::before {
+      content:''; position:absolute; top:6px; left:50%; transform:translateX(-50%);
+      width:14px; height:14px; border-radius:50%;
+      background:radial-gradient(circle at 35% 30%, #ff8a8a, #d9534f 60%, #a83232);
+      box-shadow:0 2px 3px rgba(0,0,0,0.4); z-index:5;
+    }
+    /* Vary pin colors so the board feels real. */
+    body[data-theme="corkboard"] .widget:nth-child(even)::before { background:radial-gradient(circle at 35% 30%, #8ab4ff, #4a7fd9 60%, #2e57a8); }
+    body[data-theme="corkboard"] .widget:nth-child(3n)::before  { background:radial-gradient(circle at 35% 30%, #9be29b, #4caf50 60%, #357a38); }
+    body[data-theme="corkboard"] .widget:nth-child(5n)::before  { background:radial-gradient(circle at 35% 30%, #ffd98a, #e0a93f 60%, #b3812a); }
+    /* Calendar on the cork board reads as a printed card — light cells, dark text. */
+    body[data-theme="corkboard"] .mc-cell { background:transparent; border-color:rgba(58,47,37,0.18); }
+    body[data-theme="corkboard"] .mc-names, body[data-theme="corkboard"] .mc-month,
+    body[data-theme="corkboard"] .mc-year { color:var(--accent); }
+    body[data-theme="corkboard"] .mc-cell.today .mc-daynum { color:#fff; }
+    body[data-theme="corkboard"] .w-text .tx-body { color:#3a2f25; }
+
+    /* Particle base + animations */
+    .fx-particle { position:absolute; top:-5%; will-change:transform; }
+    @keyframes fx-fall {
+      0%   { transform:translateY(-10vh) translateX(0) rotate(0deg); opacity:0; }
+      10%  { opacity:1; }
+      90%  { opacity:1; }
+      100% { transform:translateY(110vh) translateX(var(--drift,20px)) rotate(360deg); opacity:0; }
+    }
+    @keyframes fx-twinkle {
+      0%,100% { opacity:0.15; transform:scale(0.7); }
+      50%     { opacity:1;    transform:scale(1.1); }
+    }
+    @keyframes fx-rise {
+      0%   { transform:translateY(110vh) translateX(0); opacity:0; }
+      10%  { opacity:1; }
+      90%  { opacity:1; }
+      100% { transform:translateY(-15vh) translateX(var(--drift,30px)); opacity:0; }
+    }
+    /* Same rise motion as fx-rise, plus a gentle side-to-side rock — a full spin
+       would read more like a falling leaf than a floating egg. Easter-specific,
+       not shared with fx-rise, so hearts/balloons/bubbles are unaffected. */
+    @keyframes fx-egg-rise {
+      0%   { transform:translateY(110vh) translateX(0) rotate(-12deg); opacity:0; }
+      10%  { opacity:1; }
+      50%  { transform:translateY(47.5vh) translateX(calc(var(--drift,30px) * 0.5)) rotate(11deg); }
+      90%  { opacity:1; }
+      100% { transform:translateY(-15vh) translateX(var(--drift,30px)) rotate(-12deg); opacity:0; }
+    }
+    @keyframes fx-burst {
+      0%   { transform:scale(0); opacity:0; }
+      15%  { opacity:1; }
+      60%  { transform:scale(1); opacity:0.9; }
+      100% { transform:scale(1.15); opacity:0; }
+    }
+    /* Sparks raining down after a burst. Shares its parent burst's exact
+       duration/delay (not a separate one) so they stay in sync across
+       infinite loop repetitions — the "wait, then fall" timing lives in the
+       keyframe percentages instead: invisible while the burst is still
+       expanding, then falls for the remainder of the cycle. */
+    @keyframes fx-ember-fall {
+      0%, 55% { transform:translateY(0) translateX(0); opacity:0; }
+      65%     { opacity:1; }
+      100%    { transform:translateY(20vh) translateX(var(--edrift,10px)); opacity:0; }
+    }
+    /* Planes flying across at any angle/direction — start point, end point, and
+       facing angle are all set per-particle via CSS custom properties, so one
+       keyframe covers every direction rather than needing a separate keyframe
+       per angle. Heading stays fixed through the flight since it's a straight
+       line from one point to the other. */
+    @keyframes fx-flypath {
+      0%   { transform:translate(var(--x0),var(--y0)) rotate(var(--face,0deg)); opacity:0; }
+      8%   { opacity:1; }
+      92%  { opacity:1; }
+      100% { transform:translate(var(--x1),var(--y1)) rotate(var(--face,0deg)); opacity:0; }
+    }
+    /* Resolution Advisory pulse — the most severe TCAS state, given a bit of
+       urgency via a steady opacity/scale pulse rather than sitting static. */
+    @keyframes fx-ra-pulse {
+      0%, 100% { opacity:1; transform:scale(1); }
+      50%      { opacity:0.6; transform:scale(1.15); }
+    }
+

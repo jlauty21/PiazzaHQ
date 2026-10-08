@@ -9,7 +9,8 @@
 # that decide almost every "white screen / no display after reboot" report:
 # what hardware and desktop is this, how does the browser get launched at boot,
 # does the launch line point at something that exists, and what did the last
-# launch see.
+# launch see. It also checks whether the web interface answers on this Pi's network address, how many
+# connections the server has open, and the Wi-Fi state - for "stops loading from other devices" reports.
 
 set -uo pipefail
 section() { printf '\n== %s ==\n' "$*"; }
@@ -95,6 +96,38 @@ fi
 section "The Piazza HQ server"
 echo "app: $(curl -fsS --max-time 4 http://localhost:3000/api/version 2>/dev/null || echo 'NOT ANSWERING on localhost:3000')"
 echo "service: $(systemctl is-active piazzahq 2>/dev/null)   started: $(systemctl show piazzahq -p ActiveEnterTimestamp --value 2>/dev/null)"
+# "The web interface stops loading from other devices until I reboot" while the Pi's own screen keeps working: the screen
+# talks to localhost, other devices come in over the network, so the two checks below separate "the server is stuck" from
+# "the network path to this Pi is broken". Run this WHILE the problem is happening, before rebooting.
+LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+[[ -n "$LAN_IP" ]] && echo "app via this Pi's own network address ($LAN_IP:3000): $(curl -fsS --max-time 5 "http://$LAN_IP:3000/api/version" 2>/dev/null || echo 'NOT ANSWERING')"
+echo "listening on port 3000: $(ss -ltn 2>/dev/null | awk '$4 ~ /:3000$/ {print $4}' | sort -u | tr '\n' ' ')"
+MPID="$(systemctl show piazzahq -p MainPID --value 2>/dev/null)"
+if [[ -n "$MPID" && "$MPID" != 0 && -d "/proc/$MPID/fd" ]]; then
+  echo "server open files: $(ls "/proc/$MPID/fd" 2>/dev/null | wc -l) of $(awk '/Max open files/ {print $4}' "/proc/$MPID/limits" 2>/dev/null) allowed   (close to the limit = the server can no longer accept new connections)"
+fi
+echo "connections on port 3000 by state: $(ss -tan 2>/dev/null | awk '$4 ~ /:3000$/ {c[$1]++} END {for (s in c) printf "%s=%d ", s, c[s]}')"
+
+section "Network"
+for ifc in $(ls /sys/class/net 2>/dev/null | grep -E '^(wlan|eth|en)'); do
+  echo "$ifc: $(cat "/sys/class/net/$ifc/operstate" 2>/dev/null)   $(ip -4 -o addr show "$ifc" 2>/dev/null | awk '{print $4}' | head -1)"
+done
+# Wi-Fi: signal from /proc/net/wireless and power saving from NetworkManager - neither needs an extra package
+# (`iw` is not installed on Raspberry Pi OS by default; it is used too when it happens to be there).
+for w in $(ls /sys/class/net 2>/dev/null | grep '^wlan'); do
+  q="$(awk -v i="$w:" '$1==i {print "link quality " $3 "  signal " $4 " dBm  retries " $9}' /proc/net/wireless 2>/dev/null)"
+  ps=""
+  have iw && ps="$(iw dev "$w" get power_save 2>/dev/null | sed 's/^Power save: //')"
+  if [[ -z "$ps" ]] && have nmcli; then
+    con="$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | awk -F: '$2 ~ /wireless/ {print $1; exit}')"
+    [[ -n "$con" ]] && ps="NetworkManager setting '$(nmcli -g 802-11-wireless.powersave connection show "$con" 2>/dev/null)' (default = the driver's choice, which for the Pi's built-in Wi-Fi is ON)"
+  fi
+  echo "$w: ${q:-no signal info}   power saving: ${ps:-unknown}"
+done
+gw="$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
+[[ -n "$gw" ]] && echo "can reach the router ($gw): $(ping -c1 -W2 "$gw" >/dev/null 2>&1 && echo yes || echo NO)"
+echo "recent network messages from the kernel:"
+dmesg 2>/dev/null | grep -iE 'power save|brcmfmac.*(error|fail|timeout|reset|crash)|link is (up|down)|NETDEV WATCHDOG|wlan0: (deauth|disassoc)' | tail -6 | cut -c1-200 | sed 's/^/    /'
 
 section "The browser window (X11 only)"
 if have xdotool && have xprop && [[ -n "${DISPLAY:-}" ]]; then

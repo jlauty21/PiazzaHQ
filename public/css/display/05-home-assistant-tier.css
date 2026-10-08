@@ -1,0 +1,359 @@
+    /* ── Home Assistant Tier 2: media_player ── */
+    .ha-media-title { font-size:calc(var(--ha-font) * 0.5); opacity:0.75; max-width:90%;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:calc(var(--ha-font) * 0.2); }
+    .ha-media-row { display:flex; align-items:center; justify-content:center; gap:calc(var(--ha-font) * 0.5); }
+
+    /* ── Home Assistant Tier 2: covers (garage/blinds) + locks ── */
+    .ha-cover-row { display:flex; align-items:center; justify-content:center; gap:calc(var(--ha-font) * 0.5); }
+    .ha-action-btn { min-width:calc(var(--ha-font) * 1.9); height:calc(var(--ha-font) * 1.9);
+      padding:0 calc(var(--ha-font) * 0.5); border-radius:calc(var(--ha-font) * 0.4);
+      border:1px solid color-mix(in srgb, var(--text) 28%, transparent); background:color-mix(in srgb, var(--text) 10%, transparent); color:inherit;
+      font-size:calc(var(--ha-font) * 0.85); font-weight:700; cursor:pointer; touch-action:manipulation; line-height:1; }
+    .ha-action-btn:disabled { opacity:0.4; cursor:default; }
+    .ha-lock-btn { min-width:auto; height:auto; padding:0.6em 1.2em; border-radius:999px;
+      border:none; background:var(--accent); color:#fff; font-size:calc(var(--ha-font) * 0.6); }
+
+    /* ── Home Assistant Tier 4: multi-entity dashboard ──
+       Reuses ha-toggle-switch/ha-temp-btn/ha-trigger-btn as-is (shared with
+       Tier 2's Entity Status widget via renderHaEntityControl), but ha-label/
+       ha-value need their own rules here since the originals are scoped under
+       .w-entitystatus, which dashboard tiles aren't inside. */
+    .w-smarthomedash { overflow-y:auto; overflow-x:hidden; align-items:stretch; --ha-font: 16px; }
+    .w-smarthomedash .ha-dash-title { font-size:calc(var(--ha-font) * 0.9); font-weight:700;
+      margin-bottom:calc(var(--ha-font) * 0.6); }
+    .ha-dash-room { margin-bottom:calc(var(--ha-font) * 0.8); }
+    .ha-dash-room h4 { font-size:calc(var(--ha-font) * 0.55); font-weight:700; letter-spacing:0.5px;
+      text-transform:uppercase; color:var(--accent); margin:0 0 calc(var(--ha-font) * 0.4); }
+    .ha-dash-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(calc(var(--ha-font) * 6), 1fr));
+      gap:calc(var(--ha-font) * 0.6); }
+    .ha-dash-item { background:color-mix(in srgb, var(--text) 7%, transparent); border-radius:calc(var(--ha-font) * 0.5);
+      padding:calc(var(--ha-font) * 0.55); text-align:center; display:flex; flex-direction:column;
+      align-items:center; justify-content:center; }
+    .ha-dash-item .ha-label { font-size:calc(var(--ha-font) * 0.5); font-weight:600; letter-spacing:0.3px;
+      text-transform:uppercase; color:var(--accent); margin-bottom:calc(var(--ha-font) * 0.35);
+      display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+    .ha-dash-item .ha-value { font-size:calc(var(--ha-font) * 1.1); font-weight:800; line-height:1; }
+    .ha-dash-item .ha-value .ha-unit { font-size:calc(var(--ha-font) * 0.55); font-weight:600; margin-left:3px; }
+    .ha-dash-item .no-data { font-size:calc(var(--ha-font) * 0.5); opacity:0.6; }
+
+    /* ── Dashboard alternate views (List / Icon-only / Card / Tap-card) ──
+       Same --ha-font-driven proportional scaling as the Grid view above —
+       the widget's one Font Size slider doubles as an overall tile-size
+       control across every view, not just text, since virtually everything
+       here derives from that one variable via calc(). */
+    .ha-dash-list-row { display:flex; align-items:center; gap:calc(var(--ha-font) * 0.6);
+      padding:calc(var(--ha-font) * 0.4) calc(var(--ha-font) * 0.2);
+      border-bottom:1px solid var(--border); }
+    .ha-dash-list-row:last-child { border-bottom:none; }
+    .ha-dash-list-row .ha-label { flex:1; min-width:0; font-size:calc(var(--ha-font) * 0.65);
+      font-weight:600; text-transform:none; letter-spacing:normal; color:inherit;
+      margin-bottom:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .ha-dash-list-row .ha-dash-state-text { font-size:calc(var(--ha-font) * 0.5); opacity:0.6;
+      flex-shrink:0; }
+
+    .ha-dash-icon-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(calc(var(--ha-font) * 3.2), 1fr));
+      gap:calc(var(--ha-font) * 0.5); }
+    .ha-dash-icon-item { display:flex; flex-direction:column; align-items:center; gap:calc(var(--ha-font) * 0.25); }
+    .ha-dash-icon-circle { width:calc(var(--ha-font) * 2.3); height:calc(var(--ha-font) * 2.3); border-radius:50%;
+      display:flex; align-items:center; justify-content:center; font-size:calc(var(--ha-font) * 1);
+      background:color-mix(in srgb, var(--text) 10%, transparent); border:2px solid transparent; flex-shrink:0; }
+    .ha-dash-icon-circle.on { background:color-mix(in srgb, var(--accent) 20%, transparent); border-color:var(--accent); }
+    .ha-dash-icon-item .ha-dash-icon-label { font-size:calc(var(--ha-font) * 0.4); opacity:0.75;
+      text-align:center; line-height:1.2; max-width:calc(var(--ha-font) * 4); overflow:hidden;
+      text-overflow:ellipsis; white-space:nowrap; }
+
+    .ha-dash-card-row { display:flex; align-items:center; gap:calc(var(--ha-font) * 0.7);
+      background:color-mix(in srgb, var(--text) 7%, transparent); border-radius:calc(var(--ha-font) * 0.45);
+      padding:calc(var(--ha-font) * 0.5) calc(var(--ha-font) * 0.7); margin-bottom:calc(var(--ha-font) * 0.4); }
+    .ha-dash-card-row:last-child { margin-bottom:0; }
+    .ha-dash-card-icon { font-size:calc(var(--ha-font) * 1.1); width:calc(var(--ha-font) * 1.6);
+      text-align:center; flex-shrink:0; }
+    .ha-dash-card-mid { flex:1; min-width:0; }
+    .ha-dash-card-mid .ha-label { font-size:calc(var(--ha-font) * 0.6); font-weight:600;
+      text-transform:none; letter-spacing:normal; color:inherit; margin-bottom:0;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .ha-dash-card-mid .ha-dash-meta { font-size:calc(var(--ha-font) * 0.42); opacity:0.6; margin-top:2px; }
+
+    /* Whole-card tap target — no separate toggle switch drawn at all; the
+       card's own background/border communicate on/off, same visual
+       language as .ha-dash-icon-circle.on above but at card scale. */
+    .ha-dash-tapcard { display:flex; align-items:center; gap:calc(var(--ha-font) * 0.7);
+      background:color-mix(in srgb, var(--text) 7%, transparent); border-radius:calc(var(--ha-font) * 0.45);
+      padding:calc(var(--ha-font) * 0.5) calc(var(--ha-font) * 0.7); margin-bottom:calc(var(--ha-font) * 0.4);
+      border:2px solid transparent; cursor:pointer; touch-action:manipulation;
+      transition:background .15s, border-color .15s; width:100%; text-align:left;
+      font:inherit; color:inherit; }
+    .ha-dash-tapcard:last-child { margin-bottom:0; }
+    .ha-dash-tapcard.on { background:color-mix(in srgb, var(--accent) 18%, transparent); border-color:var(--accent); }
+    .ha-dash-tapcard .ha-dash-card-state { font-size:calc(var(--ha-font) * 0.45); font-weight:700;
+      text-transform:uppercase; letter-spacing:0.4px; opacity:0.6; flex-shrink:0; }
+    .ha-dash-tapcard.on .ha-dash-card-state { opacity:1; color:var(--accent); }
+
+    /* ── QR Code widget ── */
+    .w-qrcode { align-items:center; justify-content:center; text-align:center; --qr-font: 14px; --qr-size: 180px; }
+    .w-qrcode .qr-title { font-size:var(--qr-font); font-weight:600; margin-bottom:8px; color:var(--text); }
+    .w-qrcode .qr-card { background:#ffffff; padding:10px; border-radius:10px; display:inline-flex;
+      box-shadow:0 4px 16px rgba(0,0,0,0.35); }
+    /* Was line-height:0 with no explicit size at all -- the child img/canvas
+       below sets width/height:100%, but a percentage size on a replaced
+       element only resolves cleanly against a parent that HAS an explicit
+       size; with none, it's a circular dependency (parent sized by child,
+       child sized as 100% of parent) that browsers resolve inconsistently
+       under frequent relayout — exactly what Live Preview does constantly
+       while editing, which is why this rendered fine on the real static
+       display but came out corrupted there. Giving the container the same
+       explicit size the CSS was already trying to cap the child at removes
+       the ambiguity entirely. */
+    .w-qrcode .qr-container { line-height:0; width:calc(var(--qr-size) * var(--ui-scale,1)); height:calc(var(--qr-size) * var(--ui-scale,1)); }
+    .w-qrcode .qr-container img, .w-qrcode .qr-container canvas { display:block; width:100%; height:100%; }
+    /* Web Page widget: a page the household hosts, in a sandboxed frame */
+    .w-webpage { position:relative; width:100%; height:100%; display:flex; flex-direction:column; --wp-font:14px; }
+    .w-webpage .wp-title { font-size:calc(var(--wp-font) * var(--ui-scale,1)); font-weight:600; margin-bottom:6px; color:var(--text); }
+    .w-webpage .wp-view { position:relative; flex:1; min-height:0; overflow:hidden; border-radius:8px; background:#fff; }
+    .w-webpage .wp-frame { position:absolute; left:0; top:0; width:100%; height:100%; border:0; background:#fff; transform-origin:0 0; }
+    .w-webpage .wp-msg { flex:1; display:flex; align-items:center; justify-content:center; text-align:center; padding:12px; color:var(--text2, var(--muted)); font-size:calc(14px * var(--ui-scale,1)); }
+    .w-webpage .wp-fail { position:absolute; inset:0; background:rgba(0,0,0,0.78); color:#fff; border-radius:8px; }
+    .w-webpage .wp-fail[hidden] { display:none; }
+
+    /* ── Timer widget ── */
+    .w-timer { align-items:center; justify-content:center; text-align:center; --timer-font: 32px; }
+    .w-timer .timer-title { font-size:calc(var(--timer-font) * 0.4); color:var(--text); text-transform:uppercase;
+      letter-spacing:1.5px; font-weight:600; margin-bottom:6px; }
+    .w-timer .timer-display { font-size:var(--timer-font); font-weight:800; line-height:1; font-variant-numeric:tabular-nums; }
+    .w-timer .timer-status { font-size:calc(var(--timer-font) * 0.32); color:var(--text2); margin-top:6px; }
+    .w-timer.timer-done .timer-display { color:#fb7185; animation:timerPulse 1s ease-in-out infinite; }
+    .w-timer.timer-done .timer-status { color:#fb7185; font-weight:700; }
+    @keyframes timerPulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+    /* ── Layout Switcher widget ── */
+    .w-layoutswitcher { align-items:center; justify-content:center; --ls-font: 15px; }
+    .w-layoutswitcher .ls-buttons { display:flex; flex-wrap:wrap; gap:calc(var(--ls-font) * 0.5); justify-content:center; align-items:center; width:100%; }
+    .w-layoutswitcher .ls-btn {
+      font-size:var(--ls-font); font-weight:600; font-family:inherit; color:var(--text);
+      background:color-mix(in srgb, var(--text) 10%, transparent); border:1px solid color-mix(in srgb, var(--text) 16%, transparent);
+      border-radius:calc(var(--ls-font) * 0.6); padding:calc(var(--ls-font) * 0.5) calc(var(--ls-font) * 0.9);
+      cursor:pointer; transition:background 0.15s ease, transform 0.1s ease;
+    }
+    .w-layoutswitcher .ls-btn:active { background:color-mix(in srgb, var(--text) 22%, transparent); transform:scale(0.96); }
+
+    /* ── On This Day widget ── */
+    .w-onthisday { align-items:stretch; justify-content:flex-start; overflow:hidden; --otd-font: 15px; }
+    .w-onthisday .otd-head { font-size:calc(var(--otd-font) * 0.65); font-weight:600; letter-spacing:2px;
+      text-transform:uppercase; color:var(--accent); margin-bottom:8px; flex-shrink:0; }
+    .w-onthisday .otd-list { flex:1; overflow:hidden; display:flex; flex-direction:column; gap:8px; }
+    .w-onthisday .otd-item { display:flex; gap:10px; padding-bottom:8px; border-bottom:1px solid var(--border); }
+    .w-onthisday .otd-item:last-child { border-bottom:none; }
+    .w-onthisday .otd-year { font-size:var(--otd-font); font-weight:800; color:var(--text); flex-shrink:0; min-width:3.2em; }
+    .w-onthisday .otd-text { font-size:var(--otd-font); line-height:1.35; color:var(--text); }
+
+    /* ── Daily Quote widget ── */
+    .w-dailyquote { align-items:center; justify-content:center; text-align:center; --dq-font: 20px; padding:0 8px; }
+    .w-dailyquote .dq-mark { font-size:calc(var(--dq-font) * 2.2); line-height:0.5; color:var(--accent); opacity:0.7; font-family:Georgia,serif; }
+    .w-dailyquote .dq-text { font-size:var(--dq-font); font-style:italic; line-height:1.4; margin-top:4px; }
+    .w-dailyquote .dq-author { font-size:calc(var(--dq-font) * 0.7); color:var(--text2); margin-top:10px; font-weight:600; }
+
+    /* ── Sports Scores widget ── */
+    .w-sports { align-items:center; justify-content:flex-start; text-align:center; overflow:hidden; --sp-font: 16px; padding-top:4px; }
+    .w-sports .sp-badge { width:calc(var(--sp-font) * 2.6); height:calc(var(--sp-font) * 2.6); object-fit:contain; margin-bottom:4px; }
+    .w-sports .sp-team { font-size:calc(var(--sp-font) * 1.1); font-weight:700; margin-bottom:8px; }
+    .w-sports .sp-section { width:100%; margin-bottom:10px; }
+    .w-sports .sp-label { font-size:calc(var(--sp-font) * 0.6); font-weight:600; letter-spacing:1.5px; text-transform:uppercase; color:var(--accent); margin-bottom:3px; }
+    .w-sports .sp-matchup { font-size:calc(var(--sp-font) * 0.85); font-weight:500; }
+    .w-sports .sp-score { font-size:calc(var(--sp-font) * 1.3); font-weight:800; margin-top:2px; }
+    .w-sports .sp-date { font-size:calc(var(--sp-font) * 0.75); color:var(--text2); margin-top:2px; }
+    .w-sports .sp-empty { font-size:calc(var(--sp-font) * 0.8); color:var(--text2); }
+    .w-sports .sp-result { display:inline-block; width:1.4em; height:1.4em; line-height:1.4em; border-radius:50%; font-size:calc(var(--sp-font) * 0.7); font-weight:800; margin-right:4px; }
+    .w-sports .sp-result.sp-w { background:#3ec97a; color:#062; }
+    .w-sports .sp-result.sp-l { background:#fb7185; color:#3a0a10; }
+    .w-sports .sp-result.sp-t { background:var(--muted); color:#111; }
+
+    /* ── METAR/TAF widget ── */
+    .w-metar { align-items:stretch; justify-content:flex-start; overflow:hidden; text-align:left; --wx-font: 16px; }
+    .w-metar .wx-main { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .w-metar .wx-station { font-size:calc(var(--wx-font) * 1); font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .w-metar .wx-catbadge { font-size:calc(var(--wx-font) * 0.6); font-weight:800; color:#04210f; padding:2px 8px; border-radius:6px; flex-shrink:0; }
+    .w-metar .wx-temp { font-size:calc(var(--wx-font) * 1.7); font-weight:800; margin:6px 0 4px; }
+    .w-metar .wx-temp .wx-dewp { font-size:calc(var(--wx-font) * 0.55); font-weight:500; color:var(--text2); }
+    .w-metar .wx-details { display:flex; flex-direction:column; gap:2px; margin-bottom:6px; }
+    .w-metar .wx-item { display:flex; justify-content:space-between; gap:10px; font-size:calc(var(--wx-font) * 0.75); padding:3px 0; border-bottom:1px solid var(--border); }
+    .w-metar .wx-item:last-child { border-bottom:none; }
+    .w-metar .wx-item span:first-child { color:var(--text2); }
+    .w-metar .wx-obs { font-size:calc(var(--wx-font) * 0.6); color:var(--text2); }
+    .w-metar .wx-taf-head { font-size:calc(var(--wx-font) * 0.65); font-weight:600; letter-spacing:1.5px; text-transform:uppercase;
+      color:var(--text2); margin-top:10px; padding-top:8px; border-top:1px solid var(--border); }
+    .w-metar .wx-taf-raw { font-family:'DM Sans', monospace; font-size:calc(var(--wx-font) * 0.62); line-height:1.5; color:var(--text);
+      margin-top:4px; word-break:break-word; overflow:hidden; }
+
+    /* ── Photo widget ── */
+    .w-photo { border-radius:12px; overflow:hidden; }
+    .w-photo img { width:100%; height:100%; object-fit:cover; display:block; }
+
+    /* Chore chart widget (wall display, read-only) */
+    .w-chorechart { display:flex; flex-direction:column; height:100%; overflow:hidden; --cc-font:13px; }
+    .w-chorechart .cc-head { font-size:calc(var(--cc-font) * 1.23 * var(--ui-scale,1)); font-weight:700; letter-spacing:1px;
+      text-transform:uppercase; text-align:center; padding:calc(6px * var(--ui-scale,1)) 0; flex-shrink:0;
+      border-bottom:1px solid var(--border); margin-bottom:calc(6px * var(--ui-scale,1)); color:var(--accent); }
+    .w-chorechart .cc-cols { display:grid; grid-template-columns:repeat(var(--cc-count,3), 1fr);
+      gap:calc(8px * var(--ui-scale,1)); flex:1; min-height:0; overflow:hidden; }
+    .w-chorechart .cc-col { display:flex; flex-direction:column; min-width:0;
+      border-right:1px solid var(--border); padding:0 calc(8px * var(--ui-scale,1)); }
+    .w-chorechart .cc-col:last-child { border-right:none; }
+    .w-chorechart .cc-kid { font-size:calc(var(--cc-font) * 1.15 * var(--ui-scale,1)); font-weight:700; text-align:center;
+      margin-bottom:calc(8px * var(--ui-scale,1)); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .w-chorechart .cc-streak { font-size:calc(var(--cc-font) * 0.85 * var(--ui-scale,1)); font-weight:700; color:#ffb454; margin-left:calc(6px * var(--ui-scale,1)); display:inline-flex; align-items:center; gap:3px; vertical-align:middle; }
+    .w-chorechart .cc-items { display:flex; flex-direction:column; gap:calc(5px * var(--ui-scale,1)); overflow:hidden; }
+    .w-chorechart .cc-item { display:flex; align-items:center; gap:calc(7px * var(--ui-scale,1));
+      font-size:calc(var(--cc-font) * var(--ui-scale,1)); cursor:pointer; -webkit-tap-highlight-color:transparent;
+      transition:opacity 0.1s; padding:2px 0; }
+    .w-chorechart .cc-item:active { opacity:0.55; }
+    .w-chorechart .cc-box { width:calc(var(--cc-font) * 1.23 * var(--ui-scale,1)); height:calc(var(--cc-font) * 1.23 * var(--ui-scale,1));
+      border:2px solid var(--muted); border-radius:4px; flex-shrink:0; display:flex; align-items:center;
+      justify-content:center; font-size:calc(var(--cc-font) * 0.92 * var(--ui-scale,1)); line-height:1; }
+    .w-chorechart .cc-item.done .cc-box { background:#3ec97a; border-color:#3ec97a; color:#062; }
+    .w-chorechart .cc-item.done .cc-label { text-decoration:line-through; color:var(--text2); }
+    .w-chorechart .cc-ic { font-size:calc(var(--cc-font) * 1.15 * var(--ui-scale,1)); flex-shrink:0; }
+    .w-chorechart .cc-label { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .w-chorechart .cc-empty { font-size:calc(var(--cc-font) * 0.92 * var(--ui-scale,1)); color:var(--text2); text-align:center; padding:calc(8px * var(--ui-scale,1)) 0; }
+    .w-chorechart .cc-bonus { margin-top:calc(8px * var(--ui-scale,1)); padding-top:calc(7px * var(--ui-scale,1)); border-top:1px solid color-mix(in srgb, var(--text) 14%, transparent); }
+    .w-chorechart .cc-bonus-head { font-size:calc(var(--cc-font) * 0.9 * var(--ui-scale,1)); font-weight:700; letter-spacing:0.5px; color:#ffb454; margin-bottom:calc(5px * var(--ui-scale,1)); }
+    .w-chorechart .cc-bonus-list { display:flex; flex-wrap:wrap; gap:calc(6px * var(--ui-scale,1)); overflow:hidden; }
+    .w-chorechart .cc-bonus-chip { display:inline-flex; align-items:center; gap:calc(5px * var(--ui-scale,1));
+      font-size:calc(var(--cc-font) * 0.95 * var(--ui-scale,1)); padding:calc(3px * var(--ui-scale,1)) calc(8px * var(--ui-scale,1));
+      border-radius:calc(999px * var(--ui-scale,1)); background:color-mix(in srgb, #ffb454 16%, transparent);
+      border:1px solid color-mix(in srgb, #ffb454 40%, transparent); white-space:nowrap; }
+    .w-chorechart .cc-bonus-chip.claimed { opacity:0.5; background:color-mix(in srgb, var(--text) 8%, transparent); border-color:color-mix(in srgb, var(--text) 18%, transparent); }
+    .w-chorechart .cc-bonus-chip.claimed .cc-bonus-label { text-decoration:line-through; }
+    .w-chorechart .cc-bonus-label { overflow:hidden; text-overflow:ellipsis; }
+    .w-chorechart .cc-bonus-pay { font-weight:700; color:#3ec97a; }
+    .w-chorechart .cc-bonus-who { font-weight:700; font-size:calc(var(--cc-font) * 0.85 * var(--ui-scale,1)); }
+
+    /* Chore Leaderboard widget */
+    .w-chorelb { display:flex; flex-direction:column; height:100%; overflow:hidden; --lb-font:13px; }
+    .w-chorelb .lb-head { font-size:calc(var(--lb-font) * 1.23 * var(--ui-scale,1)); font-weight:700; letter-spacing:1px;
+      text-transform:uppercase; opacity:0.8; margin-bottom:calc(8px * var(--ui-scale,1)); flex-shrink:0; color:var(--accent); }
+    .w-chorelb .lb-rows { display:flex; flex-direction:column; gap:calc(6px * var(--ui-scale,1)); overflow:hidden; flex:1; }
+    .w-chorelb .lb-row { display:flex; align-items:center; gap:calc(10px * var(--ui-scale,1));
+      font-size:calc(var(--lb-font) * var(--ui-scale,1)); }
+    .w-chorelb .lb-rank { width:calc(var(--lb-font) * 1.4 * var(--ui-scale,1)); flex-shrink:0; text-align:center;
+      font-size:calc(var(--lb-font) * 1.15 * var(--ui-scale,1)); }
+    .w-chorelb .lb-avatar { font-size:calc(var(--lb-font) * 1.3 * var(--ui-scale,1)); flex-shrink:0; }
+    .w-chorelb .lb-name { flex:1; min-width:0; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .w-chorelb .lb-stat { font-weight:700; color:#ffb454; flex-shrink:0; white-space:nowrap; }
+    .w-chorelb .lb-empty { font-size:calc(var(--lb-font) * 0.92 * var(--ui-scale,1)); color:var(--text2); text-align:center; padding:calc(8px * var(--ui-scale,1)) 0; }
+
+    /* Built-in To-Do widget */
+    .w-todo { display:flex; flex-direction:column; height:100%; overflow:hidden; --td-font:15px; }
+    .w-todo .td-head { font-size:calc(var(--td-font) * 1.2 * var(--ui-scale,1)); font-weight:700; letter-spacing:1px;
+      text-transform:uppercase; padding-bottom:calc(6px * var(--ui-scale,1)); flex-shrink:0;
+      border-bottom:1px solid var(--border); margin-bottom:calc(8px * var(--ui-scale,1)); color:var(--accent); }
+    .w-todo .td-items { display:flex; flex-direction:column; gap:calc(7px * var(--ui-scale,1)); overflow:hidden; flex:1; min-height:0; }
+    .w-todo .td-item { display:flex; align-items:center; gap:calc(8px * var(--ui-scale,1)); font-size:calc(var(--td-font) * var(--ui-scale,1));
+      cursor:pointer; -webkit-tap-highlight-color:transparent; transition:opacity 0.1s; padding:2px 0; }
+    .w-todo .td-item:active { opacity:0.55; }
+    .w-todo .td-box { width:calc(var(--td-font) * 1.2 * var(--ui-scale,1)); height:calc(var(--td-font) * 1.2 * var(--ui-scale,1));
+      border:2px solid var(--muted); border-radius:4px; flex-shrink:0; display:flex; align-items:center;
+      justify-content:center; font-size:calc(var(--td-font) * 0.9 * var(--ui-scale,1)); line-height:1; }
+    .w-todo .td-item.done .td-box { background:#3ec97a; border-color:#3ec97a; color:#062; }
+    .w-todo .td-item.done .td-text { text-decoration:line-through; color:var(--text2); }
+    .w-todo .td-text { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+    /* Shopping List widget — same shape and tap-to-complete behavior as the
+       To-Do widget above (checking things off works right on the wall now,
+       same as Chore Chart/To-Do — no longer read-only). */
+    .w-shopping { display:flex; flex-direction:column; height:100%; overflow:hidden; --sl-font:15px; }
+    .w-shopping .sl-head { font-size:calc(var(--sl-font) * 1.2 * var(--ui-scale,1)); font-weight:700; letter-spacing:1px;
+      text-transform:uppercase; padding-bottom:calc(6px * var(--ui-scale,1)); flex-shrink:0;
+      border-bottom:1px solid var(--border); margin-bottom:calc(8px * var(--ui-scale,1)); color:var(--accent); }
+    .w-shopping .sl-items { display:flex; flex-direction:column; gap:var(--sl-gap, calc(7px * var(--ui-scale,1))); overflow:hidden; flex:1; min-height:0; }
+    .w-shopping .sl-item { display:flex; align-items:center; gap:calc(8px * var(--ui-scale,1)); font-size:calc(var(--sl-font) * var(--ui-scale,1));
+      cursor:pointer; -webkit-tap-highlight-color:transparent; transition:opacity 0.1s; padding:2px 0; }
+    .w-shopping .sl-item:active { opacity:0.55; }
+    .w-shopping .sl-box { width:calc(var(--sl-font) * 1.2 * var(--ui-scale,1)); height:calc(var(--sl-font) * 1.2 * var(--ui-scale,1));
+      border:2px solid var(--muted); border-radius:4px; flex-shrink:0; display:flex; align-items:center;
+      justify-content:center; font-size:calc(var(--sl-font) * 0.9 * var(--ui-scale,1)); line-height:1; }
+    .w-shopping .sl-item.done .sl-box { background:#3ec97a; border-color:#3ec97a; color:#062; }
+    .w-shopping .sl-item.done .sl-text { text-decoration:line-through; color:var(--text2); }
+    .w-shopping .sl-text { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+    /* Hourly / time-of-day weather widget */
+    .w-weather-hourly { display:flex; flex-direction:column; justify-content:center; }
+    .w-weather-combo { display:flex; flex-direction:column; }
+    .wxh-strip { display:flex; gap:calc(4px * var(--wx-scale,1)); justify-content:space-between; }
+    .wxh-hour { display:flex; flex-direction:column; align-items:center; gap:calc(3px * var(--wx-scale,1)); flex:1; min-width:0; }
+    .wxh-hr { font-size:calc(13px * var(--wx-scale,1)); color:var(--text2); white-space:nowrap; }
+    .wxh-icon svg { width:calc(34px * var(--wx-scale,1)); height:calc(34px * var(--wx-scale,1)); }
+    .wxh-temp { font-size:calc(18px * var(--wx-scale,1)); font-weight:500; }
+    .wxh-feels { font-size:calc(10px * var(--wx-scale,1)); color:var(--text2); white-space:nowrap; }
+    .wxh-pop { font-size:calc(11px * var(--wx-scale,1)); color:var(--accent); min-height:calc(13px * var(--wx-scale,1)); }
+    .wxh-parts { display:flex; gap:calc(10px * var(--wx-scale,1)); justify-content:space-around; }
+    .wxh-part { display:flex; flex-direction:column; align-items:center; gap:calc(4px * var(--wx-scale,1)); flex:1; min-width:0; }
+    .wxh-part-label { font-size:calc(12px * var(--wx-scale,1)); letter-spacing:1px; text-transform:uppercase; color:var(--text2);
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+    .wxh-part-icon svg { width:calc(40px * var(--wx-scale,1)); height:calc(40px * var(--wx-scale,1)); }
+    .wxh-part-temp { font-size:calc(24px * var(--wx-scale,1)); font-weight:300; }
+    .wxh-part-meta { font-size:calc(11px * var(--wx-scale,1)); color:var(--text2); text-align:center; }
+
+    /* Combo Hourly + Daily Forecast — one CSS block per layout style */
+    .wxc-hourly { display:flex; gap:calc(10px * var(--wx-scale,1)); overflow-x:auto; padding-bottom:2px; }
+    .wxc-hour { display:flex; flex-direction:column; align-items:center; gap:calc(3px * var(--wx-scale,1)); min-width:calc(38px * var(--wx-scale,1)); flex-shrink:0; }
+    .wxc-hr-label { font-size:calc(11px * var(--wx-scale,1)); color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; white-space:nowrap; }
+    .wxc-hr-icon svg { width:calc(28px * var(--wx-scale,1)); height:calc(28px * var(--wx-scale,1)); }
+    .wxc-hr-temp { font-size:calc(15px * var(--wx-scale,1)); font-weight:500; }
+    .wxc-hr-pop { font-size:calc(10px * var(--wx-scale,1)); color:var(--accent); min-height:calc(12px * var(--wx-scale,1)); }
+    .wxc-divider { height:1px; background:var(--border); margin:calc(12px * var(--wx-scale,1)) 0; }
+    .wxc-daily { display:flex; flex-direction:column; gap:calc(7px * var(--wx-scale,1)); }
+    .wxc-day-row { display:flex; align-items:center; gap:calc(10px * var(--wx-scale,1)); }
+    .wxc-day-name { font-size:calc(13px * var(--wx-scale,1)); width:calc(38px * var(--wx-scale,1)); flex-shrink:0; }
+    .wxc-day-icon svg { width:calc(22px * var(--wx-scale,1)); height:calc(22px * var(--wx-scale,1)); }
+    .wxc-day-bar-wrap { flex:1; display:flex; align-items:center; gap:calc(8px * var(--wx-scale,1)); min-width:0; }
+    .wxc-day-lo { font-size:calc(12px * var(--wx-scale,1)); color:var(--text2); width:calc(24px * var(--wx-scale,1)); text-align:right; flex-shrink:0; }
+    .wxc-day-bar-track { position:relative; flex:1; height:4px; border-radius:2px; background:var(--border); min-width:calc(30px * var(--wx-scale,1)); }
+    .wxc-day-bar { position:absolute; top:0; height:100%; border-radius:2px; background:linear-gradient(90deg, #5b9bd5, #fbbf24); }
+    .wxc-day-hi { font-size:calc(13px * var(--wx-scale,1)); font-weight:500; width:calc(24px * var(--wx-scale,1)); flex-shrink:0; }
+
+    .wxc-timeline { display:flex; align-items:flex-end; gap:calc(4px * var(--wx-scale,1)); overflow-x:auto; padding-bottom:2px; }
+    .wxc-tl-cell { display:flex; flex-direction:column; align-items:center; gap:calc(4px * var(--wx-scale,1)); min-width:calc(44px * var(--wx-scale,1)); flex-shrink:0; padding:calc(6px * var(--wx-scale,1)) calc(3px * var(--wx-scale,1)); border-radius:8px; }
+    .wxc-tl-cell.now { background:color-mix(in srgb, var(--accent) 16%, transparent); }
+    .wxc-tl-cell.day-boundary { border-left:1px dashed var(--border); padding-left:calc(9px * var(--wx-scale,1)); margin-left:calc(5px * var(--wx-scale,1)); }
+    .wxc-tl-label { font-size:calc(10px * var(--wx-scale,1)); color:var(--text2); text-transform:uppercase; letter-spacing:0.4px; white-space:nowrap; }
+    .wxc-tl-icon svg { width:calc(24px * var(--wx-scale,1)); height:calc(24px * var(--wx-scale,1)); }
+    .wxc-tl-temp { font-size:calc(13px * var(--wx-scale,1)); font-weight:500; }
+    .wxc-tl-temp.lo { color:var(--text2); font-weight:400; font-size:calc(11px * var(--wx-scale,1)); }
+
+    .wxc-columns { display:flex; gap:calc(16px * var(--wx-scale,1)); }
+    .wxc-col { flex:1; min-width:0; }
+    .wxc-col-title { font-size:calc(10px * var(--wx-scale,1)); text-transform:uppercase; letter-spacing:1px; color:var(--accent2, var(--accent)); margin-bottom:calc(8px * var(--wx-scale,1)); }
+    .wxc-col-row { display:flex; align-items:center; gap:calc(7px * var(--wx-scale,1)); padding:calc(5px * var(--wx-scale,1)) 0; border-bottom:1px solid var(--border); }
+    .wxc-col-row:last-child { border-bottom:none; }
+    .wxc-col-label { font-size:calc(12px * var(--wx-scale,1)); width:calc(36px * var(--wx-scale,1)); flex-shrink:0; }
+    .wxc-col-icon svg { width:calc(19px * var(--wx-scale,1)); height:calc(19px * var(--wx-scale,1)); flex-shrink:0; }
+    .wxc-col-temp { font-size:calc(12px * var(--wx-scale,1)); font-weight:500; margin-left:auto; }
+    .wxc-col-lo { font-size:calc(11px * var(--wx-scale,1)); color:var(--text2); margin-left:calc(5px * var(--wx-scale,1)); font-weight:400; }
+    .wxc-col-divider { width:1px; background:var(--border); flex-shrink:0; }
+
+    .wxc-tabs { display:flex; gap:4px; margin-bottom:calc(10px * var(--wx-scale,1)); background:color-mix(in srgb, var(--text) 8%, transparent); border-radius:8px; padding:3px; width:fit-content; cursor:pointer; }
+    .wxc-tab-btn { font-size:calc(11px * var(--wx-scale,1)); font-weight:600; padding:calc(5px * var(--wx-scale,1)) calc(13px * var(--wx-scale,1)); border-radius:6px; color:var(--text2); }
+    .wxc-tab-btn.active { background:var(--accent); color:#fff; }
+    .wxc-tab-content-hourly { display:flex; gap:calc(9px * var(--wx-scale,1)); overflow-x:auto; }
+    .wxc-tab-hour { display:flex; flex-direction:column; align-items:center; gap:calc(3px * var(--wx-scale,1)); min-width:calc(34px * var(--wx-scale,1)); flex-shrink:0; }
+    .wxc-tab-hour-label { font-size:calc(10px * var(--wx-scale,1)); color:var(--text2); white-space:nowrap; }
+    .wxc-tab-hour-icon svg { width:calc(22px * var(--wx-scale,1)); height:calc(22px * var(--wx-scale,1)); }
+    .wxc-tab-hour-temp { font-size:calc(13px * var(--wx-scale,1)); font-weight:500; }
+    .wxc-tab-content-daily { display:flex; flex-direction:column; gap:calc(6px * var(--wx-scale,1)); }
+    .wxc-tab-day { display:flex; align-items:center; gap:calc(10px * var(--wx-scale,1)); }
+    .wxc-tab-day-name { font-size:calc(13px * var(--wx-scale,1)); width:calc(48px * var(--wx-scale,1)); flex-shrink:0; }
+    .wxc-tab-day-icon svg { width:calc(22px * var(--wx-scale,1)); height:calc(22px * var(--wx-scale,1)); }
+    .wxc-tab-day-temp { font-size:calc(13px * var(--wx-scale,1)); font-weight:500; margin-left:auto; }
+    .wxc-tab-day-lo { font-size:calc(12px * var(--wx-scale,1)); color:var(--text2); margin-left:calc(6px * var(--wx-scale,1)); font-weight:400; }
+
+    /* Compact current-conditions header — Columns style only; the other
+       three styles reuse the existing .cur/.icon/.temp/.desc classes above
+       (already scoped under .w-weather, which this widget's own wrapper
+       carries) rather than needing anything new here. */
+    .wxc-cur-compact { display:flex; align-items:center; gap:calc(10px * var(--wx-scale,1)); margin-bottom:calc(12px * var(--wx-scale,1)); }
+    .wxc-cur-compact-icon svg { width:calc(32px * var(--wx-scale,1)); height:calc(32px * var(--wx-scale,1)); display:block; }
+    .wxc-cur-compact-temp { font-size:calc(24px * var(--wx-scale,1)); font-weight:300; letter-spacing:-1px; flex-shrink:0; }
+    .wxc-cur-compact-desc { font-size:calc(12.5px * var(--wx-scale,1)); color:var(--text2); }
+
+    .no-data { color:var(--text2); font-size:13px; }
+  

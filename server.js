@@ -917,6 +917,36 @@ db.exec(`
     expires_at INTEGER NOT NULL
   );
 
+  -- Remote-access login gate (see "Remote access: household login gate" in
+  -- server.js). One row = a remote password is set (scrypt hash); no row = the
+  -- gate does not exist and nothing about auth changes. Sessions store only a
+  -- sha256 of the cookie token, so a leaked DB/backup can't be replayed. Both
+  -- tables are per-device on purpose and are NOT part of the sync snapshot.
+  CREATE TABLE IF NOT EXISTS remote_auth (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    password_hash TEXT NOT NULL,
+    updated_at    INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS remote_sessions (
+    id         TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    last_seen  INTEGER NOT NULL,
+    ip         TEXT,
+    user_agent TEXT
+  );
+  -- Every remote sign-in attempt that reached the password check (not the ones the
+  -- rate limiter turned away), newest 200 kept - shown in Settings -> Security so a
+  -- guess-run or a stranger's successful sign-in is visible.
+  CREATE TABLE IF NOT EXISTS remote_login_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at         INTEGER NOT NULL,
+    ip         TEXT,
+    user_agent TEXT,
+    ok         INTEGER NOT NULL,
+    country    TEXT
+  );
+
   -- Family member profiles: a per-person view configuration for the companion
   -- app (app.html). This is a persona picker, NOT authentication — no passwords,
   -- no account creation. It sits alongside the single household App PIN
@@ -1388,6 +1418,11 @@ if (!columnExists('chores', 'photo_required')) {
   db.exec(`ALTER TABLE chores ADD COLUMN photo_required INTEGER DEFAULT 0`);
   console.log('Migrated: added photo_required column to chores');
 }
+// A one-day "Reassign to..." moves the row to another kid; remembering who it came from lets the daily build skip that kid for that day (otherwise it re-created their copy).
+if (!columnExists('chore_instances', 'reassigned_from')) {
+  db.exec(`ALTER TABLE chore_instances ADD COLUMN reassigned_from INTEGER`);
+  console.log('Migrated: added reassigned_from column to chore_instances');
+}
 if (!columnExists('chore_instances', 'proof_photo')) {
   db.exec(`ALTER TABLE chore_instances ADD COLUMN proof_photo TEXT DEFAULT ''`);
   console.log('Migrated: added proof_photo column to chore_instances');
@@ -1554,7 +1589,9 @@ const defaultSettings = {
   shopping_store: 'walmart',       // which store the shopping list's "Buy" links search: walmart | target | kroger | amazon
   display_res_w: '',              // real TV resolution reported by the Pi (for accurate previews)
   display_res_h: '',
-  display_refresh_min: '0',       // full page auto-reload interval in minutes (0 = off). Like pressing F5.
+  display_refresh_min: '360',     // full page auto-reload interval in minutes (0 = off). Like pressing F5. Default 6 hours
+                                  // since 1.92.0-beta.31 (was Off): a kiosk that runs for weeks should re-issue its page load now
+                                  // and then. The display waits for a quiet moment and for the server to answer before reloading.
   force_real_display: '0',        // per-device override: treat this screen as a real display even
                                    // if its CSS viewport (window.innerWidth/innerHeight) looks
                                    // phone/tablet-sized — needed on setups where OS-level display
@@ -1571,6 +1608,7 @@ const defaultSettings = {
   theme: 'dark',
   show_weather: '1',
   app_pin: '',  // empty = no PIN required
+  remote_access_require_auth: '0', // '1' = LAN devices must sign in with the remote password too (needs one to be set); the kiosk on the box itself never does
   todoist_token: '',  // empty = Todoist widget disabled
   ha_base_url: '',    // Home Assistant base URL, e.g. http://homeassistant.local:8123 — empty = integration disabled
   ha_token: '',        // Home Assistant Long-Lived Access Token (Profile -> Security -> Long-Lived Access Tokens)
@@ -1655,6 +1693,10 @@ const defaultSettings = {
   notif_prefs_json: '',           // JSON { <kind>: {screen:bool, phone:bool} } — per-kind delivery matrix
   severe_weather_alerts_enabled: '0', // 0/1 — poll NWS for active alerts at the household's weather location
   severe_weather_min_severity: 'Moderate', // Extreme|Severe|Moderate|Minor — NWS severity floor to notify on
+  severe_weather_muted_events: '[]',   // JSON array of NWS event types that never alert (e.g. "Flood Warning")
+  severe_weather_snoozed_events: '{}', // JSON { eventType: untilMs } — quiet until then
+  severe_weather_seen: '{}',           // internal: warnings already notified, so an update isn't treated as new
+  severe_weather_event_history: '{}',  // internal: event types seen near here lately, for the Settings list
   handwriting_enabled: '0',       // 0/1 — show the ✍️ button on the add-event sheet
   myscript_app_key: '',           // MyScript application key
   myscript_hmac_key: '',          // MyScript HMAC key (server-side only, never echoed)
@@ -1711,6 +1753,7 @@ const defaultSettings = {
                                    // via its own use_global_opacity=0 — see ical_feeds' own column
                                    // comment below for the full three-tier resolution (this ->
                                    // per-feed -> per-widget override, most-specific wins).
+  text_shadow:        'off',      // 'off' | 'soft' | 'strong' — a drop shadow behind every widget's text so clocks, dates and weather stay readable over photos
   time_format:        '12',       // '12' or '24' — affects the clock widget and any time-of-day text
   ampm_case:          'lower',    // 'lower' or 'upper' — casing for am/pm in 12-hour time (clock + any
                                    // widget showing a time-of-day); the standalone widgets can override
@@ -1723,6 +1766,16 @@ const defaultSettings = {
 };
 for (const [key, value] of Object.entries(defaultSettings)) {
   db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`).run(key, value);
+}
+
+// One-time: the display's auto-refresh used to default to Off, and the Settings screen saves every field on the
+// page whenever anything on it is saved, so an installed device holding "0" almost always holds the old default,
+// not a choice (nobody opted out of a feature this obscure on purpose). Move those to the new 6-hour default once;
+// after this runs, whatever someone sets - including Off - is left alone. Guarded by a flag like the migration above.
+if (!db.prepare(`SELECT value FROM settings WHERE key = 'display_refresh_default_migrated'`).get()) {
+  const moved = db.prepare(`UPDATE settings SET value = '360' WHERE key = 'display_refresh_min' AND (value = '0' OR value = '')`).run().changes;
+  db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('display_refresh_default_migrated', '1')`).run();
+  if (moved) console.log('Migrated: display auto-refresh moved from Off to the 6-hour default');
 }
 
 // Detect a device id that was copied over from a DIFFERENT physical machine
@@ -1931,7 +1984,9 @@ const APP_VERSION = (() => {
 // automatically with no per-device configuration. These supersede the old
 // update_server_url / feedback_central_* settings (which still exist in code but are
 // no longer surfaced in the UI). To repoint everything, change these constants.
-const CENTRAL_SERVER_URL  = 'https://piazzahq.com';
+// PIAZZA_CENTRAL_SERVER_URL is for tests only (unset in every real deployment): a throwaway instance left running for
+// minutes would otherwise phone the production server at its first update check and show up in the real fleet list.
+const CENTRAL_SERVER_URL  = process.env.PIAZZA_CENTRAL_SERVER_URL || 'https://piazzahq.com';
 const CENTRAL_FEEDBACK_KEY = '6_vThChEqBztAfahwsNglL9O';
 // Resolvers prefer the hard-coded value but fall back to a setting if one is set
 // (lets an advanced user still override via the API if ever needed).
@@ -1993,7 +2048,12 @@ const RESTORE_SAFETY_BACKUP = dataPath('.pre-restore-backup'); // snapshot of da
 // installFromZip) so the auto-rollback guard, the manual restore endpoint,
 // and the zip-download endpoint below all agree on exactly what "the code"
 // means, rather than each maintaining their own copy that could drift.
-const UPDATE_CODE_ITEMS = ['server.js', 'templates.js', 'tv-control.js', 'mqtt-bridge.js', 'public', 'package.json', 'scripts',
+// 'src' is where server.js's code is being split out into modules. It is listed HERE, ahead of any code living in it, on purpose: an
+// update is applied by the OLD version's code, which only copies the items in ITS list. A release that needs src/ but follows one whose list
+// lacks 'src' would install server.js without its modules and fail to boot (the rollback guard would then undo it, leaving that device stuck on
+// the old version). So this entry must be in a release that every device has installed BEFORE the first release that contains src/.
+// Items that are not in the update zip are skipped by every loop below, so listing it while src/ does not exist yet changes nothing.
+const UPDATE_CODE_ITEMS = ['server.js', 'templates.js', 'tv-control.js', 'mqtt-bridge.js', 'src', 'public', 'package.json', 'scripts',
                    'install.sh', 'setup-remote-access.sh', 'hide-cursor.sh', 'README.md', 'BETA_CHECKLIST.md',
                    'LICENSE']; // legal terms — unlike CHANGELOG.md/HANDOFF.md (dev-facing docs, no
                                // stakes either way), an installed device should actually receive
@@ -2108,6 +2168,513 @@ const serverUpload = multer({
   }
 });
 
+// ── Remote access: household login gate (Phase 0) ────────────────────────────
+// Prerequisite for exposing this app on a public URL (Cloudflare tunnel, see
+// the remote-access spec). Today's auth (the App PIN, x-session-token header)
+// assumes the network is trusted; a public URL needs a real login. Design:
+//
+//  * Opt-in and inert by default: the gate only exists once a "remote
+//    password" has been set (remote_auth table). No password = nothing here
+//    changes anything for anyone, including requests that look remote.
+//  * It only gates requests that LOOK remote: a non-private source address,
+//    or any reverse-proxy header (cloudflared always adds cf-connecting-ip /
+//    x-forwarded-for). LAN, loopback (the kiosk) and Tailscale (100.64/10)
+//    sources pass straight through, exactly as before. A header can only make
+//    a request look MORE remote, never less, so spoofing it just adds a login.
+//  * A remote password is a separate credential from the App PIN (a 4-digit
+//    PIN is far too weak for the open internet). A valid remote session
+//    satisfies the PIN check too, so remote users log in once, not twice.
+//  * Session cookie (HttpOnly, SameSite=Lax, Secure over https), 30 days,
+//    server-side table so it is revocable; only a sha256 of the token is
+//    stored. Password: scrypt with a per-password salt, async so a login
+//    attempt never blocks the event loop.
+//  * Even WITH a valid remote session, some things stay LAN-only: camera
+//    media (also off the tunnel for Cloudflare's ToS), code updates/installs,
+//    backups (a full DB download), and the kiosk-exit button.
+//  * Per-device on purpose (LOCAL_ONLY): credentials and sessions never sync
+//    to mirrors.
+const REMOTE_COOKIE = 'phq_remote';
+const REMOTE_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const REMOTE_PW_MIN = 10;
+const REMOTE_PW_MAX = 128;
+const REMOTE_PROXY_HEADERS = ['cf-connecting-ip', 'cf-ray', 'x-forwarded-for', 'x-forwarded-host', 'forwarded', 'x-real-ip', 'true-client-ip'];
+
+function stripV4Mapped(addr) { return String(addr || '').replace(/^::ffff:/i, ''); }
+function isPrivateAddress(addr) {
+  const a = stripV4Mapped(addr).toLowerCase();
+  if (a === '::1' || a === 'localhost') return true;
+  const m = a.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (m) {
+    const o1 = +m[1], o2 = +m[2];
+    return o1 === 127 || o1 === 10 ||
+      (o1 === 172 && o2 >= 16 && o2 <= 31) ||
+      (o1 === 192 && o2 === 168) ||
+      (o1 === 169 && o2 === 254) ||   // link-local
+      (o1 === 100 && o2 >= 64 && o2 <= 127); // CGNAT range Tailscale uses
+  }
+  if (/^f[cd][0-9a-f]{2}:/.test(a)) return true;     // fc00::/7 unique-local (incl. Tailscale's fd7a:…)
+  if (/^fe[89ab][0-9a-f]:/.test(a)) return true;     // fe80::/10 link-local
+  return false;
+}
+function hasProxyHeaders(req) { return REMOTE_PROXY_HEADERS.some((h) => req.headers[h] !== undefined); }
+function requestIsRemote(req) { return !isPrivateAddress(req.socket.remoteAddress) || hasProxyHeaders(req) || requestHostIsTunnel(req); }
+// The kiosk browser on the device itself (and a plain `curl localhost`): a
+// loopback source with no proxy headers. Never asked to log in, even when
+// "always require" is on for the rest of the LAN.
+function requestIsDirectLoopback(req) {
+  const a = stripV4Mapped(req.socket.remoteAddress);
+  return (a === '::1' || /^127\./.test(a)) && !hasProxyHeaders(req);
+}
+function remoteClientIp(req) {
+  const sock = stripV4Mapped(req.socket.remoteAddress);
+  // Forwarding headers are only believable when the connection came from a
+  // proxy on this box or network (cloudflared runs on the device). A connection
+  // straight from a public address can put anything it likes in them, which
+  // would let a guesser rotate the header to dodge the per-address lockout.
+  if (!isPrivateAddress(sock)) return sock.slice(0, 64);
+  return String(req.headers['cf-connecting-ip'] || String(req.headers['x-forwarded-for'] || '').split(',')[0] || sock || '').trim().slice(0, 64);
+}
+
+// Cached "is a remote password set" so the gate costs nothing on every static
+// request when the feature is unused.
+let _remoteAuthConfigured = null;
+function remoteAuthConfigured() {
+  if (_remoteAuthConfigured === null) {
+    try { _remoteAuthConfigured = !!db.prepare(`SELECT 1 FROM remote_auth WHERE id = 1`).get(); }
+    catch { _remoteAuthConfigured = false; }
+  }
+  return _remoteAuthConfigured;
+}
+function remoteAuthHash() {
+  const row = db.prepare(`SELECT password_hash FROM remote_auth WHERE id = 1`).get();
+  return row ? row.password_hash : null;
+}
+
+function remoteGateEnabled(req) {
+  if (IS_DEMO) return false;               // the demo is deliberately open
+  if (!remoteAuthConfigured()) return false;
+  if (requestIsRemote(req)) return true;
+  // Optional stricter mode: require the login from LAN devices too (not from
+  // the kiosk on the box itself).
+  return getSetting('remote_access_require_auth') === '1' && !requestIsDirectLoopback(req);
+}
+
+const scryptAsync = (pw, salt, len, opts) => new Promise((resolve, reject) => crypto.scrypt(pw, salt, len, opts, (e, k) => e ? reject(e) : resolve(k)));
+async function hashRemotePassword(pw) {
+  const salt = crypto.randomBytes(16);
+  const N = 16384, r = 8, p = 1;
+  const key = await scryptAsync(pw, salt, 64, { N, r, p });
+  return ['scrypt', N, r, p, salt.toString('base64'), key.toString('base64')].join('$');
+}
+async function verifyRemotePassword(pw, stored) {
+  try {
+    const [alg, N, r, p, saltB, keyB] = String(stored || '').split('$');
+    if (alg !== 'scrypt') return false;
+    const key = Buffer.from(keyB, 'base64');
+    const test = await scryptAsync(pw, Buffer.from(saltB, 'base64'), key.length, { N: +N, r: +r, p: +p });
+    return test.length === key.length && crypto.timingSafeEqual(test, key);
+  } catch { return false; }
+}
+
+// Same attempt/window/lockout shape as the PIN login limiter, as a factory so
+// remote logins get their own buckets (a flood of remote guesses must not lock
+// the family out of the PIN screen on the couch, or vice versa).
+function makeRateLimiter({ maxAttempts, windowMs, lockoutMs }) {
+  const buckets = new Map();
+  return {
+    check(key) {
+      const now = Date.now();
+      if (buckets.size > 2000) for (const [k, v] of buckets) if (now - v.firstAttempt > windowMs && now >= v.lockedUntil) buckets.delete(k);
+      const e = buckets.get(key);
+      if (e && e.lockedUntil && now < e.lockedUntil) return { allowed: false, retryAfterMs: e.lockedUntil - now };
+      if (!e || now - e.firstAttempt > windowMs) { buckets.set(key, { count: 1, firstAttempt: now, lockedUntil: 0 }); return { allowed: true }; }
+      e.count++;
+      if (e.count > maxAttempts) { e.lockedUntil = now + lockoutMs; return { allowed: false, retryAfterMs: lockoutMs }; }
+      return { allowed: true };
+    },
+    reset(key) { buckets.delete(key); },
+  };
+}
+const remoteLoginLimiter = makeRateLimiter({ maxAttempts: 5, windowMs: 10 * 60 * 1000, lockoutMs: 15 * 60 * 1000 });
+// Backstop against a guessing run spread over many source addresses.
+const remoteGlobalLimiter = makeRateLimiter({ maxAttempts: 60, windowMs: 60 * 60 * 1000, lockoutMs: 5 * 60 * 1000 });
+
+const sha256hex = (s) => crypto.createHash('sha256').update(s).digest('hex');
+function readCookie(req, name) {
+  const raw = req.headers.cookie;
+  if (!raw) return null;
+  for (const part of String(raw).split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) {
+      try { return decodeURIComponent(part.slice(i + 1).trim()); } catch { return null; }
+    }
+  }
+  return null;
+}
+function requestIsHttps(req) {
+  return String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase() === 'https' ||
+    String(req.headers['cf-visitor'] || '').includes('https');
+}
+function setRemoteCookie(req, res, token, maxAgeMs) {
+  const parts = [`${REMOTE_COOKIE}=${token}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${Math.floor(maxAgeMs / 1000)}`];
+  if (requestIsHttps(req)) parts.push('Secure');
+  res.append('Set-Cookie', parts.join('; '));
+}
+function createRemoteSession(req) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  const now = Date.now();
+  db.prepare(`DELETE FROM remote_sessions WHERE expires_at < ?`).run(now);
+  db.prepare(`INSERT INTO remote_sessions (id, created_at, expires_at, last_seen, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(sha256hex(token), now, now + REMOTE_SESSION_TTL_MS, now, remoteClientIp(req), String(req.headers['user-agent'] || '').slice(0, 200));
+  return token;
+}
+function findRemoteSession(req) {
+  const tok = readCookie(req, REMOTE_COOKIE);
+  if (!tok || tok.length > 200) return null;
+  const id = sha256hex(tok);
+  const now = Date.now();
+  const row = db.prepare(`SELECT id, last_seen FROM remote_sessions WHERE id = ? AND expires_at > ?`).get(id, now);
+  if (row && now - row.last_seen > 5 * 60 * 1000) {
+    db.prepare(`UPDATE remote_sessions SET last_seen = ? WHERE id = ?`).run(now, id);
+  }
+  return row || null;
+}
+
+// Paths that stay unavailable from a remote origin even with a valid session.
+// What a signed-in REMOTE session may not read or change: stored credentials. Reads come back with the
+// value replaced by dots (so the app still knows "something is set"); a dots value sent back is never
+// written; and credential settings cannot be written remotely at all - manage those at home.
+const REMOTE_MASK = '\u2022\u2022\u2022\u2022\u2022\u2022';
+const REMOTE_SECRET_KEY_RE = /(pass(word|wd)?|token|secret|hmac|api[_-]?key|_key$|^key$|^app_pin|_pin$|pin_previous|credential|private)/i;
+function remoteMaskString(v) {
+  return v
+    .replace(/^([a-z][a-z0-9+.-]*:\/\/[^\/\s:@]+):[^\/\s@]+@/i, '$1:' + REMOTE_MASK + '@')                                  // rtsp://user:PASSWORD@host
+    .replace(/([?&](?:token|key|secret|pass(?:word)?|auth|sig|signature|apikey|api_key|access_token)=)[^&#\s]+/ig, '$1' + REMOTE_MASK);   // ...?token=SECRET
+}
+function remoteMaskDeep(v, key, flatSettings, depth = 0) {
+  if (depth > 8) return v;
+  if (typeof v === 'string') {
+    if (v && key && (REMOTE_SECRET_KEY_RE.test(key) || (flatSettings && SENSITIVE_SETTING_RE.test(key)))) return REMOTE_MASK;
+    return remoteMaskString(v);
+  }
+  if (Array.isArray(v)) return v.map((x) => remoteMaskDeep(x, key, flatSettings, depth + 1));
+  if (v && typeof v === 'object') {
+    const o = {};
+    for (const [k, x] of Object.entries(v)) o[k] = remoteMaskDeep(x, k, flatSettings, depth + 1);
+    return o;
+  }
+  return v;
+}
+function remoteHardenIo(req, res) {
+  const p = req.path.toLowerCase().replace(/\/+$/, '');
+  const origJson = res.json.bind(res);
+  res.json = (body) => origJson(remoteMaskDeep(body, '', p === '/api/settings'));
+  const b = req.body;
+  if (b && typeof b === 'object' && !Array.isArray(b)) {
+    for (const k of Object.keys(b)) {
+      if (typeof b[k] === 'string' && b[k].includes(REMOTE_MASK)) delete b[k];                       // never write the placeholder over a real value
+      else if (p === '/api/settings' && req.method !== 'GET' && SENSITIVE_SETTING_RE.test(k)) delete b[k];   // no credential changes remotely (incl. the App PIN)
+    }
+  }
+}
+// Routes that operate real things in the house (Home Assistant actions, TV power). A remote sign-in may only
+// use them when someone at home has switched that on.
+function remoteControlPath(req) {
+  if (req.method !== 'POST') return false;
+  const p = req.path.toLowerCase().replace(/\/+$/, '');
+  return p === '/api/ha/call-action' || p === '/api/ha/call-group-action' || p === '/api/mqtt/test' || /^\/api\/screens\/[^/]+\/tv\/[^/]+$/.test(p);
+}
+function remoteBlockedPath(req) {
+  // Express matches routes case-insensitively and ignores a trailing slash, so
+  // the check has to as well — otherwise "/API/backup/download/" walks around it.
+  // Any HTTP method: none of these has a legitimate remote use.
+  const p = req.path.toLowerCase().replace(/\/+$/, '');
+  if (/^\/api\/camera\/\d+\/(frame\.jpeg|ws)$/.test(p)) return true;   // camera media stays off the tunnel
+  if (p === '/api/remote-access' || p.startsWith('/api/remote-access/')) return true;   // turning the tunnel on/off is a home-network action
+  if (p.startsWith('/api/backup/')) return true;
+  if (p.startsWith('/api/sync/')) return true;                          // /api/sync/export is the whole database incl. every stored credential (the mirror's feed)
+  if (p.startsWith('/api/voice-token/') || p.startsWith('/api/automation-token/')) return true;   // minting a new control credential
+  if (p === '/api/license-devices' || p.startsWith('/api/license-devices/')) return true;          // listing / removing this account's devices                        // download = a full copy of the database; restore = overwrite it
+  if (['/api/update', '/api/update-from-server', '/api/install-server', '/api/kiosk/exit'].includes(p)) return true;
+  if (/^\/api\/update-backups\/[^/]+\/[^/]+\/(download|restore)$/.test(p)) return true;
+  return false;
+}
+// Endpoints that authenticate THEMSELVES with their own secret (Siri Shortcuts
+// token, Alexa request signature, Home Assistant bearer token) and so must
+// reach their own check from a remote origin without a browser cookie. Keep in
+// sync with the exemptions at the top of requireAuth(); each still fails
+// closed there if its own secret is wrong.
+function remoteSelfAuthenticatingPath(req) {
+  const p = req.path, m = req.method;
+  if ((m === 'GET' || m === 'POST') && p === '/api/voice/add-item') return true;
+  if (m === 'POST' && p === '/api/alexa') return true;
+  if (/^Bearer /.test(req.headers.authorization || '') && (
+    (m === 'POST' && (/^\/api\/screens\/[^/]+\/tv\/[^/]+$/.test(p) || /^\/api\/saved-layouts\/[^/]+\/apply$/.test(p))) ||
+    (m === 'GET' && /^\/api\/automation\/(screens|displays|saved-layouts)$/.test(p)))) return true;
+  return false;
+}
+
+function safeNextPath(n) {
+  n = String(n || '');
+  return /^\/(?!\/)[^\\\r\n]*$/.test(n) && n.length < 500 && !n.startsWith('/login') ? n : '/app';
+}
+function sendRemoteLoginPage(req, res) {
+  res.set({ 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Type': 'text/html; charset=utf-8' });
+  const next = safeNextPath(req.query.next);
+  if (remoteAuthConfigured() && findRemoteSession(req)) return res.redirect(next);
+  const configured = remoteAuthConfigured();
+  const rawName = String(getSetting('display_name') || '').replace(/[<>&"]/g, '').trim();
+  const name = !rawName || /^home$/i.test(rawName) ? 'Piazza HQ' : rawName;
+  res.status(200).send(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>Sign in</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0a0e17;color:#e8edf5;font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:20px}
+main{width:100%;max-width:360px;text-align:center}
+h1{font-size:22px;margin:14px 0 4px;font-weight:600}
+p{margin:0 0 22px;color:#8b98b3;font-size:14px}
+form{display:flex;flex-direction:column;gap:12px}
+input{width:100%;padding:14px;border-radius:10px;border:1px solid #2a3550;background:#141b2b;color:#e8edf5;font-size:16px}
+input:focus{outline:2px solid #4a90d9;border-color:#4a90d9}
+button{padding:14px;border:0;border-radius:10px;background:#4a90d9;color:#fff;font-size:16px;font-weight:600;cursor:pointer}
+button:disabled{opacity:.6;cursor:default}
+#err{min-height:20px;color:#ff8585;font-size:14px}
+.lock{font-size:40px}
+</style></head><body><main>
+<div class="lock" aria-hidden="true">&#128274;</div>
+<h1>${name}</h1>
+<p>${configured ? 'Enter your household password to continue.' : 'Remote sign-in has not been set up on this device.'}</p>
+${configured ? `<form id="f" autocomplete="on">
+<input id="pw" type="password" name="password" placeholder="Password" autocomplete="current-password" required autofocus>
+<button id="go" type="submit">Sign in</button>
+<div id="err" role="alert"></div>
+</form>` : ''}
+</main>
+<script>
+(function () {
+  var f = document.getElementById('f');
+  if (!f) return;
+  var next = ${JSON.stringify(next).replace(/</g, '\\u003c')};
+  var err = document.getElementById('err'), go = document.getElementById('go'), pw = document.getElementById('pw');
+  f.addEventListener('submit', function (e) {
+    e.preventDefault();
+    err.textContent = '';
+    go.disabled = true;
+    fetch('/api/remote-auth/login', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw.value })
+    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (x) {
+        if (x.ok) { window.location.replace(next); return; }
+        err.textContent = (x.j && x.j.error) || 'Sign-in failed.';
+        go.disabled = false; pw.select();
+      })
+      .catch(function () { err.textContent = 'Could not reach the device. Check your connection.'; go.disabled = false; });
+  });
+})();
+</script></body></html>`);
+}
+
+// ── Remote sign-in email alerts (optional, off by default) ───────────────────
+// Sent through the same mail account the Daily Briefing uses. Modes: off / new (a device we have not seen
+// sign in, plus lockouts) / all (every sign-in, plus lockouts). "Device" = a fingerprint of the browser's
+// user-agent, so a phone whose address changes on cellular is still the same device. Turning the option
+// on can only be done from the home network; sending never blocks or fails a sign-in.
+const ALERT_LOCKOUT_GAP_MS = 30 * 60 * 1000;
+const _alertLast = new Map();      // fingerprint -> last alert time (all-mode throttle)
+let _alertLockoutAt = 0;
+function alertMode() { const m = getSetting('remote_alert_mode'); return m === 'new' || m === 'all' ? m : 'off'; }
+function uaFingerprint(ua) { return sha256hex(String(ua || '').toLowerCase()).slice(0, 16); }
+function knownDevices() { try { const a = JSON.parse(getSetting('remote_known_devices') || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } }
+function rememberDevice(fp) { const a = knownDevices(); if (!a.includes(fp)) { a.push(fp); setSetting('remote_known_devices', JSON.stringify(a.slice(-60))); } }
+function describeUserAgent(ua) {
+  const u = String(ua || '');
+  const os = /iPhone/.test(u) ? 'iPhone' : /iPad/.test(u) ? 'iPad' : /Android/.test(u) ? 'Android' : /Windows/.test(u) ? 'Windows' : /Mac OS X|Macintosh/.test(u) ? 'Mac' : /Linux/.test(u) ? 'Linux' : '';
+  const br = /Edg\//.test(u) ? 'Edge' : /Firefox\//.test(u) ? 'Firefox' : /Chrome\/|CriOS/.test(u) ? 'Chrome' : /Safari\//.test(u) ? 'Safari' : '';
+  return [os, br].filter(Boolean).join(' \u00b7 ') || 'Unknown device';
+}
+function alertSenderReady() { const m = getEmailSettings(); return !!(m.briefing_email_user && m.briefing_email_pass); }
+function validAlertEmail(e) { return typeof e === 'string' && e.length <= 200 && /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(e.trim()); }
+async function sendRemoteAlertMail({ subject, text }) {
+  const to = getSetting('remote_alert_email');
+  if (!validAlertEmail(to)) throw new Error('No alert address is set.');
+  if (process.env.PIAZZA_MAIL_CAPTURE_DIR) {          // tests: record the message instead of sending it
+    if (process.env.PIAZZA_MAIL_CAPTURE_FAIL === '1') throw new Error('simulated mail failure');
+    fs.mkdirSync(process.env.PIAZZA_MAIL_CAPTURE_DIR, { recursive: true });
+    fs.writeFileSync(path.join(process.env.PIAZZA_MAIL_CAPTURE_DIR, Date.now() + '-' + crypto.randomBytes(3).toString('hex') + '.json'), JSON.stringify({ to, subject, text }));
+    return;
+  }
+  const m = getEmailSettings();
+  if (!m.briefing_email_user || !m.briefing_email_pass) throw new Error('The sending email account is not set up (Settings \u2192 Daily Briefing).');
+  if (!m.briefing_provider) m.briefing_provider = 'gmail';
+  await buildMailTransporter(m).sendMail({ from: `"Piazza HQ" <${m.briefing_email_user}>`, to: to.trim(), subject, text });
+}
+function recordAlertResult(err) {
+  if (err) { setSetting('remote_alert_last_error', friendlyMailError(err)); console.error('remote sign-in alert failed:', err.message); }
+  else { setSetting('remote_alert_last_error', ''); setSetting('remote_alert_last_sent', String(Date.now())); }
+}
+const { forLanguage: mailLanguage } = require('./src/i18n-server.js');
+const alertT = () => mailLanguage(getSetting('ui_language') || 'en');
+function alertWhereLine(req) {
+  const ip = remoteClientIp(req), cc = String(req.headers['cf-ipcountry'] || '').toUpperCase().slice(0, 2);
+  return `${ip || alertT()('unknown address')}${cc && cc !== 'XX' ? ' (' + cc + ')' : ''}`;
+}
+const ALERT_FOOTER = 'If this was you, there is nothing to do. If it was not, open Piazza HQ on your home network, go to Settings \u2192 Security \u2192 Remote access login and change the remote password: that signs every remote device out.';
+const alertWhen = (T) => (T.english ? new Date().toString() : new Date().toLocaleString(T.locale, { dateStyle: 'full', timeStyle: 'short' }));
+function maybeAlertSignIn(req) {
+  try {
+    const mode = alertMode();
+    if (mode === 'off') return;
+    const fp = uaFingerprint(req.headers['user-agent']);
+    const isNew = !knownDevices().includes(fp);
+    if (isNew) rememberDevice(fp);
+    if (mode === 'new' && !isNew) return;
+    const gap = process.env.PIAZZA_ALERT_THROTTLE_MS !== undefined ? Number(process.env.PIAZZA_ALERT_THROTTLE_MS) : 60 * 1000;
+    if (!isNew && Date.now() - (_alertLast.get(fp) || 0) < gap) return;
+    _alertLast.set(fp, Date.now());
+    const host = getSetting('remote_access_address');
+    const T = alertT();
+    sendRemoteAlertMail({
+      subject: isNew ? T('New device signed in to your Piazza HQ') : T('Sign-in to your Piazza HQ'),
+      text: [
+        isNew ? T('A device we have not seen before just signed in to your Piazza HQ remotely.') : T('Someone just signed in to your Piazza HQ remotely.'), '',
+        '  ' + T('When:') + '   ' + alertWhen(T),
+        '  ' + T('Device:') + ' ' + describeUserAgent(req.headers['user-agent']) + (isNew ? '  (' + T('new') + ')' : ''),
+        '  ' + T('From:') + '   ' + alertWhereLine(req),
+        host ? '  ' + T('Address:') + ' ' + host : '', '', T(ALERT_FOOTER), '',
+      ].filter((l, i, a) => !(l === '' && a[i - 1] === '')).join('\n'),
+    }).then(() => recordAlertResult(null), (e) => recordAlertResult(e));
+  } catch (e) { console.error('remote sign-in alert:', e.message); }
+}
+function maybeAlertLockout(req) {
+  try {
+    if (alertMode() === 'off') return;
+    if (Date.now() - _alertLockoutAt < ALERT_LOCKOUT_GAP_MS) return;
+    _alertLockoutAt = Date.now();
+    const T = alertT();
+    sendRemoteAlertMail({
+      subject: T('Someone is guessing your Piazza HQ password'),
+      text: [T('Someone entered the wrong remote password several times in a row and was locked out. Nothing was opened.'), '',
+        '  ' + T('When:') + ' ' + alertWhen(T),
+        '  ' + T('From:') + ' ' + alertWhereLine(req),
+        '  ' + T('Device:') + ' ' + describeUserAgent(req.headers['user-agent']), '',
+        T('They are blocked for a while automatically. If you have shared your address widely or want to be extra careful, you can change the remote password (Settings \u2192 Security \u2192 Remote access login) or give the address back and get a new one.'), ''].join('\n'),
+    }).then(() => recordAlertResult(null), (e) => recordAlertResult(e));
+  } catch (e) { console.error('remote lockout alert:', e.message); }
+}
+function alertsStatus() {
+  return {
+    mode: alertMode(), email: getSetting('remote_alert_email') || '',
+    sender_ready: alertSenderReady() || !!process.env.PIAZZA_MAIL_CAPTURE_DIR,
+    default_email: (() => { try { const r = getBriefingRecipients(true)[0]; return r ? r.email : ''; } catch { return ''; } })(),
+    last_sent: Number(getSetting('remote_alert_last_sent')) || null, last_error: getSetting('remote_alert_last_error') || '',
+  };
+}
+
+function logRemoteLogin(req, ok) {
+  try {
+    db.prepare(`INSERT INTO remote_login_events (at, ip, user_agent, ok, country) VALUES (?, ?, ?, ?, ?)`)
+      .run(Date.now(), remoteClientIp(req), String(req.headers['user-agent'] || '').slice(0, 200), ok ? 1 : 0, String(req.headers['cf-ipcountry'] || '').slice(0, 4));
+    db.prepare(`DELETE FROM remote_login_events WHERE id <= (SELECT MAX(id) FROM remote_login_events) - 200`).run();
+  } catch (e) { console.error('remote login log:', e.message); }
+}
+async function handleRemoteLogin(req, res) {
+  if (!remoteAuthConfigured()) return res.status(404).json({ error: 'Remote sign-in has not been set up on this device.' });
+  if (!req.is('application/json')) return res.status(415).json({ error: 'Send the password as JSON.' });
+  const ip = remoteClientIp(req);
+  const g = remoteGlobalLimiter.check('global');
+  const rl = remoteLoginLimiter.check(ip);
+  if (!g.allowed || !rl.allowed) {
+    const ms = Math.max(g.allowed ? 0 : g.retryAfterMs, rl.allowed ? 0 : rl.retryAfterMs);
+    const minutes = Math.ceil(ms / 60000);
+    maybeAlertLockout(req);
+    res.set('Retry-After', String(Math.ceil(ms / 1000)));
+    return res.status(429).json({ error: `Too many attempts. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.` });
+  }
+  const pw = req.body && req.body.password;
+  const ok = typeof pw === 'string' && pw.length > 0 && pw.length <= REMOTE_PW_MAX && await verifyRemotePassword(pw, remoteAuthHash());
+  logRemoteLogin(req, ok);
+  if (!ok) return res.status(401).json({ error: 'Incorrect password.' });
+  remoteLoginLimiter.reset(ip);
+  maybeAlertSignIn(req);
+  setRemoteCookie(req, res, createRemoteSession(req), REMOTE_SESSION_TTL_MS);
+  res.json({ ok: true });
+}
+function handleRemoteLogout(req, res) {
+  const tok = readCookie(req, REMOTE_COOKIE);
+  if (tok) { try { db.prepare(`DELETE FROM remote_sessions WHERE id = ?`).run(sha256hex(tok)); } catch {} }
+  setRemoteCookie(req, res, '', 0);
+  res.json({ ok: true });
+}
+function handleRemoteStatus(req, res) {
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    configured: remoteAuthConfigured(),
+    remote: requestIsRemote(req),
+    authenticated: remoteAuthConfigured() ? !!findRemoteSession(req) : false,
+    always_require: getSetting('remote_access_require_auth') === '1',
+  });
+}
+
+function mirrorKeyMatches(req) {
+  const presented = req.headers['x-mirror-license'];
+  const mine = getSetting('update_license_key');
+  if (typeof presented !== 'string' || !presented || !mine) return false;
+  const a = Buffer.from(presented), b = Buffer.from(String(mine));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function remoteGate(req, res, next) {
+  const p = req.path;
+  try {
+    // Reached through this device's own tunnel address but no remote password exists (it was
+    // removed, or a restored backup carried the address): the login gate below would be inert,
+    // so answer nothing rather than the whole app.
+    if (requestHostIsTunnel(req) && !remoteAuthConfigured()) {
+      return res.status(503).type('text/plain').send('Remote access is not set up on this device.');
+    }
+    if (req.method === 'GET' && p === '/login') return sendRemoteLoginPage(req, res);
+    if (req.method === 'POST' && p === '/api/remote-auth/login') {
+      return handleRemoteLogin(req, res).catch((e) => { console.error('remote login error:', e.message); if (!res.headersSent) res.status(500).json({ error: 'Sign-in failed.' }); });
+    }
+    if (req.method === 'POST' && p === '/api/remote-auth/logout') return handleRemoteLogout(req, res);
+    if (req.method === 'GET' && p === '/api/remote-auth/status') return handleRemoteStatus(req, res);
+    if (!remoteGateEnabled(req)) return next();
+    // A mirror of this household syncing with us has no human to type a password. It presents the household
+    // key it already sends on every host call; on the home network / Tailscale that is enough to get past the
+    // "also ask on home Wi-Fi" login (the App PIN still applies as before). Never honoured from the internet.
+    if (!requestIsRemote(req) && mirrorKeyMatches(req)) return next();
+
+    if (findRemoteSession(req)) {
+      // Only for requests that really come from outside: a home/Tailscale device that signed in
+      // because "also ask on home Wi-Fi" is on is still on the home network and keeps these.
+      if (requestIsRemote(req) && remoteBlockedPath(req)) return res.status(403).json({ error: 'This is only available on your home network.', code: 'LOCAL_ONLY' });
+      if (requestIsRemote(req) && remoteControlPath(req) && getSetting('remote_access_allow_control') !== '1') {
+        return res.status(403).json({ error: 'Controlling smart-home devices and TVs from outside is turned off. Turn it on at home in Settings \u2192 Security \u2192 Remote access link.', code: 'REMOTE_CONTROL_OFF' });
+      }
+      if (requestIsRemote(req)) remoteHardenIo(req, res);
+      req.remoteAuthed = true;
+      return next();
+    }
+    if (remoteSelfAuthenticatingPath(req)) return next();
+    if (req.method === 'GET' && p === '/api/version') return next(); // liveness / version only
+    // Not signed in. Browsers navigating to a page get the login screen;
+    // everything else (API calls, assets) gets a 401 the app can act on.
+    if ((req.method === 'GET' || req.method === 'HEAD') && !p.startsWith('/api/') && String(req.headers.accept || '').includes('text/html')) {
+      return res.redirect('/login?next=' + encodeURIComponent(req.originalUrl));
+    }
+    return res.status(401).json({ error: 'Sign in required.', code: 'REMOTE_AUTH_REQUIRED' });
+  } catch (e) {
+    console.error('remote gate error:', e.message);
+    // Fail closed: if the gate itself breaks, a remote-looking request must not slip through.
+    if (requestIsRemote(req)) return res.status(500).json({ error: 'Sign-in check failed.' });
+    return next();
+  }
+}
+
 // ── Middleware ───────────────────────────────────────────────────────────────
 // Skips JSON body-parsing for /api/alexa specifically — ask-sdk-express-adapter
 // needs to read that request's raw, unparsed body itself to verify Alexa's
@@ -2119,6 +2686,8 @@ app.use((req, res, next) => {
   if (req.path === '/api/alexa') return next();
   express.json()(req, res, next);
 });
+// Remote login gate: must run before express.static and every route below.
+app.use(remoteGate);
 // Serve uploaded files explicitly from UPLOAD_DIR. When DATA_DIR is unset
 // this is the same directory the blanket public/ mount below already covers
 // (harmless overlap); when it's set, this is the only thing serving
@@ -2470,8 +3039,21 @@ function timingSafeTokenMatch(presented, configured) {
   return crypto.timingSafeEqual(presentedBuf, configuredBuf);
 }
 
+// Diagnostic for "the PIN screen appeared": one line per PIN-related event that a person could see as a PIN
+// prompt - a 401 from requireAuth, a PIN login, the auth check from a remote/tunnel request. Never logs a
+// PIN or a token. 401s are throttled so a page that fires many requests writes one line.
+let _authDiagAt = 0;
+function authDiag(req, what, always) {
+  try {
+    if (!always) { if (Date.now() - _authDiagAt < 5000) return; _authDiagAt = Date.now(); }
+    console.warn(`[auth] ${what} ${req.method} ${String(req.originalUrl || '').split('?')[0]} pin_set=${!!getPin()} remote=${requestIsRemote(req)} remote_session=${!!req.remoteAuthed} host=${String(req.headers.host || '').slice(0, 60)}`);
+  } catch {}
+}
 // Middleware: protect /app and /api/* (but NOT / display or /api/events GET for display polling)
 function requireAuth(req, res, next) {
+  // Already proven by the remote login gate (a signed-in remote session) —
+  // one login, not the remote password AND the PIN.
+  if (req.remoteAuthed) return next();
   const pin = getPin();
   // Real, foundational bug fixed here: this middleware is only ever reached
   // via `app.use('/api', (req,res,next) => { ...; requireAuth(req,res,next); })`
@@ -2535,6 +3117,7 @@ function requireAuth(req, res, next) {
     }
     const token = req.headers['x-session-token'] || req.query._token;
     if (validToken(token)) return next();
+    authDiag(req, '401 AUTH_REQUIRED (always-auth route)');
     return res.status(401).json({ error: 'Unauthorized', code: 'AUTH_REQUIRED' });
   }
   // Voice/Shortcuts and Alexa routes authenticate themselves — Shortcuts via
@@ -2765,12 +3348,14 @@ function requireAuth(req, res, next) {
 
   const token = req.headers['x-session-token'] || req.query._token;
   if (validToken(token)) return next();
+  authDiag(req, '401 AUTH_REQUIRED');
   res.status(401).json({ error: 'Unauthorized', code: 'AUTH_REQUIRED' });
 }
 
 // POST /api/auth/login
 app.post('/api/auth/login', (req, res) => {
   const pin = getPin();
+  authDiag(req, 'PIN login attempt', true);
   if (!pin) return res.json({ ok: true, token: null }); // no PIN configured
   const ip = clientIp(req);
   const rl = checkLoginRateLimit(ip);
@@ -2802,35 +3387,13 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Display "painted" signal ─────────────────────────────────────────────────
-// The kiosk launcher (scripts/wait-for-server-and-launch-kiosk.sh) needs to know whether the browser's display
-// page actually drew something: a boot that ends on a blank white screen looks, to the server, exactly like a
-// healthy one. The page POSTs here once it has put a frame on screen (two animation frames after its first render,
-// so a window that is not being composited never reports). Only the kiosk browser on this device counts
-// (loopback, no proxy headers); the launcher compares the count with the one it saw at launch. boot_id changes
-// when the server restarts, so a restart can't be mistaken for "no paint".
-const DISPLAY_STATE = { bootId: crypto.randomBytes(4).toString('hex'), paintedCount: 0, lastPaintedAt: 0 };
-function displayReqIsLocal(req) {
-  const a = String(req.socket.remoteAddress || '').replace(/^::ffff:/i, '');
-  const loopback = a === '::1' || /^127\./.test(a);
-  const proxied = ['cf-connecting-ip', 'cf-ray', 'x-forwarded-for', 'x-forwarded-host', 'forwarded', 'x-real-ip', 'true-client-ip'].some((h) => req.headers[h] !== undefined);
-  return loopback && !proxied;
-}
-app.post('/api/display/painted', (req, res) => {
-  if (displayReqIsLocal(req)) { DISPLAY_STATE.paintedCount++; DISPLAY_STATE.lastPaintedAt = Date.now(); }
-  res.json({ ok: true });
-});
-app.get('/api/display/state', (req, res) => {
-  if (!displayReqIsLocal(req)) return res.status(404).json({ error: 'Not found' });
-  res.set('Cache-Control', 'no-store');
-  res.json({ boot_id: DISPLAY_STATE.bootId, painted_count: DISPLAY_STATE.paintedCount, last_painted_at: DISPLAY_STATE.lastPaintedAt });
-});
-
 // GET /api/auth/status
 app.get('/api/auth/status', (req, res) => {
   const pin = getPin();
   const token = req.headers['x-session-token'];
-  res.json({ pin_set: !!pin, authenticated: !pin || validToken(token) });
+  const authenticated = !pin || !!req.remoteAuthed || validToken(token);
+  if (requestIsRemote(req) || !authenticated) authDiag(req, `auth status -> pin_set=${!!pin} authenticated=${authenticated}`, true);
+  res.json({ pin_set: !!pin, authenticated });
 });
 
 // Apply auth to all /api routes except auth itself
@@ -2839,140 +3402,591 @@ app.use('/api', (req, res, next) => {
   requireAuth(req, res, next);
 });
 
+// ── Display "painted" signal ─────────────────────────────────────────────────
+// This code lives in src/display-painted.js. It runs here, at the same place in the file as before.
+require('./src/display-painted.js')({ crypto, app });
+
+// ── Remote access: Cloudflare tunnel (Phase 1) ───────────────────────────────
+// One switch on the HOST device (Settings -> Remote Access) that gives the
+// household a private web address (like brave-otter-4821.piazzahq.com) reaching
+// this app from anywhere, through a Cloudflare tunnel run by `cloudflared` on
+// this box. No port forwarding, no static IP.
+//
+//  * Pairs with the Phase 0 login gate: a tunnel is REFUSED (and stopped)
+//    unless a remote password is set, because without one the gate is inert and
+//    the whole app would be public. A request whose Host header is the tunnel
+//    address is treated as remote even without proxy headers, and while no
+//    password exists it is answered with a 503 instead of the app.
+//  * Host only. A mirror reaches the household through the host's tunnel.
+//  * The Piazza HQ server (mothership) creates the tunnel + DNS name; this
+//    device only asks for it (POST /api/v1/tunnel/provision, idempotent) and
+//    keeps the run token locally (redacted from settings reads, never synced,
+//    handed to cloudflared through its environment, not the command line).
+//  * cloudflared is a pinned, sha256-verified download (like go2rtc), started
+//    late and at the lowest CPU priority so it can never delay a boot, and
+//    restarted with backoff if it dies.
+//  * Opt-in and default off. Nothing here runs until someone turns it on.
+const CLOUDFLARED_VERSION = '2026.9.3';
+const CLOUDFLARED_SHA256 = {
+  'cloudflared-linux-amd64': '77e26d8d900e0b8469f416239d14b5f296525fdf79fee6f511ef55609e3fbac2',
+  'cloudflared-linux-arm64': 'aaeb2d7d0da3614634c7e03ab13487a1522c2e79165ed2929cfe23d5e95b326d',
+  'cloudflared-linux-armhf': 'a714b1bee87e71ce7260555b30722ce711d12aaa0fee5a8aadc767ee6b816a14',
+  'cloudflared-linux-arm': '967dc371a3fedbf09e881c13ee7ba317155ebc336cbd4afb756b46fc6785e5af',
+  'cloudflared-windows-amd64.exe': 'f096265ec2fcbe9bb6e2d64268db167ced3fcbb83d894bdb9e2fcdb26f2ea7e2',
+};
+// process.arch/platform -> release asset (null = no build we pin for this platform).
+// Node reports 'arm' for both ARMv6 (Pi Zero/1) and ARMv7 (Pi 2/3 on a 32-bit OS).
+function cloudflaredAssetName(platform = process.platform, arch = process.arch, armVersion = process.config && process.config.variables && process.config.variables.arm_version) {
+  if (platform === 'linux') {
+    if (arch === 'x64') return 'cloudflared-linux-amd64';
+    if (arch === 'arm64') return 'cloudflared-linux-arm64';
+    if (arch === 'arm') return String(armVersion) === '6' ? 'cloudflared-linux-arm' : 'cloudflared-linux-armhf';
+    return null;
+  }
+  if (platform === 'win32' && arch === 'x64') return 'cloudflared-windows-amd64.exe';
+  return null;
+}
+const CLOUDFLARED_BIN_OVERRIDE = process.env.PIAZZA_CLOUDFLARED_BIN || '';   // tests: a stand-in binary, no download
+// Where the downloaded helper is kept. Normally next to the app. In a container the app folder can be read-only
+// (hardened `read_only: true` setups - found by testing, the download then failed with EROFS) and is thrown away on
+// every image update (so the 40 MB helper was re-downloaded each time); the data volume is the one place that is both
+// writable and persistent.
+function cloudflaredBinPathFor(isWin, isContainer, dataDir, appDir) {
+  return path.join(isContainer && dataDir ? dataDir : appDir, 'bin', isWin ? 'cloudflared.exe' : 'cloudflared');
+}
+const CLOUDFLARED_BIN_PATH = CLOUDFLARED_BIN_OVERRIDE || cloudflaredBinPathFor(IS_WIN, IS_CONTAINER, DATA_DIR, __dirname);
+function cloudflaredBinReady() { try { return fs.existsSync(CLOUDFLARED_BIN_PATH); } catch { return false; } }
+
+const RA = {
+  child: null, starting: false, stopRequested: false, restartTID: null,
+  backoff: 5000, fastFails: 0, startedAt: 0, connections: 0, everConnected: false,
+  lastError: '', downloading: false, downloadPromise: null, bringUp: null,
+  availableAt: 0, available: null, disconnectedSince: 0, reconcileTimer: null,
+  // Which cloudflared connIndex values are currently registered — see raHandleLine()'s comment for why
+  // this replaced a simple up/down counter (a real connection loss, e.g. the server deleting the tunnel
+  // out from under a running cloudflared, was invisible to that counter and left status permanently
+  // stuck on "connected"). RA.connections is kept as liveConnIndexes.size for everything that reads it.
+  liveConnIndexes: new Set(),
+};
+let _raHostLc = '';   // lower-cased tunnel address, cached so the per-request check costs nothing
+let _raHostLoaded = false;   // loaded on first use: settings helpers are defined further down the file
+function raLoadHost() { _raHostLc = String(getSetting('remote_access_address') || '').trim().toLowerCase(); _raHostLoaded = true; }
+function raMode() { return getSetting('remote_access_mode') === '1'; }
+// True when the request came in through this device's own tunnel address.
+function requestHostIsTunnel(req) {
+  if (!_raHostLoaded) raLoadHost();
+  if (!_raHostLc) return false;
+  const h = String(req.headers.host || '').toLowerCase().replace(/:\d+$/, '');
+  return h === _raHostLc;
+}
+class RaError extends Error { constructor(status, code, message) { super(message); this.status = status; this.code = code; } }
+
+// Why this device can or can't run a tunnel right now: { ok:true } or { ok:false, code, message }.
+function raEligibility() {
+  if (IS_DEMO) return { ok: false, code: 'DEMO', message: 'Not available in the demo.' };
+  if (isSlave()) return { ok: false, code: 'NOT_HOST', message: 'Set up remote access on your main (host) device. A mirror screen reaches the household through the host.' };
+  if (!remoteAuthConfigured()) return { ok: false, code: 'NEEDS_PASSWORD', message: 'Set a remote password first (Settings → Security). Without one, anyone with the link could open your calendar.' };
+  if (!resolveUpdateServerUrl()) return { ok: false, code: 'NO_SERVER', message: 'This device has no Piazza HQ server address configured.' };
+  if (!getSetting('update_license_key')) return { ok: false, code: 'NO_KEY', message: 'Enter this device’s key in Settings first — remote access needs it to set up your address.' };
+  if (!getSetting('screen_device_id_cache')) return { ok: false, code: 'NO_DEVICE', message: 'This device has not checked in with the Piazza HQ server yet. Try again in a few minutes.' };
+  if (!cloudflaredAssetName() && !CLOUDFLARED_BIN_OVERRIDE) return { ok: false, code: 'UNSUPPORTED', message: 'Remote access is not available on this kind of device yet.' };
+  return { ok: true };
+}
+
+const RA_ERROR_TEXT = {
+  DISABLED: 'Remote access is not switched on for Piazza HQ yet. It is coming soon — nothing was changed.',
+  NOT_CONFIGURED: 'Remote access is not available right now. Please try again later.',
+  NOT_HOST: 'Only your household’s main (host) device can turn on remote access.',
+  NOT_ELIGIBLE: 'Remote access is not available for this account.',
+  NO_LICENSE: 'This device’s key was not recognised. Check it in Settings.',
+  LICENSE_CAP: 'This account already has the maximum number of remote-access addresses.',
+  CAPACITY: 'Remote access is busy right now. Please try again later.',
+  RATE_LIMIT: 'Too many requests. Please try again in a few minutes.',
+  CF_ERROR: 'The address could not be set up just now. Please try again in a minute.',
+  CF_UNREACHABLE: 'The address could not be set up just now. Please try again in a minute.',
+  RENAME_LIMIT: 'You have changed this address a few times today. Try again tomorrow.',
+  NO_TUNNEL: 'Turn on remote access first.',
+  NAME_TAKEN: 'Could not find a free address with that name. Try a different one.',
+};
+async function raMothership(method, apiPath, body, timeoutMs = 30000) {
+  const serverUrl = String(process.env.PIAZZA_TUNNEL_SERVER_URL || resolveUpdateServerUrl()).replace(/\/$/, '');   // env override: tests point this at a fake server
+  const key = getSetting('update_license_key');
+  let r;
+  try {
+    r = await fetchWithTimeout(serverUrl + apiPath, {
+      method, timeoutMs,
+      headers: Object.assign({ 'x-license-key': key }, body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (e) {
+    throw new RaError(502, 'UNREACHABLE', 'Could not reach the Piazza HQ server. Check this device’s internet connection and try again.');
+  }
+  const json = await r.json().catch(() => ({}));
+  return { status: r.status, ok: r.ok, json };
+}
+// Ask the server for this device's tunnel (creates it the first time, otherwise
+// returns the same address with a fresh run token) and remember the result.
+async function raProvision() {
+  const device = getSetting('screen_device_id_cache');
+  const r = await raMothership('POST', '/api/v1/tunnel/provision', { device, port: parseInt(PORT, 10) || 3000 });
+  const j = r.json || {};
+  if (!r.ok || !j.ok || !j.hostname || !j.tunnel_token) {
+    throw new RaError(r.status >= 400 ? r.status : 502, j.code || 'ERROR', RA_ERROR_TEXT[j.code] || j.error || 'Could not set up remote access.');
+  }
+  setSetting('remote_access_address', String(j.hostname).toLowerCase());
+  setSetting('remote_access_tunnel_token', String(j.tunnel_token));
+  setSetting('remote_access_device_id', device);
+  raLoadHost();
+  return { hostname: String(j.hostname).toLowerCase(), url: j.url || ('https://' + j.hostname) };
+}
+
+async function sha256File(p) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    fs.createReadStream(p).on('data', (d) => h.update(d)).on('error', reject).on('end', () => resolve(h.digest('hex')));
+  });
+}
+// Make sure the cloudflared binary exists (pinned release, sha256-verified). Shared
+// between concurrent callers. Returns true when ready; throws RaError otherwise.
+// Why fetching/saving the helper failed, in words that point at the real cause. Every failure used to be reported as
+// "check this device's internet connection", which sent people looking in the wrong place when the real problem was a
+// read-only or full disk.
+function raDownloadFailureMessage(e) {
+  const code = e && e.code;
+  const text = String((e && e.message) || '');
+  if (code === 'EROFS' || code === 'EACCES' || code === 'EPERM' || /EROFS|EACCES|EPERM/.test(text)) return 'Could not save the remote-access helper: the folder it needs to write to is read-only or not writable (on Docker, the data volume must be writable). It will retry.';
+  if (code === 'ENOSPC' || /ENOSPC/.test(text)) return 'Could not save the remote-access helper: this device is out of disk space. It will retry.';
+  if (/sha256 mismatch/.test(text)) return 'The remote-access helper that was downloaded did not pass its safety check, so it was not used. It will retry.';
+  return 'Could not download the remote-access helper. Check this device’s internet connection; it will retry.';
+}
+async function raEnsureBinary() {
+  if (cloudflaredBinReady()) return true;
+  if (RA.downloadPromise) return RA.downloadPromise;
+  const asset = cloudflaredAssetName();
+  const sha = asset && CLOUDFLARED_SHA256[asset];
+  if (!asset || !sha) throw new RaError(400, 'UNSUPPORTED', 'Remote access is not available on this kind of device yet.');
+  RA.downloadPromise = (async () => {
+    RA.downloading = true;
+    const binDir = path.dirname(CLOUDFLARED_BIN_PATH);
+    const tmp = path.join(binDir, `.cloudflared.download.${process.pid}`);
+    try {
+      fs.mkdirSync(binDir, { recursive: true });
+      console.log(`[remote-access] downloading cloudflared ${CLOUDFLARED_VERSION} (${asset})…`);
+      await downloadFile(`https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/${asset}`, tmp, 180000);
+      const got = await sha256File(tmp);
+      if (got !== sha) throw new Error(`sha256 mismatch (expected ${sha}, got ${got})`);
+      fs.renameSync(tmp, CLOUDFLARED_BIN_PATH);
+      if (!IS_WIN) { try { fs.chmodSync(CLOUDFLARED_BIN_PATH, 0o755); } catch {} }
+      console.log('[remote-access] cloudflared ready');
+      return true;
+    } catch (e) {
+      try { fs.rmSync(tmp, { force: true }); } catch {}
+      console.error('[remote-access] cloudflared download failed: ' + e.message);
+      throw new RaError(502, 'DOWNLOAD_FAILED', raDownloadFailureMessage(e));
+    } finally { RA.downloading = false; }
+  })().finally(() => { RA.downloadPromise = null; });
+  return RA.downloadPromise;
+}
+
+// A connection that goes away cleanly logs "Unregistered tunnel connection" — but one the SERVER kills out
+// from under a running cloudflared (exactly what the admin kill switch does, confirmed live 2026-10-02 on
+// 87: the tunnel/DNS were genuinely deleted, yet cloudflared kept running and retrying forever) instead logs
+// "Connection terminated" or a failed "Register tunnel error" for that connIndex, neither of which the old
+// code recognized as "this connection is gone." A plain up/down counter that only ever decremented on the
+// clean message got stuck at its last positive value forever in that case — and since raStatus() reports
+// "connected" purely from that counter being above zero, and raReconcile()'s self-healing check refuses to
+// even ask the mothership while it's above zero, BOTH the status the app shows and the automatic "this was
+// switched off" recovery were broken by the same stuck value. Tracking actual live connIndexes in a set
+// fixes both: any of the three ways a given connIndex can stop being live removes it, in any order, however
+// many times a message repeats (a Set absorbs duplicates; `delete` on an absent member is a no-op) — so the
+// count only reflects connections that are still actually registered.
+function raHandleLine(line) {
+  const m = line.match(/connIndex=(\d+)/);
+  const idx = m ? m[1] : null;
+  if (/Registered tunnel connection/.test(line) && !/Unregistered/.test(line)) {
+    if (idx !== null) RA.liveConnIndexes.add(idx); else RA.connections++;   // no connIndex in the line (e.g. a test double): fall back to a bare increment
+    RA.connections = RA.liveConnIndexes.size || RA.connections;
+    RA.disconnectedSince = 0; RA.everConnected = true; RA.fastFails = 0; RA.backoff = 5000; RA.lastError = '';
+    console.log('[cloudflared] ' + line.slice(0, 240));
+  } else if (/Unregistered tunnel connection/.test(line) || /Connection terminated/.test(line) || /Register tunnel error/.test(line)) {
+    if (idx !== null) RA.liveConnIndexes.delete(idx);
+    RA.connections = RA.liveConnIndexes.size;
+    if (RA.connections === 0 && !RA.disconnectedSince) RA.disconnectedSince = Date.now();
+    if (/ ERR /.test(line)) RA.lastError = line.replace(/^\S+\s+ERR\s+/, '').slice(0, 200);
+    console.log('[cloudflared] ' + line.slice(0, 240));
+  }
+  else if (/ ERR /.test(line)) { RA.lastError = line.replace(/^\S+\s+ERR\s+/, '').slice(0, 200); console.log('[cloudflared] ' + line.slice(0, 240)); }
+  else if (/ WRN /.test(line) || /Starting tunnel/.test(line)) { console.log('[cloudflared] ' + line.slice(0, 240)); }
+}
+function raScheduleRestart(delayMs) {
+  if (RA.restartTID) clearTimeout(RA.restartTID);
+  RA.restartTID = setTimeout(() => { RA.restartTID = null; raBringUp('restart').catch(() => {}); }, delayMs);
+}
+function raSpawn(token) {
+  let cmd = CLOUDFLARED_BIN_PATH;
+  let args = ['tunnel', '--no-autoupdate', '--loglevel', 'info', 'run'];
+  // Lowest CPU priority: a tunnel must never compete with the display for a Pi 3's CPU.
+  if (CLOUDFLARED_BIN_OVERRIDE.endsWith('.js')) { args = [CLOUDFLARED_BIN_OVERRIDE].concat(args); cmd = process.execPath; }   // tests: a Node script standing in for the binary
+  else if (!IS_WIN && fs.existsSync('/usr/bin/nice')) { args = ['-n', '19', cmd].concat(args); cmd = '/usr/bin/nice'; }
+  const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: Object.assign({}, process.env, { TUNNEL_TOKEN: token }) });
+  RA.child = child; RA.starting = true; RA.stopRequested = false; RA.connections = 0; RA.liveConnIndexes.clear(); RA.everConnected = false; RA.startedAt = Date.now(); RA.disconnectedSince = Date.now();
+  let buf = '';
+  const onData = (b) => { buf += b; let i; while ((i = buf.indexOf('\n')) >= 0) { raHandleLine(buf.slice(0, i).trim()); buf = buf.slice(i + 1); } if (buf.length > 4000) buf = ''; };
+  child.stdout.on('data', onData); child.stderr.on('data', onData);
+  child.on('error', (e) => { RA.lastError = 'Could not start the remote-access helper: ' + e.message; console.error('[remote-access] ' + RA.lastError); });
+  child.on('spawn', () => { RA.starting = false; console.log(`[remote-access] cloudflared started (pid ${child.pid}) for ${getSetting('remote_access_address') || ''}`); });
+  child.on('exit', (code, sig) => {
+    console.log(`[remote-access] cloudflared exited (code ${code}${sig ? ', signal ' + sig : ''})`);
+    const ranMs = Date.now() - RA.startedAt;
+    RA.child = null; RA.starting = false; RA.connections = 0; RA.liveConnIndexes.clear();
+    if (RA.exitResolve) { const r = RA.exitResolve; RA.exitResolve = null; RA.exited = null; r(); }
+    if (RA.stopRequested) { RA.stopRequested = false; return; }
+    if (!raMode()) return;
+    if (ranMs < 20000 && !RA.everConnected) RA.fastFails++;
+    RA.backoff = Math.min(RA.backoff * 2, 5 * 60 * 1000);
+    raScheduleRestart(RA.backoff);
+  });
+}
+function raStop(reason) {
+  if (RA.restartTID) { clearTimeout(RA.restartTID); RA.restartTID = null; }
+  const c = RA.child;
+  if (!c) return;
+  console.log('[remote-access] stopping (' + (reason || 'requested') + ')');
+  RA.stopRequested = true;
+  RA.exited = new Promise((r) => { RA.exitResolve = r; });   // lets a quick "turn it back on" wait for this process to be gone
+  try { c.kill(); } catch {}
+}
+// The server has switched remote access off (kill switch), removed this address, or no longer allows this
+// device: stop, forget the address and token, and leave a note in Settings saying why.
+function raTurnOffBecause(message) {
+  console.warn('[remote-access] switching off: ' + message);
+  setSetting('remote_access_mode', '0'); setSetting('remote_access_address', ''); setSetting('remote_access_tunnel_token', ''); setSetting('remote_access_device_id', '');
+  setSetting('remote_access_notice', message);
+  raLoadHost(); raStop('server switched it off'); RA.lastError = ''; RA.disconnectedSince = 0; RA.available = null;
+}
+const RA_SERVER_SAID_NO = new Set(['DISABLED', 'NOT_ELIGIBLE', 'NO_LICENSE', 'NOT_HOST']);
+// While the tunnel is not connected for a while, ask the server whether it should even exist. A tunnel the
+// server has removed makes cloudflared retry forever; this is what turns that into a clear "switched off".
+async function raReconcile() {
+  if (!raMode() || RA.bringUp || RA.downloading) return;
+  if (RA.connections > 0) return;
+  const grace = Number(process.env.PIAZZA_RA_DISCONNECT_GRACE_MS) || 3 * 60 * 1000;
+  if (!RA.disconnectedSince || Date.now() - RA.disconnectedSince < grace) return;
+  if (!raEligibility().ok) return;
+  try {
+    const r = await raMothership('GET', '/api/v1/tunnel/status?device=' + encodeURIComponent(getSetting('screen_device_id_cache')), undefined, 8000);
+    if (r.ok && r.json && r.json.enabled === false) raTurnOffBecause('Remote access was switched off by Piazza HQ. Nothing on your home network changed.');
+    else if (r.ok && r.json && r.json.provisioned === false) raTurnOffBecause('Your remote-access address was removed. You can turn it on again to get a new one.');
+    else if (!r.ok && RA_SERVER_SAID_NO.has(r.json && r.json.code)) raTurnOffBecause(RA_ERROR_TEXT[r.json.code] || 'Remote access is not available for this device.');
+  } catch { /* server unreachable: keep trying the tunnel we have */ }
+}
+// Get the tunnel running: eligibility -> binary -> (refresh the run token if there's
+// none or the last few starts failed at once) -> spawn. Never throws to callers
+// that ignore the result; problems land in RA.lastError for the status card.
+function raBringUp(why) {
+  if (RA.bringUp) return RA.bringUp;
+  RA.bringUp = (async () => {
+    try {
+      if (RA.child && RA.stopRequested && RA.exited) await Promise.race([RA.exited, new Promise((r) => setTimeout(r, 5000))]);   // a stop is still finishing
+      if (!raMode() || RA.child) return;
+      const el = raEligibility();
+      if (!el.ok) { RA.lastError = el.message; return; }
+      if (getSetting('remote_access_device_id') && getSetting('remote_access_device_id') !== getSetting('screen_device_id_cache')) {
+        // A restored backup or cloned card carries the old device's tunnel; running it here would split the
+        // household's traffic between two boxes. Drop it; turning remote access on again makes a fresh one.
+        console.warn('[remote-access] tunnel belongs to a different device id — switching remote access off here');
+        setSetting('remote_access_mode', '0'); setSetting('remote_access_address', ''); setSetting('remote_access_tunnel_token', ''); setSetting('remote_access_device_id', ''); raLoadHost();
+        RA.lastError = '';
+        return;
+      }
+      await raEnsureBinary();
+      if (!getSetting('remote_access_tunnel_token') || RA.fastFails >= 3) {
+        try { await raProvision(); RA.fastFails = 0; }
+        catch (e) {
+          if (RA_SERVER_SAID_NO.has(e.code)) { raTurnOffBecause(e.message); return; }
+          if (!getSetting('remote_access_tunnel_token')) throw e; /* otherwise keep trying the token we have */
+        }
+      }
+      raSpawn(getSetting('remote_access_tunnel_token'));
+      RA.lastError = '';
+    } catch (e) {
+      RA.lastError = e.message || String(e);
+      console.error('[remote-access] ' + (why || 'start') + ' failed: ' + RA.lastError);
+      if (raMode()) raScheduleRestart(Math.min(RA.backoff = Math.min(RA.backoff * 2, 5 * 60 * 1000), 5 * 60 * 1000));
+    }
+  })().finally(() => { RA.bringUp = null; });   // cleared after the assignment below, even if the body finishes without awaiting
+  return RA.bringUp;
+}
+
+async function raServerAvailable() {
+  if (RA.available !== null && Date.now() - RA.availableAt < 60000) return RA.available;
+  try {
+    const r = await raMothership('GET', '/api/v1/tunnel/status?device=' + encodeURIComponent(getSetting('screen_device_id_cache')), undefined, 4000);
+    RA.available = r.ok ? !!(r.json && r.json.enabled) : (RA.available === null ? null : RA.available);
+  } catch { /* leave as is */ }
+  RA.availableAt = Date.now();
+  return RA.available;
+}
+async function raStatus() {
+  const el = raEligibility();
+  const on = raMode();
+  let state = 'off';
+  if (on) {
+    if (!el.ok) state = 'blocked';
+    else if (RA.downloading) state = 'downloading';
+    else if (RA.child && RA.connections > 0) state = 'connected';
+    else if (RA.child || RA.starting || RA.bringUp) state = 'connecting';
+    else if (RA.lastError) state = 'error';
+    else state = 'connecting';
+  }
+  const hostname = getSetting('remote_access_address') || '';
+  const canAsk = !isSlave() && el.code !== 'NO_KEY' && el.code !== 'NO_SERVER' && el.code !== 'NO_DEVICE' && !IS_DEMO;
+  return {
+    enabled: on, state,
+    eligible: el.ok, blocked_reason: el.ok ? null : el.code, message: el.ok ? '' : el.message,
+    hostname, url: hostname ? 'https://' + hostname : '', app_url: hostname ? 'https://' + hostname + '/app' : '',   // the control app; the bare address is the wall-display view
+    connections: RA.connections, last_error: on ? (RA.lastError || '') : '',
+    is_host: !isSlave(), password_set: remoteAuthConfigured(), allow_control: getSetting('remote_access_allow_control') === '1',
+    notice: on ? '' : (getSetting('remote_access_notice') || ''),
+    available: canAsk ? await raServerAvailable() : null,
+    supported: !!cloudflaredAssetName() || !!CLOUDFLARED_BIN_OVERRIDE,
+  };
+}
+
+app.get('/api/remote-access/status', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json(await raStatus()); } catch (e) { res.status(500).json({ error: 'Could not read remote access status.' }); }
+});
+app.post('/api/remote-access/enable', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const el = raEligibility();
+    if (!el.ok) return res.status(400).json({ error: el.message, code: el.code });
+    await raProvision();                       // quick; errors here are reported straight back
+    setSetting('remote_access_mode', '1'); setSetting('remote_access_notice', '');
+    RA.lastError = ''; RA.fastFails = 0; RA.backoff = 5000; RA.disconnectedSince = Date.now();
+    raBringUp('enable').catch(() => {});      // binary download + start continue in the background
+    res.json(await raStatus());
+  } catch (e) {
+    if (e instanceof RaError) return res.status(e.status >= 400 && e.status < 600 ? e.status : 502).json({ error: e.message, code: e.code });
+    console.error('[remote-access] enable error:', e.message);
+    res.status(500).json({ error: 'Could not turn on remote access.' });
+  }
+});
+// Email alerts for remote sign-ins. Home-network only (a remote visitor must not be able to switch the
+// alerts off, or point them at their own inbox).
+app.get('/api/remote-access/alerts', (req, res) => { res.set('Cache-Control', 'no-store'); res.json(alertsStatus()); });
+app.post('/api/remote-access/alerts', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const b = req.body || {};
+  const mode = b.mode === 'new' || b.mode === 'all' ? b.mode : 'off';
+  const email = String(b.email == null ? getSetting('remote_alert_email') : b.email).trim();
+  if (mode !== 'off') {
+    if (!validAlertEmail(email)) return res.status(400).json({ error: 'Enter the email address the alerts should go to.', code: 'BAD_EMAIL' });
+    if (!alertsStatus().sender_ready) return res.status(400).json({ error: 'Set up the sending email account first (Settings \u2192 Daily Briefing), then come back.', code: 'NO_SENDER' });
+  }
+  const wasOff = alertMode() === 'off';
+  if (validAlertEmail(email)) setSetting('remote_alert_email', email);
+  setSetting('remote_alert_mode', mode);
+  if (mode !== 'off' && wasOff) {
+    // Devices signed in right now are ones you know about: don't email about them later.
+    try { for (const r of db.prepare(`SELECT user_agent FROM remote_sessions WHERE expires_at > ?`).all(Date.now())) rememberDevice(uaFingerprint(r.user_agent)); } catch {}
+  }
+  res.json(alertsStatus());
+});
+app.post('/api/remote-access/alerts/test', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const T = alertT();
+    await sendRemoteAlertMail({ subject: T('Test alert from Piazza HQ'), text: T('This is a test. If you can read this, sign-in alerts will reach you here.') + '\n\n' + T('You will get an email like this when someone signs in to your Piazza HQ from outside your home (depending on the option you chose).') + '\n' });
+    recordAlertResult(null);
+    res.json({ ok: true, ...alertsStatus() });
+  } catch (e) {
+    recordAlertResult(e);
+    res.status(502).json({ error: friendlyMailError(e), code: 'MAIL_FAILED' });
+  }
+});
+// Whether a remote sign-in may operate real devices (smart-home actions, TV power). Off unless someone at home
+// turns it on - and it can only be changed from the home network (this whole path is LAN-only, see remoteBlockedPath).
+app.post('/api/remote-access/control', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  setSetting('remote_access_allow_control', req.body && req.body.allow === true ? '1' : '0');
+  raStatus().then((st) => res.json(st)).catch(() => res.status(500).json({ error: 'Could not save that.' }));
+});
+// Change the words in the address. The server adds a random 4-digit suffix and keeps the tunnel (and this
+// device's run token) as they are; only the public name moves.
+app.post('/api/remote-access/rename', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const el = raEligibility();
+    if (!el.ok) return res.status(400).json({ error: el.message, code: el.code });
+    if (!raMode() || !getSetting('remote_access_address')) return res.status(400).json({ error: RA_ERROR_TEXT.NO_TUNNEL, code: 'NO_TUNNEL' });
+    const r = await raMothership('POST', '/api/v1/tunnel/rename', { device: getSetting('screen_device_id_cache'), name: String((req.body && req.body.name) || '') });
+    if (r.status === 404 && !(r.json && r.json.code)) return res.status(503).json({ error: 'Changing the address is not available yet.', code: 'UNAVAILABLE' });
+    const j = r.json || {};
+    if (!r.ok || !j.ok || !j.hostname) return res.status(r.status >= 400 ? r.status : 502).json({ error: j.code === 'BAD_NAME' ? j.error : (RA_ERROR_TEXT[j.code] || j.error || 'Could not change the address.'), code: j.code || 'ERROR' });
+    setSetting('remote_access_address', String(j.hostname).toLowerCase()); raLoadHost();
+    res.json(await raStatus());
+  } catch (e) {
+    if (e instanceof RaError) return res.status(e.status >= 400 && e.status < 600 ? e.status : 502).json({ error: e.message, code: e.code });
+    console.error('[remote-access] rename error:', e.message);
+    res.status(500).json({ error: 'Could not change the address.' });
+  }
+});
+// Turn it off. By default the address is kept (so turning it back on gives the same link);
+// { release: true } also gives the address back to the server.
+app.post('/api/remote-access/disable', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    setSetting('remote_access_mode', '0');
+    raStop('disabled by user');
+    RA.lastError = '';
+    if (req.body && req.body.release === true && getSetting('remote_access_address')) {
+      try {
+        const r = await raMothership('POST', '/api/v1/tunnel/revoke', { device: getSetting('screen_device_id_cache') });
+        // 502 = the server will finish removing it itself; either way it is no longer ours.
+        if (!r.ok && r.status !== 502) return res.status(r.status).json({ error: RA_ERROR_TEXT[r.json && r.json.code] || (r.json && r.json.error) || 'Could not release the address.', code: r.json && r.json.code });
+      } catch (e) {
+        if (e instanceof RaError) return res.status(502).json({ error: e.message + ' The tunnel is off, but the address was kept. Try again later.', code: e.code });
+        throw e;
+      }
+      setSetting('remote_access_address', ''); setSetting('remote_access_tunnel_token', ''); setSetting('remote_access_device_id', ''); raLoadHost();
+    }
+    res.json(await raStatus());
+  } catch (e) {
+    console.error('[remote-access] disable error:', e.message);
+    res.status(500).json({ error: 'Could not turn off remote access.' });
+  }
+});
+
+
+// Start late so it never competes with the display for the first paint, then keep
+// it healthy: the periodic check restarts a tunnel that died while the backoff
+// timer was lost (e.g. a failed start that left nothing scheduled).
+setTimeout(() => { if (raMode()) raBringUp('boot').catch(() => {}); }, Number(process.env.PIAZZA_RA_BOOT_DELAY_MS) || 60 * 1000);
+setInterval(() => { if (raMode() && !RA.child && !RA.bringUp && !RA.restartTID) raBringUp('watchdog').catch(() => {}); }, 30 * 60 * 1000);
+setInterval(() => { raReconcile().catch(() => {}); }, Number(process.env.PIAZZA_RA_RECONCILE_MS) || 2 * 60 * 1000);
+
+// ── Remote access: manage the remote password + sessions ─────────────────────
+// (Login / logout / status are handled up in remoteGate(), before any of the
+// other auth.) These sit behind the normal /api auth, so changing them needs
+// the App PIN session if a PIN is set. Setting the FIRST password is only
+// allowed from the home network; changing or removing it from a remote
+// session additionally needs the current password.
+// The remote password is the only lock on a public address, so refuse the passwords that guess-runs
+// try first. Not a complexity ritual: length and unpredictability are what matter, which is why a
+// few unrelated words ("maple river lantern quiet") passes and "Password123!" does not.
+const COMMON_PASSWORDS = new Set(['password', 'password1', 'password12', 'password123', 'password1234', 'passw0rd', 'p@ssw0rd', 'p@ssword', 'letmein', 'letmein123', 'welcome', 'welcome1', 'welcome123',
+  'qwerty', 'qwerty123', 'qwertyuiop', 'qwertyuiop1', 'qazwsxedc', '1qaz2wsx', '1q2w3e4r', '1q2w3e4r5t', 'zxcvbnm', 'asdfghjkl', 'asdfghjkl1', 'iloveyou', 'iloveyou1', 'iloveyou123', 'admin', 'admin123', 'administrator',
+  '1234567890', '12345678901', '0123456789', '9876543210', '0987654321', '1234512345', '1122334455', '1111111111', '0000000000', 'abcdefghij', 'abcd1234', 'abc123456', 'abcdefg123',
+  'monkey', 'dragon', 'football', 'baseball', 'basketball', 'superman', 'batman', 'starwars', 'trustno1', 'sunshine', 'princess', 'master', 'mustang', 'shadow', 'michael', 'jennifer', 'jordan23', 'pokemon',
+  'changeme', 'changeme123', 'secret', 'secret123', 'default', 'test1234', 'testing123', 'guest', 'guest123', 'login', 'login123', 'hello123', 'hellohello', 'freedom', 'whatever', 'computer', 'internet',
+  'raspberry', 'raspberrypi', 'piazza', 'piazzahq', 'piazza123', 'piazzahq123', 'calendar', 'calendar123', 'family', 'family123', 'mycalendar', 'mypassword', 'mypassword1', 'newpassword', 'newpassword1',
+  'summer2024', 'summer2025', 'summer2026', 'winter2025', 'winter2026', 'spring2026', 'autumn2026', 'fall2026', 'january2026', 'september2026', 'october2026']);
+const PASSWORD_BAD_PARTS = ['password', 'passw0rd', 'qwerty', 'letmein', 'welcome', 'iloveyou', 'admin', 'abc123', '123456', '654321', '111111', '000000', 'monkey', 'dragon', 'football', 'baseball', 'sunshine', 'princess', 'trustno1', 'changeme', 'piazza'];
+const PASSWORD_RUN_SOURCES = ['abcdefghijklmnopqrstuvwxyz', '0123456789', 'qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
+function remotePasswordWeakness(pw) {
+  const lower = pw.toLowerCase();
+  const compact = lower.replace(/[^a-z0-9]/g, '');
+  const why = 'That password is too easy to guess. Use a few unrelated words, like "maple river lantern quiet", or something longer.';
+  if (COMMON_PASSWORDS.has(lower) || COMMON_PASSWORDS.has(compact)) return why;
+  if (new Set(pw).size < 5) return why;                                       // aaaaaaaaaa, abababababab
+  if (compact.length >= 6 && PASSWORD_RUN_SOURCES.some((src) => src.includes(compact) || src.split('').reverse().join('').includes(compact))) return why;   // 1234567890, qwertyuiop
+  if (/^\d+$/.test(pw) && pw.length < 16) return why;                         // digits only
+  if (pw.length < 16 && PASSWORD_BAD_PARTS.some((p) => compact.includes(p))) return why;   // Password2026!, Piazza12345
+  return null;
+}
+function remoteAuthValidNewPassword(pw) {
+  if (typeof pw !== 'string') return 'Enter a password.';
+  if (pw.length < REMOTE_PW_MIN) return `Use at least ${REMOTE_PW_MIN} characters — a short phrase of a few words works well.`;
+  if (pw.length > REMOTE_PW_MAX) return `Keep it under ${REMOTE_PW_MAX} characters.`;
+  return remotePasswordWeakness(pw);
+}
+async function remoteCurrentPasswordOk(req) {
+  const cur = req.body && req.body.current_password;
+  return typeof cur === 'string' && cur.length > 0 && cur.length <= REMOTE_PW_MAX && await verifyRemotePassword(cur, remoteAuthHash());
+}
+
+app.put('/api/remote-auth/password', async (req, res) => {
+  try {
+    const bad = remoteAuthValidNewPassword(req.body && req.body.password);
+    if (bad) return res.status(400).json({ error: bad });
+    const configured = remoteAuthConfigured();
+    if (requestIsRemote(req)) {
+      if (!configured) return res.status(403).json({ error: 'Set the first remote password while you are on your home network.' });
+      const lim = remoteLoginLimiter.check('pw:' + remoteClientIp(req));
+      if (!lim.allowed) return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+      if (!await remoteCurrentPasswordOk(req)) return res.status(403).json({ error: 'Current password is incorrect.' });
+    }
+    const hash = await hashRemotePassword(req.body.password);
+    db.prepare(`INSERT OR REPLACE INTO remote_auth (id, password_hash, updated_at) VALUES (1, ?, ?)`).run(hash, Date.now());
+    _remoteAuthConfigured = true;
+    // A new password signs every device out, including this one — then a
+    // remote caller is signed straight back in so changing it isn't a lockout.
+    db.prepare(`DELETE FROM remote_sessions`).run();
+    if (requestIsRemote(req)) setRemoteCookie(req, res, createRemoteSession(req), REMOTE_SESSION_TTL_MS);
+    res.json({ ok: true, configured: true });
+  } catch (e) {
+    console.error('remote password set error:', e.message);
+    res.status(500).json({ error: 'Could not save the password.' });
+  }
+});
+
+app.delete('/api/remote-auth/password', async (req, res) => {
+  try {
+    if (requestIsRemote(req) && remoteAuthConfigured()) {
+      const lim = remoteLoginLimiter.check('pw:' + remoteClientIp(req));
+      if (!lim.allowed) return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+      if (!await remoteCurrentPasswordOk(req)) return res.status(403).json({ error: 'Current password is incorrect.' });
+    }
+    db.prepare(`DELETE FROM remote_auth`).run();
+    db.prepare(`DELETE FROM remote_sessions`).run();
+    _remoteAuthConfigured = false;
+    // No password = no login gate, so a live tunnel would expose the app. Stop it and switch it off.
+    let tunnelStopped = false;
+    if (raMode()) { setSetting('remote_access_mode', '0'); raStop('remote password removed'); tunnelStopped = true; }
+    res.json({ ok: true, configured: false, remote_access_stopped: tunnelStopped });
+  } catch (e) {
+    console.error('remote password remove error:', e.message);
+    res.status(500).json({ error: 'Could not remove the password.' });
+  }
+});
+
+app.get('/api/remote-auth/events', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const seen = Number(getSetting('remote_events_seen_at')) || 0;
+  const events = db.prepare(`SELECT id, at, ip, user_agent, ok, country FROM remote_login_events ORDER BY id DESC LIMIT 30`).all();
+  const cnt = (ok) => db.prepare(`SELECT COUNT(*) AS n FROM remote_login_events WHERE ok = ? AND at > ?`).get(ok, seen).n;
+  res.json({ events, new_success: cnt(1), new_failed: cnt(0) });
+});
+app.post('/api/remote-auth/events/seen', (req, res) => {
+  setSetting('remote_events_seen_at', String(Date.now()));
+  res.json({ ok: true });
+});
+app.get('/api/remote-auth/sessions', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const mine = req.remoteAuthed ? sha256hex(readCookie(req, REMOTE_COOKIE) || '') : null;
+  const rows = db.prepare(`SELECT id, created_at, last_seen, expires_at, ip, user_agent FROM remote_sessions WHERE expires_at > ? ORDER BY last_seen DESC`).all(Date.now());
+  res.json(rows.map((r) => ({ id: r.id, created_at: r.created_at, last_seen: r.last_seen, expires_at: r.expires_at, ip: r.ip, user_agent: r.user_agent, current: r.id === mine })));
+});
+app.delete('/api/remote-auth/sessions', (req, res) => {
+  const r = db.prepare(`DELETE FROM remote_sessions`).run();
+  res.json({ ok: true, revoked: r.changes });
+});
+app.delete('/api/remote-auth/sessions/:id', (req, res) => {
+  const r = db.prepare(`DELETE FROM remote_sessions WHERE id = ?`).run(String(req.params.id));
+  res.json({ ok: true, revoked: r.changes });
+});
+
+
 // ── Events API ───────────────────────────────────────────────────────────────
 
 // GET /api/events?from=YYYY-MM-DD&to=YYYY-MM-DD
 // ── Chore chart API ───────────────────────────────────────────────────────────
-// A chore DEFINITION recurs; we expand it into per-kid, per-date instances on demand.
-// Scheduling is intentionally simpler than full ICS: daily, weekly-by-weekday, or a
-// one-time date.
-function choreAppliesOn(chore, dateStr) {
-  if (!chore.active) return false;
-  const d = new Date(dateStr + 'T00:00:00');
-  if (chore.freq === 'once') return (chore.on_date || '') === dateStr;
-  if (chore.freq === 'daily') return true;
-  if (chore.freq === 'weekly') {
-    const codes = (chore.byday || '').split(',').map(s => s.trim()).filter(Boolean);
-    if (!codes.length) return true; // no specific days = every day
-    const WD = ['SU','MO','TU','WE','TH','FR','SA'];
-    return codes.includes(WD[d.getDay()]);
-  }
-  return false;
-}
-// Which kids a chore is for, on a given date. assignee is one of:
-//   'all'              -> every kid
-//   '3'                -> a single kid id (legacy/simple case)
-//   '3,5,7'            -> a specific subset of kids (comma-separated ids)
-function choreKidIds(chore, dateStr) {
-  let ids;
-  if (chore.assignee === 'all') {
-    ids = db.prepare(`SELECT id FROM kids ORDER BY sort_order, id`).all().map(r => r.id);
-  } else {
-    ids = String(chore.assignee || '')
-      .split(',').map(s => parseInt(s.trim())).filter(Number.isFinite);
-  }
-  // Take turns: just the one person whose turn it is on this date.
-  if (chore.rotate && chore.freq !== 'once' && dateStr) {
-    const kidsInOrder = db.prepare(`SELECT id FROM kids ORDER BY sort_order, id`).all().map(r => r.id);
-    const cycle = kidsInOrder.filter(k => ids.includes(k));   // the cycle always runs in the kids' own order
-    const one = choreRotationKidId(chore, dateStr, cycle);
-    return one == null ? [] : [one];
-  }
-  return ids;
-}
-// How many days a chore applies on in [fromStr, toStr), negative if toStr is before fromStr. Whole weeks are counted by arithmetic so a
-// date years away costs the same as tomorrow.
-function choreApplicableDaysBefore(chore, fromStr, toStr) {
-  if (fromStr === toStr) return 0;
-  if (fromStr > toStr) return -choreApplicableDaysBefore(chore, toStr, fromStr);
-  const utc = (iso) => { const [y, m, d] = iso.split('-').map(Number); return Date.UTC(y, m - 1, d); };
-  const days = Math.round((utc(toStr) - utc(fromStr)) / 86400000);
-  const codes = chore.freq === 'weekly' ? String(chore.byday || '').split(',').map(x => x.trim()).filter(Boolean) : [];
-  if (!codes.length) return days;                        // every day (daily, or weekly with no days picked = every day)
-  const WD = ['SU','MO','TU','WE','TH','FR','SA'];
-  const weeks = Math.floor(days / 7);
-  let count = weeks * codes.filter((c, i) => WD.includes(c) && codes.indexOf(c) === i).length;
-  for (let i = 0; i < days % 7; i++) {
-    if (codes.includes(WD[new Date(utc(fromStr) + (weeks * 7 + i) * 86400000).getUTCDay()])) count++;
-  }
-  return count;
-}
-// Which of the cycle's people (kid ids, in order) has a take-turns chore on dateStr: the start person on the anchor day, then the next
-// person for each day the chore applies on since. Worked out from the date alone, so a skipped day or a restart cannot shift it.
-function choreRotationKidId(chore, dateStr, kidIds) {
-  const n = kidIds.length;
-  if (!n) return null;
-  let start = kidIds.indexOf(Number(chore.rotate_start));
-  if (start < 0) start = 0;
-  const k = choreApplicableDaysBefore(chore, chore.rotate_anchor || dateStr, dateStr);
-  return kidIds[(((start + k) % n) + n) % n];
-}
-// Ensures instance rows exist for a given date across all active chores, so the
-// kid/parent/wall views all read consistent state. Also pulls forward unfinished
-// carryover chores from previous days (marked overdue).
-function materializeChoreInstances(dateStr) {
-  const chores = db.prepare(`SELECT * FROM chores WHERE active = 1 AND bonus = 0`).all();
-  const ins = db.prepare(`INSERT OR IGNORE INTO chore_instances (chore_id, kid_id, date, pay_amount) VALUES (?, ?, ?, ?)`);
-  const tx = db.transaction(() => {
-    for (const c of chores) {
-      if (!choreAppliesOn(c, dateStr)) continue;
-      for (const kidId of choreKidIds(c, dateStr)) ins.run(c.id, kidId, dateStr, c.pay_amount || 0);
-    }
-  });
-  tx();
-}
-// Returns a kid's chores for a date: today's applicable ones plus any carryover
-// (unfinished, carryover=1, from an earlier date).
-function getKidChores(kidId, dateStr) {
-  materializeChoreInstances(dateStr);
-  const rows = db.prepare(`
-    SELECT ci.id as instance_id, ci.date, ci.done, ci.completed_at, ci.pay_amount, ci.proof_photo,
-           c.id as chore_id, c.title, c.icon, c.celebrate, c.carryover, c.at_time, c.notes, c.photo_required
-    FROM chore_instances ci
-    JOIN chores c ON c.id = ci.chore_id
-    WHERE ci.kid_id = ?
-      AND ( ci.date = ?
-            OR (ci.done = 0 AND c.carryover = 1 AND ci.date < ?) )
-    ORDER BY (ci.date < ?) DESC, c.at_time = '' ASC, c.at_time ASC, c.sort_order, c.id
-  `).all(kidId, dateStr, dateStr, dateStr);
-  return rows.map(r => ({ ...r, overdue: r.date < dateStr && !r.done }));
-}
-// Current streak = consecutive days (walking backward from today) where every chore
-// instance dated that day was completed. A day with zero instances (no chore applied,
-// or the app simply wasn't running that day to materialize them) is skipped rather
-// than breaking the streak — we only ever break on a day that demonstrably had
-// chores left undone. Stops at the kid's created_at date so a new kid never inherits
-// a phantom streak from before they existed.
-function getKidStreak(kidId, todayStr = localDateStr()) {
-  const kid = db.prepare(`SELECT created_at FROM kids WHERE id = ?`).get(kidId);
-  if (!kid) return 0;
-  const earliest = (kid.created_at || '').slice(0, 10) || todayStr;
-  const [y, m, d] = todayStr.split('-').map(Number);
-  let cursor = new Date(y, m - 1, d);
-  let streak = 0, isFirstDay = true;
-  for (let i = 0; i < 3650; i++) {
-    const ds = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`;
-    if (ds < earliest) break;
-    const rows = db.prepare(`SELECT done FROM chore_instances WHERE kid_id = ? AND date = ?`).all(kidId, ds);
-    if (rows.length) {
-      const allDone = rows.every(r => r.done);
-      if (allDone) streak++;
-      else if (!isFirstDay) break; // today being incomplete doesn't break the streak yet
-    }
-    isFirstDay = false;
-    cursor.setDate(cursor.getDate() - 1);
-  }
-  return streak;
-}
-// Sticker balance = every sticker ever earned minus every star ever spent on a
-// reward redemption. Same append-only-ledger math as allowance's SUM(amount) —
-// no mutable running-total column anywhere, so it's always derivable and a
-// redemption undo (see DELETE /api/sticker-redemptions/:id) is exact.
-function getKidStickerBalance(kidId) {
-  const earned = db.prepare(`SELECT COUNT(*) c FROM stickers WHERE kid_id = ?`).get(kidId).c;
-  const spent = db.prepare(`SELECT COALESCE(SUM(star_cost),0) c FROM sticker_redemptions WHERE kid_id = ?`).get(kidId).c;
-  return earned - spent;
-}
+// This code lives in src/chore-engine.js. It runs here, at the same place in the file as before.
+const { materializeChoreInstances, getKidChores, getKidStreak, getKidStickerBalance } = require('./src/chore-engine.js')({ db, localDateStr });
+
+// ── The family's clock (what day and time is it?) ────────────────────
 // IMPORTANT: "what day/time is it right now, for this family" should ALWAYS go
 // through appNow()/localDateStr()/localHHMM() below — never raw `new Date()`
 // getters or toISOString(). Two related bugs live here:
@@ -3022,2020 +4036,95 @@ function localHHMM() {
 }
 function choreToday() { return localDateStr(); }
 
-// Kids CRUD
-app.get('/api/kids', (req, res) => {
-  res.json(db.prepare(`SELECT * FROM kids ORDER BY sort_order, id`).all());
-});
-app.post('/api/kids', (req, res) => {
-  const { name, color, avatar, display_mode, allowance_enabled, allowance_mode, weekly_rate, savings_goal_name, savings_goal_amount, sticker_style, sticker_emoji } = req.body;
-  if (!name || !name.trim()) return res.status(400).json({ error: 'Name required' });
-  const max = db.prepare(`SELECT MAX(sort_order) m FROM kids`).get().m || 0;
-  const r = db.prepare(`INSERT INTO kids
-    (name, color, avatar, display_mode, sort_order, allowance_enabled, allowance_mode, weekly_rate, savings_goal_name, savings_goal_amount, sticker_style, sticker_emoji)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      name.trim(), color || '#4A90D9', avatar || '🙂', display_mode || 'both', max + 1,
-      allowance_enabled ? 1 : 0, allowance_mode || 'per_chore', Number(weekly_rate) || 0,
-      (savings_goal_name || '').trim(), Number(savings_goal_amount) || 0,
-      sticker_style || 'star', (sticker_emoji || '').trim());
-  broadcastUpdate('chores');
-  res.status(201).json(db.prepare(`SELECT * FROM kids WHERE id = ?`).get(r.lastInsertRowid));
-});
-app.put('/api/kids/:id', (req, res) => {
-  const { name, color, avatar, display_mode, allowance_enabled, allowance_mode, weekly_rate, savings_goal_name, savings_goal_amount, sticker_style, sticker_emoji } = req.body;
-  const k = db.prepare(`SELECT * FROM kids WHERE id = ?`).get(req.params.id);
-  if (!k) return res.status(404).json({ error: 'Not found' });
-  db.prepare(`UPDATE kids SET name=?, color=?, avatar=?, display_mode=?,
-              allowance_enabled=?, allowance_mode=?, weekly_rate=?,
-              savings_goal_name=?, savings_goal_amount=?, sticker_style=?, sticker_emoji=? WHERE id=?`)
-    .run(name ?? k.name, color ?? k.color, avatar ?? k.avatar, display_mode ?? k.display_mode,
-         (allowance_enabled ?? k.allowance_enabled) ? 1 : 0,
-         allowance_mode ?? k.allowance_mode,
-         (weekly_rate !== undefined ? Number(weekly_rate) || 0 : k.weekly_rate),
-         (savings_goal_name !== undefined ? (savings_goal_name || '').trim() : k.savings_goal_name),
-         (savings_goal_amount !== undefined ? Number(savings_goal_amount) || 0 : k.savings_goal_amount),
-         sticker_style ?? k.sticker_style,
-         (sticker_emoji !== undefined ? (sticker_emoji || '').trim() : k.sticker_emoji),
-         k.id);
-  broadcastUpdate('chores');
-  res.json(db.prepare(`SELECT * FROM kids WHERE id = ?`).get(k.id));
-});
-app.delete('/api/kids/:id', (req, res) => {
-  db.prepare(`DELETE FROM kids WHERE id = ?`).run(req.params.id);
-  db.prepare(`DELETE FROM chore_instances WHERE kid_id = ?`).run(req.params.id);
-  db.prepare(`DELETE FROM allowance_ledger WHERE kid_id = ?`).run(req.params.id);
-  db.prepare(`DELETE FROM stickers WHERE kid_id = ?`).run(req.params.id);
-  db.prepare(`DELETE FROM sticker_redemptions WHERE kid_id = ?`).run(req.params.id);
-  broadcastUpdate('chores');
-  res.json({ ok: true });
-});
+// ── Kids ──────────────────────────────────────────────────
+// This code lives in src/kids.js. It runs here, at the same place in the file as before.
+require('./src/kids.js')({ app, db, broadcastUpdate });
 
 // ── Built-in To-Do Lists (fully local, no external account needed) ───────────
-// Deliberately separate from the Todoist-backed Tasks widget — see the schema
-// comment above todo_lists for why.
-app.get('/api/todo-lists', (req, res) => {
-  const lists = db.prepare(`
-    SELECT tl.*,
-      (SELECT COUNT(*) FROM todo_items ti WHERE ti.list_id = tl.id AND ti.done = 0) as itemCount
-    FROM todo_lists tl ORDER BY tl.sort_order, tl.id
-  `).all();
-  res.json(lists);
-});
-app.post('/api/todo-lists', (req, res) => {
-  const name = demoCleanText((req.body.name || '').trim(), 60);
-  if (!name) return res.status(400).json({ error: 'A list name is required.' });
-  const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM todo_lists`).get();
-  const info = db.prepare(`INSERT INTO todo_lists (name, sort_order) VALUES (?, ?)`)
-    .run(name, (maxOrder.m || 0) + 1);
-  broadcastUpdate('todos');
-  res.json({ id: info.lastInsertRowid, name, sort_order: (maxOrder.m || 0) + 1 });
-});
-app.put('/api/todo-lists/:id', (req, res) => {
-  const list = db.prepare(`SELECT id FROM todo_lists WHERE id = ?`).get(req.params.id);
-  if (!list) return res.status(404).json({ error: 'List not found.' });
-  if (req.body.name !== undefined) {
-    const name = demoCleanText(String(req.body.name).trim(), 60);
-    if (!name) return res.status(400).json({ error: 'A list name is required.' });
-    db.prepare(`UPDATE todo_lists SET name = ? WHERE id = ?`).run(name, req.params.id);
-  }
-  if (req.body.sort_order !== undefined) {
-    db.prepare(`UPDATE todo_lists SET sort_order = ? WHERE id = ?`).run(Number(req.body.sort_order) || 0, req.params.id);
-  }
-  broadcastUpdate('todos');
-  res.json({ ok: true });
-});
-app.delete('/api/todo-lists/:id', (req, res) => {
-  db.prepare(`DELETE FROM todo_items WHERE list_id = ?`).run(req.params.id);
-  db.prepare(`DELETE FROM todo_lists WHERE id = ?`).run(req.params.id);
-  broadcastUpdate('todos');
-  res.json({ ok: true });
-});
-
-app.get('/api/todo-lists/:id/items', (req, res) => {
-  const items = db.prepare(`SELECT * FROM todo_items WHERE list_id = ? ORDER BY done, sort_order, id`).all(req.params.id);
-  res.json(items);
-});
-app.post('/api/todo-lists/:id/items', (req, res) => {
-  const text = demoCleanText((req.body.text || '').trim(), 120);
-  if (!text) return res.status(400).json({ error: 'Item text is required.' });
-  const list = db.prepare(`SELECT id FROM todo_lists WHERE id = ?`).get(req.params.id);
-  if (!list) return res.status(404).json({ error: 'List not found.' });
-  const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM todo_items WHERE list_id = ?`).get(req.params.id);
-  const info = db.prepare(`INSERT INTO todo_items (list_id, text, sort_order) VALUES (?, ?, ?)`)
-    .run(req.params.id, text, (maxOrder.m || 0) + 1);
-  broadcastUpdate('todos');
-  res.json({ id: info.lastInsertRowid, list_id: Number(req.params.id), text, done: 0 });
-});
-app.put('/api/todo-items/:id', (req, res) => {
-  const item = db.prepare(`SELECT * FROM todo_items WHERE id = ?`).get(req.params.id);
-  if (!item) return res.status(404).json({ error: 'Item not found.' });
-  if (req.body.text !== undefined) {
-    const text = demoCleanText(String(req.body.text).trim(), 120);
-    if (!text) return res.status(400).json({ error: 'Item text is required.' });
-    db.prepare(`UPDATE todo_items SET text = ? WHERE id = ?`).run(text, req.params.id);
-  }
-  if (req.body.done !== undefined) {
-    const done = req.body.done ? 1 : 0;
-    const completedAt = done ? new Date().toISOString() : '';
-    db.prepare(`UPDATE todo_items SET done = ?, completed_at = ? WHERE id = ?`).run(done, completedAt, req.params.id);
-  }
-  if (req.body.sort_order !== undefined) {
-    db.prepare(`UPDATE todo_items SET sort_order = ? WHERE id = ?`).run(Number(req.body.sort_order) || 0, req.params.id);
-  }
-  broadcastUpdate('todos');
-  res.json({ ok: true });
-});
-app.delete('/api/todo-items/:id', (req, res) => {
-  db.prepare(`DELETE FROM todo_items WHERE id = ?`).run(req.params.id);
-  broadcastUpdate('todos');
-  res.json({ ok: true });
-});
+// This code lives in src/todo-lists.js. It runs here, at the same place in the file as before.
+require('./src/todo-lists.js')({ app, db, demoCleanText, broadcastUpdate });
 
 // ── Shopping list ────────────────────────────────────────────────────────────
-// "Buy" links to store search pages are built entirely client-side (see hub.html
-// and the wall-display widget) from the item text — no product matching, no
-// scraping, no API keys, just a plain search-URL per store.
-//
-// Multiple lists: like to-dos, shopping can now have several named lists
-// (regular grocery vs Costco). Every call that predates lists — GET/POST
-// /api/shopping-list and POST .../clear-done with no list given — acts on the
-// DEFAULT list (the first one), so older clients (a mirror or hub tab still on
-// an earlier version) behave exactly as they did with a single list.
-function defaultShoppingListId() {
-  const r = db.prepare(`SELECT id FROM shopping_lists ORDER BY sort_order, id LIMIT 1`).get();
-  if (r) return r.id;
-  return Number(db.prepare(`INSERT INTO shopping_lists (name, sort_order) VALUES ('Shopping List', 0)`).run().lastInsertRowid);
-}
-// A request-supplied list id → a real list id, the default when none was
-// given, or null when one was given that doesn't exist.
-function resolveShoppingListId(v) {
-  if (v === undefined || v === null || v === '') return defaultShoppingListId();
-  const r = db.prepare(`SELECT id FROM shopping_lists WHERE id = ?`).get(Number(v));
-  return r ? r.id : null;
-}
-app.get('/api/shopping-lists', (req, res) => {
-  defaultShoppingListId(); // guarantees at least one list exists
-  res.json(db.prepare(`
-    SELECT sl.id, sl.name, sl.sort_order,
-           (SELECT COUNT(*) FROM shopping_items si WHERE si.list_id = sl.id AND si.done = 0) AS open_count
-    FROM shopping_lists sl ORDER BY sl.sort_order, sl.id`).all());
-});
-app.post('/api/shopping-lists', (req, res) => {
-  const name = demoCleanText(String((req.body && req.body.name) || '').trim(), 60);
-  if (!name) return res.status(400).json({ error: 'A list name is required.' });
-  const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM shopping_lists`).get();
-  const info = db.prepare(`INSERT INTO shopping_lists (name, sort_order) VALUES (?, ?)`).run(name, (maxOrder.m || 0) + 1);
-  broadcastUpdate('shopping');
-  res.status(201).json({ id: Number(info.lastInsertRowid), name });
-});
-app.put('/api/shopping-lists/:id', (req, res) => {
-  const list = db.prepare(`SELECT id FROM shopping_lists WHERE id = ?`).get(req.params.id);
-  if (!list) return res.status(404).json({ error: 'List not found.' });
-  if (req.body.name !== undefined) {
-    const name = demoCleanText(String(req.body.name).trim(), 60);
-    if (!name) return res.status(400).json({ error: 'A list name is required.' });
-    db.prepare(`UPDATE shopping_lists SET name = ? WHERE id = ?`).run(name, req.params.id);
-  }
-  if (req.body.sort_order !== undefined) {
-    db.prepare(`UPDATE shopping_lists SET sort_order = ? WHERE id = ?`).run(Number(req.body.sort_order) || 0, req.params.id);
-  }
-  broadcastUpdate('shopping');
-  res.json({ ok: true });
-});
-app.delete('/api/shopping-lists/:id', (req, res) => {
-  const list = db.prepare(`SELECT id FROM shopping_lists WHERE id = ?`).get(req.params.id);
-  if (!list) return res.status(404).json({ error: 'List not found.' });
-  // Never delete the last remaining list — there's always somewhere for the
-  // default (un-targeted) add to land.
-  const count = db.prepare(`SELECT COUNT(*) AS n FROM shopping_lists`).get().n;
-  if (count <= 1) return res.status(409).json({ error: 'You need at least one shopping list.' });
-  db.prepare(`DELETE FROM shopping_items WHERE list_id = ?`).run(req.params.id);
-  db.prepare(`DELETE FROM shopping_lists WHERE id = ?`).run(req.params.id);
-  broadcastUpdate('shopping');
-  res.json({ ok: true });
-});
-// ?list=<id> → that list's items; ?list=all → every list's items (each row
-// carries its list_id — what the wall display uses so several widgets can each
-// show a different list from one fetch); no param → the default list.
-app.get('/api/shopping-list', (req, res) => {
-  if (req.query.list === 'all') {
-    return res.json(db.prepare(`SELECT * FROM shopping_items ORDER BY done, sort_order, id`).all());
-  }
-  const listId = resolveShoppingListId(req.query.list);
-  if (listId === null) return res.status(404).json({ error: 'List not found.' });
-  res.json(db.prepare(`SELECT * FROM shopping_items WHERE list_id = ? ORDER BY done, sort_order, id`).all(listId));
-});
-app.post('/api/shopping-list', (req, res) => {
-  const text = demoCleanText((req.body.text || '').trim(), 120);
-  if (!text) return res.status(400).json({ error: 'Item text is required.' });
-  const listId = resolveShoppingListId(req.body.list_id);
-  if (listId === null) return res.status(404).json({ error: 'List not found.' });
-  const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM shopping_items WHERE list_id = ?`).get(listId);
-  const info = db.prepare(`INSERT INTO shopping_items (list_id, text, sort_order) VALUES (?, ?, ?)`)
-    .run(listId, text, (maxOrder.m || 0) + 1);
-  broadcastUpdate('shopping');
-  res.status(201).json({ id: info.lastInsertRowid, list_id: listId, text, done: 0 });
-});
-app.put('/api/shopping-items/:id', (req, res) => {
-  const item = db.prepare(`SELECT * FROM shopping_items WHERE id = ?`).get(req.params.id);
-  if (!item) return res.status(404).json({ error: 'Item not found.' });
-  if (req.body.text !== undefined) {
-    const text = demoCleanText(String(req.body.text).trim(), 120);
-    if (!text) return res.status(400).json({ error: 'Item text is required.' });
-    db.prepare(`UPDATE shopping_items SET text = ? WHERE id = ?`).run(text, req.params.id);
-  }
-  if (req.body.done !== undefined) {
-    const done = req.body.done ? 1 : 0;
-    const completedAt = done ? new Date().toISOString() : '';
-    db.prepare(`UPDATE shopping_items SET done = ?, completed_at = ? WHERE id = ?`).run(done, completedAt, req.params.id);
-  }
-  broadcastUpdate('shopping');
-  res.json({ ok: true });
-});
-app.delete('/api/shopping-items/:id', (req, res) => {
-  db.prepare(`DELETE FROM shopping_items WHERE id = ?`).run(req.params.id);
-  broadcastUpdate('shopping');
-  res.json({ ok: true });
-});
-// Clears every checked-off item at once — the "I put it all away" button.
-// Scoped to one list (?list=<id> or body.list_id; the default list if neither).
-app.post('/api/shopping-list/clear-done', (req, res) => {
-  const listId = resolveShoppingListId(req.query.list !== undefined ? req.query.list : (req.body && req.body.list_id));
-  if (listId === null) return res.status(404).json({ error: 'List not found.' });
-  const r = db.prepare(`DELETE FROM shopping_items WHERE done = 1 AND list_id = ?`).run(listId);
-  broadcastUpdate('shopping');
-  res.json({ ok: true, removed: r.changes });
-});
+// This code lives in src/shopping.js. It runs here, at the same place in the file as before.
+const { defaultShoppingListId } = require('./src/shopping.js')({ app, db, demoCleanText, broadcastUpdate });
 
 // ── Voice control (Siri Shortcuts / similar) ──────────────────────────────────
-// A long-lived bearer token, generated server-side (never user-typed, unlike
-// ha_token which comes from HA itself — this one needs to BE strong since
-// nothing else vouches for it), stored as a normal setting so it round-trips
-// through the existing GET/PUT /api/settings the same as everything else.
-// Generation stays behind the normal requireAuth (PIN session, or open if no
-// PIN — same as the rest of Settings) since minting a new credential is a
-// sensitive action; USING it (the actual add-item route below) authenticates
-// itself instead, since a voice automation can't do an interactive PIN login.
-app.post('/api/voice-token/generate', (req, res) => {
-  const token = crypto.randomBytes(24).toString('hex');
-  db.prepare(`INSERT INTO settings (key, value) VALUES ('voice_token', ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(token);
-  res.json({ token });
-});
-app.delete('/api/voice-token', (req, res) => {
-  db.prepare(`DELETE FROM settings WHERE key = 'voice_token'`).run();
-  res.json({ ok: true });
-});
+// This code lives in src/voice-token.js. It runs here, at the same place in the file as before.
+require('./src/voice-token.js')({ crypto, app, db });
 
 // ── Home Assistant control (reverse direction): automation token ───────────
-// Same shape as the Siri Shortcuts voice_token just above — a long-lived,
-// server-generated bearer token, stored as a normal setting, that lets an
-// external automation (Home Assistant's rest_command, or any curl-capable
-// tool) call a small, explicitly-listed set of device-control routes without
-// an interactive PIN session. See the requireAuth() exemption below for
-// exactly which routes this unlocks — deliberately narrow: TV/monitor power
-// and saved-layout apply (which also switches theme), nothing else.
-app.post('/api/automation-token/generate', (req, res) => {
-  const token = crypto.randomBytes(24).toString('hex');
-  db.prepare(`INSERT INTO settings (key, value) VALUES ('automation_token', ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(token);
-  res.json({ token });
-});
-app.delete('/api/automation-token', (req, res) => {
-  db.prepare(`DELETE FROM settings WHERE key = 'automation_token'`).run();
-  res.json({ ok: true });
-});
-
-// Read-only discovery under the same automation_token, for a client that
-// needs to find valid ids on its own (the HA custom integration's config
-// flow) rather than have them typed in by hand. Same queries mqtt-bridge.js
-// already uses for its own discovery (publishSwitches/publishSelects) —
-// deliberately reused verbatim rather than re-derived, so all three doors
-// agree on exactly what counts as "a screen with TV control" or "a saved
-// layout" without risk of drifting apart.
-app.get('/api/automation/screens', (req, res) => {
-  const rows = db.prepare(`SELECT device_id, name FROM screens WHERE tv_control_type != ''`).all();
-  res.json(rows);
-});
-app.get('/api/automation/displays', (req, res) => {
-  const rows = db.prepare(`SELECT slug, name FROM displays ORDER BY sort_order ASC, id ASC`).all();
-  res.json(rows);
-});
-app.get('/api/automation/saved-layouts', (req, res) => {
-  const rows = db.prepare(`SELECT id, name FROM saved_layouts ORDER BY created_at DESC, id DESC`).all();
-  res.json(rows);
-});
+// This code lives in src/automation-token.js. It runs here, at the same place in the file as before.
+require('./src/automation-token.js')({ crypto, app, db });
 
 // ── Home Assistant control (reverse direction): MQTT ────────────────────────
-// Staged follow-up to the automation-token/REST door just above — same two
-// underlying actions (TV/monitor power, saved-layout+theme apply), reached
-// instead through the household's own MQTT broker with HA MQTT Discovery,
-// so entities just appear with no YAML. See mqtt-bridge.js for the actual
-// connection/discovery/command logic; this is just status + a one-shot
-// connection test for the Settings UI, same role /api/ha's own connection
-// check plays for the outbound integration above.
-app.get('/api/mqtt-status', (req, res) => {
-  res.json({
-    available: !!mqttBridge && mqttBridge.isAvailable(),
-    configured: getSetting('mqtt_enabled') === '1' && !!getSetting('mqtt_broker_url'),
-    connected: !!mqttBridge && mqttBridge.isConnected(),
-  });
-});
-app.post('/api/mqtt/test', (req, res) => {
-  let mqttLib; try { mqttLib = require('mqtt'); } catch { mqttLib = null; }
-  if (!mqttLib) return res.status(503).json({ ok: false, error: 'The mqtt package isn\'t installed on this device yet — apply the latest update, then try again.' });
-  const { brokerUrl, username, password } = req.body || {};
-  if (!brokerUrl) return res.status(400).json({ ok: false, error: 'Broker URL is required.' });
-  // A throwaway client, fully separate from the real persistent one in
-  // mqtt-bridge.js — this only ever tests whatever's currently typed in the
-  // form (which may not be saved yet), and always tears itself down before
-  // responding, success or failure, so a test never leaks a connection
-  // alongside the real one.
-  let settled = false;
-  const testClient = mqttLib.connect(brokerUrl, {
-    username: username || undefined, password: password || undefined,
-    clientId: `piazzahq_test_${crypto.randomBytes(4).toString('hex')}`,
-    connectTimeout: 8000, reconnectPeriod: 0,
-  });
-  const finish = (ok, error) => {
-    if (settled) return;
-    settled = true;
-    try { testClient.end(true); } catch {}
-    if (ok) res.json({ ok: true });
-    else res.status(400).json({ ok: false, error: error || 'Could not connect.' });
-  };
-  testClient.on('connect', () => finish(true));
-  testClient.on('error', (e) => finish(false, e.message));
-  setTimeout(() => finish(false, 'Connection timed out.'), 9000);
-});
+// This code lives in src/mqtt-routes.js. It runs here, at the same place in the file as before.
+require('./src/mqtt-routes.js')({ crypto, mqttBridge, app, getSetting: (k) => getSetting(k) });
 
-// Strips natural command phrasing off the front and back of a spoken/typed
-// voice input, so "add bananas to the shopping list" and "put paper towels
-// on my list" both become just the actual item — "bananas", "paper towels"
-// — rather than being stored verbatim. Answering the Shortcuts prompt with
-// just the item name already worked fine before this and still does (no
-// leading/trailing pattern to strip means the text passes through
-// untouched) — this specifically targets the more natural full-sentence
-// phrasing someone would reasonably expect a voice assistant to handle,
-// since neither Siri Shortcuts' free-text dictation nor Alexa's custom slot
-// values do that kind of extraction on their own.
-// Deliberately simple pattern-matching, not real NLU — won't catch every
-// possible phrasing (rare/unusual wording can still come through
-// unstripped), but covers the common "add/put X to/on (the/my) ___ list"
-// shapes without needing an actual language model for something this small.
-function extractItemFromSpokenPhrase(raw) {
-  let text = (raw || '').trim();
-  if (!text) return text;
-  text = text.replace(/^(please\s+)?(can you\s+)?(add|put|throw|include|get)\s+/i, '');
-  text = text.replace(/\s+please\.?$/i, '');
-  // The real target list is already decided by the `list` parameter, not by
-  // whatever list name was actually spoken — so this doesn't need to match
-  // a specific list name, just the general "to/on (the/my/our) ___ list"
-  // shape at the end of the sentence. Stripping trailing "please" BEFORE
-  // this, not after, matters — "add coffee to the list please" has "please"
-  // sitting after "list", which would otherwise stop the list-phrase
-  // pattern from anchoring to the actual end of the string.
-  text = text.replace(/\s+(to|on|for)\s+(the\s+|my\s+|our\s+)?[\w\s]*?\blist\b\.?\s*$/i, '');
-  text = text.trim().replace(/[.!?]+$/, '').trim();
-  return text || raw.trim(); // never return empty if stripping happened to over-match
-}
-
-// Shared by both voice surfaces (Siri Shortcuts' REST endpoint below, and the
-// Alexa skill handler further down) so the actual "where does this item go"
-// logic exists exactly once. Returns { ok, list, id, text } on success, or
-// { error, status } on failure — callers translate that into whatever shape
-// their own protocol needs (plain JSON for Shortcuts, an Alexa speech
-// response for Alexa), rather than this function knowing about either.
-// list defaults to the shopping list; anything else is case-insensitively
-// matched against existing To-Do list names — an unrecognized name is a real
-// error, not a silent fallback to the wrong list.
-function addVoiceItem(text, listName) {
-  text = extractItemFromSpokenPhrase(text);
-  if (!text) return { error: 'No item text provided.', status: 400 };
-  listName = (listName || 'shopping').trim();
-
-  // "shopping" (the default, and what existing Shortcuts send) → the default
-  // shopping list. Otherwise a shopping list with that name wins over a to-do
-  // list of the same name, so "add milk to the Costco list" lands on a Costco
-  // SHOPPING list when there is one.
-  let shopListId = null;
-  if (listName.toLowerCase() === 'shopping') shopListId = defaultShoppingListId();
-  else {
-    const sl = db.prepare(`SELECT id FROM shopping_lists WHERE LOWER(name) = LOWER(?)`).get(listName);
-    if (sl) shopListId = sl.id;
-  }
-  if (shopListId !== null) {
-    const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM shopping_items WHERE list_id = ?`).get(shopListId);
-    const info = db.prepare(`INSERT INTO shopping_items (list_id, text, sort_order) VALUES (?, ?, ?)`)
-      .run(shopListId, text, (maxOrder.m || 0) + 1);
-    broadcastUpdate('shopping');
-    return { ok: true, list: listName.toLowerCase() === 'shopping' ? 'shopping' : listName, id: info.lastInsertRowid, text };
-  }
-  const list = db.prepare(`SELECT id FROM todo_lists WHERE LOWER(name) = LOWER(?)`).get(listName);
-  if (!list) return { error: `No list named "${listName}".`, status: 404 };
-  const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM todo_items WHERE list_id = ?`).get(list.id);
-  const info = db.prepare(`INSERT INTO todo_items (list_id, text, sort_order) VALUES (?, ?, ?)`)
-    .run(list.id, text, (maxOrder.m || 0) + 1);
-  broadcastUpdate('todos');
-  return { ok: true, list: listName, id: info.lastInsertRowid, text };
-}
-
-// GET/POST /api/voice/add-item — the actual Siri Shortcuts target. Deliberately
-// narrow in what it can do (add an item, nothing else — no read, no delete,
-// no settings access) even though it bypasses the PIN entirely, so a leaked
-// token is a "someone can add junk to your shopping list" problem, not a
-// "someone has the run of the app" problem.
-//
-// Accepts credentials/params two ways, checked in this order:
-//   1. Query string (?token=...&text=...&list=...) — the recommended path.
-//      A single URL Shortcuts can build with one field and one inline
-//      variable insertion, instead of separately configuring Headers and a
-//      JSON Request Body in a "Show More" panel, which is where the real
-//      confusion happened in practice (see HANDOFF.md — a header ending up
-//      with the token in the wrong box, and an entire JSON blob crammed
-//      into a single body field, both directly caused by that older,
-//      more "correct" but much more error-prone setup). No request logging
-//      exists on this server (checked before adding this) that would write
-//      a token-bearing URL to a persistent log file.
-//   2. Authorization: Bearer header + JSON body — the original method,
-//      left working for anyone who already built a Shortcut that way, or
-//      who'd rather not have the token sitting in a URL for other reasons.
-// Whichever path supplies a token, it's checked identically via
-// timingSafeEqual against the configured voice_token.
-function voiceAddItemHandler(req, res) {
-  const configuredToken = getSetting('voice_token');
-  if (!configuredToken) return res.status(403).json({ error: 'Voice control isn\'t set up yet — generate a token in Settings first.' });
-
-  const authHeader = req.headers['authorization'] || '';
-  const headerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  const presented = req.query.token || headerToken;
-  const presentedBuf = Buffer.from(presented);
-  const configuredBuf = Buffer.from(configuredToken);
-  const validLength = presentedBuf.length === configuredBuf.length;
-  // timingSafeEqual throws on mismatched lengths rather than returning
-  // false, so length is checked first — but still compare SOMETHING of the
-  // same length as configuredToken even on a length mismatch, rather than
-  // short-circuiting straight to "reject," so a wrong-length guess doesn't
-  // return measurably faster than a right-length one. (Real discrepancy
-  // found auditing this: `validLength && timingSafeEqual(...)` short-circuits
-  // via `&&` and never calls timingSafeEqual at all on a length mismatch —
-  // exactly the shortcut this comment says it avoids. Negligible practical
-  // impact given the token's 192 bits of entropy makes any timing channel
-  // irrelevant for brute-forcing, but the code should actually do what its
-  // own comment claims.)
-  let isValid;
-  if (validLength) {
-    isValid = crypto.timingSafeEqual(presentedBuf, configuredBuf);
-  } else {
-    crypto.timingSafeEqual(configuredBuf, configuredBuf); // dummy same-length compare, for constant-ish time
-    isValid = false;
-  }
-  if (!isValid) return res.status(401).json({ error: 'Invalid token' });
-
-  const text = req.query.text || (req.body && req.body.text);
-  const list = req.query.list || (req.body && req.body.list);
-  const result = addVoiceItem(text, list);
-  if (result.error) return res.status(result.status || 500).json({ error: result.error });
-  res.status(201).json(result);
-}
-app.get('/api/voice/add-item', voiceAddItemHandler);
-app.post('/api/voice/add-item', voiceAddItemHandler);
+// ── Voice add-item (Siri Shortcuts; also used by the Alexa skill) ──────────────────
+// This code lives in src/voice-add-item.js. It runs here, at the same place in the file as before.
+const { addVoiceItem } = require('./src/voice-add-item.js')({ crypto, app, db, broadcastUpdate, getSetting: (k) => getSetting(k), defaultShoppingListId });
 
 // ── Voice control: Alexa skill ────────────────────────────────────────────────
-// Same underlying addVoiceItem() as the Siri route above, but Alexa doesn't
-// send a bearer token — its own request comes with a cryptographic signature
-// (an X.509 cert chain + timestamp) that ask-sdk-express-adapter verifies
-// automatically, which is why this is authenticated a third, different way
-// from the previous two routes. Deliberately using the official SDK for this
-// rather than hand-rolling signature verification: getting that subtly wrong
-// (a cert-chain check that looks right but doesn't actually validate against
-// Amazon's real CA) would be worse than not having it, and is exactly the
-// kind of security code that shouldn't be reinvented per-project.
-// ALEXA_SKILL_ID (from .env) must match the skill's real ID once created in
-// the Alexa Developer Console — without it, requestInterceptors below still
-// verifies the signature/timestamp, but skips confirming the request is
-// actually FOR this skill specifically (which matters if this same public
-// endpoint is ever guessed at by an unrelated skill's requests).
-const ALEXA_SKILL_ID = process.env.ALEXA_SKILL_ID || '';
-if (Alexa && ExpressAdapter) {
-  const AddItemIntentHandler = {
-    canHandle(handlerInput) {
-      return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
-        && Alexa.getIntentName(handlerInput.requestEnvelope) === 'AddItemIntent';
-    },
-    handle(handlerInput) {
-      const slots = handlerInput.requestEnvelope.request.intent.slots || {};
-      const itemName = slots.ItemName && slots.ItemName.value;
-      const listName = (slots.ListName && slots.ListName.value) || 'shopping';
-      if (!itemName) {
-        return handlerInput.responseBuilder.speak("What should I add?").reprompt("What should I add?").getResponse();
-      }
-      const result = addVoiceItem(itemName, listName);
-      const speech = result.error
-        ? `Sorry, I couldn't do that — ${result.error}`
-        : `Added ${itemName} to your ${result.list === 'shopping' ? 'shopping list' : result.list + ' list'}.`;
-      return handlerInput.responseBuilder.speak(speech).getResponse();
-    },
-  };
-  const LaunchRequestHandler = {
-    canHandle(handlerInput) { return Alexa.getRequestType(handlerInput.requestEnvelope) === 'LaunchRequest'; },
-    handle(handlerInput) {
-      return handlerInput.responseBuilder.speak("You can say, add milk to the shopping list.").reprompt("What should I add?").getResponse();
-    },
-  };
-  const HelpIntentHandler = {
-    canHandle(handlerInput) {
-      return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
-        && Alexa.getIntentName(handlerInput.requestEnvelope) === 'AMAZON.HelpIntent';
-    },
-    handle(handlerInput) {
-      return handlerInput.responseBuilder.speak("Say something like, add milk to the shopping list.").reprompt("What should I add?").getResponse();
-    },
-  };
-  const CancelAndStopIntentHandler = {
-    canHandle(handlerInput) {
-      const name = Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest' && Alexa.getIntentName(handlerInput.requestEnvelope);
-      return name === 'AMAZON.CancelIntent' || name === 'AMAZON.StopIntent';
-    },
-    handle(handlerInput) { return handlerInput.responseBuilder.speak("Okay.").getResponse(); },
-  };
-  const SessionEndedRequestHandler = {
-    canHandle(handlerInput) { return Alexa.getRequestType(handlerInput.requestEnvelope) === 'SessionEndedRequest'; },
-    handle(handlerInput) { return handlerInput.responseBuilder.getResponse(); },
-  };
-  const ErrorHandler = {
-    canHandle() { return true; },
-    handle(handlerInput, error) {
-      console.error('Alexa skill error:', error && error.message);
-      return handlerInput.responseBuilder.speak("Sorry, something went wrong.").getResponse();
-    },
-  };
-  const skillBuilder = Alexa.SkillBuilders.custom()
-    .addRequestHandlers(AddItemIntentHandler, LaunchRequestHandler, HelpIntentHandler, CancelAndStopIntentHandler, SessionEndedRequestHandler)
-    .addErrorHandlers(ErrorHandler);
-  if (ALEXA_SKILL_ID) skillBuilder.withSkillId(ALEXA_SKILL_ID);
-  const alexaAdapter = new ExpressAdapter(skillBuilder.create(), true, true); // (skill, verifySignature, verifyTimestamp) — both left on
-  // Mounted directly, not behind requireAuth: Alexa's own signature already
-  // IS the authentication here, and requireAuth's PIN-session model has no
-  // way to authenticate an Alexa request in the first place (no cookie, no
-  // bearer token, no interactive login possible).
-  app.post('/api/alexa', alexaAdapter.getRequestHandlers());
-} else {
-  app.post('/api/alexa', (req, res) => res.status(503).json({ error: 'Alexa integration isn\'t installed on this server — run npm install and restart.' }));
-}
+// This code lives in src/alexa.js. It runs here, at the same place in the file as before.
+require('./src/alexa.js')({ Alexa, ExpressAdapter, app, addVoiceItem });
 
-// Chores CRUD
-app.get('/api/chores', (req, res) => {
-  res.json(db.prepare(`SELECT * FROM chores ORDER BY sort_order, id`).all());
-});
-app.post('/api/chores', (req, res) => {
-  const b = req.body || {};
-  if (!b.title || !b.title.trim()) return res.status(400).json({ error: 'Title required' });
-  const max = db.prepare(`SELECT MAX(sort_order) m FROM chores`).get().m || 0;
-  const r = db.prepare(`INSERT INTO chores
-    (title, icon, assignee, freq, byday, on_date, at_time, carryover, celebrate, pay_amount, notes, photo_required, bonus, sort_order, rotate, rotate_start, rotate_anchor)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      demoCleanText(b.title.trim(), 120), b.icon || '✅', String(b.assignee || 'all'),
-      b.freq || 'daily', b.byday || '', b.on_date || '', b.at_time || '',
-      b.carryover ? 1 : 0, (b.celebrate === false || b.celebrate === 0) ? 0 : 1,
-      Number(b.pay_amount) || 0, demoCleanText((b.notes || '').trim(), 500),
-      b.photo_required ? 1 : 0, b.bonus ? 1 : 0, max + 1,
-      b.rotate ? 1 : 0, Number(b.rotate_start) || 0, b.rotate ? localDateStr() : '');
-  broadcastUpdate('chores');
-  res.status(201).json(db.prepare(`SELECT * FROM chores WHERE id = ?`).get(r.lastInsertRowid));
-});
-app.put('/api/chores/:id', (req, res) => {
-  const c = db.prepare(`SELECT * FROM chores WHERE id = ?`).get(req.params.id);
-  if (!c) return res.status(404).json({ error: 'Not found' });
-  const b = req.body || {};
-  // Take turns. The anchor ("this person has it today") is reset only when something that decides who-has-it-when actually changed, so
-  // editing a title or the pay on a rotating chore never moves the cycle. When it does change, today's and later unfinished rows are
-  // dropped so they are made again for the right person.
-  const newRotate = (b.rotate ?? c.rotate) ? 1 : 0;
-  const newStart = b.rotate_start !== undefined ? (Number(b.rotate_start) || 0) : c.rotate_start;
-  const newAssignee = String(b.assignee ?? c.assignee), newFreq = b.freq ?? c.freq, newByday = b.byday ?? c.byday;
-  const cycleChanged = newRotate !== (c.rotate ? 1 : 0) || (newRotate && (newStart !== c.rotate_start || newAssignee !== c.assignee || newFreq !== c.freq || newByday !== c.byday));
-  const newAnchor = !newRotate ? '' : (cycleChanged ? localDateStr() : c.rotate_anchor);
-  if (cycleChanged) db.prepare(`DELETE FROM chore_instances WHERE chore_id = ? AND date >= ? AND done = 0`).run(c.id, localDateStr());
-  db.prepare(`UPDATE chores SET title=?, icon=?, assignee=?, freq=?, byday=?, on_date=?, at_time=?,
-              carryover=?, celebrate=?, pay_amount=?, notes=?, photo_required=?, bonus=?, active=?, rotate=?, rotate_start=?, rotate_anchor=? WHERE id=?`)
-    .run(
-      b.title !== undefined ? demoCleanText(b.title, 120) : c.title, b.icon ?? c.icon, String(b.assignee ?? c.assignee),
-      b.freq ?? c.freq, b.byday ?? c.byday, b.on_date ?? c.on_date, b.at_time ?? c.at_time,
-      (b.carryover ?? c.carryover) ? 1 : 0, (b.celebrate ?? c.celebrate) ? 1 : 0,
-      (b.pay_amount !== undefined ? Number(b.pay_amount) || 0 : c.pay_amount),
-      (b.notes !== undefined ? demoCleanText((b.notes || '').trim(), 500) : c.notes),
-      (b.photo_required ?? c.photo_required) ? 1 : 0,
-      (b.bonus ?? c.bonus) ? 1 : 0,
-      (b.active ?? c.active) ? 1 : 0, newRotate, newStart, newAnchor, c.id);
-  broadcastUpdate('chores');
-  res.json(db.prepare(`SELECT * FROM chores WHERE id = ?`).get(c.id));
-});
-app.delete('/api/chores/:id', (req, res) => {
-  db.prepare(`DELETE FROM chores WHERE id = ?`).run(req.params.id);
-  db.prepare(`DELETE FROM chore_instances WHERE chore_id = ?`).run(req.params.id);
-  broadcastUpdate('chores');
-  res.json({ ok: true });
-});
-
-// Upload a custom picture for a chore. Reuses the photo upload pipeline (same
-// /uploads dir, same slave sync). Returns an icon token "img:<filename>" the client
-// stores in the chore's icon field.
-app.post('/api/chore-image', upload.single('photo'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No image (jpeg/png/webp/gif, ≤20MB)' });
-  broadcastUpdate('chores'); // prompt slaves to pull the new file on next sync
-  res.status(201).json({ icon: 'img:' + req.file.filename, filename: req.file.filename });
-});
-
-// Upload a "proof" photo for a completed chore instance — same upload pipeline
-// as the chore icon above. Separate from the toggle endpoint on purpose: the kid
-// takes/picks the photo first, THEN the client calls toggle(done:true), so a
-// chore that requires a photo never gets marked done without one actually
-// attached (the toggle endpoint below double-checks this server-side too).
-app.post('/api/chore-instances/:id/proof', upload.single('photo'), (req, res) => {
-  const inst = db.prepare(`SELECT * FROM chore_instances WHERE id = ?`).get(req.params.id);
-  if (!inst) return res.status(404).json({ error: 'Unknown chore instance' });
-  if (!req.file) return res.status(400).json({ error: 'No image (jpeg/png/webp/gif, ≤20MB)' });
-  db.prepare(`UPDATE chore_instances SET proof_photo = ? WHERE id = ?`).run(req.file.filename, inst.id);
-  broadcastUpdate('chores');
-  res.status(201).json({ ok: true, filename: req.file.filename });
-});
-
-// A kid's chores for today (or ?date=YYYY-MM-DD)
-app.get('/api/kids/:id/chores', (req, res) => {
-  const kid = db.prepare(`SELECT * FROM kids WHERE id = ?`).get(req.params.id);
-  if (!kid) return res.status(404).json({ error: 'Unknown kid' });
-  const date = req.query.date || choreToday();
-  let balance = null;
-  if (kid.allowance_enabled) {
-    ensureWeeklyAllowanceCredited(); // lazy-credit so the goal progress bar stays current
-    balance = db.prepare(`SELECT COALESCE(SUM(amount),0) as total FROM allowance_ledger WHERE kid_id = ?`).get(kid.id).total;
-  }
-  res.json({ kid, date, chores: getKidChores(kid.id, date), streak: getKidStreak(kid.id, date), balance, stickerBalance: getKidStickerBalance(kid.id) });
-});
-
-// The whole chart for the wall display: every kid + their day's chores.
-// 7-day (including today) completed/total count — the ranking stat for the
-// wall-display leaderboard widget. Same "total=0 means nothing was due, not a
-// miss" semantics as the /stats endpoint, just collapsed to two numbers instead
-// of a daily breakdown since the widget only needs a single ranking figure.
-function getKidWeeklyCompletion(kidId, todayStr) {
-  const [y, m, d] = todayStr.split('-').map(Number);
-  const start = new Date(y, m - 1, d); start.setDate(start.getDate() - 6);
-  const startStr = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
-  const row = db.prepare(`SELECT COUNT(*) as total, SUM(done) as done FROM chore_instances WHERE kid_id = ? AND date >= ? AND date <= ?`)
-    .get(kidId, startStr, todayStr);
-  return { weeklyDone: row.done || 0, weeklyTotal: row.total || 0 };
-}
-app.get('/api/chore-chart', (req, res) => {
-  const date = req.query.date || choreToday();
-  const kids = db.prepare(`SELECT * FROM kids ORDER BY sort_order, id`).all();
-  // The shared bonus / extra-credit pool for the day, so a chore-chart widget
-  // can optionally surface it on the wall (claiming still happens in the app /
-  // kid page). A claimed one carries who got it; unclaimed ones are up for
-  // grabs. Same rows the per-kid /api/kids/:id/bonus-chores route reads.
-  const claimRows = db.prepare(`
-    SELECT ci.chore_id, k.name, k.avatar, k.color
-    FROM chore_instances ci JOIN kids k ON k.id = ci.kid_id
-    WHERE ci.date = ?`).all(date);
-  const claimByChore = new Map(claimRows.map(r => [r.chore_id, r]));
-  const bonusChores = db.prepare(
-    `SELECT id, title, icon, pay_amount FROM chores WHERE active = 1 AND bonus = 1 ORDER BY sort_order, id`
-  ).all().map(c => {
-    const cl = claimByChore.get(c.id);
-    return {
-      id: c.id, title: c.title, icon: c.icon, pay_amount: c.pay_amount || 0,
-      claimedBy: cl ? { name: cl.name, avatar: cl.avatar, color: cl.color } : null,
-    };
-  });
-  res.json({
-    date,
-    bonusChores,
-    kids: kids.map(k => ({
-      ...k,
-      chores: getKidChores(k.id, date),
-      streak: getKidStreak(k.id, date),
-      stickerBalance: getKidStickerBalance(k.id),
-      ...getKidWeeklyCompletion(k.id, date),
-    })),
-  });
-});
-
-// Toggle / set a chore instance done state. Body: { done: true|false }.
-// Kid page and parent app both use this; parents can re-open (done:false).
-app.post('/api/chore-instances/:id/toggle', (req, res) => {
-  const inst = db.prepare(`SELECT * FROM chore_instances WHERE id = ?`).get(req.params.id);
-  if (!inst) return res.status(404).json({ error: 'Unknown chore instance' });
-  const done = (typeof req.body.done === 'boolean') ? req.body.done : !inst.done;
-  // Enforced here too, not just hidden/disabled in the UI — kids.html has no
-  // login, so anyone on the LAN could otherwise call this endpoint directly and
-  // skip a photo requirement the parent specifically set.
-  if (done && !inst.proof_photo) {
-    const chore = db.prepare(`SELECT photo_required FROM chores WHERE id = ?`).get(inst.chore_id);
-    if (chore && chore.photo_required) {
-      return res.status(400).json({ error: 'This chore needs a photo before it can be marked done.' });
-    }
-  }
-  db.prepare(`UPDATE chore_instances SET done = ?, completed_at = ? WHERE id = ?`)
-    .run(done ? 1 : 0, done ? new Date().toISOString() : '', inst.id);
-  // Per-chore allowance: credit on completion, cleanly reverse if un-checked. Only
-  // applies when the kid has allowance on and set to 'per_chore' — weekly_flat kids
-  // aren't paid per instance, so a chore's pay_amount is simply ignored for them.
-  const kid = db.prepare(`SELECT * FROM kids WHERE id = ?`).get(inst.kid_id);
-  if (kid && kid.allowance_enabled && kid.allowance_mode === 'per_chore') {
-    // Always clear any prior ledger row for this instance first — avoids double-credit
-    // on repeated toggling and makes "un-check" a clean, exact reversal.
-    db.prepare(`DELETE FROM allowance_ledger WHERE chore_instance_id = ? AND type = 'chore'`).run(inst.id);
-    if (done && inst.pay_amount > 0) {
-      db.prepare(`INSERT INTO allowance_ledger (kid_id, date, type, amount, chore_instance_id) VALUES (?,?,?,?,?)`)
-        .run(kid.id, inst.date, 'chore', inst.pay_amount, inst.id);
-    }
-  }
-  // Auto-awarded stickers: only when the family has chosen 'auto' mode (default is
-  // 'manual' — see sticker_award_mode). Reuses the chore's own celebrate flag as
-  // the "this one's worth a sticker" signal rather than adding a second, separate
-  // per-chore checkbox that would mean almost the same thing. Same delete-then-
-  // insert dedupe shape as the allowance credit just above: always clear any prior
-  // sticker tied to this instance first, so re-toggling never double-awards and
-  // un-checking is a clean, exact reversal — not a silent leftover sticker.
-  const choreFull = db.prepare(`SELECT celebrate FROM chores WHERE id = ?`).get(inst.chore_id);
-  const stickerMode = db.prepare(`SELECT value FROM settings WHERE key = 'sticker_award_mode'`).get();
-  if (stickerMode && stickerMode.value === 'auto' && choreFull && choreFull.celebrate) {
-    db.prepare(`DELETE FROM stickers WHERE chore_instance_id = ?`).run(inst.id);
-    if (done) {
-      db.prepare(`INSERT INTO stickers (kid_id, date, chore_instance_id) VALUES (?,?,?)`)
-        .run(inst.kid_id, inst.date, inst.id);
-    }
-  }
-  broadcastUpdate('chores');
-  res.json({ ok: true, done, celebrate: !!(choreFull && choreFull.celebrate) });
-});
+// ── Chores API (definitions, a kid's day, the chart, ticking off) ────────────────────
+// This code lives in src/chores.js. It runs here, at the same place in the file as before.
+require('./src/chores.js')({ app, demoCleanText, db, upload, broadcastUpdate, getKidChores, getKidStreak, getKidStickerBalance, localDateStr, choreToday, ensureWeeklyAllowanceCredited: (...a) => ensureWeeklyAllowanceCredited(...a) });
 
 // ── Stickers ──────────────────────────────────────────────────────────────────
-// GET /api/stickers?from=YYYY-MM-DD&to=YYYY-MM-DD&kid_id=3
-// Range query (not just "today") because both the calendar widget (a month grid)
-// and the kid's own sticker board (last few weeks) need a window, not a single day.
-// kid_id is optional — omit it to get every kid's stickers in range (calendar
-// widget's use case); pass it to scope to one kid (kids.html's use case).
-app.get('/api/stickers', (req, res) => {
-  const from = req.query.from || '1970-01-01';
-  const to = req.query.to || '2999-12-31';
-  const kidId = req.query.kid_id ? parseInt(req.query.kid_id) : null;
-  const rows = kidId
-    ? db.prepare(`SELECT * FROM stickers WHERE date >= ? AND date <= ? AND kid_id = ? ORDER BY date, id`).all(from, to, kidId)
-    : db.prepare(`SELECT * FROM stickers WHERE date >= ? AND date <= ? ORDER BY date, id`).all(from, to);
-  res.json(rows);
-});
-
-// POST /api/stickers — manual award. Body: { kid_id, date?, note? }. date defaults
-// to today. Available regardless of sticker_award_mode: 'manual' mode uses this as
-// the ONLY way stickers happen; 'auto' mode still allows a parent to hand out an
-// extra one for something outside the chore chart entirely (a kind word, good
-// behavior at school, etc.) without that needing its own separate mechanism.
-app.post('/api/stickers', (req, res) => {
-  const kidId = parseInt(req.body.kid_id);
-  if (!Number.isFinite(kidId)) return res.status(400).json({ error: 'kid_id required' });
-  const kid = db.prepare(`SELECT id FROM kids WHERE id = ?`).get(kidId);
-  if (!kid) return res.status(404).json({ error: 'Unknown kid' });
-  const date = (req.body.date || choreToday()).trim();
-  const note = (req.body.note || '').trim();
-  const r = db.prepare(`INSERT INTO stickers (kid_id, date, note) VALUES (?,?,?)`).run(kidId, date, note);
-  broadcastUpdate('chores');
-  res.status(201).json(db.prepare(`SELECT * FROM stickers WHERE id = ?`).get(r.lastInsertRowid));
-});
-
-// DELETE /api/stickers/:id — revoke one sticker (manual or auto). Parent-app only
-// (not in the public-routes whitelist below), same trust boundary as editing any
-// other chore-chart data — a kid on kids.html can view their stickers but not
-// remove them.
-app.delete('/api/stickers/:id', (req, res) => {
-  db.prepare(`DELETE FROM stickers WHERE id = ?`).run(req.params.id);
-  broadcastUpdate('chores');
-  res.json({ ok: true });
-});
-
-// DELETE /api/stickers?kid_id=5 — clear ALL of a kid's stickers at once (a full
-// reset to zero), for a manual correction rather than deleting one at a time.
-// Deliberately kept on /api/stickers (not nested under /api/kids/:id/...) so
-// it inherits the same protected trust boundary as the single-sticker DELETE
-// above — /api/kids itself is public (kids.html/hub.html both manage kids
-// without a login), and a route path merely nested under it would silently
-// inherit that same public status via the whitelist's prefix match, which
-// isn't the right boundary for a bulk-destructive action like this one.
-// Deliberately does NOT touch sticker_redemptions — past redemptions keep
-// their own history regardless (same "don't rewrite what already happened"
-// reasoning as deleting a reward definition not touching redemptions made
-// against it). That means clearing stickers can put a kid's balance
-// temporarily negative if they'd already redeemed more than they now have on
-// record — an intentional, visible signal that a correction happened, not
-// silently hidden.
-app.delete('/api/stickers', (req, res) => {
-  const kidId = parseInt(req.query.kid_id);
-  if (!Number.isFinite(kidId)) return res.status(400).json({ error: 'kid_id required' });
-  const kid = db.prepare(`SELECT id FROM kids WHERE id = ?`).get(kidId);
-  if (!kid) return res.status(404).json({ error: 'Unknown kid' });
-  const info = db.prepare(`DELETE FROM stickers WHERE kid_id = ?`).run(kid.id);
-  broadcastUpdate('chores');
-  res.json({ ok: true, cleared: info.changes, balance: getKidStickerBalance(kid.id) });
-});
-
-// GET a kid's sticker summary: running balance, recent stickers, recent
-// redemptions. Mirrors GET /api/kids/:id/allowance's exact shape (balance +
-// entries) — kids.html and app.html's stats sheet both read this the same way
-// the allowance sheet already reads its own summary endpoint.
-app.get('/api/kids/:id/stickers', (req, res) => {
-  const kid = db.prepare(`SELECT * FROM kids WHERE id = ?`).get(req.params.id);
-  if (!kid) return res.status(404).json({ error: 'Unknown kid' });
-  const balance = getKidStickerBalance(kid.id);
-  const stickers = db.prepare(`SELECT * FROM stickers WHERE kid_id = ? ORDER BY date DESC, id DESC LIMIT 50`).all(kid.id);
-  const redemptions = db.prepare(`SELECT * FROM sticker_redemptions WHERE kid_id = ? ORDER BY date DESC, id DESC LIMIT 50`).all(kid.id);
-  res.json({ kid, balance, stickers, redemptions });
-});
-
-// GET /api/sticker-redemptions — every kid's redeemed rewards, most recent
-// first, for the Family Hub's parent-facing "Redeemed Prizes" list (a single
-// combined feed across kids, not one summary call per kid). Joins in the
-// kid's name/avatar/color at read time rather than trusting the snapshot on
-// each row for those fields — reward_title/star_cost ARE meant to be frozen
-// snapshots (see the table's own schema comment), but a kid's name/avatar/
-// color are live identity, not part of what was "redeemed."
-app.get('/api/sticker-redemptions', (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit) || 50, 200);
-  const rows = db.prepare(`
-    SELECT sr.*, k.name as kid_name, k.avatar as kid_avatar, k.color as kid_color
-    FROM sticker_redemptions sr
-    JOIN kids k ON k.id = sr.kid_id
-    ORDER BY sr.date DESC, sr.id DESC
-    LIMIT ?
-  `).all(limit);
-  res.json(rows);
-});
+// The routes live in src/stickers.js. They are registered here, at the same place in the file as before.
+require('./src/stickers')({ app, db, choreToday, broadcastUpdate, getKidStickerBalance });
 
 // ── Rewards ───────────────────────────────────────────────────────────────────
-// GET is public/read-only (kids.html shows what's available + affordable);
-// create/edit/delete/redeem/undo all require the parent PIN like the rest of
-// the chore chart's management surface.
-app.get('/api/rewards', (req, res) => {
-  res.json(db.prepare(`SELECT * FROM rewards ORDER BY sort_order, id`).all());
-});
-app.post('/api/rewards', (req, res) => {
-  const title = (req.body.title || '').trim();
-  if (!title) return res.status(400).json({ error: 'Title required' });
-  const starCost = parseInt(req.body.star_cost);
-  if (!Number.isFinite(starCost) || starCost <= 0) return res.status(400).json({ error: 'star_cost must be a positive number' });
-  const max = db.prepare(`SELECT MAX(sort_order) m FROM rewards`).get().m || 0;
-  const r = db.prepare(`INSERT INTO rewards (title, icon, star_cost, assignee, sort_order) VALUES (?,?,?,?,?)`)
-    .run(title, (req.body.icon || '🎁').trim(), starCost, req.body.assignee || 'all', max + 1);
-  broadcastUpdate('chores');
-  res.status(201).json(db.prepare(`SELECT * FROM rewards WHERE id = ?`).get(r.lastInsertRowid));
-});
-app.put('/api/rewards/:id', (req, res) => {
-  const rw = db.prepare(`SELECT * FROM rewards WHERE id = ?`).get(req.params.id);
-  if (!rw) return res.status(404).json({ error: 'Not found' });
-  const starCost = req.body.star_cost !== undefined ? parseInt(req.body.star_cost) : rw.star_cost;
-  if (!Number.isFinite(starCost) || starCost <= 0) return res.status(400).json({ error: 'star_cost must be a positive number' });
-  db.prepare(`UPDATE rewards SET title=?, icon=?, star_cost=?, assignee=?, active=? WHERE id=?`)
-    .run((req.body.title ?? rw.title).trim(), (req.body.icon ?? rw.icon).trim(), starCost,
-         req.body.assignee ?? rw.assignee, (req.body.active ?? rw.active) ? 1 : 0, rw.id);
-  broadcastUpdate('chores');
-  res.json(db.prepare(`SELECT * FROM rewards WHERE id = ?`).get(rw.id));
-});
-app.delete('/api/rewards/:id', (req, res) => {
-  // Deliberately does NOT touch sticker_redemptions — past redemptions keep
-  // their own snapshotted reward_title/star_cost, so deleting the reward
-  // definition doesn't erase or corrupt history of what was already redeemed.
-  db.prepare(`DELETE FROM rewards WHERE id = ?`).run(req.params.id);
-  broadcastUpdate('chores');
-  res.json({ ok: true });
-});
-
-// POST /api/rewards/:id/redeem — body: { kid_id }. Parent confirms the kid has
-// enough stars and records the spend; this is the moment the parent actually
-// hands over the ice cream trip etc. Re-checks the balance server-side (not
-// just trusting a greyed-out button in the UI) since kids.html is unauthenticated
-// on the LAN — same reasoning as the photo-required check on chore completion.
-app.post('/api/rewards/:id/redeem', (req, res) => {
-  const reward = db.prepare(`SELECT * FROM rewards WHERE id = ?`).get(req.params.id);
-  if (!reward) return res.status(404).json({ error: 'Unknown reward' });
-  const kidId = parseInt(req.body.kid_id);
-  const kid = db.prepare(`SELECT * FROM kids WHERE id = ?`).get(kidId);
-  if (!kid) return res.status(404).json({ error: 'Unknown kid' });
-  const balance = getKidStickerBalance(kidId);
-  if (balance < reward.star_cost) {
-    return res.status(400).json({ error: `Not enough stars — ${kid.name} has ${balance}, this costs ${reward.star_cost}.` });
-  }
-  db.prepare(`INSERT INTO sticker_redemptions (kid_id, reward_id, reward_title, star_cost, date) VALUES (?,?,?,?,?)`)
-    .run(kidId, reward.id, reward.title, reward.star_cost, localDateStr());
-  broadcastUpdate('chores');
-  res.status(201).json({ ok: true, balance: getKidStickerBalance(kidId) });
-});
-
-// DELETE /api/sticker-redemptions/:id — undo a redemption recorded by mistake,
-// giving the stars back. Symmetric with the rest of this ledger's reversibility
-// (allowance payouts/adjustments and auto-award stickers are all cleanly
-// reversible too) rather than a one-way spend with no way back.
-app.delete('/api/sticker-redemptions/:id', (req, res) => {
-  db.prepare(`DELETE FROM sticker_redemptions WHERE id = ?`).run(req.params.id);
-  broadcastUpdate('chores');
-  res.json({ ok: true });
-});
+// This code lives in src/rewards.js. It runs here, at the same place in the file as before.
+require('./src/rewards.js')({ app, db, broadcastUpdate, getKidStickerBalance, localDateStr });
 
 // ── Favorites tab ────────────────────────────────────────────────────────────
-// GET is the only one that needs to be fast/simple — config is returned
-// pre-parsed from JSON so the client never touches raw JSON strings.
-app.get('/api/favorite-cards', (req, res) => {
-  const rows = db.prepare(`SELECT * FROM favorite_cards ORDER BY sort_order, id`).all();
-  res.json(rows.map(r => {
-    let config = {};
-    try { config = JSON.parse(r.config || '{}'); } catch {}
-    return { ...r, config };
-  }));
-});
-app.post('/api/favorite-cards', (req, res) => {
-  const type = (req.body.type || '').trim();
-  if (!type) return res.status(400).json({ error: 'type is required' });
-  const config = req.body.config && typeof req.body.config === 'object' ? req.body.config : {};
-  const max = db.prepare(`SELECT MAX(sort_order) m FROM favorite_cards`).get().m || 0;
-  const r = db.prepare(`INSERT INTO favorite_cards (type, config, sort_order) VALUES (?,?,?)`)
-    .run(type, JSON.stringify(config), max + 1);
-  broadcastUpdate('favorites');
-  res.status(201).json({ id: r.lastInsertRowid, type, config, sort_order: max + 1 });
-});
-app.put('/api/favorite-cards/:id', (req, res) => {
-  const card = db.prepare(`SELECT * FROM favorite_cards WHERE id = ?`).get(req.params.id);
-  if (!card) return res.status(404).json({ error: 'Not found' });
-  const config = req.body.config !== undefined
-    ? JSON.stringify(req.body.config && typeof req.body.config === 'object' ? req.body.config : {})
-    : card.config;
-  const sortOrder = req.body.sort_order !== undefined ? Number(req.body.sort_order) : card.sort_order;
-  db.prepare(`UPDATE favorite_cards SET config = ?, sort_order = ? WHERE id = ?`).run(config, sortOrder, card.id);
-  broadcastUpdate('favorites');
-  res.json({ ok: true });
-});
-// Swap this card's sort_order with its immediate neighbor — a simpler,
-// lower-risk reorder primitive than accepting a full reordered id list from
-// the client (nothing to validate/reconcile against a race if two browsers
-// reorder at once; each move is just one atomic swap).
-app.post('/api/favorite-cards/:id/move', (req, res) => {
-  const dir = req.body.direction === 'up' ? -1 : 1;
-  const cards = db.prepare(`SELECT * FROM favorite_cards ORDER BY sort_order, id`).all();
-  const idx = cards.findIndex(c => c.id === parseInt(req.params.id));
-  if (idx === -1) return res.status(404).json({ error: 'Not found' });
-  const swapIdx = idx + dir;
-  if (swapIdx < 0 || swapIdx >= cards.length) return res.json({ ok: true }); // already at an edge — no-op, not an error
-  const a = cards[idx], b = cards[swapIdx];
-  const tx = db.transaction(() => {
-    db.prepare(`UPDATE favorite_cards SET sort_order = ? WHERE id = ?`).run(b.sort_order, a.id);
-    db.prepare(`UPDATE favorite_cards SET sort_order = ? WHERE id = ?`).run(a.sort_order, b.id);
-  });
-  tx();
-  broadcastUpdate('favorites');
-  res.json({ ok: true });
-});
-app.delete('/api/favorite-cards/:id', (req, res) => {
-  db.prepare(`DELETE FROM favorite_cards WHERE id = ?`).run(req.params.id);
-  broadcastUpdate('favorites');
-  res.json({ ok: true });
-});
+// This code lives in src/favorites.js. It runs here, at the same place in the file as before.
+require('./src/favorites.js')({ app, db, broadcastUpdate });
 
-// Reassign a single day's chore instance to a different kid — a one-off swap
-// (sick kid, schedule change) that does NOT touch the chore's own recurring
-// assignee rule. Only allowed while undone: a completed instance may already
-// have an allowance ledger row tied to the original kid, and un-picking that
-// apart cleanly isn't worth the complexity for what's meant to be a same-day,
-// before-it's-done swap. Parent un-checks it first if they really need to move
-// a completed one.
-app.put('/api/chore-instances/:id/reassign', (req, res) => {
-  const inst = db.prepare(`SELECT * FROM chore_instances WHERE id = ?`).get(req.params.id);
-  if (!inst) return res.status(404).json({ error: 'Unknown chore instance' });
-  if (inst.done) return res.status(400).json({ error: 'Un-check this chore before reassigning it.' });
-  const newKidId = parseInt(req.body.kid_id);
-  if (!Number.isFinite(newKidId)) return res.status(400).json({ error: 'kid_id required' });
-  if (newKidId === inst.kid_id) return res.json({ ok: true }); // no-op
-  const newKid = db.prepare(`SELECT id FROM kids WHERE id = ?`).get(newKidId);
-  if (!newKid) return res.status(404).json({ error: 'Unknown kid' });
-  const clash = db.prepare(`SELECT id FROM chore_instances WHERE chore_id = ? AND kid_id = ? AND date = ?`)
-    .get(inst.chore_id, newKidId, inst.date);
-  if (clash) return res.status(400).json({ error: 'That kid already has this chore today.' });
-  db.prepare(`UPDATE chore_instances SET kid_id = ? WHERE id = ?`).run(newKidId, inst.id);
-  broadcastUpdate('chores');
-  res.json({ ok: true });
-});
+// ── Reassign a chore for one day ──────────────────────────────
+// This code lives in src/chore-reassign.js. It runs here, at the same place in the file as before.
+require('./src/chore-reassign.js')({ app, db, broadcastUpdate });
 
 // ── Bonus / extra-credit chores ──────────────────────────────────────────────
-// A shared pool (not pre-assigned to anyone — see materializeChoreInstances,
-// which skips bonus chores) that any kid can claim for the day; whoever claims
-// it first gets it and it's gone for everyone else. Claiming = doing it (no
-// separate "claim then complete" step) since these are meant to be quick,
-// opportunistic extra tasks.
-app.get('/api/kids/:id/bonus-chores', (req, res) => {
-  const kid = db.prepare(`SELECT * FROM kids WHERE id = ?`).get(req.params.id);
-  if (!kid) return res.status(404).json({ error: 'Unknown kid' });
-  const date = req.query.date || choreToday();
-  const claimedToday = new Set(
-    db.prepare(`SELECT chore_id FROM chore_instances WHERE date = ?`).all(date).map(r => r.chore_id)
-  );
-  const bonusChores = db.prepare(`SELECT * FROM chores WHERE active = 1 AND bonus = 1 ORDER BY sort_order, id`).all()
-    .filter(c => !claimedToday.has(c.id));
-  res.json(bonusChores);
-});
-app.post('/api/kids/:id/claim-bonus/:choreId', (req, res) => {
-  const kid = db.prepare(`SELECT * FROM kids WHERE id = ?`).get(req.params.id);
-  if (!kid) return res.status(404).json({ error: 'Unknown kid' });
-  const chore = db.prepare(`SELECT * FROM chores WHERE id = ? AND bonus = 1 AND active = 1`).get(req.params.choreId);
-  if (!chore) return res.status(404).json({ error: 'Unknown bonus chore' });
-  const date = choreToday();
-  // Whole-pool check (any kid), not the usual per-kid uniqueness — see schema note.
-  const already = db.prepare(`SELECT id FROM chore_instances WHERE chore_id = ? AND date = ?`).get(chore.id, date);
-  if (already) return res.status(400).json({ error: 'Someone already claimed this one today.' });
-  const r = db.prepare(`INSERT INTO chore_instances (chore_id, kid_id, date, done, completed_at, pay_amount)
-    VALUES (?, ?, ?, 1, ?, ?)`).run(chore.id, kid.id, date, new Date().toISOString(), chore.pay_amount || 0);
-  if (kid.allowance_enabled && kid.allowance_mode === 'per_chore' && chore.pay_amount > 0) {
-    db.prepare(`INSERT INTO allowance_ledger (kid_id, date, type, amount, chore_instance_id) VALUES (?,?,?,?,?)`)
-      .run(kid.id, date, 'chore', chore.pay_amount, r.lastInsertRowid);
-  }
-  broadcastUpdate('chores');
-  res.status(201).json({ ok: true, celebrate: !!chore.celebrate });
-});
-
+// This code lives in src/bonus-chores.js. It runs here, at the same place in the file as before.
+require('./src/bonus-chores.js')({ app, db, broadcastUpdate, choreToday });
 
 // ── Allowance ──────────────────────────────────────────────────────────────────
-// ISO week string like '2026-W28', used to dedupe the weekly flat credit so it's
-// only ever granted once per calendar week no matter how often this is checked.
-function isoWeekStr(d = new Date()) {
-  const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  const day = dt.getUTCDay() || 7;
-  dt.setUTCDate(dt.getUTCDate() + 4 - day);
-  const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
-  const week = Math.ceil((((dt - yearStart) / 86400000) + 1) / 7);
-  return `${dt.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
-}
-// Credits this week's flat allowance for weekly_flat kids, if not already credited
-// this week. Host-only, same reasoning as the briefing/feedback schedulers: a slave
-// writing this locally would silently diverge from the host instead of syncing.
-function ensureWeeklyAllowanceCredited() {
-  if (isSlave()) return;
-  const period = isoWeekStr();
-  const kids = db.prepare(`SELECT * FROM kids WHERE allowance_enabled = 1 AND allowance_mode = 'weekly_flat' AND weekly_rate > 0`).all();
-  for (const k of kids) {
-    const already = db.prepare(`SELECT id FROM allowance_ledger WHERE kid_id = ? AND type = 'weekly' AND period = ?`).get(k.id, period);
-    if (already) continue;
-    db.prepare(`INSERT INTO allowance_ledger (kid_id, date, type, amount, period, note) VALUES (?,?,?,?,?,?)`)
-      .run(k.id, localDateStr(), 'weekly', k.weekly_rate, period, 'Weekly allowance');
-  }
-}
-// GET a kid's completion history/stats for the parent's History view. ?days=N
-// (default 30, capped at 180) controls how far back the daily breakdown goes.
-// A day with total=0 means no chore was due that day (not a miss) — the UI should
-// distinguish that from a day with total>0 and done<total.
-app.get('/api/kids/:id/stats', (req, res) => {
-  const kid = db.prepare(`SELECT * FROM kids WHERE id = ?`).get(req.params.id);
-  if (!kid) return res.status(404).json({ error: 'Unknown kid' });
-  const days = Math.min(Math.max(parseInt(req.query.days) || 30, 1), 180);
-  const todayStr = localDateStr();
-  const [y, m, d] = todayStr.split('-').map(Number);
-  const dates = [];
-  let cursor = new Date(y, m - 1, d);
-  for (let i = 0; i < days; i++) {
-    dates.push(`${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`);
-    cursor.setDate(cursor.getDate() - 1);
-  }
-  dates.reverse(); // oldest first
-  const rows = db.prepare(`SELECT date, done FROM chore_instances WHERE kid_id = ? AND date >= ? AND date <= ?`)
-    .all(kid.id, dates[0], todayStr);
-  const byDate = {};
-  for (const r of rows) {
-    if (!byDate[r.date]) byDate[r.date] = { total: 0, done: 0 };
-    byDate[r.date].total++;
-    if (r.done) byDate[r.date].done++;
-  }
-  const daily = dates.map(ds => ({ date: ds, total: (byDate[ds] || {}).total || 0, done: (byDate[ds] || {}).done || 0 }));
-  const pctOverLastN = (n) => {
-    const slice = daily.slice(-n);
-    const total = slice.reduce((s, x) => s + x.total, 0);
-    const done = slice.reduce((s, x) => s + x.done, 0);
-    return total ? Math.round((done / total) * 100) : null; // null = no chores due in that window
-  };
-  const allTimeCompleted = db.prepare(`SELECT COUNT(*) c FROM chore_instances WHERE kid_id = ? AND done = 1`).get(kid.id).c;
-  res.json({
-    kid, days, daily,
-    last7Pct: pctOverLastN(7),
-    last30Pct: pctOverLastN(30),
-    streak: getKidStreak(kid.id, todayStr),
-    allTimeCompleted,
-  });
-});
-// GET a kid's allowance summary: running balance + recent ledger entries.
-app.get('/api/kids/:id/allowance', (req, res) => {
-  const kid = db.prepare(`SELECT * FROM kids WHERE id = ?`).get(req.params.id);
-  if (!kid) return res.status(404).json({ error: 'Unknown kid' });
-  ensureWeeklyAllowanceCredited();
-  const balance = db.prepare(`SELECT COALESCE(SUM(amount),0) as total FROM allowance_ledger WHERE kid_id = ?`).get(kid.id).total;
-  const entries = db.prepare(`SELECT * FROM allowance_ledger WHERE kid_id = ? ORDER BY id DESC LIMIT 50`).all(kid.id);
-  res.json({ kid, balance, entries });
-});
-// Record a payout (parent hands over cash) — reduces the balance.
-app.post('/api/kids/:id/allowance/payout', (req, res) => {
-  const kid = db.prepare(`SELECT * FROM kids WHERE id = ?`).get(req.params.id);
-  if (!kid) return res.status(404).json({ error: 'Unknown kid' });
-  const amount = Number(req.body.amount);
-  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'Positive amount required' });
-  db.prepare(`INSERT INTO allowance_ledger (kid_id, date, type, amount, note) VALUES (?,?,?,?,?)`)
-    .run(kid.id, localDateStr(), 'payout', -Math.abs(amount), (req.body.note || '').trim());
-  broadcastUpdate('chores');
-  const balance = db.prepare(`SELECT COALESCE(SUM(amount),0) as total FROM allowance_ledger WHERE kid_id = ?`).get(kid.id).total;
-  res.status(201).json({ ok: true, balance });
-});
-// Manual bonus (positive) or deduction (negative) — e.g. docking for a missed chore,
-// or a one-off bonus that doesn't fit the per-chore/weekly model.
-app.post('/api/kids/:id/allowance/adjust', (req, res) => {
-  const kid = db.prepare(`SELECT * FROM kids WHERE id = ?`).get(req.params.id);
-  if (!kid) return res.status(404).json({ error: 'Unknown kid' });
-  const amount = Number(req.body.amount);
-  if (!Number.isFinite(amount) || amount === 0) return res.status(400).json({ error: 'Non-zero amount required' });
-  db.prepare(`INSERT INTO allowance_ledger (kid_id, date, type, amount, note) VALUES (?,?,?,?,?)`)
-    .run(kid.id, localDateStr(), 'adjustment', amount, (req.body.note || '').trim());
-  broadcastUpdate('chores');
-  const balance = db.prepare(`SELECT COALESCE(SUM(amount),0) as total FROM allowance_ledger WHERE kid_id = ?`).get(kid.id).total;
-  res.status(201).json({ ok: true, balance });
-});
+// This code lives in src/allowance.js. It runs here, at the same place in the file as before.
+const { ensureWeeklyAllowanceCredited } = require('./src/allowance.js')({ app, db, isSlave: () => isSlave(), localDateStr, broadcastUpdate, getKidStreak });
 
 // ── Reminders (generic rotation reminders — trash/recycling day and
-// anything else that recurs on a schedule but isn't a real calendar event:
-// no title/notes/attendees, just a name+icon+schedule. Two schedule types
-// cover the common cases without needing full RRULE complexity: 'weekly'
-// (specific days of the week, e.g. trash is every Tuesday) and 'interval'
-// (every N days from a reference date, e.g. recycling every 14 days
-// starting from a known date). Household-shared data, same as events —
-// participates in the host/slave sync snapshot below, not per-widget or
-// per-display. ──────────────────────────────────────────────────────────
-app.get('/api/reminders', (req, res) => {
-  const rows = db.prepare(`SELECT * FROM reminders WHERE active = 1 ORDER BY id ASC`).all();
-  res.json(rows.map(r => ({ ...r, schedule_config: JSON.parse(r.schedule_config) })));
-});
+// This code lives in src/reminders.js. It runs here, at the same place in the file as before.
+require('./src/reminders.js')({ path, fs, app, demoCleanText, db, UPLOAD_DIR, upload, broadcastUpdate });
 
-// POST /api/reminders/icon-image — uploads a reminder icon image standalone,
-// not tied to a specific reminder id, so it works identically whether the
-// person is creating a brand new reminder or editing an existing one (the
-// modal uploads on file-select, then includes the returned filename in the
-// reminder's own create/save payload below). Reuses the same UPLOAD_DIR and
-// `upload` multer instance as photos — no server-side resizing here, matching
-// every other upload in this file (no image-processing library exists or is
-// used anywhere; photos and custom-theme decorations are both stored at
-// whatever size was uploaded and sized down at render time via CSS instead).
-// A reminder icon renders at badge/chip scale everywhere it appears — see
-// reminderIconHtml() in display.html for the CSS-based sizing.
-app.post('/api/reminders/icon-image', upload.single('image'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No image uploaded (must be JPEG, PNG, WebP, or GIF).' });
-  res.json({ ok: true, filename: req.file.filename });
-});
-
-// Validates a reminder's schedule_type/schedule_config shape — shared by
-// POST and PUT below rather than duplicated, since the rules are identical
-// for both. Returns an error string, or null if valid. Deliberately loose
-// where a wrong value just means "won't match any date" rather than
-// corrupting anything (e.g. an out-of-range weekday) — this exists to catch
-// missing required fields and obviously malformed types, not to be a
-// bulletproof schema validator.
-function validateReminderSchedule(scheduleType, cfg) {
-  cfg = cfg || {};
-  if (!['weekly', 'interval', 'monthly', 'yearly'].includes(scheduleType)) {
-    return "schedule_type must be 'weekly', 'interval', 'monthly', or 'yearly'";
-  }
-  if (scheduleType === 'weekly') {
-    if (!Array.isArray(cfg.daysOfWeek) || !cfg.daysOfWeek.length) return 'Pick at least one day of the week';
-  } else if (scheduleType === 'interval') {
-    if (!cfg.startDate) return 'A start date is required';
-    if (!Number.isInteger(cfg.intervalDays) || cfg.intervalDays < 1) return 'intervalDays must be a positive whole number';
-  } else if (scheduleType === 'monthly') {
-    if (!cfg.startDate) return 'A start date is required';
-    if (cfg.monthlyMode === 'nthWeekday') {
-      if (![1,2,3,4,-1].includes(cfg.nthWeek)) return 'nthWeek must be 1-4 or -1 (last)';
-      if (!Number.isInteger(cfg.nthWeekday) || cfg.nthWeekday < 0 || cfg.nthWeekday > 6) return 'nthWeekday must be 0-6';
-    } else {
-      if (!Number.isInteger(cfg.dayOfMonth) || cfg.dayOfMonth < 1 || cfg.dayOfMonth > 31) return 'dayOfMonth must be 1-31';
-    }
-  } else if (scheduleType === 'yearly') {
-    if (!cfg.startDate) return 'A start date is required';
-    if (!Number.isInteger(cfg.yearlyMonth) || cfg.yearlyMonth < 1 || cfg.yearlyMonth > 12) return 'yearlyMonth must be 1-12';
-    if (cfg.yearlyMode === 'nthWeekday') {
-      if (![1,2,3,4,-1].includes(cfg.yearlyNthWeek)) return 'yearlyNthWeek must be 1-4 or -1 (last)';
-      if (!Number.isInteger(cfg.yearlyNthWeekday) || cfg.yearlyNthWeekday < 0 || cfg.yearlyNthWeekday > 6) return 'yearlyNthWeekday must be 0-6';
-    } else {
-      if (!Number.isInteger(cfg.yearlyDay) || cfg.yearlyDay < 1 || cfg.yearlyDay > 31) return 'yearlyDay must be 1-31';
-    }
-  }
-  if (cfg.endType && !['never', 'onDate', 'afterCount'].includes(cfg.endType)) {
-    return "endType must be 'never', 'onDate', or 'afterCount'";
-  }
-  if (cfg.endType === 'onDate' && !cfg.endDate) return 'An end date is required when Ends is set to "On a date"';
-  if (cfg.endType === 'afterCount' && (!Number.isInteger(cfg.endCount) || cfg.endCount < 1)) {
-    return 'endCount must be a positive whole number when Ends is set to "After a number of times"';
-  }
-  return null;
-}
-app.post('/api/reminders', (req, res) => {
-  const { name, icon, icon_type, icon_image, schedule_type, schedule_config } = req.body;
-  if (!name || !schedule_type || !schedule_config) {
-    return res.status(400).json({ error: 'name, schedule_type, and schedule_config are required' });
-  }
-  const scheduleError = validateReminderSchedule(schedule_type, schedule_config);
-  if (scheduleError) return res.status(400).json({ error: scheduleError });
-  const validIconType = ['emoji', 'text', 'image'].includes(icon_type) ? icon_type : 'emoji';
-  const result = db.prepare(`
-    INSERT INTO reminders (name, icon, icon_type, icon_image, schedule_type, schedule_config)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(demoCleanText(name, 120), icon || '📌', validIconType, validIconType === 'image' ? (icon_image || null) : null, schedule_type, JSON.stringify(schedule_config));
-  const row = db.prepare(`SELECT * FROM reminders WHERE id = ?`).get(result.lastInsertRowid);
-  broadcastUpdate('reminders');
-  res.status(201).json({ ...row, schedule_config: JSON.parse(row.schedule_config) });
-});
-
-app.put('/api/reminders/:id', (req, res) => {
-  const existing = db.prepare(`SELECT * FROM reminders WHERE id = ?`).get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Reminder not found' });
-  const { name, icon, icon_type, icon_image, schedule_type, schedule_config, active } = req.body;
-  const newScheduleType = schedule_type ?? existing.schedule_type;
-  const newScheduleConfig = schedule_config !== undefined ? schedule_config : JSON.parse(existing.schedule_config);
-  const scheduleError = validateReminderSchedule(newScheduleType, newScheduleConfig);
-  if (scheduleError) return res.status(400).json({ error: scheduleError });
-  const newIconType = icon_type !== undefined
-    ? (['emoji', 'text', 'image'].includes(icon_type) ? icon_type : 'emoji')
-    : existing.icon_type;
-  const newIconImage = newIconType === 'image' ? (icon_image ?? existing.icon_image) : null;
-  // Clean up the old file whenever it's being replaced by a different one, or
-  // dropped entirely because the type changed away from 'image' — same
-  // pattern removeCustomThemeFile() already uses for decorations, just
-  // inline here since this is the only place a reminder's own icon image
-  // ever changes.
-  if (existing.icon_image && existing.icon_image !== newIconImage) {
-    try { fs.unlinkSync(path.join(UPLOAD_DIR, existing.icon_image)); } catch {}
-  }
-  db.prepare(`
-    UPDATE reminders SET name=?, icon=?, icon_type=?, icon_image=?, schedule_type=?, schedule_config=?, active=?
-    WHERE id=?
-  `).run(
-    name !== undefined ? demoCleanText(name, 120) : existing.name,
-    icon ?? existing.icon,
-    newIconType,
-    newIconImage,
-    newScheduleType,
-    JSON.stringify(newScheduleConfig),
-    active !== undefined ? (active ? 1 : 0) : existing.active,
-    req.params.id
-  );
-  const row = db.prepare(`SELECT * FROM reminders WHERE id = ?`).get(req.params.id);
-  broadcastUpdate('reminders');
-  res.json({ ...row, schedule_config: JSON.parse(row.schedule_config) });
-});
-
-app.delete('/api/reminders/:id', (req, res) => {
-  const existing = db.prepare(`SELECT * FROM reminders WHERE id = ?`).get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Reminder not found' });
-  if (existing.icon_image) {
-    try { fs.unlinkSync(path.join(UPLOAD_DIR, existing.icon_image)); } catch {}
-  }
-  db.prepare(`DELETE FROM reminders WHERE id = ?`).run(req.params.id);
-  broadcastUpdate('reminders');
-  res.json({ ok: true });
-});
-
-// Resolves each iCal-sourced event's color_opacity to its EFFECTIVE value —
-// the master default (feed_default_opacity) for any feed that hasn't opted
-// out via its own use_global_opacity=0, or that feed's own color_opacity
-// otherwise. Called once on every events response so the client
-// (eventPillColor() in display.html) only ever has to reason about ONE
-// already-correct opacity per event — it never needs to know this master-
-// default/per-feed tier exists at all, same idea as eventPillColor() itself
-// hiding the per-widget-override tier from every OTHER part of the app.
-// Mutates events in place (this app's established convention — see
-// mergeEvents() and friends) and strips use_global_opacity before
-// returning, since it's an internal resolution detail the client has no
-// use for once this has already run.
-function resolveEventOpacity(events) {
-  const masterRow = db.prepare(`SELECT value FROM settings WHERE key = 'feed_default_opacity'`).get();
-  let master = masterRow ? parseInt(masterRow.value, 10) : 100;
-  if (Number.isNaN(master)) master = 100;
-  events.forEach(e => {
-    if (e.source === 'ical' && e.use_global_opacity) e.color_opacity = master;
-    delete e.use_global_opacity;
-  });
-  return events;
-}
-
-app.get('/api/events', (req, res) => {
-  const { from, to } = req.query;
-
-  // Local events — an event "overlaps" the [from, to] window if its span
-  // (date .. end_date-or-date) intersects that window at all.
-  let query = `SELECT *, 'local' as source FROM events`;
-  const params = [];
-  if (from && to) {
-    query += ` WHERE date <= ? AND COALESCE(end_date, date) >= ?`;
-    params.push(to, from);
-  } else if (from) {
-    query += ` WHERE COALESCE(end_date, date) >= ?`;
-    params.push(from);
-  }
-  query += ` ORDER BY date ASC, start_time ASC`;
-  const localEvents = db.prepare(query).all(...params);
-
-  // iCal events (join with feed for color + enabled flag). The raw location and
-  // the feed's show_location flag both go out; the display resolves visibility
-  // (feed default -> per-widget master toggle -> per-widget-per-feed override),
-  // exactly like the per-feed opacity override already works.
-  let icalQuery = `
-    SELECT ie.uid as id, ie.title, ie.date, ie.end_date, ie.start_time, ie.end_time, ie.notes,
-           ie.location as location, f.show_location as show_location,
-           f.id as feed_id, f.color, f.color_opacity, f.use_global_opacity, f.color_timed, f.name as feed_name, 'ical' as source
-    FROM ical_events ie
-    JOIN ical_feeds f ON f.id = ie.feed_id
-    WHERE f.enabled = 1
-  `;
-  const icalParams = [];
-  if (from && to) {
-    icalQuery += ` AND ie.date <= ? AND COALESCE(ie.end_date, ie.date) >= ?`;
-    icalParams.push(to, from);
-  } else if (from) {
-    icalQuery += ` AND COALESCE(ie.end_date, ie.date) >= ?`;
-    icalParams.push(from);
-  }
-  icalQuery += ` ORDER BY ie.date ASC, ie.start_time ASC`;
-  const icalEvents = db.prepare(icalQuery).all(...icalParams);
-
-  // Merge and sort
-  const all = resolveEventOpacity([...localEvents, ...icalEvents]).sort((a, b) => {
-    if (a.date !== b.date) return a.date < b.date ? -1 : 1;
-    if (!a.start_time) return -1;
-    if (!b.start_time) return 1;
-    return a.start_time < b.start_time ? -1 : 1;
-  });
-
-  // Drop anything the user has hidden. Series hides remove every occurrence of that
-  // event key; occurrence hides remove only the matching date.
-  const hidden = db.prepare(`SELECT event_key, scope, date FROM hidden_events`).all();
-  if (hidden.length) {
-    const seriesHidden = new Set(hidden.filter(h => h.scope === 'series').map(h => h.event_key));
-    const occHidden = new Set(hidden.filter(h => h.scope !== 'series').map(h => `${h.event_key}|${h.date}`));
-    const keyOf = (e) => e.source === 'ical' ? `ical:${e.id}` : `local:${e.id}`;
-    const visible = all.filter(e => {
-      const k = keyOf(e);
-      if (seriesHidden.has(k)) return false;
-      if (occHidden.has(`${k}|${e.date}`)) return false;
-      return true;
-    });
-    return res.json(visible);
-  }
-  res.json(all);
-});
+// ── Calendar events API ──────────────────────────────────────
+// This code lives in src/events-api.js. It runs here, at the same place in the file as before.
+const { coerceOwnerProfileId } = require('./src/events-api.js')({ app, demoCleanText, db, broadcastUpdate, pushLocalEventToCalDAV: (...a) => pushLocalEventToCalDAV(...a), deleteEventFromCalDAV: (...a) => deleteEventFromCalDAV(...a), pushLocalEventToGoogle: (...a) => pushLocalEventToGoogle(...a), deleteEventFromGoogle: (...a) => deleteEventFromGoogle(...a) });
 
 // ── Hidden events (show/hide individual events on the displays) ───────────────
-app.get('/api/hidden-events', (req, res) => {
-  res.json(db.prepare(`SELECT * FROM hidden_events ORDER BY created_at DESC`).all());
-});
-app.post('/api/hidden-events', (req, res) => {
-  const { event_key, scope, date, title } = req.body || {};
-  if (!event_key) return res.status(400).json({ error: 'event_key required' });
-  const sc = scope === 'series' ? 'series' : 'occurrence';
-  // For a series hide, store a single row with date = '' (PK-safe sentinel) and
-  // clear any per-occurrence hides for that key to avoid redundancy.
-  if (sc === 'series') {
-    db.prepare(`DELETE FROM hidden_events WHERE event_key = ?`).run(event_key);
-    db.prepare(`INSERT OR REPLACE INTO hidden_events (event_key, scope, date, title) VALUES (?, 'series', '', ?)`)
-      .run(event_key, title || '');
-  } else {
-    db.prepare(`INSERT OR REPLACE INTO hidden_events (event_key, scope, date, title) VALUES (?, 'occurrence', ?, ?)`)
-      .run(event_key, date || '', title || '');
-  }
-  broadcastUpdate('events');
-  res.json({ ok: true });
-});
-app.delete('/api/hidden-events', (req, res) => {
-  // Unhide: remove by event_key (+ optional date for a single occurrence).
-  const { event_key, date } = req.body || {};
-  if (!event_key) return res.status(400).json({ error: 'event_key required' });
-  if (date !== undefined && date !== null) {
-    db.prepare(`DELETE FROM hidden_events WHERE event_key = ? AND date = ?`).run(event_key, date);
-  } else {
-    db.prepare(`DELETE FROM hidden_events WHERE event_key = ?`).run(event_key);
-  }
-  broadcastUpdate('events');
-  res.json({ ok: true });
-});
+// This code lives in src/hidden-events.js. It runs here, at the same place in the file as before.
+require('./src/hidden-events.js')({ app, db, broadcastUpdate });
 
 // ── User feedback / bug / feature submissions ─────────────────────────────────
-// Stored locally and emailed to the product owner as a once-daily digest. The
-// recipient + email creds are configured server-side (see feedback_* settings).
-app.post('/api/feedback', upload.single('image'), (req, res) => {
-  const { kind, message, device_name } = req.body || {};
-  const msg = (message || '').trim();
-  if (!msg) return res.status(400).json({ error: 'Message is required' });
-  const k = ['bug','feature','feedback'].includes(kind) ? kind : 'feedback';
-  const image = req.file ? req.file.filename : '';
-  db.prepare(`INSERT INTO feedback (kind, message, device_name, app_version, image) VALUES (?,?,?,?,?)`)
-    .run(k, msg.slice(0, 4000), (device_name || '').slice(0, 120), APP_VERSION, image);
-  // Best-effort real-time forward to the central server (mothership). Never blocks
-  // or fails the user's submission — local storage + email digest remain the
-  // baseline; this is an additive delivery path.
-  forwardFeedbackToCentral({ kind: k, message: msg, device_name, image }).catch(() => {});
-  res.json({ ok: true });
-});
-
-// POSTs a feedback item to the configured central intake endpoint, if one is set.
-// Does nothing (resolves) when no URL is configured, so the feature is fully
-// optional and the app works identically with or without a central server. Uses a
-// plain JSON body (image as base64) so there are no extra dependencies on the Pi.
-async function forwardFeedbackToCentral({ kind, message, device_name, image }) {
-  const base = resolveFeedbackUrl();
-  if (!base) return; // feature off
-  const key = resolveFeedbackKey();
-  const target = new URL(`${base}/api/v1/feedback`);
-
-  const payload = {
-    kind, message,
-    device_name: device_name || getSetting('display_name') || '',
-    // NOT DEVICE_ID — this app has two separate, unrelated per-device
-    // identifiers. DEVICE_ID (the scr_... file-based one) is used for
-    // host/slave sync identity. screen_device_id_cache is the ID
-    // fetchUpdateInfo() actually sends to /api/v1/update-check, which is
-    // what the mothership records into licenseActivations. The mothership
-    // resolves a feedback submitter's email by joining feedback.device_id
-    // against licenseActivations.device_id — that only works if this sends
-    // the SAME id update-check does. Sending DEVICE_ID here (as this
-    // originally did) meant that join could essentially never match for any
-    // real device, silently breaking email resolution for ~all submissions.
-    device_id: updateSetting('screen_device_id_cache', '') || DEVICE_ID || '',
-    app_version: APP_VERSION,
-  };
-  if (key) payload.key = key;
-  if (image) {
-    try {
-      const imgPath = path.join(UPLOAD_DIR, image);
-      if (fs.existsSync(imgPath)) {
-        const ext = (path.extname(image).slice(1) || 'jpeg').toLowerCase();
-        payload.image_base64 = `data:image/${ext};base64,` + fs.readFileSync(imgPath).toString('base64');
-      }
-    } catch { /* skip image on any read error */ }
-  }
-  const body = JSON.stringify(payload);
-  const res = await fetchWithTimeout(target, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(key ? { 'x-feedback-key': key } : {}) },
-    body,
-    timeoutMs: 8000,
-    timeoutMessage: 'central feedback timeout',
-  });
-  await res.text(); // drain the body, matching the original's resp.resume()/'end' wait
-}
-
-// Small helper: make a JSON request to the central server (GET or POST), returning the
-// parsed body. Used for the feedback reply thread. Resolves null on any failure so the
-// UI degrades gracefully when the server is unreachable.
-async function centralRequest(method, pathAndQuery, bodyObj) {
-  const base = resolveFeedbackUrl();
-  if (!base) return null;
-  const key = resolveFeedbackKey();
-  let target;
-  try { target = new URL(base + pathAndQuery); } catch { return null; }
-  const body = bodyObj ? JSON.stringify(bodyObj) : null;
-  try {
-    const res = await fetchWithTimeout(target, {
-      method,
-      headers: {
-        'Accept': 'application/json',
-        ...(key ? { 'x-feedback-key': key } : {}),
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-      },
-      body,
-      timeoutMs: 8000,
-    });
-    return await res.json();
-  } catch { return null; }
-}
-
-// The id a feedback thread is actually filed under server-side — see the identical
-// resolution (and the full explanation) in forwardFeedbackToCentral() above: the
-// mothership joins feedback.device_id against licenseActivations.device_id, which
-// only has entries keyed by screen_device_id_cache (what fetchUpdateInfo() sends),
-// never by DEVICE_ID. The three routes below used to query with bare DEVICE_ID —
-// a different id namespace entirely — so a device could never find its OWN
-// feedback threads and every developer reply sat permanently invisible, no matter
-// how long the device polled. Must stay in lockstep with the submit-side id.
-function feedbackDeviceId() {
-  return getSetting('screen_device_id_cache') || DEVICE_ID || '';
-}
-
-// APP endpoint: fetch any developer replies to this device's feedback.
-app.get('/api/feedback-replies', async (req, res) => {
-  const key = resolveFeedbackKey();
-  const allParam = (req.query.all === '1' || req.query.all === 'true') ? '&all=1' : '';
-  const out = await centralRequest('GET',
-    `/api/v1/feedback-replies?device=${encodeURIComponent(feedbackDeviceId())}&key=${encodeURIComponent(key)}${allParam}`);
-  res.json(out || { threads: [] });
-});
-
-// APP endpoint: user replies back on a thread.
-app.post('/api/feedback-replies/:id', async (req, res) => {
-  const text = (req.body && req.body.text || '').trim();
-  if (!text) return res.status(400).json({ error: 'Message required' });
-  const out = await centralRequest('POST', `/api/v1/feedback-replies/${encodeURIComponent(req.params.id)}`,
-    { text, device: feedbackDeviceId(), key: resolveFeedbackKey() });
-  res.json(out || { error: 'Could not reach the server.' });
-});
-
-// APP endpoint: mark a thread's developer replies as seen.
-app.post('/api/feedback-replies/:id/seen', async (req, res) => {
-  await centralRequest('POST', `/api/v1/feedback-replies/${encodeURIComponent(req.params.id)}/seen`,
-    { device: feedbackDeviceId(), key: resolveFeedbackKey() });
-  res.json({ ok: true });
-});
-// each annotated with its hidden state and a stable key, so the Events tab can
-// search and toggle visibility. Defaults to a forward-looking window.
-app.get('/api/events-manage', (req, res) => {
-  const _today = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
-  const from = req.query.from || _today;
-  const to = req.query.to || (() => { const d = new Date(); d.setDate(d.getDate() + 365); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
-
-  const localEvents = db.prepare(
-    `SELECT *, 'local' as source FROM events WHERE date <= ? AND COALESCE(end_date, date) >= ? ORDER BY date ASC, start_time ASC`
-  ).all(to, from);
-  const icalEvents = db.prepare(`
-    SELECT ie.uid as id, ie.title, ie.date, ie.end_date, ie.start_time, ie.end_time, ie.notes,
-           ie.location as location, f.show_location as show_location,
-           f.id as feed_id, f.color, f.color_opacity, f.use_global_opacity, f.name as feed_name, 'ical' as source
-    FROM ical_events ie JOIN ical_feeds f ON f.id = ie.feed_id
-    WHERE f.enabled = 1 AND ie.date <= ? AND COALESCE(ie.end_date, ie.date) >= ?
-    ORDER BY ie.date ASC, ie.start_time ASC
-  `).all(to, from);
-
-  const hidden = db.prepare(`SELECT event_key, scope, date FROM hidden_events`).all();
-  const seriesHidden = new Set(hidden.filter(h => h.scope === 'series').map(h => h.event_key));
-  const occHidden = new Set(hidden.filter(h => h.scope !== 'series').map(h => `${h.event_key}|${h.date}`));
-
-  const annotate = (e) => {
-    const key = e.source === 'ical' ? `ical:${e.id}` : `local:${e.id}`;
-    const isSeries = seriesHidden.has(key);
-    const isOcc = occHidden.has(`${key}|${e.date}`);
-    return { ...e, event_key: key, hidden_series: isSeries, hidden_occurrence: isOcc,
-             // ical events can recur; local events are single (no series concept unless multi-day)
-             recurring: e.source === 'ical' };
-  };
-  const all = resolveEventOpacity([...localEvents, ...icalEvents]).map(annotate).sort((a, b) => {
-    if (a.date !== b.date) return a.date < b.date ? -1 : 1;
-    if (!a.start_time) return -1;
-    if (!b.start_time) return 1;
-    return a.start_time < b.start_time ? -1 : 1;
-  });
-  res.json(all);
-});
-
-// POST /api/events
-// Coerce a client-supplied owner_profile_id to a positive integer or null. Any
-// junk (0, negative, non-numeric, absent) becomes null = unassigned — we don't
-// verify the profile row exists here; a stale id just renders with the default
-// colour, same as null, and a real orphan is cleaned up on profile delete.
-function coerceOwnerProfileId(v) {
-  const n = Number(v);
-  return Number.isInteger(n) && n > 0 ? n : null;
-}
-
-app.post('/api/events', (req, res) => {
-  let { title, date, end_date, start_time, end_time, color, notes, location, target_calendar, owner_profile_id } = req.body;
-  if (!title || !date) {
-    return res.status(400).json({ error: 'title and date are required' });
-  }
-  title = demoCleanText(title, 120);
-  notes = demoCleanText(notes, 500);
-  location = demoCleanText(location, 300);
-  // Normalize: an end_date equal to or before the start date just means "single day"
-  const normalizedEndDate = (end_date && end_date > date) ? end_date : null;
-  // 'local' | 'google' | 'caldav:<url>' — where this one event should be
-  // pushed. Anything unrecognized (or absent) is stored as NULL = the
-  // legacy "push to whatever's enabled" default.
-  const tc = (typeof target_calendar === 'string' && /^(local|google|caldav:.+)$/.test(target_calendar)) ? target_calendar : null;
-  const ownerId = coerceOwnerProfileId(owner_profile_id);
-  const result = db.prepare(`
-    INSERT INTO events (title, date, end_date, start_time, end_time, color, notes, location, target_calendar, owner_profile_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(title, date, normalizedEndDate, start_time || null, end_time || null, color || '#4A90D9', notes || '', location || '', tc, ownerId);
-  const event = db.prepare(`SELECT * FROM events WHERE id = ?`).get(result.lastInsertRowid);
-  broadcastUpdate('events');
-  res.status(201).json(event);
-  pushLocalEventToCalDAV(event); // fire-and-forget; self-swallows all errors, no-ops if iCloud push isn't configured
-  pushLocalEventToGoogle(event); // ditto for Google Calendar
-});
-
-// PUT /api/events/:id
-app.put('/api/events/:id', (req, res) => {
-  let { title, date, end_date, start_time, end_time, color, notes, location, owner_profile_id } = req.body;
-  const existing = db.prepare(`SELECT * FROM events WHERE id = ?`).get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Event not found' });
-  if (title !== undefined) title = demoCleanText(title, 120);
-  if (notes !== undefined) notes = demoCleanText(notes, 500);
-  if (location !== undefined) location = demoCleanText(location, 300);
-
-  const finalDate = date ?? existing.date;
-  let finalEndDate = end_date !== undefined ? end_date : existing.end_date;
-  if (finalEndDate && finalEndDate <= finalDate) finalEndDate = null;
-
-  db.prepare(`
-    UPDATE events SET title=?, date=?, end_date=?, start_time=?, end_time=?, color=?, notes=?, location=?, owner_profile_id=?
-    WHERE id=?
-  `).run(
-    title ?? existing.title,
-    finalDate,
-    finalEndDate,
-    start_time !== undefined ? start_time : existing.start_time,
-    end_time   !== undefined ? end_time   : existing.end_time,
-    color ?? existing.color,
-    notes ?? existing.notes,
-    location !== undefined ? location : existing.location,
-    owner_profile_id !== undefined ? coerceOwnerProfileId(owner_profile_id) : existing.owner_profile_id,
-    req.params.id
-  );
-  broadcastUpdate('events');
-  const updated = db.prepare(`SELECT * FROM events WHERE id = ?`).get(req.params.id);
-  res.json(updated);
-  pushLocalEventToCalDAV(updated); // re-PUTs to the same deterministic remote URL — handles both edit and first-push-after-enabling
-  pushLocalEventToGoogle(updated);
-});
-
-// DELETE /api/events/:id
-app.delete('/api/events/:id', (req, res) => {
-  const existing = db.prepare(`SELECT * FROM events WHERE id = ?`).get(req.params.id); // read BEFORE delete — need caldav_url
-  const result = db.prepare(`DELETE FROM events WHERE id = ?`).run(req.params.id);
-  if (result.changes === 0) return res.status(404).json({ error: 'Event not found' });
-  broadcastUpdate('events');
-  res.json({ ok: true });
-  if (existing) { deleteEventFromCalDAV(existing); deleteEventFromGoogle(existing); } // fire-and-forget; each no-ops if this event was never pushed there
-});
+// This code lives in src/feedback.js. It runs here, at the same place in the file as before.
+require('./src/feedback.js')({ URL, path, fs, fetchWithTimeout, app, db, UPLOAD_DIR, upload, APP_VERSION, resolveFeedbackUrl, resolveFeedbackKey, DEVICE_ID, getSetting: (k) => getSetting(k), updateSetting });
 
 // ── Family member profiles ───────────────────────────────────────────────────
-// Persona picker for the companion app — NOT authentication. See the profiles
-// table comment in the schema block. Zero rows = the app is unchanged. On a
-// slave these mutating routes proxy to the host automatically (slaveWriteGuard
-// doesn't allowlist /api/profiles as local-only).
-
-// Only these tabs can be hidden — calendars/favorites/settings always stay.
-const HIDEABLE_TABS = new Set(['photos', 'layout', 'displays', 'family']);
-const PROFILE_FEATURE_KEYS = new Set(['ha', 'integrations']);
-const PROFILE_PRESETS = new Set(['basic', 'intermediate', 'advanced', 'custom']);
-
-// Normalise a client-supplied hidden_tabs value to a JSON string of a clean
-// array (unknown / non-hideable ids dropped, deduped).
-function cleanHiddenTabs(v) {
-  let arr = v;
-  if (typeof v === 'string') { try { arr = JSON.parse(v); } catch { arr = []; } }
-  if (!Array.isArray(arr)) arr = [];
-  return JSON.stringify([...new Set(arr.filter(t => HIDEABLE_TABS.has(t)))]);
-}
-// Normalise features to a JSON string of an object with only known boolean keys.
-function cleanFeatures(v) {
-  let obj = v;
-  if (typeof v === 'string') { try { obj = JSON.parse(v); } catch { obj = {}; } }
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) obj = {};
-  const out = {};
-  for (const k of PROFILE_FEATURE_KEYS) { if (k in obj) out[k] = !!obj[k]; }
-  return JSON.stringify(out);
-}
-function countManagers(exceptId) {
-  const row = exceptId != null
-    ? db.prepare(`SELECT COUNT(*) n FROM profiles WHERE is_manager = 1 AND id != ?`).get(exceptId)
-    : db.prepare(`SELECT COUNT(*) n FROM profiles WHERE is_manager = 1`).get();
-  return row.n;
-}
-
-// GET /api/profiles — rows verbatim; the client parses hidden_tabs / features.
-app.get('/api/profiles', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.json(db.prepare(`SELECT * FROM profiles ORDER BY sort, id`).all());
-});
-
-// POST /api/profiles — the very first profile in a household is forced to be a
-// manager, so a household can never lock itself out of profile management.
-app.post('/api/profiles', (req, res) => {
-  const b = req.body || {};
-  const name = (b.name || '').toString().trim().slice(0, 40);
-  if (!name) return res.status(400).json({ error: 'name is required' });
-  const isFirst = db.prepare(`SELECT COUNT(*) n FROM profiles`).get().n === 0;
-  const landing = HIDEABLE_TABS.has(b.landing_tab) || ['favorites', 'calendars', 'settings'].includes(b.landing_tab)
-    ? b.landing_tab : 'favorites';
-  const preset = PROFILE_PRESETS.has(b.preset) ? b.preset : 'custom';
-  const result = db.prepare(`
-    INSERT INTO profiles (name, color, avatar, is_manager, landing_tab, hidden_tabs, features, pin, preset, sort)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    name,
-    /^#[0-9a-fA-F]{3,8}$/.test(b.color || '') ? b.color : '#4A90D9',
-    (b.avatar || '').toString().slice(0, 8),
-    isFirst || b.is_manager ? 1 : 0,
-    landing,
-    cleanHiddenTabs(b.hidden_tabs),
-    cleanFeatures(b.features),
-    (b.pin || '').toString().replace(/\D/g, '').slice(0, 8),
-    preset,
-    Number.isInteger(b.sort) ? b.sort : 0
-  );
-  broadcastUpdate('profiles');
-  res.status(201).json(db.prepare(`SELECT * FROM profiles WHERE id = ?`).get(result.lastInsertRowid));
-});
-
-// PUT /api/profiles/:id — partial: only the keys present in the body change.
-// pin: send "" to clear, omit to keep.
-app.put('/api/profiles/:id', (req, res) => {
-  const existing = db.prepare(`SELECT * FROM profiles WHERE id = ?`).get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Profile not found' });
-  const b = req.body || {};
-  const sets = [];
-  const vals = [];
-  const put = (col, val) => { sets.push(`${col}=?`); vals.push(val); };
-
-  if (b.name !== undefined) {
-    const n = (b.name || '').toString().trim().slice(0, 40);
-    if (!n) return res.status(400).json({ error: 'name cannot be empty' });
-    put('name', n);
-  }
-  if (b.color !== undefined && /^#[0-9a-fA-F]{3,8}$/.test(b.color || '')) put('color', b.color);
-  if (b.avatar !== undefined) put('avatar', (b.avatar || '').toString().slice(0, 8));
-  if (b.is_manager !== undefined) {
-    const next = b.is_manager ? 1 : 0;
-    // Never let the last manager demote themselves — the household would lose
-    // all profile-management access.
-    if (!next && existing.is_manager && countManagers(existing.id) === 0) {
-      return res.status(400).json({ error: 'At least one profile must stay a manager.' });
-    }
-    put('is_manager', next);
-  }
-  if (b.landing_tab !== undefined) {
-    const ok = HIDEABLE_TABS.has(b.landing_tab) || ['favorites', 'calendars', 'settings'].includes(b.landing_tab);
-    put('landing_tab', ok ? b.landing_tab : 'favorites');
-  }
-  if (b.hidden_tabs !== undefined) put('hidden_tabs', cleanHiddenTabs(b.hidden_tabs));
-  if (b.features !== undefined) put('features', cleanFeatures(b.features));
-  if (b.pin !== undefined) put('pin', (b.pin || '').toString().replace(/\D/g, '').slice(0, 8));
-  if (b.preset !== undefined) put('preset', PROFILE_PRESETS.has(b.preset) ? b.preset : 'custom');
-  if (b.sort !== undefined && Number.isInteger(b.sort)) put('sort', b.sort);
-
-  if (!sets.length) return res.json(existing);
-  vals.push(existing.id);
-  db.prepare(`UPDATE profiles SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
-  broadcastUpdate('profiles');
-  res.json(db.prepare(`SELECT * FROM profiles WHERE id = ?`).get(existing.id));
-});
-
-// DELETE /api/profiles/:id — refuses to remove the last manager; orphaned
-// events fall back to owner_profile_id = NULL (default colour).
-app.delete('/api/profiles/:id', (req, res) => {
-  const existing = db.prepare(`SELECT * FROM profiles WHERE id = ?`).get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Profile not found' });
-  if (existing.is_manager && countManagers(existing.id) === 0) {
-    return res.status(400).json({ error: 'This is the only manager profile — make another profile a manager first.' });
-  }
-  db.prepare(`UPDATE events SET owner_profile_id = NULL WHERE owner_profile_id = ?`).run(existing.id);
-  db.prepare(`UPDATE messages SET author_profile_id = NULL WHERE author_profile_id = ?`).run(existing.id);
-  db.prepare(`DELETE FROM profiles WHERE id = ?`).run(existing.id);
-  broadcastUpdate('profiles');
-  broadcastUpdate('events');
-  broadcastUpdate('messages');
-  res.json({ ok: true });
-});
+// This code lives in src/profiles.js. It runs here, at the same place in the file as before.
+require('./src/profiles.js')({ crypto, app, db, makeRateLimiter, broadcastUpdate, clientIp });
 
 // ── Family message board ─────────────────────────────────────────────────────
-// Short notes shown on the wall (the "messageboard" widget) and managed from
-// the app's Family Hub. See the `messages` table comment. Syncs host->slave
-// like profiles/events; on a slave these mutating routes proxy to the host
-// (not in slaveWriteGuard's local-only allowlist).
-
-const MESSAGE_MAX_NOTES = 60; // cap the board; over this, the oldest UNPINNED note is dropped on insert
-// Delete notes older than settings.messageboard_autoclear_days (pinned notes
-// exempt; '0' = never). Cheap; runs at boot, on every GET /api/messages, and
-// hourly. Host-only — a slave mirrors the host's table wholesale.
-function sweepMessages() {
-  if (isSlave()) return;
-  const days = parseInt(getSetting('messageboard_autoclear_days'), 10);
-  if (!Number.isFinite(days) || days <= 0) return;
-  db.prepare(`DELETE FROM messages WHERE pinned = 0 AND created_at < datetime('now', ?)`).run(`-${days} days`);
-}
-try { sweepMessages(); } catch {}
-setInterval(() => { try { sweepMessages(); } catch {} }, 60 * 60 * 1000);
-
-app.get('/api/messages', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  try { sweepMessages(); } catch {}
-  res.json(db.prepare(`SELECT * FROM messages ORDER BY pinned DESC, created_at DESC, id DESC`).all());
-});
-
-app.post('/api/messages', (req, res) => {
-  const b = req.body || {};
-  const text = demoCleanText((b.text || '').toString().slice(0, 280), 280).trim();
-  if (!text) return res.status(400).json({ error: 'text is required' });
-  const author = demoCleanText((b.author || '').toString().slice(0, 40), 40).trim();
-  const color = /^#[0-9a-fA-F]{3,8}$/.test(b.color || '') ? b.color : '#4A90D9';
-  const authorProfileId = coerceOwnerProfileId(b.author_profile_id);
-  const result = db.prepare(
-    `INSERT INTO messages (text, author, author_profile_id, color) VALUES (?, ?, ?, ?)`
-  ).run(text, author, authorProfileId, color);
-  // Trim to the cap — keep pinned + the newest, drop the rest.
-  db.prepare(`
-    DELETE FROM messages WHERE pinned = 0 AND id NOT IN (
-      SELECT id FROM messages ORDER BY pinned DESC, created_at DESC, id DESC LIMIT ?
-    )`).run(MESSAGE_MAX_NOTES);
-  broadcastUpdate('messages');
-  res.status(201).json(db.prepare(`SELECT * FROM messages WHERE id = ?`).get(result.lastInsertRowid));
-});
-
-app.put('/api/messages/:id', (req, res) => {
-  const existing = db.prepare(`SELECT * FROM messages WHERE id = ?`).get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Message not found' });
-  const b = req.body || {};
-  const sets = [];
-  const vals = [];
-  if (b.pinned !== undefined) { sets.push('pinned=?'); vals.push(b.pinned ? 1 : 0); }
-  if (b.text !== undefined) {
-    const t = demoCleanText((b.text || '').toString().slice(0, 280), 280).trim();
-    if (!t) return res.status(400).json({ error: 'text cannot be empty' });
-    sets.push('text=?'); vals.push(t);
-  }
-  if (!sets.length) return res.json(existing);
-  vals.push(existing.id);
-  db.prepare(`UPDATE messages SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
-  broadcastUpdate('messages');
-  res.json(db.prepare(`SELECT * FROM messages WHERE id = ?`).get(existing.id));
-});
-
-app.delete('/api/messages/:id', (req, res) => {
-  const r = db.prepare(`DELETE FROM messages WHERE id = ?`).run(req.params.id);
-  if (r.changes === 0) return res.status(404).json({ error: 'Message not found' });
-  broadcastUpdate('messages');
-  res.json({ ok: true });
-});
+// This code lives in src/messageboard.js. It runs here, at the same place in the file as before.
+require('./src/messageboard.js')({ app, db, isSlave: () => isSlave(), getSetting: (k) => getSetting(k), demoCleanText, coerceOwnerProfileId, broadcastUpdate });
 
 // ── Meal plan API ────────────────────────────────────────────────────────────
-// One planned meal per (date, slot). slot is breakfast|lunch|dinner; which
-// slots the household actually plans is settings.mealplan_slots (default just
-// 'dinner'). An unplanned slot has no row. Shown on the wall (the "mealplan"
-// widget) and managed from the app's Family Hub "Meals" sub-tab. Syncs
-// host->slave like messages.
-const MEAL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const MEAL_SLOTS = ['breakfast', 'lunch', 'dinner'];
-function sweepMeals() {
-  if (isSlave()) return;
-  db.prepare(`DELETE FROM meals WHERE date < date('now','-7 days') OR date > date('now','+120 days')`).run();
-}
-try { sweepMeals(); } catch {}
-setInterval(() => { try { sweepMeals(); } catch {} }, 6 * 60 * 60 * 1000);
+// This code lives in src/mealplan.js. It runs here, at the same place in the file as before.
+require('./src/mealplan.js')({ app, db, isSlave: () => isSlave(), demoCleanText, broadcastUpdate });
 
-app.get('/api/meals', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  try { sweepMeals(); } catch {}
-  const today = new Date();
-  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  const defFrom = iso(today);
-  const defTo = (() => { const d = new Date(today); d.setDate(d.getDate() + 14); return iso(d); })();
-  const from = MEAL_DATE_RE.test(req.query.from || '') ? req.query.from : defFrom;
-  const to = MEAL_DATE_RE.test(req.query.to || '') ? req.query.to : defTo;
-  // A stable slot order (breakfast -> lunch -> dinner) so the client doesn't
-  // have to re-sort.
-  res.json(db.prepare(`
-    SELECT * FROM meals WHERE date BETWEEN ? AND ?
-    ORDER BY date, CASE slot WHEN 'breakfast' THEN 0 WHEN 'lunch' THEN 1 ELSE 2 END
-  `).all(from, to));
-});
-
-function upsertMeal(req, res, date, slot) {
-  if (!MEAL_DATE_RE.test(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
-  if (!MEAL_SLOTS.includes(slot)) return res.status(400).json({ error: 'slot must be breakfast, lunch or dinner' });
-  const b = req.body || {};
-  const title = demoCleanText((b.title || '').toString().slice(0, 80), 80).trim();
-  const notes = demoCleanText((b.notes || '').toString().slice(0, 300), 300).trim();
-  if (!title) {
-    // Empty title = clear this slot.
-    db.prepare(`DELETE FROM meals WHERE date = ? AND slot = ?`).run(date, slot);
-    broadcastUpdate('meals');
-    return res.json({ ok: true, cleared: true });
-  }
-  db.prepare(`
-    INSERT INTO meals (date, slot, title, notes, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(date, slot) DO UPDATE SET title = excluded.title, notes = excluded.notes, updated_at = excluded.updated_at
-  `).run(date, slot, title, notes);
-  broadcastUpdate('meals');
-  res.json(db.prepare(`SELECT * FROM meals WHERE date = ? AND slot = ?`).get(date, slot));
-}
-// /api/meals/:date defaults to the dinner slot (back-compat with the
-// pre-slots widget/app); /api/meals/:date/:slot is explicit.
-app.put('/api/meals/:date/:slot', (req, res) => upsertMeal(req, res, req.params.date, req.params.slot));
-app.put('/api/meals/:date', (req, res) => upsertMeal(req, res, req.params.date, 'dinner'));
-
-function deleteMeal(req, res, date, slot) {
-  if (!MEAL_DATE_RE.test(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
-  if (!MEAL_SLOTS.includes(slot)) return res.status(400).json({ error: 'bad slot' });
-  db.prepare(`DELETE FROM meals WHERE date = ? AND slot = ?`).run(date, slot);
-  broadcastUpdate('meals');
-  res.json({ ok: true });
-}
-app.delete('/api/meals/:date/:slot', (req, res) => deleteMeal(req, res, req.params.date, req.params.slot));
-app.delete('/api/meals/:date', (req, res) => deleteMeal(req, res, req.params.date, 'dinner'));
-
-// ── Camera streaming (managed go2rtc) ─────────────────────────────────────────
-// The "camera" layout widget shows a live RTSP / ONVIF / Home Assistant camera
-// on the wall. Browsers can't play RTSP, so a local go2rtc process ingests each
-// camera once and repackages it (WebRTC / MSE / MJPEG) for the browser. go2rtc's
-// own HTTP API binds to 127.0.0.1 and is NEVER exposed: the browser reaches
-// exactly one thing — the WebSocket at /api/camera/:id/ws, reverse-proxied to
-// go2rtc's /api/ws?src=cam_<id> (that single socket carries WebRTC signalling,
-// MSE and MJPEG) — plus /api/camera/:id/frame.jpeg for a poster still. Stream
-// URLs (which routinely embed rtsp://user:pass@host) live only in the cameras
-// table and go2rtc.yaml on disk, never in an API response.
-
-// The binary is bundled by install.sh (Pi), the Docker image, and the Windows
-// installer. When an install updates code-only through the in-app updater the
-// binary won't be there — ensureGo2rtcBinary() below downloads the pinned build
-// on first camera use so it self-heals on every platform. Keep this version +
-// the sha256 map in step with scripts/go2rtc-version.sh on a bump.
-const GO2RTC_VERSION = 'v1.9.14';
-const GO2RTC_SHA256 = {
-  go2rtc_linux_amd64: '32d616af226bd731678ffde328b94cfb94e30339bfefc469cfb76323144615a6',
-  go2rtc_linux_arm64: '359fabade8a7a51e81a55fe6df6b0ef81764a5e1d63179577534eaaa71904b50',
-  go2rtc_linux_arm:   '4d7e1639af5a2722a28e864468fd8099b3c1682565446c798bf9e3b38fde12e4',
-  go2rtc_linux_armv6: '4dc20370556b29f3a90f4c7a09dcd95472c8f74cca56d4d1fb91f32bdd15174c',
-  go2rtc_linux_i386:  '12a114d19fc9fba1b3541cf7c6bb9b01896a6845f31285ec77269e2e7c613885',
-  'go2rtc_win64.zip':     'dd4167d75cb04abe618855b7c71f8658bd009f60c1a71835d134d2c11c939907',
-  'go2rtc_win_arm64.zip': '814be0f6d8669025c7bccdd1f026ffaf613abae5352239f4ec84de543b94594a',
-  'go2rtc_win32.zip':     '6fafb817477f4d34e5edfd8bb3c547151dfc5c404bde41e274db146b17ed5c03',
-  'go2rtc_mac_amd64.zip': '9b0b9a27a4dc3a5b8b93376e7e8fc2787c6af624a512842622be84aec0171c7a',
-  'go2rtc_mac_arm64.zip': '919b78adc759d6b3883d1e1b2ac915ac0985bb903ff1897b4d228527bd64690c',
-};
-// process.arch/platform -> release asset name (or null for an arch with no build).
-function go2rtcAssetName() {
-  const a = process.arch, p = process.platform;
-  if (p === 'linux') {
-    if (a === 'x64') return 'go2rtc_linux_amd64';
-    if (a === 'arm64') return 'go2rtc_linux_arm64';
-    if (a === 'arm') return 'go2rtc_linux_arm';   // Node reports 'arm' for v6 and v7; the v7 build covers Pi 2+
-    if (a === 'ia32') return 'go2rtc_linux_i386';
-    return null;
-  }
-  if (p === 'win32') {
-    if (a === 'x64') return 'go2rtc_win64.zip';
-    if (a === 'arm64') return 'go2rtc_win_arm64.zip';
-    if (a === 'ia32') return 'go2rtc_win32.zip';
-    return null;
-  }
-  if (p === 'darwin') return a === 'arm64' ? 'go2rtc_mac_arm64.zip' : 'go2rtc_mac_amd64.zip';
-  return null;
-}
-
-const GO2RTC_BIN_NAME = IS_WIN ? 'go2rtc.exe' : 'go2rtc';
-const GO2RTC_BIN_PATH = path.join(__dirname, 'bin', GO2RTC_BIN_NAME);
-function go2rtcBinReady() { try { return fs.existsSync(GO2RTC_BIN_PATH); } catch { return false; } }
-const GO2RTC_CONFIG_PATH = dataPath('go2rtc.yaml');
-const GO2RTC_WEBRTC_PORT = 8555; // fixed local UDP port for WebRTC media (single-box case)
-function go2rtcPort() {
-  const p = parseInt(getSetting('go2rtc_port'), 10);
-  return Number.isFinite(p) && p > 0 && p < 65536 ? p : 1984;
-}
-
-const CAMERA_URL_SCHEMES = new Set(['rtsp', 'rtsps', 'rtmp', 'rtmps', 'http', 'https', 'onvif', 'hls']);
-// Validate + normalise a camera source. Returns { ok, value } | { ok:false, error }.
-// This is the whole SSRF story on the input side: the browser never causes a
-// server-side fetch (it only talks to /api/camera/*), and the only URL the
-// server hands onward is this one, to the local go2rtc — same trust class as
-// ha_base_url / the SMTP host / an iCal feed URL. We don't allowlist hosts (it
-// breaks legitimate NVRs on odd subnets), but we do bound the scheme and block
-// the cloud metadata address, the one target that turns "fetch a URL" into a
-// credential-theft primitive on a hosted box.
-function validateCameraUrl(kind, raw) {
-  const s = (raw || '').toString().trim();
-  if (kind === 'ha') {
-    return /^ha:camera\.[a-z0-9_]+$/.test(s)
-      ? { ok: true, value: s }
-      : { ok: false, error: 'Home Assistant cameras must be ha:camera.<entity_id>' };
-  }
-  let u;
-  try { u = new URL(s); } catch { return { ok: false, error: 'That is not a valid URL' }; }
-  const scheme = u.protocol.replace(/:$/, '').toLowerCase();
-  if (!CAMERA_URL_SCHEMES.has(scheme)) {
-    return { ok: false, error: `Unsupported "${scheme}:" — use rtsp / rtsps / http / https / onvif / rtmp` };
-  }
-  const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  if (host === '169.254.169.254' || host === 'metadata.google.internal' || host === 'metadata') {
-    return { ok: false, error: 'That address is not allowed' };
-  }
-  return { ok: true, value: s };
-}
-
-// ── go2rtc process management ──
-let _go2rtc = null;              // the child process, or null
-let _go2rtcRestartTID = null;
-let _go2rtcBackoff = 1000;
-let _go2rtcStarting = false;
-let _go2rtcUnavailable = false;    // spawn failed for a non-arch reason
-let _go2rtcUnsupportedArch = false; // no go2rtc build for this platform/arch — permanent
-let _go2rtcDownloading = false;    // fetching the binary right now
-let _go2rtcDownloadPromise = null; // in-flight download, so concurrent callers share it
-let _go2rtcStopRequested = false;
-let _go2rtcWantImmediateRespawn = false;
-const _haStreamCache = new Map(); // entity_id -> { url, at }
-
+// ── Shared file download helper (core: stays in server.js) ─────────────────────────
 // Stream a URL (following redirects) to a file. No auth headers — this only
 // ever fetches a pinned GitHub release asset.
 // fetch() follows redirects on its own, so the manual redirect-recursion this
@@ -5051,1036 +4140,13 @@ async function downloadFile(url, destPath, timeoutMs = 60000) {
   });
 }
 
-// Make sure bin/go2rtc exists — download + sha256-verify the pinned build for
-// this platform if it doesn't. Self-swallowing; sets _go2rtcUnsupportedArch /
-// _go2rtcUnavailable on a permanent / transient failure. Returns true once the
-// binary is present and ready.
-async function ensureGo2rtcBinary() {
-  if (go2rtcBinReady()) return true;
-  if (_go2rtcUnsupportedArch) return false;
-  if (_go2rtcDownloadPromise) return _go2rtcDownloadPromise;
-  const asset = go2rtcAssetName();
-  const sha = asset && GO2RTC_SHA256[asset];
-  if (!asset || !sha) {
-    _go2rtcUnsupportedArch = true;
-    console.error(`[go2rtc] no build for ${process.platform}/${process.arch} — the Camera widget is unavailable on this device`);
-    return false;
-  }
-  _go2rtcDownloadPromise = (async () => {
-    _go2rtcDownloading = true;
-    const url = `https://github.com/AlexxIT/go2rtc/releases/download/${GO2RTC_VERSION}/${asset}`;
-    const binDir = path.join(__dirname, 'bin');
-    const tmp = path.join(binDir, `.go2rtc.download.${process.pid}`);
-    try {
-      fs.mkdirSync(binDir, { recursive: true });
-      console.log(`[go2rtc] downloading ${GO2RTC_VERSION} (${asset})…`);
-      await downloadFile(url, tmp, 120000);
-      const got = crypto.createHash('sha256').update(fs.readFileSync(tmp)).digest('hex');
-      if (got !== sha) throw new Error(`sha256 mismatch (expected ${sha}, got ${got})`);
-      if (asset.endsWith('.zip')) {
-        const exDir = path.join(binDir, '.go2rtc.extract');
-        fs.rmSync(exDir, { recursive: true, force: true });
-        extractZip(tmp, exDir);
-        // the zip holds a single go2rtc / go2rtc.exe
-        const found = fs.readdirSync(exDir).find((f) => f === GO2RTC_BIN_NAME) || fs.readdirSync(exDir)[0];
-        fs.renameSync(path.join(exDir, found), GO2RTC_BIN_PATH);
-        fs.rmSync(exDir, { recursive: true, force: true });
-        fs.rmSync(tmp, { force: true });
-      } else {
-        fs.renameSync(tmp, GO2RTC_BIN_PATH);
-      }
-      if (!IS_WIN) { try { fs.chmodSync(GO2RTC_BIN_PATH, 0o755); } catch {} }
-      _go2rtcUnavailable = false;
-      console.log('[go2rtc] binary ready');
-      return true;
-    } catch (e) {
-      try { fs.rmSync(tmp, { force: true }); } catch {}
-      _go2rtcUnavailable = true; // transient — a later reload retries
-      console.error('[go2rtc] binary download failed (Camera widget unavailable for now): ' + e.message);
-      return false;
-    } finally {
-      _go2rtcDownloading = false;
-      _go2rtcDownloadPromise = null;
-    }
-  })();
-  return _go2rtcDownloadPromise;
-}
-
-function anyLayoutHasCamera() {
-  try {
-    for (const r of db.prepare(`SELECT widgets FROM layouts`).all()) {
-      const arr = JSON.parse(r.widgets || '[]');
-      if (Array.isArray(arr) && arr.some(w => w && w.type === 'camera' && w.camId)) return true;
-    }
-  } catch {}
-  return false;
-}
-
-function cameraServiceState() {
-  if (getSetting('camera_service_autostart') === '0') return 'disabled';
-  if (_go2rtcDownloading) return 'downloading';
-  if (_go2rtcUnsupportedArch || _go2rtcUnavailable) return 'unavailable';
-  if (_go2rtc) return 'running';
-  if (anyLayoutHasCamera()) return 'starting';
-  return 'stopped';
-}
-
-// Ask Home Assistant for a playable stream source for a camera entity. Prefers
-// the WebSocket `camera/stream` command (yields an HA-proxied HLS URL whose
-// token is in the path — no LLAT exposure). Cached ~5 min. null = unresolvable
-// (the widget then shows "offline"; the user can add it as a direct RTSP URL).
-async function resolveHaCameraSource(entityId) {
-  const cached = _haStreamCache.get(entityId);
-  if (cached && Date.now() - cached.at < 5 * 60 * 1000) return cached.url;
-  const base = getSetting('ha_base_url'), token = getSetting('ha_token');
-  if (!base || !token || !WebSocketClient) return null;
-  let url = null;
-  try {
-    const r = await haWsRequest(base, token, [{ type: 'camera/stream', entity_id: entityId }]);
-    const result = r && r['camera/stream'];
-    if (result && result.url) {
-      url = /^(https?|rtsps?):/.test(result.url)
-        ? result.url
-        : base.replace(/\/+$/, '') + result.url; // HA returns a relative /api/hls/... path
-    }
-  } catch {}
-  _haStreamCache.set(entityId, { url, at: Date.now() });
-  return url;
-}
-
-async function buildGo2rtcConfig() {
-  const streams = {};
-  for (const c of db.prepare(`SELECT * FROM cameras`).all()) {
-    let src = c.url;
-    if (c.kind === 'ha') {
-      src = await resolveHaCameraSource(c.url.slice(3));
-      if (!src) continue; // unresolvable — skip; widget shows offline
-    }
-    streams[`cam_${c.id}`] = src;
-  }
-  return streams;
-}
-function toGo2rtcYaml(streams) {
-  const q = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-  const lines = [
-    'api:', `  listen: ${q('127.0.0.1:' + go2rtcPort())}`,
-    'rtsp:', '  listen: ""',
-    'webrtc:', `  listen: ":${GO2RTC_WEBRTC_PORT}"`, '  candidates:', `    - ${q('127.0.0.1:' + GO2RTC_WEBRTC_PORT)}`,
-    'log:', '  level: "warn"',
-    'streams:',
-  ];
-  for (const [k, v] of Object.entries(streams)) lines.push(`  ${k}: ${q(v)}`);
-  return lines.join('\n') + '\n';
-}
-
-function _go2rtcLog(buf) {
-  String(buf).split(/\r?\n/).filter(Boolean).forEach((l) => console.log('[go2rtc] ' + l));
-}
-function startCameraService() {
-  if (_go2rtc || _go2rtcStarting) return;
-  // Prefer the bundled/downloaded binary; fall back to a bare command in case
-  // go2rtc is on PATH (a hand-rolled install).
-  const bin = go2rtcBinReady() ? GO2RTC_BIN_PATH : GO2RTC_BIN_NAME;
-  _go2rtcStarting = true;
-  _go2rtcStopRequested = false;
-  let child;
-  try {
-    child = spawn(bin, ['-config', GO2RTC_CONFIG_PATH], { stdio: ['ignore', 'pipe', 'pipe'] });
-  } catch (e) {
-    _go2rtcStarting = false; _go2rtcUnavailable = true;
-    console.error('[go2rtc] could not start — camera widgets will show "unavailable": ' + e.message);
-    return;
-  }
-  child.on('error', (e) => {
-    _go2rtcStarting = false;
-    if (e.code === 'ENOENT') { _go2rtcUnavailable = true; console.error('[go2rtc] binary not found — cameras unavailable on this device'); }
-    else console.error('[go2rtc] process error: ' + e.message);
-  });
-  child.stdout.on('data', _go2rtcLog);
-  child.stderr.on('data', _go2rtcLog);
-  child.on('spawn', () => {
-    _go2rtcStarting = false; _go2rtcUnavailable = false; _go2rtcBackoff = 1000;
-    console.log(`[go2rtc] started (pid ${child.pid}, api 127.0.0.1:${go2rtcPort()})`);
-  });
-  child.on('exit', (code, sig) => {
-    console.log(`[go2rtc] exited (code ${code}${sig ? ', signal ' + sig : ''})`);
-    _go2rtc = null; _go2rtcStarting = false;
-    if (_go2rtcStopRequested && !_go2rtcWantImmediateRespawn) { _go2rtcStopRequested = false; return; }
-    const immediate = _go2rtcWantImmediateRespawn;
-    _go2rtcWantImmediateRespawn = false; _go2rtcStopRequested = false;
-    if (getSetting('camera_service_autostart') === '0' || !anyLayoutHasCamera()) return;
-    const delay = immediate ? 200 : _go2rtcBackoff;
-    if (!immediate) _go2rtcBackoff = Math.min(_go2rtcBackoff * 2, 15000);
-    _go2rtcRestartTID = setTimeout(() => { _go2rtcRestartTID = null; startCameraService(); }, delay);
-  });
-  _go2rtc = child;
-}
-function stopCameraService(reason) {
-  if (_go2rtcRestartTID) { clearTimeout(_go2rtcRestartTID); _go2rtcRestartTID = null; }
-  if (!_go2rtc) return;
-  console.log('[go2rtc] stopping (' + (reason || 'requested') + ')');
-  _go2rtcStopRequested = true; _go2rtcWantImmediateRespawn = false;
-  try { _go2rtc.kill(); } catch {}
-}
-// Rewrite the config and make go2rtc pick it up: kill + immediate respawn when
-// it's running (go2rtc reads its config only at startup — no reliable partial
-// reload), a fresh start when it wasn't. No-ops (and stops the service) when
-// nothing needs a camera or the hard off-switch is set.
-async function reloadCameraService() {
-  try {
-    if (getSetting('camera_service_autostart') === '0') { stopCameraService('service disabled'); return; }
-    if (!anyLayoutHasCamera()) { stopCameraService('no camera widgets'); return; }
-    let yaml;
-    try { yaml = toGo2rtcYaml(await buildGo2rtcConfig()); }
-    catch (e) { console.error('[go2rtc] config build failed: ' + e.message); return; }
-    try { fs.writeFileSync(GO2RTC_CONFIG_PATH, yaml); }
-    catch (e) { console.error('[go2rtc] config write failed: ' + e.message); return; }
-    if (_go2rtc) {
-      _go2rtcWantImmediateRespawn = true;
-      try { _go2rtc.kill(); } catch {}
-    } else {
-      // Bundled by the installer / image; downloaded on demand otherwise so a
-      // code-only in-app update still ends up with a working Camera widget.
-      const ready = await ensureGo2rtcBinary();
-      if (ready) startCameraService();
-    }
-  } catch (e) {
-    console.error('[go2rtc] reload error: ' + e.message);
-  }
-}
-// A camera widget exists but the service isn't up (typically a first-run
-// binary download that failed while offline) — retry periodically so it
-// self-heals once the network is back. Cheap: no-ops unless all conditions hold.
-setInterval(() => {
-  if (!_go2rtc && !_go2rtcStarting && !_go2rtcDownloading && !_go2rtcUnsupportedArch
-      && getSetting('camera_service_autostart') !== '0' && anyLayoutHasCamera()) {
-    reloadCameraService();
-  }
-}, 20 * 60 * 1000);
-function go2rtcApi(method, pathname) {
-  return new Promise((resolve, reject) => {
-    const req = http.request(
-      { host: '127.0.0.1', port: go2rtcPort(), path: pathname, method, timeout: 4000 },
-      (r) => { let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => {
-        if (r.statusCode >= 400) return reject(new Error('go2rtc ' + r.statusCode));
-        try { resolve(d ? JSON.parse(d) : null); } catch { resolve(null); }
-      }); }
-    );
-    req.on('error', reject);
-    req.on('timeout', () => req.destroy(new Error('go2rtc timeout')));
-    req.end();
-  });
-}
-
-// WebSocket reverse-proxy: /api/camera/:id/ws  <->  ws://127.0.0.1:<port>/api/ws?src=cam_<id>
-let _camWss = null;
-function attachCameraWsProxy(server) {
-  if (!WebSocketClient || _camWss) return;
-  const WSS = WebSocketClient.Server || WebSocketClient.WebSocketServer;
-  if (!WSS) return;
-  _camWss = new WSS({ noServer: true });
-  server.on('upgrade', (req, socket, head) => {
-    let pathname;
-    try { pathname = new URL(req.url, 'http://localhost').pathname; } catch { return; }
-    const m = pathname.match(/^\/api\/camera\/(\d+)\/ws$/);
-    if (!m) return; // not ours — leave the socket for any other handler
-    const id = parseInt(m[1], 10);
-    if (!db.prepare(`SELECT id FROM cameras WHERE id = ?`).get(id)) { socket.destroy(); return; }
-    _camWss.handleUpgrade(req, socket, head, (client) => {
-      let upstream;
-      try { upstream = new WebSocketClient(`ws://127.0.0.1:${go2rtcPort()}/api/ws?src=cam_${id}`); }
-      catch { try { client.close(); } catch {} return; }
-      const closeBoth = () => { try { client.close(); } catch {} try { upstream.close(); } catch {} };
-      upstream.on('open', () => {
-        client.on('message', (d, isBinary) => { try { upstream.send(d, { binary: isBinary }); } catch {} });
-        upstream.on('message', (d, isBinary) => { try { client.send(d, { binary: isBinary }); } catch {} });
-      });
-      upstream.on('error', closeBoth);
-      upstream.on('close', closeBoth);
-      client.on('error', closeBoth);
-      client.on('close', closeBoth);
-    });
-  });
-}
-
-// ── Camera API ──
-function redactCamera(c) {
-  let host_hint = '';
-  if (c.kind === 'ha') host_hint = c.url.slice(3);
-  else { try { host_hint = new URL(c.url).host; } catch {} }
-  return { id: c.id, name: c.name, kind: c.kind, url_set: !!c.url, host_hint, created_at: c.created_at };
-}
-
-app.get('/api/cameras', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.json(db.prepare(`SELECT * FROM cameras ORDER BY name COLLATE NOCASE, id`).all().map(redactCamera));
-});
-
-app.post('/api/cameras', (req, res) => {
-  const b = req.body || {};
-  const name = demoCleanText((b.name || '').toString().slice(0, 60), 60).trim();
-  if (!name) return res.status(400).json({ error: 'name is required' });
-  const kind = b.kind === 'ha' ? 'ha' : 'url';
-  const v = validateCameraUrl(kind, b.url);
-  if (!v.ok) return res.status(400).json({ error: v.error });
-  const r = db.prepare(`INSERT INTO cameras (name, kind, url) VALUES (?, ?, ?)`).run(name, kind, v.value);
-  broadcastUpdate('cameras');
-  reloadCameraService();
-  res.status(201).json(redactCamera(db.prepare(`SELECT * FROM cameras WHERE id = ?`).get(r.lastInsertRowid)));
-});
-
-app.put('/api/cameras/:id', (req, res) => {
-  const existing = db.prepare(`SELECT * FROM cameras WHERE id = ?`).get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Camera not found' });
-  const b = req.body || {};
-  const sets = [], vals = [];
-  if (b.name !== undefined) {
-    const name = demoCleanText((b.name || '').toString().slice(0, 60), 60).trim();
-    if (!name) return res.status(400).json({ error: 'name cannot be empty' });
-    sets.push('name=?'); vals.push(name);
-  }
-  const kind = b.kind === 'ha' ? 'ha' : b.kind === 'url' ? 'url' : existing.kind;
-  if (b.kind !== undefined) { sets.push('kind=?'); vals.push(kind); }
-  const urlGiven = b.url !== undefined && (b.url || '').toString().trim() !== '';
-  if (urlGiven) {
-    const v = validateCameraUrl(kind, b.url);
-    if (!v.ok) return res.status(400).json({ error: v.error });
-    sets.push('url=?'); vals.push(v.value);
-  } else if (kind !== existing.kind) {
-    return res.status(400).json({ error: 'Changing the source type needs a new URL' });
-  }
-  if (!sets.length) return res.json(redactCamera(existing));
-  vals.push(existing.id);
-  db.prepare(`UPDATE cameras SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
-  broadcastUpdate('cameras');
-  reloadCameraService();
-  res.json(redactCamera(db.prepare(`SELECT * FROM cameras WHERE id = ?`).get(existing.id)));
-});
-
-app.delete('/api/cameras/:id', (req, res) => {
-  const r = db.prepare(`DELETE FROM cameras WHERE id = ?`).run(req.params.id);
-  if (r.changes === 0) return res.status(404).json({ error: 'Camera not found' });
-  broadcastUpdate('cameras');
-  reloadCameraService();
-  res.json({ ok: true });
-});
-
-app.get('/api/cameras/:id/test', async (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  const id = parseInt(req.params.id, 10);
-  if (!db.prepare(`SELECT id FROM cameras WHERE id = ?`).get(id)) return res.status(404).json({ error: 'Camera not found' });
-  const state = cameraServiceState();
-  if (state === 'downloading') return res.json({ ok: false, error: 'Setting up the camera service — try again in a moment.' });
-  if (state === 'unavailable') {
-    return res.json({ ok: false, error: _go2rtcUnsupportedArch
-      ? 'No camera service build for this device — run the server on Docker or Windows instead.'
-      : "Couldn't set up the camera service (offline?). It will retry on its own." });
-  }
-  if (state === 'disabled') return res.json({ ok: false, error: 'The camera service is turned off in settings.' });
-  try {
-    const info = await go2rtcApi('GET', `/api/streams?src=cam_${id}`);
-    const s = info && (info[`cam_${id}`] || info);
-    const producers = s && s.producers;
-    const online = Array.isArray(producers) && producers.some((p) => p && !p.error);
-    res.json(online ? { ok: true } : { ok: false, error: 'The camera service could not connect to this stream yet.' });
-  } catch {
-    res.json({ ok: false, error: 'The camera service is not responding.' });
-  }
-});
-
-app.get('/api/camera/service', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.json({ state: cameraServiceState() });
-});
-
-// Poster / last-frame still (also what the widget shows dimmed while
-// reconnecting). Proxied straight from go2rtc; never cached.
-app.get('/api/camera/:id/frame.jpeg', (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  if (!Number.isFinite(id) || !db.prepare(`SELECT id FROM cameras WHERE id = ?`).get(id)) return res.sendStatus(404);
-  res.set('Cache-Control', 'no-store');
-  const up = http.request(
-    { host: '127.0.0.1', port: go2rtcPort(), path: `/api/frame.jpeg?src=cam_${id}`, method: 'GET', timeout: 10000 },
-    (r) => {
-      if (r.statusCode >= 400) { res.sendStatus(502); r.resume(); return; }
-      res.status(200);
-      if (r.headers['content-type']) res.set('Content-Type', r.headers['content-type']);
-      r.pipe(res);
-    }
-  );
-  up.on('error', () => { if (!res.headersSent) res.sendStatus(502); });
-  up.on('timeout', () => up.destroy());
-  up.end();
-});
+// ── Camera streaming (managed go2rtc) ─────────────────────────────────────────
+// This code lives in src/camera.js. It runs here, at the same place in the file as before.
+const { stopCameraService, reloadCameraService, attachCameraWsProxy, ensureGo2rtcBinary, getGo2rtcProc } = require('./src/camera.js')({ path, http, fs, crypto, IS_WIN, WebSocketClient, app, demoCleanText, dataPath, db, extractZip, requestIsRemote, remoteGateEnabled, findRemoteSession, broadcastUpdate, downloadFile, getSetting: (k) => getSetting(k), haWsRequest: (...a) => haWsRequest(...a), URL, spawn });
 
 // ── Flight Map (live ADS-B aircraft tracking) ────────────────────────────────
-// The "flightmap" widget shows filtered aircraft moving on a self-drawn world
-// map. Data comes from free community ADS-B APIs (airplanes.live, with
-// adsb.lol / adsb.fi as fallbacks) — polled server-side on an interval,
-// cached, and pushed to the widget via the normal SSE 'flightmap' topic. The
-// browser only ever hits /api/flightmap/* on its own origin. Every device
-// (host and each slave) runs its own poll loop, exactly like each runs its
-// own go2rtc — so flight_positions (the breadcrumb trail) is per-device and
-// not synced; only flight_watch (saved subjects) syncs host->slave.
-//
-// SSRF posture: outbound hosts are the configured source base (a settings
-// field, same trust class as ha_base_url), the pinned ADS-B fallback hosts,
-// and api.adsbdb.com for route/type enrichment. No user-supplied host ever
-// reaches a fetch — only a callsign/hex is interpolated into a fixed URL.
-
-const FLIGHT_BUILTIN_SOURCES = [
-  'https://api.airplanes.live/v2',
-  'https://api.adsb.lol/v2',
-  'https://opendata.adsb.fi/api/v2',
-];
-function flightSources() {
-  const custom = (getSetting('flightmap_source') || '').trim().replace(/\/+$/, '');
-  const list = [];
-  if (/^https?:\/\/[^\s/]+/i.test(custom)) list.push(custom);
-  for (const s of FLIGHT_BUILTIN_SOURCES) if (!list.includes(s)) list.push(s);
-  return list;
-}
-function flightUserAgent() {
-  const contact = (getSetting('flightmap_ua_contact') || '').trim();
-  return `PiazzaHQ/${APP_VERSION} (+https://piazzahq.com${contact ? '; ' + contact : ''})`;
-}
-function flightPollSeconds() {
-  const n = parseInt(getSetting('flightmap_poll_seconds'), 10);
-  return Number.isFinite(n) ? Math.max(8, Math.min(n, 120)) : 12;
-}
-function flightTrailMinutes() {
-  const n = parseInt(getSetting('flightmap_trail_minutes'), 10);
-  return Number.isFinite(n) ? Math.max(2, Math.min(n, 480)) : 30;
-}
-// A widget can ask for a longer trail than the household default via
-// ?trailMin= on /state; clamp it here (both the seed window and the storage
-// retention floor honour this).
-function clampTrailMin(v, fallback) {
-  const n = parseInt(v, 10);
-  return Number.isFinite(n) ? Math.max(2, Math.min(n, 480)) : fallback;
-}
-
-// Normalise one readsb/tar1090 aircraft record to our shape.
-function normalizeAircraft(ac) {
-  if (!ac || typeof ac.lat !== 'number' || typeof ac.lon !== 'number') return null;
-  const onGround = ac.alt_baro === 'ground' || ac.alt_baro === 0;
-  const altFt = ac.alt_baro === 'ground' ? 0
-    : (typeof ac.alt_baro === 'number' ? ac.alt_baro
-    : (typeof ac.alt_geom === 'number' ? ac.alt_geom : null));
-  return {
-    hex: String(ac.hex || '').trim().toLowerCase(),
-    callsign: String(ac.flight || '').trim(),
-    reg: String(ac.r || '').trim(),
-    type: String(ac.t || '').trim(),
-    lat: ac.lat, lon: ac.lon,
-    altFt,
-    gsKts: typeof ac.gs === 'number' ? ac.gs : null,
-    trackDeg: typeof ac.track === 'number' ? ac.track : (typeof ac.true_heading === 'number' ? ac.true_heading : null),
-    vertRateFpm: typeof ac.baro_rate === 'number' ? ac.baro_rate : (typeof ac.geom_rate === 'number' ? ac.geom_rate : null),
-    squawk: String(ac.squawk || '').trim(),
-    mil: !!((Number(ac.dbFlags) || 0) & 1), // readsb dbFlags bit 0 = military
-    onGround,
-  };
-}
-
-// A FlightQuery is one of:
-//   {kind:'mil'} | {kind:'type', value} | {kind:'squawk', value}
-//   {kind:'callsign', value} | {kind:'reg', value} | {kind:'hex', value}
-//   {kind:'point', lat, lon, radiusNm}
-function flightQueryPath(q) {
-  const e = encodeURIComponent;
-  switch (q.kind) {
-    case 'mil': return '/mil';
-    case 'type': return '/type/' + e(String(q.value || '').toUpperCase());
-    case 'squawk': return '/squawk/' + e(String(q.value || '').replace(/\D/g, '').slice(0, 4));
-    case 'callsign': return '/callsign/' + e(String(q.value || '').toUpperCase().replace(/[^A-Z0-9]/g, ''));
-    case 'reg': return '/reg/' + e(String(q.value || '').toUpperCase().replace(/[^A-Z0-9-]/g, ''));
-    case 'hex': return '/hex/' + e(String(q.value || '').toLowerCase().replace(/[^0-9a-f,]/g, ''));
-    case 'point': {
-      const lat = Math.max(-90, Math.min(90, Number(q.lat) || 0));
-      const lon = Math.max(-180, Math.min(180, Number(q.lon) || 0));
-      const r = Math.max(1, Math.min(250, Math.round(Number(q.radiusNm) || 100)));
-      return `/point/${lat}/${lon}/${r}`;
-    }
-    default: return null;
-  }
-}
-function flightQueryKey(q) {
-  if (!q || !q.kind) return '';
-  if (q.kind === 'point') return `point:${Number(q.lat).toFixed(3)},${Number(q.lon).toFixed(3)},${Math.round(q.radiusNm)}`;
-  return `${q.kind}:${String(q.value || '').toLowerCase()}`;
-}
-function flightQueryValid(q) { return !!(q && flightQueryPath(q)); }
-// "B738, A320" / "b738 a320" -> ['B738','A320']. The ADS-B /type/ endpoint is
-// one type per request, so a multi-type filter fans out to one query each and
-// the results merge by hex in the /state route.
-function flightTypeList(raw) {
-  return String(raw || '').toUpperCase().split(/[\s,]+/).map(s => s.replace(/[^A-Z0-9]/g, '')).filter(Boolean).slice(0, 8);
-}
-
-async function flightHttpJson(base, pathname, timeoutMs = 8000) {
-  let u;
-  try { u = new URL(base + pathname); } catch { throw new Error('bad url'); }
-  // https for the public APIs; http allowed too (same trust class as
-  // ha_base_url — someone may point flightmap_source at a tar1090 box on
-  // their own LAN). Scheme still bounded to the two.
-  if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('bad scheme');
-  const res = await fetchWithTimeout(u, {
-    headers: { 'User-Agent': flightUserAgent(), 'Accept': 'application/json' },
-    timeoutMs,
-    timeoutMessage: 'timeout',
-  });
-  if (res.status !== 200) throw new Error('HTTP ' + res.status);
-  const body = await res.text();
-  if (body.length > 4_000_000) throw new Error('too big');
-  try { return JSON.parse(body); } catch { throw new Error('bad json'); }
-}
-
-// Try each source in order. The first that returns aircraft wins; a source
-// that answers 200-but-empty is NOT trusted to be authoritative (a
-// soft-rate-limited mirror looks exactly like "no matching aircraft"), so we
-// keep going and take the first non-empty result, falling back to an empty
-// 200 if that's genuinely all anyone has. Returns
-// { aircraft:[...], source, degraded } — degraded=true only if every source
-// errored (caller then keeps serving whatever it had).
-async function flightFetch(q) {
-  const pathname = flightQueryPath(q);
-  if (!pathname) return { aircraft: [], source: null, degraded: true };
-  let anyOk = false, emptySource = null;
-  for (const base of flightSources()) {
-    try {
-      const json = await flightHttpJson(base, pathname);
-      anyOk = true;
-      const raw = Array.isArray(json && json.ac) ? json.ac : (Array.isArray(json && json.aircraft) ? json.aircraft : []);
-      const aircraft = raw.map(normalizeAircraft).filter(a => a && a.hex);
-      if (aircraft.length) return { aircraft, source: base, degraded: false };
-      if (!emptySource) emptySource = base;
-    } catch { /* try next source */ }
-  }
-  if (anyOk) return { aircraft: [], source: emptySource, degraded: false };
-  return { aircraft: [], source: null, degraded: true };
-}
-
-// ── route / aircraft-type enrichment (adsbdb.com — free, no key) ──
-// The ADS-B feeds carry position + callsign but not the origin/destination
-// airports or a human aircraft-type name. adsbdb fills that in. Cached in
-// memory (lost on restart, refetched — fine) and decorated onto the aircraft
-// objects the /state route returns. Only ever fetches api.adsbdb.com over
-// https; a fixed host, no user input in the URL beyond the callsign/hex.
-const _flightRouteCache = new Map();    // callsign -> { route|null, at }
-const _flightAcInfoCache = new Map();   // hex -> { info|null, at }
-const _flightEnrichInflight = new Set();
-const ROUTE_TTL = 2 * 60 * 60 * 1000;
-const ACINFO_TTL = 24 * 60 * 60 * 1000;
-
-// PIAZZA_ADSBDB_URL overrides the enrichment host (tests only; unset in prod).
-const ADSBDB_BASE = process.env.PIAZZA_ADSBDB_URL || 'https://api.adsbdb.com';
-async function adsbdbGet(pathname) {
-  const u = new URL(ADSBDB_BASE + pathname);
-  const res = await fetchWithTimeout(u, {
-    headers: { 'User-Agent': flightUserAgent(), 'Accept': 'application/json' },
-    timeoutMs: 6000,
-    timeoutMessage: 'timeout',
-  });
-  if (res.status === 404) return null; // unknown callsign/hex
-  if (res.status !== 200) throw new Error('HTTP ' + res.status);
-  const body = await res.text();
-  if (body.length > 200000) throw new Error('too big');
-  try { return JSON.parse(body); } catch { throw new Error('bad json'); }
-}
-function _airport(a) {
-  if (!a || typeof a !== 'object') return null;
-  return {
-    icao: a.icao_code || '', iata: a.iata_code || '',
-    name: a.name || '', city: a.municipality || '',
-    lat: typeof a.latitude === 'number' ? a.latitude : null,
-    lon: typeof a.longitude === 'number' ? a.longitude : null,
-  };
-}
-async function flightEnrichOne(callsign, hex) {
-  const cs = (callsign || '').trim().toUpperCase();
-  const hx = (hex || '').trim().toLowerCase();
-  const now = Date.now();
-  const needRoute = cs && !(_flightRouteCache.has(cs) && now - _flightRouteCache.get(cs).at < ROUTE_TTL);
-  const needAc = hx && !(_flightAcInfoCache.has(hx) && now - _flightAcInfoCache.get(hx).at < ACINFO_TTL);
-  if (!needRoute && !needAc) return;
-  const inflightKey = cs + '|' + hx;
-  if (_flightEnrichInflight.has(inflightKey)) return;
-  _flightEnrichInflight.add(inflightKey);
-  try {
-    if (needRoute) {
-      try {
-        const j = await adsbdbGet('/v0/callsign/' + encodeURIComponent(cs));
-        const fr = j && j.response && typeof j.response === 'object' ? j.response.flightroute : null;
-        _flightRouteCache.set(cs, { at: now, route: fr ? { from: _airport(fr.origin), to: _airport(fr.destination), airline: (fr.airline && fr.airline.name) || '' } : null });
-      } catch { _flightRouteCache.set(cs, { at: now, route: null }); }
-    }
-    if (needAc) {
-      try {
-        const j = await adsbdbGet('/v0/aircraft/' + encodeURIComponent(hx));
-        const ac = j && j.response && typeof j.response === 'object' ? j.response.aircraft : null;
-        _flightAcInfoCache.set(hx, { at: now, info: ac ? { typeName: ac.type || '', icaoType: ac.icao_type || '', manufacturer: ac.manufacturer || '', owner: ac.registered_owner || '' } : null });
-      } catch { _flightAcInfoCache.set(hx, { at: now, info: null }); }
-    }
-  } finally {
-    _flightEnrichInflight.delete(inflightKey);
-  }
-}
-// Decorate an aircraft list with cached route/type info. When awaitSmall and
-// the list is short (a followed flight / a small watch set), block briefly on
-// the first uncached lookup so the very first render has the route; big
-// filter lists enrich in the background and pick it up next poll.
-async function enrichAircraft(list, awaitSmall) {
-  if (!Array.isArray(list) || !list.length) return list;
-  const small = list.length <= 4;
-  const jobs = [];
-  for (const a of list) {
-    if (!a.callsign && !a.hex) continue;
-    const p = flightEnrichOne(a.callsign, a.hex);
-    if (awaitSmall && small) jobs.push(p); else p.catch(() => {});
-  }
-  if (jobs.length) { try { await Promise.race([Promise.allSettled(jobs), new Promise(r => setTimeout(r, 2500))]); } catch {} }
-  for (const a of list) {
-    const r = a.callsign && _flightRouteCache.get(a.callsign.trim().toUpperCase());
-    const i = a.hex && _flightAcInfoCache.get(a.hex);
-    if (r && r.route) a.route = r.route;
-    if (i && i.info) { a.typeName = i.info.typeName; a.owner = i.info.owner; if (!a.type && i.info.icaoType) a.type = i.info.icaoType; }
-  }
-  return list;
-}
-
-// ── poll loop ──
-const _flightState = new Map();   // queryKey -> { query, fetchedAt, source, aircraft, degraded }
-const _flightBackoff = new Map(); // queryKey -> ms
-let _flightPollTID = null;
-let _flightPolling = false;
-
-function activeFlightWatches(now) {
-  const today = (now instanceof Date ? now : new Date()).toISOString().slice(0, 10);
-  return db.prepare(`SELECT * FROM flight_watch`).all().filter(r =>
-    (!r.active_from || r.active_from <= today) && (!r.active_to || r.active_to >= today));
-}
-function watchToQuery(r) {
-  const kind = r.kind === 'reg' ? 'reg' : (r.kind === 'hex' ? 'hex' : 'callsign');
-  return { kind, value: r.value };
-}
-// The union of distinct queries across every flightmap widget on every layout
-// plus every active flight_watch row. De-duped by key.
-function activeFlightQueries() {
-  const out = new Map();
-  const add = (q) => { if (flightQueryValid(q)) out.set(flightQueryKey(q), q); };
-  try {
-    for (const row of db.prepare(`SELECT widgets FROM layouts`).all()) {
-      let arr; try { arr = JSON.parse(row.widgets || '[]'); } catch { continue; }
-      if (!Array.isArray(arr)) continue;
-      for (const w of arr) {
-        if (!w || w.type !== 'flightmap') continue;
-        for (const q of widgetFlightQueries(w)) add(q);
-      }
-    }
-  } catch {}
-  try { for (const r of activeFlightWatches()) add(watchToQuery(r)); } catch {}
-  return [...out.entries()].map(([key, query]) => ({ key, query }));
-}
-// The concrete queries a single widget needs, given its subject config.
-function widgetFlightQueries(w) {
-  const s = (w && w.fmSubject) || 'filter';
-  if (s === 'flight') {
-    const kind = w.fmFlightKind === 'reg' ? 'reg' : (w.fmFlightKind === 'hex' ? 'hex' : 'callsign');
-    return w.fmFlightValue ? [{ kind, value: w.fmFlightValue }] : [];
-  }
-  if (s === 'watch') {
-    const rows = activeFlightWatches().filter(r =>
-      w.fmWatchProfileId == null ? true : String(r.profile_id) === String(w.fmWatchProfileId));
-    return rows.map(watchToQuery);
-  }
-  // filter
-  const f = (w && w.fmFilter) || {};
-  if (f.mil) return [{ kind: 'mil' }];
-  if (f.type) return flightTypeList(f.type).map(t => ({ kind: 'type', value: t }));
-  if (f.squawk) return [{ kind: 'squawk', value: f.squawk }];
-  if (f.radiusNm && (f.lat != null) && (f.lon != null))
-    return [{ kind: 'point', lat: f.lat, lon: f.lon, radiusNm: f.radiusNm }];
-  return [];
-}
-
-function recordFlightPositions(aircraft) {
-  // No isSlave() guard: a slave is a real device with a display that polls the
-  // ADS-B API itself, so it keeps its own local trail (flight_positions is not
-  // synced). Same model as each device running its own go2rtc.
-  const now = Math.floor(Date.now() / 1000);
-  const ins = db.prepare(`INSERT INTO flight_positions (hex, ts, lat, lon, alt_ft, gs_kts, track, callsign) VALUES (?,?,?,?,?,?,?,?)`);
-  const tx = db.transaction((list) => {
-    for (const a of list) {
-      if (!a.hex || typeof a.lat !== 'number' || typeof a.lon !== 'number') continue;
-      ins.run(a.hex, now, a.lat, a.lon, a.altFt == null ? null : Math.round(a.altFt),
-        a.gsKts == null ? null : a.gsKts, a.trackDeg == null ? null : a.trackDeg, a.callsign || null);
-    }
-  });
-  try { tx(aircraft); } catch {}
-}
-
-async function flightPollTick() {
-  if (_flightPolling) return;
-  _flightPolling = true;
-  try {
-    const queries = activeFlightQueries();
-    const keep = new Set(queries.map(q => q.key));
-    for (const k of [..._flightState.keys()]) if (!keep.has(k)) _flightState.delete(k);
-    if (!queries.length) return;
-    let changed = false;
-    for (const { key, query } of queries) {
-      const bo = _flightBackoff.get(key) || 0;
-      const prev = _flightState.get(key);
-      if (bo && prev && Date.now() - prev.fetchedAt < bo) continue;
-      const r = await flightFetch(query);
-      if (r.degraded) {
-        _flightBackoff.set(key, Math.min((bo || flightPollSeconds() * 1000) * 2, 5 * 60 * 1000));
-        if (prev) prev.degraded = true;
-        continue;
-      }
-      _flightBackoff.delete(key);
-      _flightState.set(key, { query, fetchedAt: Date.now(), source: r.source, aircraft: r.aircraft, degraded: false });
-      recordFlightPositions(r.aircraft);
-      enrichAircraft(r.aircraft, false).catch(() => {}); // background: next /state call serves it
-      changed = true;
-    }
-    if (changed) broadcastUpdate('flightmap');
-  } catch (e) {
-    console.error('[flightmap] poll error: ' + e.message);
-  } finally {
-    _flightPolling = false;
-  }
-}
-function startFlightPolling() {
-  if (_flightPollTID) clearInterval(_flightPollTID);
-  const run = () => { flightPollTick().catch(() => {}); };
-  _flightPollTID = setInterval(run, Math.max(4000, flightPollSeconds() * 1000));
-  run();
-}
-
-// The longest trail any flightmap widget on any layout is asking for, so the
-// sweep keeps enough history to satisfy it (a widget's fmTrailMin can exceed
-// the household flightmap_trail_minutes default).
-function maxWidgetTrailMinutes() {
-  let m = 0;
-  try {
-    for (const r of db.prepare(`SELECT widgets FROM layouts`).all()) {
-      let arr; try { arr = JSON.parse(r.widgets || '[]'); } catch { continue; }
-      for (const w of (Array.isArray(arr) ? arr : [])) {
-        if (w && w.type === 'flightmap' && Number.isFinite(+w.fmTrailMin)) m = Math.max(m, +w.fmTrailMin);
-      }
-    }
-  } catch {}
-  return m;
-}
-function sweepFlightPositions() {
-  try {
-    const keepMin = Math.min(Math.max(flightTrailMinutes(), maxWidgetTrailMinutes(), 180), 480);
-    const cutoff = Math.floor(Date.now() / 1000) - keepMin * 60;
-    db.prepare(`DELETE FROM flight_positions WHERE ts < ?`).run(cutoff);
-    // per-hex row cap — enough for ~8h at a 12s poll
-    db.prepare(`
-      DELETE FROM flight_positions WHERE rowid IN (
-        SELECT rowid FROM (
-          SELECT rowid, ROW_NUMBER() OVER (PARTITION BY hex ORDER BY ts DESC) AS rn FROM flight_positions
-        ) WHERE rn > 2600
-      )`).run();
-  } catch (e) { console.error('[flightmap] sweep error: ' + e.message); }
-}
-setInterval(() => { try { sweepFlightPositions(); } catch {} }, 30 * 60 * 1000);
-
-function anyLayoutHasFlightMap() {
-  try {
-    for (const r of db.prepare(`SELECT widgets FROM layouts`).all()) {
-      const arr = JSON.parse(r.widgets || '[]');
-      if (Array.isArray(arr) && arr.some(w => w && w.type === 'flightmap')) return true;
-    }
-  } catch {}
-  return false;
-}
-
-// ── world basemap (optional on-demand download, mirrors ensureGo2rtcBinary) ──
-// It's world-atlas@2's countries-50m.json (Natural Earth 1:50m land + country
-// borders — public domain), fetched once on first Flight Map use and
-// sha256-verified. Pinned + hashed in scripts/basemap-version.sh; keep in
-// step on a bump. Served from jsDelivr's npm mirror (stable, version-pinned);
-// PIAZZA_BASEMAP_URL overrides it (tests point it at a local fixture; unset
-// in every real deployment). ensureBasemap() accepts the file raw OR gzipped.
-const BASEMAP_VERSION = 'world-atlas@2/countries-50m';
-const BASEMAP_URL = process.env.PIAZZA_BASEMAP_URL
-  || 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json';
-const BASEMAP_SHA256_GZ = 'b0cc4fba25b956b5797bdda6b5276cfa5aac427ba3274e7c3e9eb8a50de4bf0f';
-const BASEMAP_SHA256_RAW = '04342cdc1e3016bcd7db1630de95684d67b79fe3c8c460321e87aef469502394';
-const BASEMAP_RAW_BYTES = 756420;
-const BASEMAP_PATH = dataPath('flightmap-basemap.json');
-let _basemapDownloading = false;
-let _basemapDownloadPromise = null;
-let _basemapUnavailable = false;
-let _basemapNextRetryAt = 0; // don't re-hit the network on every poll after a failure
-
-// Optional second layer: US state borders (us-atlas@3's states-10m.json —
-// public domain, US Census). Same on-demand + sha256 pattern; drawn under
-// the country outlines when the widget's "state lines" option is on.
-const STATES_URL = process.env.PIAZZA_STATES_URL || 'https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json';
-const STATES_SHA256 = 'd76b391ccfa8bff601d51e3e3da5d43a89fa46cd5caca72ce731b383be5596d0';
-const STATES_BYTES = 114554;
-const STATES_PATH = dataPath('flightmap-states.json');
-let _statesDownloading = false, _statesPromise = null, _statesUnavail = false, _statesRetryAt = 0;
-function statesReady() { try { return fs.existsSync(STATES_PATH) && fs.statSync(STATES_PATH).size === STATES_BYTES; } catch { return false; } }
-async function ensureStatesBasemap() {
-  if (statesReady()) return true;
-  if (_statesPromise) return _statesPromise;
-  if (!flightmapWanted()) return false;
-  if (_statesUnavail && Date.now() < _statesRetryAt) return false;
-  _statesPromise = (async () => {
-    _statesDownloading = true;
-    const tmp = STATES_PATH + `.dl.${process.pid}`;
-    try {
-      fs.mkdirSync(path.dirname(STATES_PATH), { recursive: true });
-      await downloadFile(STATES_URL, tmp, 60000);
-      let buf = fs.readFileSync(tmp);
-      if (buf[0] === 0x1f && buf[1] === 0x8b) buf = zlib.gunzipSync(buf);
-      if (crypto.createHash('sha256').update(buf).digest('hex') !== STATES_SHA256) throw new Error('states sha256 mismatch');
-      JSON.parse(buf);
-      fs.writeFileSync(STATES_PATH, buf);
-      _statesUnavail = false;
-      console.log('[flightmap] state-lines basemap ready');
-      return true;
-    } catch (e) {
-      try { fs.rmSync(tmp, { force: true }); } catch {}
-      _statesUnavail = true; _statesRetryAt = Date.now() + 60000;
-      console.error('[flightmap] state-lines download failed: ' + e.message);
-      return false;
-    } finally { _statesDownloading = false; _statesPromise = null; }
-  })();
-  return _statesPromise;
-}
-
-function basemapReady() {
-  try { return fs.existsSync(BASEMAP_PATH) && fs.statSync(BASEMAP_PATH).size === BASEMAP_RAW_BYTES; }
-  catch { return false; }
-}
-function basemapState() {
-  if (basemapReady()) return 'ready';
-  if (_basemapDownloading) return 'downloading';
-  if (_basemapUnavailable) return 'unavailable';
-  return 'idle';
-}
-function flightmapWanted() {
-  return getSetting('flightmap_enabled') === '1' || anyLayoutHasFlightMap();
-}
-async function ensureBasemap() {
-  if (basemapReady()) return true;
-  if (_basemapDownloadPromise) return _basemapDownloadPromise;
-  if (!flightmapWanted()) return false;
-  if (_basemapUnavailable && Date.now() < _basemapNextRetryAt) return false; // cooling off after a failure
-  _basemapDownloadPromise = (async () => {
-    _basemapDownloading = true;
-    const tmp = BASEMAP_PATH + `.download.${process.pid}`;
-    const tmpDl = tmp + '.dl';
-    try {
-      fs.mkdirSync(path.dirname(BASEMAP_PATH), { recursive: true });
-      console.log(`[flightmap] downloading basemap (${BASEMAP_VERSION})…`);
-      await downloadFile(BASEMAP_URL, tmpDl, 60000);
-      let buf = fs.readFileSync(tmpDl);
-      // The source may serve the file raw (jsDelivr) or gzipped (a mirror /
-      // the test fixture). gzip magic is 1f 8b.
-      if (buf[0] === 0x1f && buf[1] === 0x8b) {
-        if (crypto.createHash('sha256').update(buf).digest('hex') !== BASEMAP_SHA256_GZ)
-          throw new Error('basemap .gz sha256 mismatch');
-        buf = zlib.gunzipSync(buf);
-      }
-      if (crypto.createHash('sha256').update(buf).digest('hex') !== BASEMAP_SHA256_RAW)
-        throw new Error('basemap sha256 mismatch');
-      JSON.parse(buf); // must be valid JSON
-      fs.writeFileSync(tmp, buf);
-      fs.renameSync(tmp, BASEMAP_PATH);
-      fs.rmSync(tmpDl, { force: true });
-      _basemapUnavailable = false;
-      console.log('[flightmap] basemap ready');
-      return true;
-    } catch (e) {
-      try { fs.rmSync(tmp, { force: true }); } catch {}
-      try { fs.rmSync(tmpDl, { force: true }); } catch {}
-      _basemapUnavailable = true;
-      _basemapNextRetryAt = Date.now() + 60000;
-      console.error('[flightmap] basemap download failed (map unavailable for now): ' + e.message);
-      return false;
-    } finally {
-      _basemapDownloading = false;
-      _basemapDownloadPromise = null;
-    }
-  })();
-  return _basemapDownloadPromise;
-}
-// Self-heal: a flight widget exists but the basemap never landed (offline at
-// first use) — retry while it's wanted. Cheap no-op otherwise.
-setInterval(() => {
-  if (!basemapReady() && !_basemapDownloading && flightmapWanted()) ensureBasemap().catch(() => {});
-  if (!statesReady() && !_statesDownloading && flightmapWanted()) ensureStatesBasemap().catch(() => {});
-}, 20 * 60 * 1000);
-
-// ── routes ──
-function resolveSubjectQueries(qp) {
-  const subject = qp.subject || 'filter';
-  if (subject === 'flight') {
-    const kind = qp.hex ? 'hex' : (qp.reg ? 'reg' : 'callsign');
-    const value = qp.hex || qp.reg || qp.callsign || '';
-    return value ? [{ kind, value }] : [];
-  }
-  if (subject === 'watch') {
-    let rows = activeFlightWatches();
-    if (qp.watchId) rows = rows.filter(r => String(r.id) === String(qp.watchId));
-    else if (qp.profileId) rows = rows.filter(r => String(r.profile_id) === String(qp.profileId));
-    return rows.map(watchToQuery);
-  }
-  // filter
-  if (qp.mil === '1' || qp.mil === 'true') return [{ kind: 'mil' }];
-  if (qp.type) return flightTypeList(qp.type).map(t => ({ kind: 'type', value: t }));
-  if (qp.squawk) return [{ kind: 'squawk', value: qp.squawk }];
-  if (qp.radiusNm && qp.lat && qp.lon)
-    return [{ kind: 'point', lat: Number(qp.lat), lon: Number(qp.lon), radiusNm: Number(qp.radiusNm) }];
-  return [];
-}
-
-app.get('/api/flightmap/state', async (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  const queries = resolveSubjectQueries(req.query).filter(flightQueryValid);
-  if (!queries.length) return res.json({ aircraft: [], fetchedAt: 0, source: null, degraded: false, trailSeed: {}, note: 'no subject configured' });
-  const byHex = new Map();
-  let fetchedAt = 0, source = null, degraded = false;
-  const maxAge = flightPollSeconds() * 1000;
-  for (const q of queries) {
-    const key = flightQueryKey(q);
-    let entry = _flightState.get(key);
-    if (!entry || Date.now() - entry.fetchedAt > maxAge) {
-      try {
-        const r = await flightFetch(q);
-        if (!r.degraded) {
-          entry = { query: q, fetchedAt: Date.now(), source: r.source, aircraft: r.aircraft, degraded: false };
-          _flightState.set(key, entry);
-          recordFlightPositions(r.aircraft);
-        } else if (!entry) {
-          degraded = true;
-          continue;
-        } else {
-          entry.degraded = true;
-        }
-      } catch { if (!entry) { degraded = true; continue; } }
-    }
-    if (!entry) continue;
-    fetchedAt = Math.max(fetchedAt, entry.fetchedAt);
-    source = source || entry.source;
-    if (entry.degraded) degraded = true;
-    for (const a of entry.aircraft) byHex.set(a.hex, a);
-  }
-  let aircraft = [...byHex.values()];
-  // "military only" — drop civil aircraft that happen to share an ICAO type
-  // (e.g. civil aircraft that happen to share an ICAO type with a military variant).
-  if (req.query.milOnly === '1' || req.query.milOnly === 'true') aircraft = aircraft.filter(a => a.mil);
-  // callsign-prefix filter — "all United / Delta / …" (ICAO prefixes like
-  // UAL, DAL). The ADS-B feed has no operator query, so this filters a
-  // point/area result down by callsign.
-  const csPfx = String(req.query.callsignPrefix || '').toUpperCase().split(/[\s,]+/).map(s => s.replace(/[^A-Z0-9]/g, '')).filter(Boolean);
-  if (csPfx.length) {
-    aircraft = aircraft.filter(a => { const c = (a.callsign || '').toUpperCase(); return csPfx.some(p => c.startsWith(p)); });
-  }
-  // route / aircraft-type enrichment (adsbdb) — block briefly for a small
-  // followed set so the first render has the route; big lists fill in later.
-  try { await enrichAircraft(aircraft, true); } catch {}
-  // trail seed: last N minutes of positions for each aircraft shown — the
-  // widget's own fmTrailMin (?trailMin=) wins over the household default.
-  const trailMin = clampTrailMin(req.query.trailMin, flightTrailMinutes());
-  const since = Math.floor(Date.now() / 1000) - trailMin * 60;
-  const trailSeed = {};
-  const trailStmt = db.prepare(`SELECT ts, lat, lon, alt_ft FROM flight_positions WHERE hex = ? AND ts >= ? ORDER BY ts`);
-  for (const a of aircraft) {
-    const rows = trailStmt.all(a.hex, since);
-    if (rows.length > 1) trailSeed[a.hex] = rows.map(r => [r.ts, r.lat, r.lon, r.alt_ft]);
-  }
-  res.json({ aircraft, fetchedAt, source, degraded, trailSeed });
-});
-
-app.get('/api/flightmap/trail/:hex', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  const hex = String(req.params.hex || '').toLowerCase().replace(/[^0-9a-f]/g, '').slice(0, 8);
-  if (!hex) return res.json([]);
-  const mins = clampTrailMin(req.query.minutes, flightTrailMinutes());
-  const since = Math.floor(Date.now() / 1000) - mins * 60;
-  res.json(db.prepare(`SELECT ts, lat, lon, alt_ft FROM flight_positions WHERE hex = ? AND ts >= ? ORDER BY ts`).all(hex, since));
-});
-
-app.get('/api/flightmap/basemap', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  if (flightmapWanted()) {
-    if (!basemapReady() && !_basemapDownloading) ensureBasemap().catch(() => {});
-    if (!statesReady() && !_statesDownloading) ensureStatesBasemap().catch(() => {});
-  }
-  res.json({ state: basemapState(), version: BASEMAP_VERSION, states: statesReady() });
-});
-app.get('/api/flightmap/basemap.json', (req, res) => {
-  if (basemapReady()) {
-    res.set('Cache-Control', 'public, max-age=604800, immutable');
-    return res.sendFile(BASEMAP_PATH);
-  }
-  if (flightmapWanted()) ensureBasemap().catch(() => {});
-  res.status(503).json({ state: basemapState() });
-});
-app.get('/api/flightmap/states.json', (req, res) => {
-  if (statesReady()) {
-    res.set('Cache-Control', 'public, max-age=604800, immutable');
-    return res.sendFile(STATES_PATH);
-  }
-  if (flightmapWanted()) ensureStatesBasemap().catch(() => {});
-  res.status(503).json({ ready: false });
-});
-
-// flight_watch CRUD. slaveWriteGuard proxies the mutating verbs to the host
-// automatically (not in its local-only allowlist); GET is answered locally
-// off the synced table.
-app.get('/api/flight-watch', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.json(db.prepare(`SELECT * FROM flight_watch ORDER BY COALESCE(profile_id, -1), id`).all());
-});
-const FW_KINDS = new Set(['callsign', 'reg', 'hex']);
-const FW_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-function cleanWatchBody(b) {
-  const kind = FW_KINDS.has(b.kind) ? b.kind : 'callsign';
-  let value = String(b.value || '').trim().toUpperCase();
-  if (kind === 'hex') value = value.toLowerCase().replace(/[^0-9a-f]/g, '').slice(0, 8);
-  else value = value.replace(/[^A-Z0-9-]/g, '').slice(0, 12);
-  const label = String(b.label || '').trim().slice(0, 60);
-  const profileId = coerceOwnerProfileId(b.profile_id);
-  const af = FW_DATE_RE.test(b.active_from || '') ? b.active_from : null;
-  const at = FW_DATE_RE.test(b.active_to || '') ? b.active_to : null;
-  return { kind, value, label, profileId, af, at };
-}
-app.post('/api/flight-watch', (req, res) => {
-  const c = cleanWatchBody(req.body || {});
-  if (!c.value) return res.status(400).json({ error: 'value is required (a callsign, registration or hex)' });
-  const r = db.prepare(`INSERT INTO flight_watch (profile_id, kind, value, label, active_from, active_to) VALUES (?,?,?,?,?,?)`)
-    .run(c.profileId, c.kind, c.value, c.label, c.af, c.at);
-  broadcastUpdate('flight_watch');
-  startFlightPolling(); // pick the new subject up now, not next tick
-  res.status(201).json(db.prepare(`SELECT * FROM flight_watch WHERE id = ?`).get(r.lastInsertRowid));
-});
-app.put('/api/flight-watch/:id', (req, res) => {
-  const existing = db.prepare(`SELECT * FROM flight_watch WHERE id = ?`).get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Not found' });
-  const c = cleanWatchBody({ ...existing, ...req.body });
-  if (!c.value) return res.status(400).json({ error: 'value cannot be empty' });
-  db.prepare(`UPDATE flight_watch SET profile_id=?, kind=?, value=?, label=?, active_from=?, active_to=? WHERE id=?`)
-    .run(c.profileId, c.kind, c.value, c.label, c.af, c.at, existing.id);
-  broadcastUpdate('flight_watch');
-  res.json(db.prepare(`SELECT * FROM flight_watch WHERE id = ?`).get(existing.id));
-});
-app.delete('/api/flight-watch/:id', (req, res) => {
-  const r = db.prepare(`DELETE FROM flight_watch WHERE id = ?`).run(req.params.id);
-  if (r.changes === 0) return res.status(404).json({ error: 'Not found' });
-  broadcastUpdate('flight_watch');
-  res.json({ ok: true });
-});
+// This code lives in src/flightmap.js. It runs here, at the same place in the file as before.
+const { startFlightPolling, ensureStatesBasemap, flightmapWanted, ensureBasemap } = require('./src/flightmap.js')({ path, zlib, fs, crypto, fetchWithTimeout, app, dataPath, db, APP_VERSION, broadcastUpdate, downloadFile, getSetting: (k) => getSetting(k), URL, coerceOwnerProfileId });
 
 // ── Settings API ─────────────────────────────────────────────────────────────
 
@@ -6152,6 +4218,11 @@ app.put('/api/settings', (req, res) => {
       if (demoSettingBlocked(k)) delete req.body[k];
     }
   }
+  // The tunnel's on/off, address and run token are owned by the /api/remote-access routes; a generic
+  // settings save must not be able to switch a tunnel on, or point it somewhere else.
+  for (const k of Object.keys(req.body)) {
+    if ((/^remote_access_/.test(k) && k !== 'remote_access_require_auth') || /^remote_(alert_|known_devices)/.test(k)) delete req.body[k];
+  }
   // Removing an existing PIN requires re-confirming the CURRENT one first —
   // an active session alone isn't enough for this specific, high-consequence
   // action. A stale or hijacked session could otherwise silently disable PIN
@@ -6168,6 +4239,26 @@ app.put('/api/settings', (req, res) => {
       const confirmPin = (req.body.current_pin_confirm || '').toString();
       if (confirmPin !== curVal) {
         return res.status(400).json({ error: 'Incorrect PIN — enter the current PIN to confirm removing it.' });
+      }
+    }
+  }
+  // Changing the household LANGUAGE also moves the two settings that carry a language's conventions (24-hour clock, date order) - but only while they
+  // still hold the shipped defaults, so a choice someone made on purpose is never overwritten. Going back to English undoes exactly what this did.
+  if ('ui_language' in req.body) {
+    const cur = getSetting('ui_language') || 'en', next = String(req.body.ui_language || 'en');
+    if (next !== cur) {
+      const tf = getSetting('time_format'), df = getSetting('date_format'), ws = getSetting('week_start_day');
+      const applied = (getSetting('i18n_defaults_applied') || '').split(',').filter(Boolean);   // which of 'time' / 'week' this moved (so only those are undone)
+      if (next !== 'en') {
+        if (!('time_format' in req.body) && tf === '12') { req.body.time_format = '24'; if (!applied.includes('time')) applied.push('time'); }
+        if (!('week_start_day' in req.body) && ws === '0') { req.body.week_start_day = '1'; if (!applied.includes('week')) applied.push('week'); }
+        if (!('date_format' in req.body) && df === 'us_long') req.body.date_format = 'locale';
+        req.body.i18n_defaults_applied = applied.join(',');
+      } else {
+        if (!('date_format' in req.body) && df === 'locale') req.body.date_format = 'us_long';
+        if (!('time_format' in req.body) && tf === '24' && applied.includes('time')) req.body.time_format = '12';
+        if (!('week_start_day' in req.body) && ws === '1' && applied.includes('week')) req.body.week_start_day = '0';
+        req.body.i18n_defaults_applied = '';
       }
     }
   }
@@ -6278,6 +4369,7 @@ function _httpGet(url, timeoutMs, asBuffer) {
     const headers = { 'User-Agent': 'PiazzaHQ-Sync/1.0' };
     const hostPin = getSetting('app_pin'); // a slave's own PIN IS the household PIN — see setup wizard, which saves the host's PIN directly as this device's app_pin, not a separate value
     headers['x-host-pin'] = hostPin || ''; // always sent, even empty — see requireAuth()'s grace-period comment for why an omitted header can't safely mean the same thing as a deliberately empty one
+    headers['x-mirror-license'] = getSetting('update_license_key') || '';   // lets the host recognise this mirror without a browser login
     // This device's own license key — the host checks this against its own
     // in /api/sync/export before handing over a settings snapshot (which
     // includes the license key itself, among everything else). Without
@@ -6332,6 +4424,7 @@ function fetchJSONPost(url, timeoutMs) {
     const headers = { 'User-Agent': 'PiazzaHQ-Sync/1.0', 'Content-Length': 0 };
     const hostPin = getSetting('app_pin'); // a slave's own PIN IS the household PIN — see setup wizard, which saves the host's PIN directly as this device's app_pin, not a separate value
     headers['x-host-pin'] = hostPin || ''; // always sent, even empty — see requireAuth()'s grace-period comment for why an omitted header can't safely mean the same thing as a deliberately empty one
+    headers['x-mirror-license'] = getSetting('update_license_key') || '';   // lets the host recognise this mirror without a browser login
     const req = lib.request({
       hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: 'POST',
       headers,
@@ -6355,12 +4448,18 @@ function fetchJSONPost(url, timeoutMs) {
 // and flows host → slave. The role/host-address/identity/update keys stay per-device.
 const LOCAL_ONLY_SETTINGS = new Set([
   'device_role', 'host_lan_address', 'host_ts_address', 'host_port', 'setup_complete',
+  'remote_access_require_auth', // per-device: whether THIS box demands the remote login from LAN devices
+  'remote_alert_mode', 'remote_alert_email', 'remote_known_devices', 'remote_alert_last_sent', 'remote_alert_last_error',   // this box's own alert choices - never synced
+  'remote_access_allow_control', 'remote_access_notice', // this box's own remote-access choices - never synced
+  'remote_events_seen_at', // per-device: when THIS box's owner last looked at the remote sign-in activity
+  'remote_access_mode', 'remote_access_address', 'remote_access_tunnel_token', 'remote_access_device_id', // this box's own tunnel - never synced to a mirror
   'tour_completed',      // per-device: whether THIS screen's spotlight tour has run
   'checklist_done', 'checklist_dismissed',  // per-device: getting-started checklist state
   'sync_interval_min', 'last_sync_at', 'last_sync_status',
   'briefing_last_sent',  // per-device: the host tracks its own send; never sync this
                          // or a slave's value could suppress the host's daily send
   'display_res_w', 'display_res_h', 'display_refresh_min',
+  'severe_weather_seen', 'severe_weather_event_history',   // this box's own alert bookkeeping - meaningless on a mirror
   'force_real_display', // per-device: one screen's scaling quirk shouldn't force another's preview detection
   'update_server_url', 'auto_push_updates',
   'app_pin_previous',    // this host's own recent PIN history — meaningless on a
@@ -7010,8 +5109,10 @@ function slaveWriteGuard(req, res, next) {
                     // confirmed live) it just fails outright with "No host configured to
                     // forward this edit to" instead of doing anything at all.
                     /^\/api\/update-backups\/[^/]+\/[^/]+\/restore$/.test(p) || // same — restores CODE from THIS device's own backup dir
-                    p.startsWith('/api/display/') ||    // this device's own kiosk browser reporting that it drew (must not be forwarded to the host)
                     p.startsWith('/api/auth') ||        // local login/PIN
+                    p.startsWith('/api/remote-auth') || // this device's own remote password/sessions — never proxied to the host
+                    p.startsWith('/api/display/') ||    // this device's own kiosk browser reporting that it drew (must not be forwarded to the host)
+                    p.startsWith('/api/remote-access') || // this device's own tunnel - a mirror must answer "use your host" itself, not switch the HOST's tunnel on
                     // This device's OWN license key, not the host's — unlike most proxied
                     // writes, a mirror legitimately holds its own independently-verified
                     // license key (see LOCAL_ONLY_SETTINGS' own comment on
@@ -7119,6 +5220,7 @@ function proxyWriteToHost(req, res) {
     const headers = { ...req.headers, host: u.host };
     const hostPin = getSetting('app_pin'); // a slave's own PIN IS the household PIN — see setup wizard, which saves the host's PIN directly as this device's app_pin, not a separate value
     headers['x-host-pin'] = hostPin || ''; // always sent, even empty — see requireAuth()'s grace-period comment for why an omitted header can't safely mean the same thing as a deliberately empty one
+    headers['x-mirror-license'] = getSetting('update_license_key') || '';   // lets the host recognise this mirror without a browser login
     const preq = lib.request({
       hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: req.method,
       headers,
@@ -7167,6 +5269,7 @@ function proxyJSONToHost(method, urlPath, bodyObj) {
     const headers = { 'Content-Type': 'application/json', 'Content-Length': payload.length };
     const hostPin = getSetting('app_pin'); // a slave's own PIN IS the household PIN — see setup wizard, which saves the host's PIN directly as this device's app_pin, not a separate value
     headers['x-host-pin'] = hostPin || ''; // always sent, even empty — see requireAuth()'s grace-period comment for why an omitted header can't safely mean the same thing as a deliberately empty one
+    headers['x-mirror-license'] = getSetting('update_license_key') || '';   // lets the host recognise this mirror without a browser login
     const r = lib.request({
       hostname: u.hostname, port: u.port, path: u.pathname + u.search, method,
       headers,
@@ -7184,1843 +5287,50 @@ function proxyJSONToHost(method, urlPath, bodyObj) {
 }
 
 // ── Geocoding — zip code to lat/lon (nominatim, free, no key) ────────────────
-// US Postal abbreviations for the 50 states + DC, used to turn a full state name
-// (as returned by Nominatim) into the compact "ST" people expect next to a city,
-// e.g. "Columbus, OH" rather than "Columbus, Ohio".
-const US_STATE_ABBR = {
-  'Alabama':'AL','Alaska':'AK','Arizona':'AZ','Arkansas':'AR','California':'CA','Colorado':'CO',
-  'Connecticut':'CT','Delaware':'DE','Florida':'FL','Georgia':'GA','Hawaii':'HI','Idaho':'ID',
-  'Illinois':'IL','Indiana':'IN','Iowa':'IA','Kansas':'KS','Kentucky':'KY','Louisiana':'LA',
-  'Maine':'ME','Maryland':'MD','Massachusetts':'MA','Michigan':'MI','Minnesota':'MN','Mississippi':'MS',
-  'Missouri':'MO','Montana':'MT','Nebraska':'NE','Nevada':'NV','New Hampshire':'NH','New Jersey':'NJ',
-  'New Mexico':'NM','New York':'NY','North Carolina':'NC','North Dakota':'ND','Ohio':'OH','Oklahoma':'OK',
-  'Oregon':'OR','Pennsylvania':'PA','Rhode Island':'RI','South Carolina':'SC','South Dakota':'SD',
-  'Tennessee':'TN','Texas':'TX','Utah':'UT','Vermont':'VT','Virginia':'VA','Washington':'WA',
-  'West Virginia':'WV','Wisconsin':'WI','Wyoming':'WY','District of Columbia':'DC',
-};
-
-// Builds a clean location label from Nominatim's structured address breakdown
-// (addressdetails=1) rather than string-splitting display_name, which varies in
-// field count/order depending on how rural/urban the area is.
-// US addresses: "City, ST" (state abbreviated), matching the original format.
-// Non-US addresses: "City, Region, Country" when a state/region-level field is
-// available, else "City, Country" — since a bare city or county name alone can
-// be genuinely ambiguous worldwide (there are many towns sharing a name across
-// countries) in a way "City, ST" already isn't for a US audience.
-function buildLocationLabel(address) {
-  if (!address) return '';
-  const city = address.city || address.town || address.village || address.hamlet || address.county || '';
-  const state = address.state || '';
-  const country = address.country || '';
-  const isUS = address.country_code === 'us';
-  if (isUS) {
-    const stateAbbr = US_STATE_ABBR[state] || state;
-    if (city && stateAbbr) return `${city}, ${stateAbbr}`;
-    return city || stateAbbr || '';
-  }
-  const parts = [city, state, country].filter(Boolean);
-  // Avoid an awkward "City, City" when Nominatim's state-level field just
-  // repeats the city/county name (common for city-states and some regions).
-  return [...new Set(parts)].join(', ');
-}
-
-// Single Nominatim postal-code search, returning the parsed results array
-// (empty if none). Shared by resolveGeoCandidates below.
-async function nominatimPostalSearch(zip, countryCode) {
-  const countryParam = countryCode ? `&country=${countryCode}` : '';
-  const url = `https://nominatim.openstreetmap.org/search?postalcode=${encodeURIComponent(zip)}${countryParam}&format=json&addressdetails=1&limit=1`;
-  // family:4/timeout — same fix as geocodeAddress() just below, same host.
-  const res = await fetchWithTimeout(url, {
-    headers: { 'User-Agent': 'PiazzaHQ/1.0' },
-    timeoutMs: 10000,
-    timeoutMessage: `Timed out looking up postal code "${zip}"`,
-  });
-  try { return await res.json(); }
-  catch { throw new Error('Failed to parse geocoding response'); }
-}
-
-// Queries a US-scoped search and an unrestricted worldwide search in
-// parallel and returns however many DISTINCT places they point to (1 or 2).
-//
-// A country=US-only restriction was the original bug (a UK postcode simply
-// couldn't resolve at all). Removing the country filter entirely turned out
-// to be its own regression: plenty of postal-code FORMATS overlap across
-// countries — a plain 5-digit code exists in the US, but also in places
-// like Lithuania or Germany — and Nominatim doesn't rank "your household's
-// own country" any higher than any other match, so a real US ZIP like
-// 67228 could resolve to Lithuania instead of Kansas.
-//
-// Rather than guessing which one the household actually meant (whether by
-// hardcoding US-only again, or by trusting whichever the worldwide search
-// ranks first), this returns both when they genuinely disagree, so the
-// caller can ask instead of guess. When there's no real ambiguity — the
-// worldwide search either agrees with the US result or comes up empty
-// entirely, which is the common case for both an ordinary US ZIP and for a
-// non-US postal code like a UK postcode (no US match to conflict with) —
-// this quietly returns just the one real match, same as before.
-async function resolveGeoCandidates(zip) {
-  const [usResults, worldResults] = await Promise.all([
-    nominatimPostalSearch(zip, 'US'),
-    nominatimPostalSearch(zip, null),
-  ]);
-  const us = usResults[0] || null;
-  const world = worldResults[0] || null;
-  if (!us) return world ? [world] : [];
-  if (!world) return [us];
-  const sameLat = Math.abs(parseFloat(us.lat) - parseFloat(world.lat)) < 0.05;
-  const sameLon = Math.abs(parseFloat(us.lon) - parseFloat(world.lon)) < 0.05;
-  return (sameLat && sameLon) ? [us] : [us, world];
-}
-
-function geoResultToCandidate(r) {
-  const label = buildLocationLabel(r.address) || r.display_name;
-  return { lat: r.lat, lon: r.lon, display_name: r.display_name, label, location_label: label };
-}
-
-app.get('/api/geocode', async (req, res) => {
-  const { zip } = req.query;
-  // When save=0, geocode WITHOUT touching the global weather location. Used by the
-  // per-widget location override so looking up a vacation-home ZIP doesn't change
-  // the whole device's default location.
-  const save = req.query.save !== '0';
-  if (!zip) return res.status(400).json({ error: 'zip required' });
-
-  let candidates;
-  try { candidates = await resolveGeoCandidates(zip); }
-  catch (e) { return res.status(500).json({ error: e.message }); }
-  if (!candidates.length) return res.status(404).json({ error: 'ZIP/postal code not found' });
-
-  // Genuinely ambiguous (e.g. 67228 matching both Kansas and Lithuania) —
-  // don't save anything yet, let the caller ask the person which one is
-  // theirs and re-request with an explicit choice.
-  if (candidates.length > 1) {
-    return res.json({ ambiguous: true, candidates: candidates.map(geoResultToCandidate) });
-  }
-
-  const { lat, lon, display_name, address } = candidates[0];
-  const locationLabel = buildLocationLabel(address);
-  if (save) {
-    const upsert = db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`);
-    db.transaction(() => {
-      upsert.run('weather_lat', lat);
-      upsert.run('weather_lon', lon);
-      upsert.run('weather_zip', zip);
-      upsert.run('weather_location_auto', locationLabel);
-    })();
-  }
-  // Return both label keys so either caller style works.
-  res.json({ lat, lon, display_name, location_label: locationLabel, label: locationLabel });
-});
-
-// Free-text place search (city / airport / landmark / ZIP) → lat/lon + label.
-// Read-only: unlike /api/geocode this never touches the device's saved weather
-// location. Used by widgets that let you centre a map on a searched place.
-app.get('/api/place-search', async (req, res) => {
-  const q = String(req.query.q || '').trim();
-  if (q.length < 2) return res.status(400).json({ error: 'A search term is required.' });
-  try {
-    const r = await geocodeAddress(q);
-    res.json({ lat: r.lat, lon: r.lon, label: r.label });
-  } catch (e) {
-    res.status(404).json({ error: (e && e.message) || 'Place not found' });
-  }
-});
+// This code lives in src/geocoding.js. It runs here, at the same place in the file as before.
+require('./src/geocoding.js')({ fetchWithTimeout, app, db, geocodeAddress: (...a) => geocodeAddress(...a) });
 
 // ── Weather proxy (Open-Meteo, free, no API key) ─────────────────────────────
-// Short WMO weather-code descriptions for the email (display.html has its own copy).
-const WMO_DESC = {
-  0:'Clear', 1:'Mainly clear', 2:'Partly cloudy', 3:'Overcast',
-  45:'Fog', 48:'Rime fog', 51:'Light drizzle', 53:'Drizzle', 55:'Heavy drizzle',
-  56:'Freezing drizzle', 57:'Freezing drizzle', 61:'Light rain', 63:'Rain', 65:'Heavy rain',
-  66:'Freezing rain', 67:'Freezing rain', 71:'Light snow', 73:'Snow', 75:'Heavy snow',
-  77:'Snow grains', 80:'Light showers', 81:'Showers', 82:'Heavy showers',
-  85:'Snow showers', 86:'Snow showers', 95:'Thunderstorm', 96:'Thunderstorm', 99:'Thunderstorm',
-};
-
-// Weather is always fetched and cached in Fahrenheit — Fahrenheit/Celsius is
-// a display-time choice everywhere it's shown, including here in the daily
-// briefing email, so this mirrors display.html's own formatTemp() exactly
-// rather than re-fetching from Open-Meteo per unit. Returns a bare "NN°"
-// (no unit letter) to match the email's existing styling, which states the
-// unit once at the headline rather than repeating it on every value.
-function emailFormatTemp(fahrenheit) {
-  if (fahrenheit == null || isNaN(fahrenheit)) return '--';
-  const unit = getSetting('weather_unit');
-  const val = unit === 'celsius' ? (fahrenheit - 32) * 5 / 9 : fahrenheit;
-  return `${Math.round(val)}°`;
-}
-function emailTempUnitLabel() {
-  return getSetting('weather_unit') === 'celsius' ? 'C' : 'F';
-}
-// PIAZZA_OPENMETEO_URL overrides the base (tests only; unset in prod).
-const OPENMETEO_BASE = process.env.PIAZZA_OPENMETEO_URL || 'https://api.open-meteo.com';
-async function getWeather(lat, lon) {
-  // apparent_temperature/relative_humidity_2m/wind_gusts_10m ride the same
-  // current/hourly call as everything else — no extra request. UV index
-  // isn't a valid `current` variable on this API, only `hourly`/`daily`;
-  // reconcileWeatherToday() below picks the closest-to-now hourly value
-  // into current.uv_index so every provider ends up with the same shape.
-  const url = `${OPENMETEO_BASE}/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    `&current=temperature_2m,weather_code,wind_speed_10m,wind_gusts_10m,apparent_temperature,relative_humidity_2m,is_day` +
-    `&hourly=temperature_2m,weather_code,precipitation_probability,apparent_temperature,uv_index,is_day` +
-    `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset` +
-    `&temperature_unit=fahrenheit&wind_speed_unit=mph&forecast_days=16&timezone=auto`;
-  // See fetchWithTimeout's comment above for why this matters — a stalled
-  // (not outright failed) request would otherwise hang forever with no
-  // error, same bug class, same fix.
-  const res = await fetchWithTimeout(url, { timeoutMs: 10000, timeoutMessage: 'Timed out fetching Open-Meteo weather' });
-  try { return await res.json(); }
-  catch { throw new Error('Failed to parse weather data'); }
-}
-
-// Maps an OpenWeatherMap condition id (https://openweathermap.org/weather-conditions)
-// to the WMO weather code our icons/descriptions use, so OWM data renders identically
-// to Open-Meteo data downstream.
-function owmToWmo(id) {
-  if (id >= 200 && id < 300) return 95;            // thunderstorm
-  if (id >= 300 && id < 400) return 51;            // drizzle
-  if (id >= 500 && id < 505) return 61;            // rain
-  if (id === 511) return 67;                       // freezing rain
-  if (id >= 520 && id < 532) return 80;            // rain showers
-  if (id >= 600 && id < 700) return 71;            // snow
-  if (id >= 700 && id < 800) return 45;            // atmosphere (fog/mist)
-  if (id === 800) return 0;                        // clear
-  if (id === 801) return 1;                        // mainly clear
-  if (id === 802) return 2;                        // partly cloudy
-  if (id >= 803) return 3;                         // overcast
-  return 3;
-}
-// Fetches from OpenWeatherMap (One Call 3.0) and normalizes to the Open-Meteo shape
-// the rest of the app expects. Requires the user's own API key.
-async function getWeatherOWM(lat, lon, apiKey) {
-  const url = `https://api.openweathermap.org/data/3.0/onecall?lat=${lat}&lon=${lon}` +
-    `&units=imperial&exclude=minutely,alerts&appid=${encodeURIComponent(apiKey)}`;
-  const res = await fetchWithTimeout(url, { timeoutMs: 10000, timeoutMessage: 'Timed out fetching OpenWeatherMap weather' });
-  let j;
-  try { j = await res.json(); }
-  catch { throw new Error('Failed to parse OpenWeatherMap data'); }
-  if (j.cod && String(j.cod) !== '200') throw new Error(j.message || 'OpenWeatherMap error');
-  const cur = j.current || {};
-  const hours = (j.hourly || []).slice(0, 48);
-  const days = (j.daily || []).slice(0, 16);
-  const iso = t => new Date(t * 1000).toISOString().slice(0, 16);
-  const isoDate = t => new Date(t * 1000).toISOString().slice(0, 10);
-  return {
-    current: {
-      temperature_2m: cur.temp,
-      weather_code: owmToWmo(cur.weather?.[0]?.id ?? 800),
-      wind_speed_10m: cur.wind_speed,
-      wind_gusts_10m: cur.wind_gust,
-      apparent_temperature: cur.feels_like,
-      relative_humidity_2m: cur.humidity,
-      uv_index: cur.uvi,
-      is_day: (cur.dt >= cur.sunrise && cur.dt < cur.sunset) ? 1 : 0,
-    },
-    hourly: {
-      time: hours.map(h => iso(h.dt)),
-      temperature_2m: hours.map(h => h.temp),
-      weather_code: hours.map(h => owmToWmo(h.weather?.[0]?.id ?? 800)),
-      precipitation_probability: hours.map(h => Math.round((h.pop || 0) * 100)),
-      apparent_temperature: hours.map(h => h.feels_like),
-      uv_index: hours.map(h => h.uvi),
-      is_day: hours.map(h => (h.dt >= (j.current?.sunrise||0) && h.dt < (j.current?.sunset||0)) ? 1 : 0),
-    },
-    daily: {
-      time: days.map(d => isoDate(d.dt)),
-      weather_code: days.map(d => owmToWmo(d.weather?.[0]?.id ?? 800)),
-      temperature_2m_max: days.map(d => d.temp?.max),
-      temperature_2m_min: days.map(d => d.temp?.min),
-      precipitation_probability_max: days.map(d => Math.round((d.pop || 0) * 100)),
-      sunrise: days.map(d => iso(d.sunrise)),
-      sunset: days.map(d => iso(d.sunset)),
-    },
-    _provider: 'openweathermap',
-  };
-}
-
-// Provider-aware weather fetch used by both the API and the email briefing, so they
-// Maps a National Weather Service short forecast text (e.g. "Partly Sunny",
-// "Chance Showers And Thunderstorms") to our WMO code. NWS uses prose, not codes,
-// so we keyword-match — ordered from most to least specific.
-function nwsTextToWmo(text) {
-  const t = (text || '').toLowerCase();
-  if (t.includes('thunder')) return 95;
-  if (t.includes('freezing')) return 67;
-  if (t.includes('sleet') || t.includes('ice')) return 67;
-  if (t.includes('snow') || t.includes('flurr') || t.includes('blizzard')) return 71;
-  if (t.includes('showers') || t.includes('rain shower')) return 80;
-  if (t.includes('rain') || t.includes('drizzle')) return 61;
-  if (t.includes('fog') || t.includes('haze') || t.includes('mist')) return 45;
-  if (t.includes('partly') || t.includes('mostly sunny') || t.includes('mostly clear')) return 2;
-  if (t.includes('mostly cloudy') || t.includes('considerable cloud')) return 3;
-  if (t.includes('cloud')) return 3;
-  if (t.includes('sunny') || t.includes('clear') || t.includes('fair')) return 0;
-  return 2;
-}
-// Small JSON GET helper that sends the User-Agent NWS requires.
-// Real, confirmed bug fixed here: without an explicit timeout, a request
-// that stalls (NWS's servers momentarily hanging, a network blip — anything
-// short of an outright connection error) never resolves AND never rejects.
-// No error, no console output, nothing — https.get()'s own 'error' event
-// only fires for actual connection failures, not for a server that accepted
-// the connection and then just never finishes responding. That leaves every
-// weather widget across every device permanently stuck on "Loading
-// weather…" until the server process itself is restarted, since nothing
-// ever times out to let the normal per-poll retry take over.
-// fetch() follows redirects on its own, so this no longer needs to recurse.
-async function httpGetJSON(url, timeoutMs = 10000) {
-  const res = await fetchWithTimeout(url, {
-    headers: { 'User-Agent': 'PiazzaHQ/1.0 (family calendar display)', 'Accept': 'application/geo+json' },
-    timeoutMs,
-  });
-  try { return await res.json(); }
-  catch { throw new Error('Bad JSON from ' + url); }
-}
-// Fetches from the US National Weather Service (weather.gov) and normalizes to the
-// Open-Meteo shape. Keyless, but US-only. Two-step: points -> gridpoint forecast.
-async function getWeatherNWS(lat, lon) {
-  const pts = await httpGetJSON(`https://api.weather.gov/points/${(+lat).toFixed(4)},${(+lon).toFixed(4)}`);
-  const props = pts && pts.properties;
-  if (!props || !props.forecast) throw new Error('NWS: no forecast for this location (US-only)');
-
-  const [daily, hourly] = await Promise.all([
-    httpGetJSON(props.forecast),
-    httpGetJSON(props.forecastHourly).catch(() => null),
-  ]);
-  const periods = (daily.properties && daily.properties.periods) || [];
-  if (!periods.length) throw new Error('NWS: empty forecast');
-
-  // Current conditions: first hourly period if available, else first daily period.
-  const hp = hourly && hourly.properties && hourly.properties.periods || [];
-  const nowP = hp[0] || periods[0];
-  const current = {
-    temperature_2m: nowP.temperature,
-    weather_code: nwsTextToWmo(nowP.shortForecast),
-    wind_speed_10m: parseInt((nowP.windSpeed || '0').replace(/[^0-9]/g, '')) || 0,
-    is_day: nowP.isDaytime ? 1 : 0,
-  };
-  // Hourly arrays (next 48h) for the hourly widget.
-  const hSlice = hp.slice(0, 48);
-  const hourlyOut = {
-    time: hSlice.map(p => (p.startTime || '').slice(0, 16)),
-    temperature_2m: hSlice.map(p => p.temperature),
-    weather_code: hSlice.map(p => nwsTextToWmo(p.shortForecast)),
-    precipitation_probability: hSlice.map(p => (p.probabilityOfPrecipitation && p.probabilityOfPrecipitation.value) || 0),
-    is_day: hSlice.map(p => p.isDaytime ? 1 : 0),
-  };
-  // Daily: NWS splits into day & night periods. Fold into per-date hi/lo.
-  const byDate = {};
-  for (const p of periods) {
-    const date = (p.startTime || '').slice(0, 10);
-    if (!byDate[date]) byDate[date] = { code: nwsTextToWmo(p.shortForecast), hi: null, lo: null, pop: 0 };
-    const temp = p.temperature;
-    if (p.isDaytime) { byDate[date].hi = temp; byDate[date].code = nwsTextToWmo(p.shortForecast); }
-    else { byDate[date].lo = temp; }
-    const pop = (p.probabilityOfPrecipitation && p.probabilityOfPrecipitation.value) || 0;
-    if (pop > byDate[date].pop) byDate[date].pop = pop;
-  }
-  const dates = Object.keys(byDate).sort();
-  // Today's bucket is the one date where hi or lo can legitimately be missing
-  // — not because the data doesn't exist, but because NWS periods are
-  // forward-looking from "now": once "Today" has elapsed, only "Tonight"
-  // remains for today's date (hi stays null); early in the morning, before
-  // "Tonight" has arrived yet, only "Today" exists (lo stays null). The
-  // naive fallback above (used for every other, fully-populated future date)
-  // collapses hi and lo to that single remaining value, contradicting the
-  // live current reading — e.g. showing today's high as tonight's 75° low
-  // while current conditions read 96°. Correct today's bucket using the
-  // current reading itself, which is real evidence of at least that
-  // temperature having actually occurred today.
-  const todayDate = dates[0];
-  if (todayDate && byDate[todayDate]) {
-    const t = byDate[todayDate];
-    if (t.hi == null && t.lo != null) t.hi = Math.max(t.lo, current.temperature_2m);
-    else if (t.lo == null && t.hi != null) t.lo = Math.min(t.hi, current.temperature_2m);
-  }
-  const dailyOut = {
-    time: dates,
-    weather_code: dates.map(d => byDate[d].code),
-    temperature_2m_max: dates.map(d => byDate[d].hi != null ? byDate[d].hi : byDate[d].lo),
-    temperature_2m_min: dates.map(d => byDate[d].lo != null ? byDate[d].lo : byDate[d].hi),
-    precipitation_probability_max: dates.map(d => byDate[d].pop),
-    sunrise: dates.map(() => ''), // NWS doesn't provide sunrise/sunset here
-    sunset: dates.map(() => ''),
-  };
-  return { current, hourly: hourlyOut, daily: dailyOut, _provider: 'nws' };
-}
+// This code lives in src/weather-providers.js. It runs here, at the same place in the file as before.
+const { WMO_DESC, emailFormatTemp, emailTempUnitLabel, getWeather, getWeatherOWM, httpGetJSON, getWeatherNWS } = require('./src/weather-providers.js')({ fetchWithTimeout, getSetting });
 
 // ── Sunrise/sunset-based day/night, shared across all providers ─────────────
-// Open-Meteo and OpenWeatherMap each report their own is_day, computed from
-// their own real astronomical data — generally trustworthy. NWS has no
-// sunrise/sunset of its own at all and derives is_day from whichever forecast
-// period's text happens to be "current", which is exactly the same
-// elapsed-period lag that caused the hi/lo bug above. Rather than have three
-// different trust boundaries for the same day/night fact (one of which has a
-// known bug), compute it ourselves the same way for every provider, so the
-// icon can never disagree with an actual sunset regardless of source.
-// Standard sunrise/sunset equation (Almanac for Computers, 1990).
-//
-// CORRECTED: an earlier version of this comment claimed the UTC-day-boundary
-// effect below was "imperceptible, off by less than a day" — that was wrong,
-// and understated a real, serious bug. For any longitude west of Greenwich
-// (i.e. the entire US), local evening sunset genuinely lands on the
-// FOLLOWING UTC calendar day. The raw algorithm returns just an hour-of-day
-// in [0,24) with no indication of which UTC date that belongs to, so a plain
-// `base + sunsetUT` anchored to the same UTC day as sunrise placed sunset
-// BEFORE sunrise numerically — making `is_day` false for essentially the
-// entire actual daytime, every single day, for any US location. Not a rare
-// edge case; this was the actual cause of the moon-during-daylight bug,
-// which had never actually been exercised before beta.7 (a separate crash
-// in trackTodayExtreme was throwing first every time, so this line never
-// even ran until that crash was fixed). Verified now with a continuous
-// 72-hour sweep across multiple longitudes/hemispheres (Denver, Tokyo,
-// London, Sydney) — exactly one flip to day and one to night per real 24h
-// period, everywhere tested.
-function computeSunTimes(lat, lon, when) {
-  const rad = Math.PI / 180, deg = 180 / Math.PI;
-  const dayOfYear = Math.floor((when.getTime() - Date.UTC(when.getUTCFullYear(), 0, 0)) / 86400000);
-  const lngHour = lon / 15;
-  function calc(isSunrise) {
-    const t = dayOfYear + ((isSunrise ? 6 : 18) - lngHour) / 24;
-    const M = (0.9856 * t) - 3.289;
-    let L = M + (1.916 * Math.sin(M * rad)) + (0.020 * Math.sin(2 * M * rad)) + 282.634;
-    L = ((L % 360) + 360) % 360;
-    let RA = deg * Math.atan(0.91764 * Math.tan(L * rad));
-    RA = ((RA % 360) + 360) % 360;
-    RA = (RA + (Math.floor(L / 90) * 90 - Math.floor(RA / 90) * 90)) / 15;
-    const sinDec = 0.39782 * Math.sin(L * rad);
-    const cosDec = Math.cos(Math.asin(sinDec));
-    const cosH = (Math.cos(90.833 * rad) - (sinDec * Math.sin(lat * rad))) / (cosDec * Math.cos(lat * rad));
-    if (cosH > 1 || cosH < -1) return null; // sun never rises/sets today at this latitude (polar)
-    let H = isSunrise ? 360 - deg * Math.acos(cosH) : deg * Math.acos(cosH);
-    H /= 15;
-    return (((H + RA - (0.06571 * t) - 6.622) - lngHour) % 24 + 24) % 24; // hour-of-day, UTC, in [0,24)
-  }
-  const sunriseUT = calc(true), sunsetUT = calc(false);
-  if (sunriseUT == null || sunsetUT == null) return null;
-  const base = Date.UTC(when.getUTCFullYear(), when.getUTCMonth(), when.getUTCDate());
-  // If sunset's hour-of-day comes out numerically earlier than sunrise's, that's
-  // the wraparound signature described above — it actually belongs to the
-  // following UTC calendar day. Push it forward a day to correct it.
-  const sunsetDayOffset = (sunsetUT < sunriseUT) ? 1 : 0;
-  return {
-    sunrise: new Date(base + sunriseUT * 3600000),
-    sunset: new Date(base + (sunsetDayOffset * 24 + sunsetUT) * 3600000),
-  };
-}
-function isDaytimeAt(lat, lon, when) {
-  const sun = computeSunTimes(lat, lon, when);
-  // Polar day/night edge case (sun never rises or sets): fall back to a
-  // plain clock-hour guess rather than returning nothing.
-  if (!sun) return when.getUTCHours() >= 6 && when.getUTCHours() < 19 ? 1 : 0;
-  return (when >= sun.sunrise && when < sun.sunset) ? 1 : 0;
-}
-
-// Tracks the actual peak/trough current-conditions reading seen *today* per
-// location. Used as the fallback whenever a provider is missing today's
-// forecasted high/low (NWS, once a period has elapsed — see above) instead
-// of the instantaneous current reading. Using the instant reading was the
-// bug: as the evening cools off, current keeps dropping, so a "today's high"
-// recomputed fresh from current on every poll ticks down right along with
-// it. The running peak only ever moves toward the true high actually
-// reached, and only resets when the calendar date changes. In-memory only —
-// a server restart just starts re-accumulating from that point, which is a
-// fine tradeoff since this is purely a fallback value, never the primary
-// forecasted number.
-const _todayExtremes = new Map(); // "YYYY-MM-DD|lat|lon" -> { hi, lo }
-function trackTodayExtreme(lat, lon, temp) {
-  if (temp == null) return null;
-  const dateKey = new Date().toISOString().slice(0, 10);
-  // Defensive coercion here too, not just at getWeatherResolved's entry
-  // point — this is exactly the mistake that caused the beta.4 bug
-  // (called with a string lat/lon, .toFixed() threw). Cheap insurance
-  // against a future caller making the same assumption mistake again.
-  const key = `${dateKey}|${(+lat).toFixed(2)}|${(+lon).toFixed(2)}`;
-  for (const k of _todayExtremes.keys()) if (!k.startsWith(dateKey)) _todayExtremes.delete(k); // drop stale days
-  let e = _todayExtremes.get(key);
-  if (!e) { e = { hi: temp, lo: temp }; _todayExtremes.set(key, e); }
-  else { if (temp > e.hi) e.hi = temp; if (temp < e.lo) e.lo = temp; }
-  return e;
-}
-
-// Runs on every provider's normalized output before it reaches the rest of
-// the app, so both reported bugs are corrected regardless of which provider
-// is active:
-//   1. Today's hi/lo can never sit below/above the peak/trough actually
-//      observed today — backstops the NWS elapsed-period bug fixed above
-//      (using the tracked peak rather than the instant reading, so it
-//      doesn't tick down as the evening cools), and guards the same class
-//      of issue for Open-Meteo/OpenWeatherMap even without a confirmed bug
-//      there, since it's a cheap, safe invariant to enforce regardless of
-//      source.
-//   2. is_day is recomputed from real sunrise/sunset for this exact moment,
-//      not trusted from the provider — the actual fix for NWS's moon-during-
-//      daylight bug. This intentionally overrides Open-Meteo/OWM's own
-//      (already-accurate) is_day too, trading their minute-or-two-better
-//      precision for one shared, already-debugged code path instead of three
-//      separate ones.
-function reconcileWeatherToday(w, lat, lon) {
-  if (!w) return w;
-  if (w.current && w.current.temperature_2m != null) {
-    const ext = trackTodayExtreme(lat, lon, w.current.temperature_2m);
-    if (ext && w.daily && w.daily.temperature_2m_max && w.daily.temperature_2m_max.length) {
-      if (w.daily.temperature_2m_max[0] != null && ext.hi > w.daily.temperature_2m_max[0]) w.daily.temperature_2m_max[0] = ext.hi;
-      if (w.daily.temperature_2m_min[0] != null && ext.lo < w.daily.temperature_2m_min[0]) w.daily.temperature_2m_min[0] = ext.lo;
-    }
-  }
-  if (w.current) w.current.is_day = isDaytimeAt(lat, lon, new Date());
-  // UV index isn't a valid Open-Meteo `current` variable (only hourly/daily),
-  // so current.uv_index arrives empty from getWeather() — fill it from the
-  // hourly series' closest-to-now value. No-op for OWM (already set from
-  // cur.uvi) and for NWS (doesn't report UV at all — stays absent, same as
-  // NWS's already-blank sunrise/sunset).
-  if (w.current && w.current.uv_index == null && w.hourly && Array.isArray(w.hourly.uv_index) && Array.isArray(w.hourly.time)) {
-    const now = Date.now();
-    let idx = 0;
-    for (let i = 0; i < w.hourly.time.length; i++) {
-      if (new Date(w.hourly.time[i]).getTime() <= now) idx = i; else break;
-    }
-    const uv = w.hourly.uv_index[idx];
-    if (uv != null) w.current.uv_index = uv;
-  }
-  return w;
-}
-
-// always agree on the source. Falls back to keyless Open-Meteo on any failure.
-//
-// Cached in memory, same pattern as getRadarFrames() just below — a real
-// report (2026-09-13) that weather "took a while to load" traced back to
-// there being NO caching at all here: every single call, from any widget,
-// on any device, on every page load or periodic refresh, triggered a brand
-// new outbound round-trip fetching 16 days of hourly+daily data, even
-// though forecast data doesn't meaningfully change minute to minute and the
-// client's own fastest refresh interval is 5 minutes anyway. Keyed on
-// rounded lat/lon (not the raw floats) so two callers for "the same place"
-// reliably share one cache entry instead of missing on float noise.
-const _weatherCache = new Map(); // "lat,lon" -> { data, at }
-const WEATHER_CACHE_MS = 5 * 60 * 1000;
-async function getWeatherResolved(lat, lon) {
-  // lat/lon arrive as strings from every real caller (Express req.query,
-  // the SQLite settings fallback) — coerced to real numbers once here so
-  // every downstream function can rely on that without each having to
-  // defensively re-coerce itself. getWeatherNWS() already knew to guard
-  // against this (`(+lat).toFixed(4)`); reconcileWeatherToday()'s
-  // trackTodayExtreme() did NOT, and its plain `lat.toFixed(2)` threw
-  // immediately on a string — a real, confirmed bug that silently broke
-  // weather for every widget (see beta.6 HANDOFF entry for the full
-  // failure chain).
-  lat = Number(lat);
-  lon = Number(lon);
-  const cacheKey = `${lat.toFixed(4)},${lon.toFixed(4)}`;
-  const cached = _weatherCache.get(cacheKey);
-  if (cached && (Date.now() - cached.at) < WEATHER_CACHE_MS) return cached.data;
-
-  const provider = getSetting('weather_provider') || 'open-meteo';
-  const apiKey = getSetting('weather_api_key') || '';
-  let w;
-  if (provider === 'openweathermap' && apiKey) {
-    try { w = await getWeatherOWM(lat, lon, apiKey); }
-    catch (e) { console.warn('OWM failed, using Open-Meteo:', e.message); w = await getWeather(lat, lon); }
-  } else if (provider === 'nws') {
-    try { w = await getWeatherNWS(lat, lon); }
-    catch (e) { console.warn('NWS failed, using Open-Meteo:', e.message); w = await getWeather(lat, lon); }
-  } else {
-    w = await getWeather(lat, lon);
-  }
-  const resolved = reconcileWeatherToday(w, lat, lon);
-  _weatherCache.set(cacheKey, { data: resolved, at: Date.now() });
-  return resolved;
-}
+// This code lives in src/weather-resolve.js. It runs here, at the same place in the file as before.
+const { reconcileWeatherToday, getWeatherResolved } = require('./src/weather-resolve.js')({ RA, getSetting, getWeather, getWeatherOWM, getWeatherNWS });
 
 // ── Weather Radar (RainViewer, free, no API key — see radar widget) ─────────
-// RainViewer's own weather-maps.json is tiny (a frame list, not imagery) but
-// we still proxy it server-side rather than having the display fetch it
-// directly, for the same reason /api/weather and /api/air-quality are
-// proxied: keeps the display's outbound dependency list to "this server"
-// only, and lets the server apply its own short cache/retry behavior later
-// if RainViewer has a bad moment. The actual tile IMAGES (many, especially
-// while animating) are NOT proxied — those load directly from RainViewer's
-// tile CDN in the browser via Leaflet, same as any other tile-based map;
-// proxying binary tile traffic through this server would add real bandwidth
-// and CPU cost for no real benefit, and every other tile-map integration
-// (including RainViewer's own official examples) fetches tiles client-side.
-let radarFramesCache = null;
-let radarFramesCacheAt = 0;
-async function getRadarFrames() {
-  const now = Date.now();
-  if (radarFramesCache && (now - radarFramesCacheAt) < 2 * 60 * 1000) {
-    return radarFramesCache;
-  }
-  const res = await fetchWithTimeout('https://api.rainviewer.com/public/weather-maps.json', {
-    timeoutMs: 10000,
-    timeoutMessage: 'Timed out fetching RainViewer radar frames',
-  });
-  let parsed;
-  try { parsed = await res.json(); }
-  catch { throw new Error('Failed to parse RainViewer data'); }
-  // 'past' is up to the last 2 hours of OBSERVED radar (10-min steps)
-  // — that 2-hour window is RainViewer's own hard ceiling for this
-  // free tier, not a limit set here. 'nowcast', when present, is a
-  // short-term (roughly 30–60 min) EXTRAPOLATION forward from now,
-  // not a full weather-model forecast — tagged separately so the
-  // client can label it differently if it wants to, rather than
-  // presenting it as equally-measured data.
-  const past = (parsed.radar && parsed.radar.past) || [];
-  const nowcast = (parsed.radar && parsed.radar.nowcast) || [];
-  const frames = [
-    ...past.map(f => ({ time: f.time, path: f.path, kind: 'observed' })),
-    ...nowcast.map(f => ({ time: f.time, path: f.path, kind: 'forecast' })),
-  ];
-  const result = { host: parsed.host, frames };
-  radarFramesCache = result;
-  radarFramesCacheAt = now;
-  return result;
-}
-app.get('/api/radar-frames', async (req, res) => {
-  try {
-    const data = await getRadarFrames();
-    if (!data.frames.length) return res.status(502).json({ error: 'No radar frames available right now' });
-    res.json(data);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get('/api/weather', async (req, res) => {
-  // Accept lat/lon directly or look up from saved settings
-  let lat = req.query.lat;
-  let lon = req.query.lon;
-  if (!lat || !lon) {
-    const latRow = db.prepare(`SELECT value FROM settings WHERE key = 'weather_lat'`).get();
-    const lonRow = db.prepare(`SELECT value FROM settings WHERE key = 'weather_lon'`).get();
-    lat = latRow?.value; lon = lonRow?.value;
-  }
-  if (!lat || !lon) return res.status(400).json({ error: 'No location set — enter a ZIP code in Settings' });
-  try {
-    res.json(await getWeatherResolved(lat, lon));
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+// This code lives in src/weather-radar.js. It runs here, at the same place in the file as before.
+require('./src/weather-radar.js')({ path, fetchWithTimeout, app, db, getWeatherResolved });
 
 // ── Air Quality / Pollen / UV proxy (Open-Meteo, free, no API key) ───────────
-// Reuses the same lat/lon already saved for Weather — no separate location setup.
-// Override only in tests (PIAZZA_AIRQUALITY_URL); unset everywhere real —
-// same pattern as OPENMETEO_BASE/NOMINATIM_BASE above.
-const AIRQUALITY_BASE = process.env.PIAZZA_AIRQUALITY_URL || 'https://air-quality-api.open-meteo.com';
-// Cached the same way getWeatherResolved() is — the client only ever polls
-// this every 30 min (AQI/pollen/UV change slowly), so a 15-min server
-// cache can never make a response staler than what the client already
-// tolerates, while still cutting real, redundant upstream calls.
-const _airQualityCache = new Map(); // "lat,lon" -> { data, at }
-const AIR_QUALITY_CACHE_MS = 15 * 60 * 1000;
-async function getAirQuality(lat, lon) {
-  const cacheKey = `${Number(lat).toFixed(4)},${Number(lon).toFixed(4)}`;
-  const cached = _airQualityCache.get(cacheKey);
-  if (cached && (Date.now() - cached.at) < AIR_QUALITY_CACHE_MS) return cached.data;
-  const url = `${AIRQUALITY_BASE}/v1/air-quality?latitude=${lat}&longitude=${lon}` +
-    `&current=us_aqi,pm2_5,pm10,uv_index` +
-    `&hourly=grass_pollen,birch_pollen,ragweed_pollen` +
-    `&timezone=auto&forecast_days=1`;
-  const res = await fetchWithTimeout(url, { timeoutMs: 10000, timeoutMessage: 'Timed out fetching air quality data' });
-  let parsed;
-  try { parsed = await res.json(); }
-  catch { throw new Error('Failed to parse air quality data'); }
-  _airQualityCache.set(cacheKey, { data: parsed, at: Date.now() });
-  return parsed;
-}
-function aqiCategory(aqi) {
-  if (aqi == null) return { label: 'Unknown', color: '#9aa6c0' };
-  if (aqi <= 50)  return { label: 'Good', color: '#3ec97a' };
-  if (aqi <= 100) return { label: 'Moderate', color: '#ffd454' };
-  if (aqi <= 150) return { label: 'Unhealthy for Sensitive Groups', color: '#f4845f' };
-  if (aqi <= 200) return { label: 'Unhealthy', color: '#fb7185' };
-  if (aqi <= 300) return { label: 'Very Unhealthy', color: '#a78bfa' };
-  return { label: 'Hazardous', color: '#7c2d12' };
-}
-function uvCategory(uv) {
-  if (uv == null) return { label: 'Unknown', color: '#9aa6c0' };
-  if (uv < 3)  return { label: 'Low', color: '#3ec97a' };
-  if (uv < 6)  return { label: 'Moderate', color: '#ffd454' };
-  if (uv < 8)  return { label: 'High', color: '#f4845f' };
-  if (uv < 11) return { label: 'Very High', color: '#fb7185' };
-  return { label: 'Extreme', color: '#a78bfa' };
-}
-app.get('/api/air-quality', async (req, res) => {
-  let lat = req.query.lat, lon = req.query.lon;
-  if (!lat || !lon) {
-    const latRow = db.prepare(`SELECT value FROM settings WHERE key = 'weather_lat'`).get();
-    const lonRow = db.prepare(`SELECT value FROM settings WHERE key = 'weather_lon'`).get();
-    lat = latRow?.value; lon = lonRow?.value;
-  }
-  if (!lat || !lon) return res.status(400).json({ error: 'No location set — enter a ZIP code in Settings → Weather' });
-  try {
-    const data = await getAirQuality(lat, lon);
-    const cur = data.current || {};
-    const aqi = (cur.us_aqi != null) ? Math.round(cur.us_aqi) : null;
-    const uv = (cur.uv_index != null) ? Math.round(cur.uv_index * 10) / 10 : null;
-    // Pollen is only ever populated by Open-Meteo for European locations on the free
-    // tier — null/undefined elsewhere is expected, not a failure. Pick the hourly
-    // slot matching the current local hour (timezone=auto means hourly.time is
-    // already local, so this doesn't need the server's own timezone_override).
-    let pollen = { grass: null, birch: null, ragweed: null };
-    if (data.hourly && Array.isArray(data.hourly.time)) {
-      const now = new Date();
-      const nowKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}T${String(now.getHours()).padStart(2, '0')}:00`;
-      let idx = data.hourly.time.indexOf(nowKey);
-      if (idx === -1) idx = 0;
-      pollen = {
-        grass: data.hourly.grass_pollen ? data.hourly.grass_pollen[idx] ?? null : null,
-        birch: data.hourly.birch_pollen ? data.hourly.birch_pollen[idx] ?? null : null,
-        ragweed: data.hourly.ragweed_pollen ? data.hourly.ragweed_pollen[idx] ?? null : null,
-      };
-    }
-    res.json({
-      aqi, aqiInfo: aqiCategory(aqi),
-      pm2_5: cur.pm2_5 ?? null, pm10: cur.pm10 ?? null,
-      uv, uvInfo: uvCategory(uv),
-      pollen,
-      updated: cur.time || null,
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+// This code lives in src/air-quality.js. It runs here, at the same place in the file as before.
+require('./src/air-quality.js')({ fetchWithTimeout, app, db });
 
 // ── Travel Time widget ────────────────────────────────────────────────────────
-// Free-text address -> lat/lon, cached briefly since the same origin/destination
-// pair gets looked up on every refresh but rarely actually changes. Separate from
-// the ZIP-only /api/geocode above (which also writes the global weather location
-// as a side effect — this must NOT do that, it's resolving arbitrary addresses
-// for a specific widget, not setting the device's home location).
-const _geocodeCache = new Map(); // query -> { lat, lon, label, at }
-const GEOCODE_CACHE_MS = 24 * 60 * 60 * 1000; // 24h — addresses don't move
-// Override the geocoder base only in tests (PIAZZA_NOMINATIM_URL); unset everywhere real.
-const NOMINATIM_BASE = process.env.PIAZZA_NOMINATIM_URL || 'https://nominatim.openstreetmap.org';
-// Real bug (contact-form inquiry #6 follow-up, 2026-09-12): a household on
-// a network with broken/partial outbound IPv6 couldn't get the new per-
-// widget place-name search to resolve anything — same class of bug as
-// fetchUrl()'s, just never applied here. Forces IPv4 and times out a
-// stalled connection instead of hanging forever.
-async function geocodeAddress(query) {
-  const cached = _geocodeCache.get(query);
-  if (cached && (Date.now() - cached.at) < GEOCODE_CACHE_MS) return cached;
-  const url = `${NOMINATIM_BASE}/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
-  // PIAZZA_GEOCODE_TIMEOUT_MS overrides the default (tests only; unset in
-  // prod) — lets a test exercise a genuine timeout in well under a second.
-  const res = await fetchWithTimeout(url, {
-    headers: { 'User-Agent': 'PiazzaHQ/1.0' },
-    timeoutMs: Number(process.env.PIAZZA_GEOCODE_TIMEOUT_MS) || 10000,
-    timeoutMessage: `Timed out looking up "${query}"`,
-  });
-  let results;
-  try { results = await res.json(); }
-  catch { throw new Error('Failed to parse geocoding response'); }
-  if (!results.length) throw new Error(`Could not find "${query}"`);
-  const result = { lat: parseFloat(results[0].lat), lon: parseFloat(results[0].lon), label: results[0].display_name, at: Date.now() };
-  _geocodeCache.set(query, result);
-  return result;
-}
-// OSRM's public demo router — free, no key, no signup. Road-network typical
-// travel time; does NOT account for live traffic conditions.
-// Cached the same way getWeatherResolved() is, keyed on the route (not just
-// location — mode matters too, driving vs. walking are different routes).
-// The client polls this every 5 min, so a matching 5-min cache can't make a
-// response any staler than what it already shows — it just avoids hitting
-// OSRM/Google again for every device/tab asking about the same commute
-// inside that window.
-const _travelTimeCache = new Map(); // "olat,olon|dlat,dlon|mode|provider" -> { data, at }
-const TRAVEL_TIME_CACHE_MS = 5 * 60 * 1000;
-// Override only in tests (PIAZZA_OSRM_URL); unset everywhere real.
-const OSRM_BASE = process.env.PIAZZA_OSRM_URL || 'https://router.project-osrm.org';
-function travelCacheKey(origin, destination, mode, provider) {
-  return `${origin.lat},${origin.lon}|${destination.lat},${destination.lon}|${mode}|${provider}`;
-}
-async function getOsrmDuration(origin, destination, mode) {
-  const cacheKey = travelCacheKey(origin, destination, mode, 'osrm');
-  const cached = _travelTimeCache.get(cacheKey);
-  if (cached && (Date.now() - cached.at) < TRAVEL_TIME_CACHE_MS) return cached.data;
-  const profile = mode === 'walking' ? 'foot' : mode === 'bicycling' ? 'bike' : 'driving';
-  const url = `${OSRM_BASE}/route/v1/${profile}/${origin.lon},${origin.lat};${destination.lon},${destination.lat}?overview=false`;
-  const res = await fetchWithTimeout(url, { timeoutMs: 10000, timeoutMessage: 'Timed out fetching a route from OSRM' });
-  let parsed;
-  try { parsed = await res.json(); }
-  catch { throw new Error('Failed to parse routing response'); }
-  const route = parsed.routes && parsed.routes[0];
-  if (!route) throw new Error('No route found between those two addresses');
-  const result = { durationMin: Math.round(route.duration / 60), distanceMiles: Math.round(route.distance / 1609.34 * 10) / 10, trafficAware: false };
-  _travelTimeCache.set(cacheKey, { data: result, at: Date.now() });
-  return result;
-}
-// Google's Distance Matrix API — needs the user's own key, but gives a
-// traffic-aware duration ("in current traffic") the same way Google Maps
-// itself would show for right now.
-async function getGoogleDuration(origin, destination, mode, apiKey) {
-  const cacheKey = travelCacheKey(origin, destination, mode, 'google');
-  const cached = _travelTimeCache.get(cacheKey);
-  if (cached && (Date.now() - cached.at) < TRAVEL_TIME_CACHE_MS) return cached.data;
-  const gMode = mode === 'walking' ? 'walking' : mode === 'bicycling' ? 'bicycling' : 'driving';
-  const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin.lat},${origin.lon}&destinations=${destination.lat},${destination.lon}` +
-    `&mode=${gMode}&departure_time=now&key=${encodeURIComponent(apiKey)}`;
-  const res = await fetchWithTimeout(url, { timeoutMs: 10000, timeoutMessage: 'Timed out fetching a route from Google' });
-  let parsed;
-  try { parsed = await res.json(); }
-  catch { throw new Error('Failed to parse Google response'); }
-  const el = parsed.rows && parsed.rows[0] && parsed.rows[0].elements && parsed.rows[0].elements[0];
-  if (!el || el.status !== 'OK') throw new Error('Google could not find a route between those addresses');
-  const seconds = (el.duration_in_traffic || el.duration).value;
-  const result = { durationMin: Math.round(seconds / 60), distanceMiles: Math.round(el.distance.value / 1609.34 * 10) / 10, trafficAware: !!el.duration_in_traffic };
-  _travelTimeCache.set(cacheKey, { data: result, at: Date.now() });
-  return result;
-}
-app.get('/api/travel-time', async (req, res) => {
-  const origin = (req.query.origin || '').trim();
-  const destination = (req.query.destination || '').trim();
-  const mode = req.query.mode || 'driving';
-  if (!origin || !destination) return res.status(400).json({ error: 'Set an origin and destination in this widget\'s settings' });
-  try {
-    const [originGeo, destGeo] = await Promise.all([geocodeAddress(origin), geocodeAddress(destination)]);
-    const provider = getSetting('travel_provider') || 'osrm';
-    const apiKey = getSetting('travel_api_key') || '';
-    const route = (provider === 'google' && apiKey)
-      ? await getGoogleDuration(originGeo, destGeo, mode, apiKey)
-      : await getOsrmDuration(originGeo, destGeo, mode);
-    res.json({ ...route, originLabel: originGeo.label, destinationLabel: destGeo.label });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+// This code lives in src/travel-time.js. It runs here, at the same place in the file as before.
+const { geocodeAddress } = require('./src/travel-time.js')({ fetchWithTimeout, app, getSetting: (k) => getSetting(k) });
 
 // ── On This Day proxy (Wikipedia REST API, free, no key) ─────────────────────
-// Cached once per calendar day (local date) since the content is the same all day.
-let onThisDayCache = { dateKey: null, data: null };
-async function fetchJsonWithUA(url) {
-  const res = await fetchWithTimeout(url, {
-    headers: { 'User-Agent': 'PiazzaHQApp/1.0 (self-hosted family wall display; contact via project repo)' },
-    timeoutMs: 10000,
-    timeoutMessage: 'Timed out fetching from Wikipedia',
-  });
-  if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
-  try { return await res.json(); } catch { throw new Error('Failed to parse response'); }
-}
-// Picks n random items from an array without mutating it (Fisher-Yates partial shuffle).
-function sampleRandom(arr, n) {
-  const copy = [...arr];
-  for (let i = copy.length - 1; i > 0 && copy.length - i <= n; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy.slice(-n).reverse();
-}
-app.get('/api/on-this-day', async (req, res) => {
-  const dateKey = localDateStr();
-  if (onThisDayCache.dateKey === dateKey && onThisDayCache.data) {
-    return res.json(onThisDayCache.data);
-  }
-  const { m, d } = appNow();
-  const mm = String(m).padStart(2, '0'), dd = String(d).padStart(2, '0');
-  try {
-    const raw = await fetchJsonWithUA(`https://en.wikipedia.org/api/rest_v1/feed/onthisday/events/${mm}/${dd}`);
-    const events = Array.isArray(raw.events) ? raw.events : [];
-    // Sample a handful at random each day (rather than always the same first N)
-    // so a family glancing at this daily sees variety, not the identical facts
-    // every year on the same date.
-    const picked = sampleRandom(events.filter(e => e.text && e.year), 6)
-      .sort((a, b) => a.year - b.year)
-      .map(e => ({ year: e.year, text: e.text }));
-    const payload = { month: m, day: d, events: picked };
-    onThisDayCache = { dateKey, data: payload };
-    res.json(payload);
-  } catch (e) {
-    if (onThisDayCache.data) return res.json({ ...onThisDayCache.data, stale: true });
-    res.status(500).json({ error: 'Could not reach Wikipedia — ' + e.message });
-  }
-});
+// This code lives in src/on-this-day.js. It runs here, at the same place in the file as before.
+const { fetchJsonWithUA } = require('./src/on-this-day.js')({ fetchWithTimeout, app, appNow, localDateStr });
 
 // ── Daily Quote proxy (ZenQuotes, free, no key) ───────────────────────────────
-let dailyQuoteCache = { dateKey: null, data: null };
-app.get('/api/daily-quote', async (req, res) => {
-  const dateKey = localDateStr();
-  if (dailyQuoteCache.dateKey === dateKey && dailyQuoteCache.data) {
-    return res.json(dailyQuoteCache.data);
-  }
-  try {
-    const raw = await fetchJsonWithUA('https://zenquotes.io/api/today');
-    const item = Array.isArray(raw) ? raw[0] : null;
-    if (!item || !item.q) throw new Error('Unexpected response shape');
-    const payload = { quote: item.q, author: item.a || 'Unknown' };
-    dailyQuoteCache = { dateKey, data: payload };
-    res.json(payload);
-  } catch (e) {
-    if (dailyQuoteCache.data) return res.json({ ...dailyQuoteCache.data, stale: true });
-    res.status(500).json({ error: 'Could not reach quote service — ' + e.message });
-  }
-});
+// This code lives in src/daily-quote.js. It runs here, at the same place in the file as before.
+require('./src/daily-quote.js')({ app, localDateStr, fetchJsonWithUA });
 
 // ── Sports Scores proxy (TheSportsDB, free tier via shared test key "3") ─────
-// TheSportsDB's "3" key is their published free/test key intended for exactly
-// this kind of personal, low-volume, non-commercial use (see thesportsdb.com/api.php).
-// NOTE: true real-time in-play score ticking is a paid-tier feature on TheSportsDB;
-// this only surfaces the next scheduled game and the most recent final score, which
-// is what the free tier actually supports.
-const SPORTSDB_KEY = '3';
-// TheSportsDB's own search endpoint favors something closer to prefix/exact
-// matching over a true substring search — "Packers" alone doesn't surface
-// "Green Bay Packers" the way searching "Green Bay" does, even though it's
-// the same team. Not something fixable by tweaking a query parameter, since
-// the matching itself happens on their end, not ours. This is a practical
-// middle ground: a lookup table of common nickname -> full team name for the
-// major leagues (where fans would naturally just type the nickname), used to
-// ALSO search the full name alongside whatever the raw query already finds —
-// not a replacement for the direct query, since that still correctly
-// handles anything typed in full already.
-const SPORTS_NICKNAME_MAP = {
-  // NFL
-  cardinals: ['Arizona Cardinals'], falcons: ['Atlanta Falcons'], ravens: ['Baltimore Ravens'],
-  bills: ['Buffalo Bills'], panthers: ['Carolina Panthers'], bears: ['Chicago Bears'],
-  bengals: ['Cincinnati Bengals'], browns: ['Cleveland Browns'], cowboys: ['Dallas Cowboys'],
-  broncos: ['Denver Broncos'], lions: ['Detroit Lions'], packers: ['Green Bay Packers'],
-  texans: ['Houston Texans'], colts: ['Indianapolis Colts'], jaguars: ['Jacksonville Jaguars'],
-  chiefs: ['Kansas City Chiefs'], raiders: ['Las Vegas Raiders'], chargers: ['Los Angeles Chargers'],
-  rams: ['Los Angeles Rams'], dolphins: ['Miami Dolphins'], vikings: ['Minnesota Vikings'],
-  patriots: ['New England Patriots'], saints: ['New Orleans Saints'],
-  giants: ['New York Giants', 'San Francisco Giants'], jets: ['New York Jets'],
-  eagles: ['Philadelphia Eagles'], steelers: ['Pittsburgh Steelers'],
-  '49ers': ['San Francisco 49ers'], niners: ['San Francisco 49ers'], seahawks: ['Seattle Seahawks'],
-  buccaneers: ['Tampa Bay Buccaneers'], bucs: ['Tampa Bay Buccaneers'], titans: ['Tennessee Titans'],
-  commanders: ['Washington Commanders'],
-  // NBA
-  hawks: ['Atlanta Hawks'], celtics: ['Boston Celtics'], nets: ['Brooklyn Nets'],
-  hornets: ['Charlotte Hornets'], bulls: ['Chicago Bulls'], cavaliers: ['Cleveland Cavaliers'],
-  cavs: ['Cleveland Cavaliers'], mavericks: ['Dallas Mavericks'], mavs: ['Dallas Mavericks'],
-  nuggets: ['Denver Nuggets'], pistons: ['Detroit Pistons'], warriors: ['Golden State Warriors'],
-  rockets: ['Houston Rockets'], pacers: ['Indiana Pacers'], clippers: ['Los Angeles Clippers'],
-  lakers: ['Los Angeles Lakers'], grizzlies: ['Memphis Grizzlies'], heat: ['Miami Heat'],
-  bucks: ['Milwaukee Bucks'], timberwolves: ['Minnesota Timberwolves'], wolves: ['Minnesota Timberwolves'],
-  pelicans: ['New Orleans Pelicans'], knicks: ['New York Knicks'], thunder: ['Oklahoma City Thunder'],
-  magic: ['Orlando Magic'], '76ers': ['Philadelphia 76ers'], sixers: ['Philadelphia 76ers'],
-  suns: ['Phoenix Suns'], blazers: ['Portland Trail Blazers'], kings: ['Sacramento Kings'],
-  spurs: ['San Antonio Spurs'], raptors: ['Toronto Raptors'], jazz: ['Utah Jazz'],
-  wizards: ['Washington Wizards'],
-  // MLB (only nicknames not already covered above)
-  diamondbacks: ['Arizona Diamondbacks'], dbacks: ['Arizona Diamondbacks'], braves: ['Atlanta Braves'],
-  orioles: ['Baltimore Orioles'], redsox: ['Boston Red Sox'], cubs: ['Chicago Cubs'],
-  whitesox: ['Chicago White Sox'], reds: ['Cincinnati Reds'], guardians: ['Cleveland Guardians'],
-  rockies: ['Colorado Rockies'], tigers: ['Detroit Tigers'], astros: ['Houston Astros'],
-  royals: ['Kansas City Royals'], angels: ['Los Angeles Angels'], dodgers: ['Los Angeles Dodgers'],
-  marlins: ['Miami Marlins'], brewers: ['Milwaukee Brewers'], twins: ['Minnesota Twins'],
-  mets: ['New York Mets'], yankees: ['New York Yankees'], athletics: ['Oakland Athletics'],
-  phillies: ['Philadelphia Phillies'], pirates: ['Pittsburgh Pirates'], padres: ['San Diego Padres'],
-  mariners: ['Seattle Mariners'], cardinalsmlb: ['St. Louis Cardinals'], rays: ['Tampa Bay Rays'],
-  rangers: ['Texas Rangers', 'New York Rangers'], bluejays: ['Toronto Blue Jays'], nationals: ['Washington Nationals'],
-  // NHL (only nicknames not already covered above)
-  ducks: ['Anaheim Ducks'], coyotes: ['Arizona Coyotes'], sabres: ['Buffalo Sabres'],
-  flames: ['Calgary Flames'], hurricanes: ['Carolina Hurricanes'], blackhawks: ['Chicago Blackhawks'],
-  avalanche: ['Colorado Avalanche'], bluejackets: ['Columbus Blue Jackets'], stars: ['Dallas Stars'],
-  redwings: ['Detroit Red Wings'], oilers: ['Edmonton Oilers'], panthersnhl: ['Florida Panthers'],
-  wild: ['Minnesota Wild'], canadiens: ['Montreal Canadiens'], predators: ['Nashville Predators'],
-  devils: ['New Jersey Devils'], islanders: ['New York Islanders'], senators: ['Ottawa Senators'],
-  flyers: ['Philadelphia Flyers'], penguins: ['Pittsburgh Penguins'], sharks: ['San Jose Sharks'],
-  kraken: ['Seattle Kraken'], blues: ['St. Louis Blues'], lightning: ['Tampa Bay Lightning'],
-  mapleleafs: ['Toronto Maple Leafs'], canucks: ['Vancouver Canucks'], golden_knights: ['Vegas Golden Knights'],
-  capitals: ['Washington Capitals'], jetsnhl: ['Winnipeg Jets'],
-};
-
-app.get('/api/sports/search-team', async (req, res) => {
-  const q = (req.query.q || '').trim();
-  if (!q) return res.json({ teams: [] });
-  try {
-    // Search the raw query as typed, PLUS the full name for any known nickname
-    // match, merging and deduping by team id. Every search still runs
-    // through TheSportsDB's own endpoint either way — this only ever adds
-    // additional, more specific queries alongside it, never replaces it.
-    const queries = [q];
-    const nicknameKey = q.toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (SPORTS_NICKNAME_MAP[nicknameKey]) {
-      for (const fullName of SPORTS_NICKNAME_MAP[nicknameKey]) {
-        if (!queries.some(existing => existing.toLowerCase() === fullName.toLowerCase())) queries.push(fullName);
-      }
-    }
-    const results = await Promise.all(queries.map(query =>
-      fetchJsonWithUA(`https://www.thesportsdb.com/api/v1/json/${SPORTSDB_KEY}/searchteams.php?t=${encodeURIComponent(query)}`)
-        .catch(() => ({ teams: [] }))
-    ));
-    const seen = new Set();
-    const teams = [];
-    for (const raw of results) {
-      for (const t of (raw.teams || [])) {
-        if (seen.has(t.idTeam)) continue;
-        seen.add(t.idTeam);
-        teams.push({ id: t.idTeam, name: t.strTeam, badge: t.strTeamBadge || null, sport: t.strSport || '', league: t.strLeague || '' });
-        if (teams.length >= 8) break;
-      }
-      if (teams.length >= 8) break;
-    }
-    res.json({ teams });
-  } catch (e) {
-    res.status(500).json({ error: 'Could not reach TheSportsDB — ' + e.message });
-  }
-});
-// Cache per team id for a few minutes — schedule/final-score data doesn't need to be
-// fetched on every single display poll.
-const sportsTeamCache = new Map(); // teamId -> { fetchedAt, data }
-const SPORTS_CACHE_MS = 10 * 60 * 1000;
-app.get('/api/sports/team/:id', async (req, res) => {
-  const id = req.params.id;
-  const cached = sportsTeamCache.get(id);
-  if (cached && (Date.now() - cached.fetchedAt) < SPORTS_CACHE_MS) {
-    return res.json(cached.data);
-  }
-  try {
-    const [nextRaw, lastRaw] = await Promise.all([
-      fetchJsonWithUA(`https://www.thesportsdb.com/api/v1/json/${SPORTSDB_KEY}/eventsnext.php?id=${encodeURIComponent(id)}`).catch(() => null),
-      fetchJsonWithUA(`https://www.thesportsdb.com/api/v1/json/${SPORTSDB_KEY}/eventslast.php?id=${encodeURIComponent(id)}`).catch(() => null),
-    ]);
-    // TheSportsDB is inconsistent about the wrapper key across endpoints — check
-    // both "events" and "results" defensively rather than assuming one.
-    const nextEvents = (nextRaw && (nextRaw.events || nextRaw.results)) || [];
-    const lastEvents = (lastRaw && (lastRaw.results || lastRaw.events)) || [];
-    const mapEvent = (e) => e ? ({
-      id: e.idEvent, name: e.strEvent, league: e.strLeague || '',
-      home: e.strHomeTeam, away: e.strAwayTeam,
-      homeScore: (e.intHomeScore != null) ? Number(e.intHomeScore) : null,
-      awayScore: (e.intAwayScore != null) ? Number(e.intAwayScore) : null,
-      date: e.dateEvent || '', time: e.strTime || '', venue: e.strVenue || '',
-    }) : null;
-    const payload = {
-      nextEvent: mapEvent(nextEvents[0]),
-      lastEvent: mapEvent(lastEvents[0]),
-    };
-    sportsTeamCache.set(id, { fetchedAt: Date.now(), data: payload });
-    res.json(payload);
-  } catch (e) {
-    if (cached) return res.json({ ...cached.data, stale: true });
-    res.status(500).json({ error: 'Could not reach TheSportsDB — ' + e.message });
-  }
-});
+// This code lives in src/sports.js. It runs here, at the same place in the file as before.
+require('./src/sports.js')({ app, fetchJsonWithUA });
 
 // ── METAR/TAF proxy (NOAA Aviation Weather Center, free, no key) ─────────────
-// https://aviationweather.gov/api/data — public, keyless, but asks for a custom
-// User-Agent and reasonable rate limiting, both already satisfied by
-// fetchJsonWithUA() and the per-station cache below.
-const metarTafCache = new Map(); // icao -> { fetchedAt, data }
-const METAR_TAF_CACHE_MS = 10 * 60 * 1000;
-
-// Standard US flight-category rule, derived from ceiling (lowest broken/overcast
-// layer, or vertical visibility) and surface visibility — not returned directly by
-// the API, so computed here the same way pilots read a METAR at a glance.
-function flightCategory(visibSM, ceilingFt) {
-  if (visibSM == null && ceilingFt == null) return null;
-  const vis = visibSM == null ? Infinity : visibSM;
-  const ceil = ceilingFt == null ? Infinity : ceilingFt;
-  if (vis < 1 || ceil < 500) return 'LIFR';
-  if (vis < 3 || ceil < 1000) return 'IFR';
-  if (vis <= 5 || ceil <= 3000) return 'MVFR';
-  return 'VFR';
-}
-// The API returns visibility as either a plain number (miles) or a string like
-// "10+" (at-or-above threshold) — normalize both to a number.
-function parseVisib(v) {
-  if (v == null) return null;
-  if (typeof v === 'number') return v;
-  const n = parseFloat(String(v).replace('+', ''));
-  return Number.isFinite(n) ? n : null;
-}
-function lowestCeiling(clouds) {
-  if (!Array.isArray(clouds)) return null;
-  const layers = clouds.filter(c => c.cover === 'BKN' || c.cover === 'OVC' || c.cover === 'VV').map(c => c.base).filter(b => b != null);
-  return layers.length ? Math.min(...layers) : null;
-}
-function skyConditionText(clouds) {
-  if (!Array.isArray(clouds) || !clouds.length) return 'Sky data unavailable';
-  if (clouds.length === 1 && (clouds[0].cover === 'CLR' || clouds[0].cover === 'SKC')) return 'Clear';
-  const names = { FEW: 'Few', SCT: 'Scattered', BKN: 'Broken', OVC: 'Overcast', VV: 'Vertical Visibility' };
-  return clouds
-    .filter(c => c.cover !== 'CLR' && c.cover !== 'SKC')
-    .map(c => `${names[c.cover] || c.cover}${c.base != null ? ' ' + c.base.toLocaleString() + 'ft' : ''}`)
-    .join(', ') || 'Clear';
-}
-app.get('/api/metar-taf', async (req, res) => {
-  const icao = String(req.query.icao || '').trim().toUpperCase();
-  if (!/^[A-Z0-9]{3,4}$/.test(icao)) return res.status(400).json({ error: 'Enter a valid 4-letter ICAO airport code (e.g. KJFK).' });
-
-  const cached = metarTafCache.get(icao);
-  if (cached && (Date.now() - cached.fetchedAt) < METAR_TAF_CACHE_MS) {
-    return res.json(cached.data);
-  }
-  try {
-    const [metarRaw, tafRaw] = await Promise.all([
-      fetchJsonWithUA(`https://aviationweather.gov/api/data/metar?ids=${encodeURIComponent(icao)}&format=json`).catch(() => []),
-      fetchJsonWithUA(`https://aviationweather.gov/api/data/taf?ids=${encodeURIComponent(icao)}&format=json`).catch(() => []),
-    ]);
-    const m = Array.isArray(metarRaw) ? metarRaw[0] : null;
-    const t = Array.isArray(tafRaw) ? tafRaw[0] : null;
-    if (!m && !t) {
-      return res.status(404).json({ error: `No data found for "${icao}" — check the ICAO code (it's usually 4 letters, e.g. KJFK, not the 3-letter airport code like JFK).` });
-    }
-
-    let metar = null;
-    if (m) {
-      const visib = parseVisib(m.visib);
-      const ceiling = lowestCeiling(m.clouds);
-      metar = {
-        stationId: m.icaoId, name: m.name || icao,
-        obsTime: m.obsTime ? m.obsTime * 1000 : null, // -> ms epoch for the client
-        tempC: m.temp ?? null, dewpC: m.dewp ?? null,
-        windDir: m.wdir ?? null, windSpeedKt: m.wspd ?? null, windGustKt: m.wgst ?? null,
-        visibSM: visib,
-        altimInHg: (m.altim != null) ? Math.round((m.altim / 33.8639) * 100) / 100 : null, // API gives hPa
-        wx: m.wxString || null,
-        sky: skyConditionText(m.clouds),
-        flightCategory: flightCategory(visib, ceiling),
-        raw: m.rawOb || null,
-      };
-    }
-    let taf = null;
-    if (t) {
-      // issueTime is a "YYYY-MM-DD HH:MM:SS" string with no timezone marker, but is
-      // always UTC — must explicitly mark it as such or Date() would (wrongly)
-      // interpret it as the server's local time.
-      const issuedMs = t.issueTime ? new Date(String(t.issueTime).replace(' ', 'T') + 'Z').getTime() : null;
-      taf = {
-        validFrom: t.validTimeFrom ? t.validTimeFrom * 1000 : null,
-        validTo: t.validTimeTo ? t.validTimeTo * 1000 : null,
-        issued: Number.isFinite(issuedMs) ? issuedMs : null,
-        raw: t.rawTAF || null,
-      };
-    }
-    const payload = { icao, name: (m && m.name) || (t && t.name) || icao, metar, taf };
-    metarTafCache.set(icao, { fetchedAt: Date.now(), data: payload });
-    res.json(payload);
-  } catch (e) {
-    if (cached) return res.json({ ...cached.data, stale: true });
-    res.status(500).json({ error: 'Could not reach the Aviation Weather Center — ' + e.message });
-  }
-});
+// This code lives in src/metar.js. It runs here, at the same place in the file as before.
+require('./src/metar.js')({ app, fetchJsonWithUA });
 
 // ── iCal feeds API ────────────────────────────────────────────────────────────
+// This code lives in src/ical-feeds.js. It runs here, at the same place in the file as before.
+require('./src/ical-feeds.js')({ app, db, markHostEditing, broadcastUpdate, isGoogleFeedUrl: (...a) => isGoogleFeedUrl(...a), googleFeedUrlValid: (...a) => googleFeedUrlValid(...a), isIcloudFeedUrl: (...a) => isIcloudFeedUrl(...a), icloudFeedUrlValid: (...a) => icloudFeedUrlValid(...a), syncFeed: (...a) => syncFeed(...a) });
 
-// GET /api/feeds
-app.get('/api/feeds', (req, res) => {
-  const feeds = db.prepare(`SELECT * FROM ical_feeds ORDER BY id ASC`).all();
-  const masterRow = db.prepare(`SELECT value FROM settings WHERE key = 'feed_default_opacity'`).get();
-  let master = masterRow ? parseInt(masterRow.value, 10) : 100;
-  if (Number.isNaN(master)) master = 100;
-  // effective_opacity: what's ACTUALLY applied right now (the master default
-  // if this feed hasn't opted out, its own color_opacity otherwise) — kept
-  // alongside the raw color_opacity/use_global_opacity fields rather than
-  // replacing them, since the Calendar Feeds edit UI needs the RAW state
-  // (is the checkbox on, what's this feed's own stored slider value) while
-  // the per-widget-override list (see populateFeedOpacityOverrideList() in
-  // app.html) needs the resolved one, as the accurate starting point for
-  // "here's what this feed currently looks like before you override it."
-  res.json(feeds.map(f => ({ ...f, effective_opacity: f.use_global_opacity ? master : f.color_opacity })));
-});
-
-// POST /api/feeds
-app.post('/api/feeds', async (req, res) => {
-  const { name, url, color } = req.body;
-  if (!name || !url) return res.status(400).json({ error: 'name and url are required' });
-  try {
-    const result = db.prepare(
-      `INSERT INTO ical_feeds (name, url, color) VALUES (?, ?, ?)`
-    ).run(name, url, color || '#a78bfa');
-    const feed = db.prepare(`SELECT * FROM ical_feeds WHERE id = ?`).get(result.lastInsertRowid);
-    broadcastUpdate('feeds');
-    // Sync immediately, but don't let a sync failure undo adding the feed —
-    // the URL might just be transiently unreachable, and the person can retry
-    // the sync later without having to re-add it from scratch. Instead, report
-    // the sync outcome honestly so a failure is visible rather than silently
-    // looking like a successful "0 events" sync.
-    try {
-      await syncFeed(feed);
-      broadcastUpdate('events');
-      res.status(201).json({ ...feed, sync_warning: null });
-    } catch (syncErr) {
-      res.status(201).json({ ...feed, sync_warning: syncErr.message });
-    }
-  } catch (e) {
-    if (e.message.includes('UNIQUE')) return res.status(409).json({ error: 'Feed URL already exists' });
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// PUT /api/feeds/:id
-app.put('/api/feeds/:id', async (req, res) => {
-  const { name, url, color, color_timed, show_location, color_opacity, use_global_opacity, enabled } = req.body;
-  const feed = db.prepare(`SELECT * FROM ical_feeds WHERE id = ?`).get(req.params.id);
-  if (!feed) return res.status(404).json({ error: 'Feed not found' });
-
-  const newUrl = (url !== undefined && url !== null && url.trim() !== '') ? url.trim() : feed.url;
-  const urlChanged = newUrl !== feed.url;
-
-  // Clamp defensively — this is a percentage a slider writes, but nothing
-  // stops a malformed/out-of-range value arriving some other way, and an
-  // opacity outside 0-100 would produce a nonsensical (or invalid) CSS
-  // color wherever feedColorWithOpacity() applies it downstream.
-  let newOpacity = feed.color_opacity;
-  if (color_opacity !== undefined && color_opacity !== null) {
-    const n = parseInt(color_opacity, 10);
-    if (!Number.isNaN(n)) newOpacity = Math.max(0, Math.min(100, n));
-  }
-
-  try {
-    db.prepare(`UPDATE ical_feeds SET name=?, url=?, color=?, color_timed=?, show_location=?, color_opacity=?, use_global_opacity=?, enabled=? WHERE id=?`)
-      .run(
-        name ?? feed.name,
-        newUrl,
-        color ?? feed.color,
-        color_timed !== undefined ? (color_timed ? 1 : 0) : feed.color_timed,
-        show_location !== undefined ? (show_location ? 1 : 0) : feed.show_location,
-        newOpacity,
-        use_global_opacity !== undefined ? (use_global_opacity ? 1 : 0) : feed.use_global_opacity,
-        enabled !== undefined ? enabled : feed.enabled,
-        req.params.id
-      );
-  } catch (e) {
-    if (e.message.includes('UNIQUE')) return res.status(409).json({ error: 'Another calendar already uses that URL' });
-    return res.status(500).json({ error: e.message });
-  }
-
-  const updated = db.prepare(`SELECT * FROM ical_feeds WHERE id = ?`).get(req.params.id);
-
-  // If the URL changed, the existing events belong to the old calendar — clear them
-  // and re-sync from the new URL. Report a sync warning rather than failing the whole
-  // edit if the new URL can't be fetched (consistent with how adding a feed behaves).
-  let sync_warning = null;
-  if (urlChanged) {
-    db.prepare(`DELETE FROM ical_events WHERE feed_id = ?`).run(req.params.id);
-    try {
-      await syncFeed(updated);
-    } catch (syncErr) {
-      sync_warning = syncErr.message;
-    }
-  }
-
-  broadcastUpdate('feeds');
-  broadcastUpdate('events');
-  // Same reasoning as the master-opacity fix in PUT /api/settings above: this
-  // broadcastUpdate() only reaches SSE clients on THIS device. A feed edit
-  // (opacity, color, "use global default," etc.) previously didn't mark the
-  // host as actively being edited, so a slave display picked it up on its
-  // normal 15s poll rather than the 1.5s fast one layout saves already get.
-  markHostEditing();
-  res.json({ ...db.prepare(`SELECT * FROM ical_feeds WHERE id = ?`).get(req.params.id), sync_warning });
-});
-
-// DELETE /api/feeds/:id
-app.delete('/api/feeds/:id', (req, res) => {
-  db.prepare(`DELETE FROM ical_events WHERE feed_id = ?`).run(req.params.id);
-  const result = db.prepare(`DELETE FROM ical_feeds WHERE id = ?`).run(req.params.id);
-  if (result.changes === 0) return res.status(404).json({ error: 'Feed not found' });
-  broadcastUpdate('feeds');
-  broadcastUpdate('events');
-  res.json({ ok: true });
-});
-
-// POST /api/feeds/:id/sync — manual sync trigger
-app.post('/api/feeds/:id/sync', async (req, res) => {
-  const feed = db.prepare(`SELECT * FROM ical_feeds WHERE id = ?`).get(req.params.id);
-  if (!feed) return res.status(404).json({ error: 'Feed not found' });
-  try {
-    const count = await syncFeed(feed);
-    broadcastUpdate('events');
-    res.json({ ok: true, events_imported: count });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ── iCal parser ───────────────────────────────────────────────────────────────
-
-// Real, confirmed bug (contact-form inquiry #6, 2026-09-12): a household on
-// a network with broken/partial outbound IPv6 (common — many home ISPs/
-// routers are like this) got "Host Unreachable" trying to sync a calendar
-// feed, worked around it by editing the feed URL into SQLite directly. Two
-// gaps, same shape as fixes already applied elsewhere in this file:
-//  - No `family: 4`. Without it, Node can resolve an IPv6 address for the
-//    calendar host and fail outright (ENETUNREACH/EHOSTUNREACH) on a broken
-//    IPv6 path — unlike a browser, Node doesn't "happy eyeballs" fall back
-//    to IPv4 on its own. Already fixed for Gmail SMTP in
-//    buildMailTransporter(); never applied here, despite this being the
-//    single most-used outbound call in the app.
-//  - No request timeout. A connection that stalls (not outright fails) hung
-//    forever with no error — the same bug class already fixed in
-//    httpGetJSON()/getWeather() this session, missed here.
-// PIAZZA_FETCH_TIMEOUT_MS overrides the default (tests only — lets a test
-// exercise a genuine timeout in milliseconds instead of waiting out the real
-// 20s default; unset in prod).
-async function fetchUrl(urlStr, timeoutMs = Number(process.env.PIAZZA_FETCH_TIMEOUT_MS) || 20000) {
-  // Redirects and gzip/deflate/br decompression are both handled by fetch()
-  // itself now — no manual redirect-following or zlib step needed the way
-  // the old http.get()-based version required (iCloud in particular always
-  // gzips its .ics feeds).
-  const res = await fetchWithTimeout(urlStr, {
-    headers: {
-      'User-Agent': 'PiazzaHQ/1.0',
-      // Some calendar hosts (e.g. iCloud) serve different/empty content to
-      // requests that don't look like they're asking for calendar data —
-      // an explicit Accept header makes this request look more like what a
-      // real calendar client sends.
-      'Accept': 'text/calendar, text/plain, */*',
-    },
-    timeoutMs,
-    timeoutMessage: `Timed out after ${timeoutMs}ms fetching ${urlStr}`,
-  });
-  let body;
-  try { body = await res.text(); }
-  catch (e) { throw new Error(`Failed to read calendar response: ${e.message}`); }
-  // Treat non-2xx as a real failure instead of silently parsing whatever
-  // error page/body came back as "0 events found".
-  if (!res.ok) {
-    throw new Error(`Calendar server returned HTTP ${res.status}${body ? ': ' + body.slice(0, 200) : ''}`);
-  }
-  return body;
-}
-
-function parseICS(icsText, feedId, feedColor, timeZone) {
-  const events = [];
-  // Resolve the timezone once for the whole feed (used to localize UTC times).
-  const tz = timeZone || getLocalTimezone();
-  // Unfold lines (RFC 5545: lines ending in \r\n + space/tab are continuations)
-  const unfolded = icsText.replace(/\r\n[ \t]/g, '').replace(/\r\n/g, '\n');
-  const lines = unfolded.split('\n');
-
-  let inEvent = false, current = {};
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (line === 'BEGIN:VEVENT') { inEvent = true; current = { exdates: [] }; continue; }
-    if (line === 'END:VEVENT') {
-      inEvent = false;
-      // Keep any VEVENT that has the essentials. Overrides (with a recurrenceId)
-      // and cancellations are sorted out in the reconciliation step below.
-      // Skip events this device pushed OUT itself (see the push section): if
-      // the household also subscribes to the same iCloud/Google calendar as a
-      // feed, its own pushed events would otherwise come back in as duplicate
-      // 'ical:' rows alongside the original 'local:' ones. Both UID forms are
-      // self-identifying — piazzahq-local-<id>@piazzahq.local for CalDAV, and
-      // phqlocal<id>@google.com for events created with our deterministic id
-      // through Google's API.
-      if (current.uid && current.title && current.date
-          && !/^piazzahq-local-\d+@piazzahq\.local$/.test(current.uid)
-          && !/^phqlocal\d+@google\.com$/i.test(current.uid)) {
-        events.push(current);
-      }
-      continue;
-    }
-    if (!inEvent) continue;
-
-    const colon = line.indexOf(':');
-    if (colon === -1) continue;
-    const key   = line.slice(0, colon).toUpperCase();
-    const value = line.slice(colon + 1).trim();
-
-    // UID
-    if (key === 'UID') current.uid = value;
-
-    // Summary (title) — may have params like SUMMARY;LANGUAGE=en:Title
-    if (key.startsWith('SUMMARY')) current.title = decodeICSText(value);
-
-    // Description
-    if (key.startsWith('DESCRIPTION')) current.notes = decodeICSText(value).slice(0, 500);
-
-    // Location (venue / address) — may carry params like LOCATION;LANGUAGE=en:...
-    if (key.startsWith('LOCATION')) current.location = decodeICSText(value).slice(0, 300);
-
-    // DTSTART — handles date-only (VALUE=DATE) and datetime
-    if (key.startsWith('DTSTART')) {
-      const parsed = parseICSDate(key, value, tz);
-      if (parsed) { current.date = parsed.date; current.start_time = parsed.time; }
-    }
-    if (key.startsWith('DTEND')) {
-      const parsed = parseICSDate(key, value, tz);
-      if (parsed) {
-        current.end_time = parsed.time;
-        // RFC 5545: for all-day (VALUE=DATE) events, DTEND is exclusive —
-        // a 3-day event Mon-Wed has DTEND of Thursday. Subtract a day so our
-        // stored end_date reflects the actual last day the event occurs.
-        if (!parsed.time) {
-          const d = new Date(parsed.date + 'T00:00:00');
-          d.setDate(d.getDate() - 1);
-          current.end_date = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-        } else {
-          current.end_date = parsed.date;
-        }
-      }
-    }
-
-    // RRULE — recurrence pattern, e.g. "FREQ=YEARLY" or "FREQ=WEEKLY;BYDAY=MO,WE,FR"
-    if (key === 'RRULE') current.rrule = value;
-
-    // RECURRENCE-ID — marks this VEVENT as an override of a SINGLE occurrence of a
-    // recurring series (same UID). Its value is the ORIGINAL date/time of the
-    // occurrence being replaced. Captured here; reconciled after parsing so the
-    // original instance is suppressed and this modified one shown in its place.
-    if (key.startsWith('RECURRENCE-ID')) {
-      const parsed = parseICSDate(key, value, tz);
-      if (parsed) current.recurrenceId = parsed.date;
-    }
-
-    // STATUS — CANCELLED means this (occurrence or event) should not be shown.
-    if (key === 'STATUS') current.status = value.toUpperCase();
-
-    // EXDATE — one or more cancelled occurrence dates. Can appear as multiple EXDATE
-    // lines, and/or as a comma-separated list within a single line.
-    if (key.startsWith('EXDATE')) {
-      for (const part of value.split(',')) {
-        const parsed = parseICSDate(key, part.trim(), tz);
-        if (parsed) current.exdates.push(parsed.date);
-      }
-    }
-  }
-  return reconcileRecurrenceOverrides(events);
-}
-
-// Reconciles per-occurrence overrides (RECURRENCE-ID) against their master series.
-// Calendar providers express "this one instance moved/changed/was cancelled" as a
-// SEPARATE VEVENT sharing the series UID, with a RECURRENCE-ID naming the original
-// occurrence. Without handling these you get duplicates (the original instance AND
-// the override) or ghosts (a cancelled instance still showing).
-//
-// For each override we:
-//   • add the original occurrence date to the master's EXDATEs, so expansion skips it
-//   • if the override is CANCELLED, drop it entirely (occurrence simply removed)
-//   • otherwise keep it as a standalone one-off at its new date/time
-function reconcileRecurrenceOverrides(events) {
-  // Index masters (recurring, no recurrenceId) by UID. A UID could in theory have
-  // a non-recurring master too; we only need the recurring ones for suppression.
-  const mastersByUid = new Map();
-  for (const e of events) {
-    if (!e.recurrenceId && e.rrule) mastersByUid.set(e.uid, e);
-  }
-
-  const result = [];
-  for (const e of events) {
-    // Drop any event/occurrence explicitly cancelled.
-    if (e.status === 'CANCELLED') {
-      // If it's a cancelled override, still suppress the original instance below.
-      if (e.recurrenceId) {
-        const master = mastersByUid.get(e.uid);
-        if (master) master.exdates.push(e.recurrenceId);
-      }
-      continue;
-    }
-
-    if (e.recurrenceId) {
-      // A modified single occurrence: suppress the original in the master series,
-      // then keep this override as a standalone event at its new slot.
-      const master = mastersByUid.get(e.uid);
-      if (master) master.exdates.push(e.recurrenceId);
-      // Strip recurrence fields so it's treated as a one-off (it has no RRULE anyway).
-      const oneOff = { ...e };
-      delete oneOff.rrule;
-      result.push(oneOff);
-      continue;
-    }
-
-    result.push(e);
-  }
-  return result;
-}
-
-// The display's configured IANA timezone (e.g. "America/Chicago"). Calendar times
-// marked UTC (trailing Z) are converted into this zone so they land on the right
-// day and clock time. Shares the same 'timezone_override' setting as appNow()
-// (Settings tab -> Timezone) rather than a separate key, so one control governs
-// both "what day is it" logic and calendar-feed UTC conversion. Falls back to
-// the Pi's system zone, then Chicago, if the override is unset.
-function getLocalTimezone() {
-  const override = getTimezoneOverride();
-  if (override) return override;
-  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Chicago'; }
-  catch { return 'America/Chicago'; }
-}
-
-// Converts a UTC instant to {date:'YYYY-MM-DD', time:'HH:MM'} in the given IANA zone.
-function utcToLocalParts(utcDate, timeZone) {
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false,
-  });
-  const parts = {};
-  for (const p of fmt.formatToParts(utcDate)) parts[p.type] = p.value;
-  let hour = parts.hour === '24' ? '00' : parts.hour; // some engines emit 24 for midnight
-  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${hour}:${parts.minute}` };
-}
-
-function parseICSDate(key, value, timeZone) {
-  // All-day: DTSTART;VALUE=DATE:20240315 — no time, no zone conversion (it's a
-  // floating calendar date by definition).
-  if (key.includes('VALUE=DATE') || /^\d{8}$/.test(value)) {
-    const d = value.replace(/\D/g, '').slice(0, 8);
-    return { date: `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`, time: null };
-  }
-  // DateTime: 20240315T093000Z (UTC) or 20240315T093000 (local/floating)
-  const m = value.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?(Z)?$/);
-  if (m) {
-    const [, yy, mo, dd, hh, mi, , z] = m;
-    // UTC (trailing Z): convert to the configured local zone so the day/time are
-    // correct. Without this, e.g. a 03:00Z meeting showed a day late at 3am.
-    if (z && timeZone) {
-      const utc = new Date(Date.UTC(+yy, +mo - 1, +dd, +hh, +mi, 0));
-      return utcToLocalParts(utc, timeZone);
-    }
-    // No Z: a "floating"/local time — take it as written (this is what the spec
-    // intends for local-time values, and matches how most personal events read).
-    return { date: `${yy}-${mo}-${dd}`, time: `${hh}:${mi}` };
-  }
-  return null;
-}
-
-function decodeICSText(s) {
-  return s.replace(/\\n/g, ' ').replace(/\\,/g, ',').replace(/\\;/g, ';').replace(/\\\\/g, '\\');
-}
-
-// ── Recurring event expansion (RRULE) ─────────────────────────────────────────
-// Supported: FREQ (DAILY/WEEKLY/MONTHLY/YEARLY), INTERVAL, COUNT, UNTIL,
-// BYDAY (plain like "MO,WE,FR" and ordinal like "2MO"/"-1FR"), BYMONTH,
-// BYMONTHDAY, BYSETPOS (e.g. "BYDAY=MO;BYSETPOS=3" = 3rd Monday — the form
-// Outlook/Exchange and many corporate calendars emit), and EXDATE exclusions.
-//
-// Known limitations (rare in personal/family calendars, but worth knowing):
-//   • BYWEEKNO / BYYEARDAY / BYHOUR / sub-daily FREQ (HOURLY/MINUTELY/SECONDLY)
-//     aren't expanded — these essentially never appear on a wall calendar.
-//   • INTERVAL for weekly is approximated by week parity from the start date
-//     (no explicit WKST handling).
-//   • VTIMEZONE blocks with named TZID offsets aren't parsed; UTC ("Z") times ARE
-//     converted to the configured local zone, and floating local times are taken
-//     as written. A TZID-with-custom-offset time is treated as floating (shown as
-//     written), which is correct for same-zone calendars and off only if a feed
-//     specifies a zone different from the display's.
-//
-// Handled: per-occurrence overrides (RECURRENCE-ID — moved/edited/cancelled single
-// instances) and STATUS:CANCELLED, reconciled against their master series.
-//
-// Occurrences are bounded to a window around "now" (rather than expanding a
-// "forever" yearly birthday out to infinity) so storage and sync time stay bounded.
-const RECURRENCE_WINDOW_PAST_DAYS   = 366;       // ~1 year back, covers "this already happened" lookups
-const RECURRENCE_WINDOW_FUTURE_DAYS = 366 * 2;    // ~2 years ahead, plenty for a wall calendar
-
-const WEEKDAY_CODES = ['SU','MO','TU','WE','TH','FR','SA'];
-
-function parseRRule(rruleStr) {
-  const parts = {};
-  for (const pair of rruleStr.split(';')) {
-    const [k, v] = pair.split('=');
-    if (k && v !== undefined) parts[k.toUpperCase()] = v;
-  }
-  return {
-    freq: parts.FREQ,
-    interval: parseInt(parts.INTERVAL) || 1,
-    count: parts.COUNT ? parseInt(parts.COUNT) : null,
-    until: parts.UNTIL ? parseICSDate('UNTIL', parts.UNTIL, getLocalTimezone())?.date : null,
-    byday: parts.BYDAY ? parts.BYDAY.split(',') : null,       // e.g. ["MO","WE"] or ["1MO","-1FR"]
-    bymonthday: parts.BYMONTHDAY ? parts.BYMONTHDAY.split(',').map(Number) : null,
-    bymonth: parts.BYMONTH ? parts.BYMONTH.split(',').map(Number) : null,  // e.g. [11] for November — restricts which months occurrences land in
-    bysetpos: parts.BYSETPOS ? parts.BYSETPOS.split(',').map(Number) : null,  // e.g. [3] = the 3rd match within each period; [-1] = the last. Outlook/Exchange emit "BYDAY=MO;BYSETPOS=3" for "3rd Monday".
-  };
-}
-
-function addDays(dateStr, n) {
-  const d = new Date(dateStr + 'T00:00:00');
-  d.setDate(d.getDate() + n);
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-}
-function addMonths(dateStr, n) {
-  const [y, m, day] = dateStr.split('-').map(Number);
-  const totalMonths = (y * 12 + (m - 1)) + n;
-  const targetYear  = Math.floor(totalMonths / 12);
-  const targetMonth = totalMonths % 12; // 0-indexed
-  const lastDayOfTargetMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
-  const targetDay = Math.min(day, lastDayOfTargetMonth);
-  return `${targetYear}-${String(targetMonth+1).padStart(2,'0')}-${String(targetDay).padStart(2,'0')}`;
-}
-function addYears(dateStr, n) {
-  const [y, m, day] = dateStr.split('-').map(Number);
-  const targetYear = y + n;
-  const lastDayOfTargetMonth = new Date(targetYear, m, 0).getDate(); // m is already 1-indexed here, so month=m gives day-0 of month m = last day of month m
-  const targetDay = Math.min(day, lastDayOfTargetMonth);
-  return `${targetYear}-${String(m).padStart(2,'0')}-${String(targetDay).padStart(2,'0')}`;
-}
-
-// Expands a single recurring VEVENT into a list of { date, end_date } occurrences
-// within the sync window. `base` is the parsed event (has .date, .end_date, .rrule, .exdates).
-function expandRecurrence(base) {
-  const rule = parseRRule(base.rrule);
-  if (!rule.freq) return [{ date: base.date, end_date: base.end_date }]; // malformed RRULE — treat as one-off
-
-  const today = new Date();
-  const windowStart = addDays(`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`, -RECURRENCE_WINDOW_PAST_DAYS);
-  const windowEnd   = addDays(`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`, RECURRENCE_WINDOW_FUTURE_DAYS);
-  const hardStop    = rule.until && rule.until < windowEnd ? rule.until : windowEnd;
-  const exdateSet   = new Set(base.exdates || []);
-
-  // Span length (in days) stays constant across all occurrences for multi-day events
-  const spanDays = base.end_date
-    ? Math.round((new Date(base.end_date+'T00:00:00') - new Date(base.date+'T00:00:00')) / 86400000)
-    : 0;
-
-  const occurrences = [];
-  let count = 0;
-  const MAX_ITER = 3000; // safety valve against pathological/infinite-loop RRULEs
-  let iter = 0;
-
-  if (rule.freq === 'YEARLY' && !rule.byday) {
-    let i = 0;
-    while (iter++ < MAX_ITER) {
-      const d = addYears(base.date, i * rule.interval); // always offset from the ORIGINAL date, not the previous occurrence — avoids clamp-drift (e.g. Feb 29 -> Feb 28 sticking permanently)
-      if (d > hardStop) break;
-      if (d >= windowStart && !exdateSet.has(d)) {
-        occurrences.push({ date: d, end_date: spanDays ? addDays(d, spanDays) : null });
-        count++;
-      }
-      if (rule.count && count >= rule.count) break;
-      i++;
-    }
-  } else if (rule.freq === 'MONTHLY' && !rule.byday) {
-    let i = 0;
-    while (iter++ < MAX_ITER) {
-      const d = addMonths(base.date, i * rule.interval); // same fix as above, for monthly (e.g. Jan 31 -> Feb 28 -> back to Mar 31, not stuck at 28)
-      if (d > hardStop) break;
-      if (d >= windowStart && !exdateSet.has(d)) {
-        occurrences.push({ date: d, end_date: spanDays ? addDays(d, spanDays) : null });
-        count++;
-      }
-      if (rule.count && count >= rule.count) break;
-      i++;
-    }
-  } else if (rule.freq === 'WEEKLY' || (rule.freq === 'MONTHLY' && rule.byday) || (rule.freq === 'YEARLY' && rule.byday)) {
-    // BYDAY-based patterns ("every Mon/Wed/Fri", "2nd Tuesday of the month", etc.)
-    // Walk day-by-day through the window and test each candidate date against the rule —
-    // simpler and more robust than computing offsets directly, at the cost of more iterations.
-    // A WEEKLY rule with NO BYDAY (common from iCloud/Apple for simple weekly events)
-    // implies "the same weekday as DTSTART". Without this, targetWeekdays was empty and
-    // NOTHING matched — silently dropping the entire series.
-    let effectiveByday = rule.byday;
-    if (!effectiveByday && rule.freq === 'WEEKLY') {
-      effectiveByday = [WEEKDAY_CODES[new Date(base.date + 'T00:00:00').getDay()]];
-    }
-    const targetWeekdays = (effectiveByday || []).map(code => {
-      const m = code.match(/^(-?\d+)?(SU|MO|TU|WE|TH|FR|SA)$/);
-      return m ? { ord: m[1] ? parseInt(m[1]) : null, day: WEEKDAY_CODES.indexOf(m[2]) } : null;
-    }).filter(Boolean);
-
-    let d = base.date < windowStart ? windowStart : base.date;
-    const scanEnd = hardStop < windowEnd ? hardStop : windowEnd;
-
-    // BYSETPOS (e.g. "BYDAY=MO;BYSETPOS=3" = 3rd Monday) selects the Nth matching
-    // day within each period rather than every match. We collect the raw weekday
-    // matches first, then — if BYSETPOS is set — keep only the chosen position(s)
-    // within each month. This is the format Outlook/Exchange use, and without it
-    // "3rd Monday" was expanding to EVERY Monday.
-    const useSetPos = rule.bysetpos && (rule.freq === 'MONTHLY' || rule.freq === 'YEARLY');
-    const candidatesByPeriod = {}; // 'YYYY-MM' -> [dateStr, ...] in chronological order
-
-    while (d <= scanEnd && iter++ < MAX_ITER * 5) {
-      const dd = new Date(d + 'T00:00:00');
-      const weekday = dd.getDay();
-
-      // BYMONTH restriction (e.g. Thanksgiving = FREQ=YEARLY;BYMONTH=11;BYDAY=4TH):
-      // only months in the list are eligible. Without this, "4th Thursday" matched
-      // in every month, producing ~12x too many (wrong) occurrences.
-      const monthOk = !rule.bymonth || rule.bymonth.includes(dd.getMonth() + 1);
-
-      const matchesDay = monthOk && targetWeekdays.some(t => {
-        if (t.day !== weekday) return false;
-        if (t.ord === null) return true; // no ordinal = every occurrence of this weekday
-        // Ordinal (e.g. "2TU" = 2nd Tuesday, "-1FR" = last Friday of the month) only
-        // applies for MONTHLY/YEARLY; figure out which occurrence-of-the-month this is.
-        const dayOfMonth = dd.getDate();
-        const occurrenceInMonth = Math.ceil(dayOfMonth / 7); // 1st, 2nd, 3rd... occurrence of this weekday in the month
-        if (t.ord > 0) return occurrenceInMonth === t.ord;
-        // Negative ordinal: count from the end of the month instead
-        const lastDayOfMonth = new Date(dd.getFullYear(), dd.getMonth() + 1, 0).getDate();
-        const occurrencesRemainingInMonth = Math.ceil((lastDayOfMonth - dayOfMonth + 1) / 7);
-        return occurrencesRemainingInMonth === Math.abs(t.ord);
-      });
-
-      // INTERVAL for WEEKLY is approximated by week-count parity from the start date;
-      // good enough for the "every other week" case without full WKST handling.
-      // Real bug found here: subtracting two LOCAL-time Date objects (`dd` and a
-      // fresh `new Date(base.date+'T00:00:00')`) loses or gains an hour across any
-      // DST transition the span crosses, so the millisecond difference isn't a
-      // clean multiple of a day — e.g. Jan 5 to Mar 9, 2026 (crossing the Mar 8
-      // spring-forward) comes out to 62.958 days instead of exactly 63, and
-      // Math.floor() of that turns an ODD week into an even one, matching a week
-      // an every-2-weeks rule should have skipped. Confirmed live: an
-      // INTERVAL=2;BYDAY=MO rule starting 2026-01-05 produced an extra occurrence
-      // on 2026-03-09, one week early. Fixed the same way this file's own
-      // isoWeekStr()/getKidStreak() already do date-only math elsewhere: build
-      // both endpoints with Date.UTC() from their calendar Y/M/D instead of
-      // parsing a local-time string — UTC has no DST, so the day count is exact
-      // regardless of what the span crosses.
-      const [baseY, baseM, baseD] = base.date.split('-').map(Number);
-      const weeksSinceStart = Math.floor((Date.UTC(dd.getFullYear(), dd.getMonth(), dd.getDate()) - Date.UTC(baseY, baseM - 1, baseD)) / (7*86400000));
-      const intervalOk = rule.freq !== 'WEEKLY' || rule.interval <= 1 || (weeksSinceStart % rule.interval === 0);
-
-      if (matchesDay && intervalOk && d >= base.date) {
-        if (useSetPos) {
-          // Defer selection: bucket by month, choose the Nth after scanning.
-          const periodKey = `${dd.getFullYear()}-${dd.getMonth()}`;
-          (candidatesByPeriod[periodKey] ||= []).push(d);
-        } else if (d >= windowStart && !exdateSet.has(d)) {
-          occurrences.push({ date: d, end_date: spanDays ? addDays(d, spanDays) : null });
-          count++;
-          if (rule.count && count >= rule.count) break;
-        }
-      }
-      d = addDays(d, 1);
-    }
-
-    // Apply BYSETPOS: from each month's ordered candidate list, keep only the
-    // positions named (1-based; negatives count from the end, so -1 = last).
-    if (useSetPos) {
-      const periods = Object.keys(candidatesByPeriod).sort((a, b) => {
-        const [ay, am] = a.split('-').map(Number), [by, bm] = b.split('-').map(Number);
-        return ay !== by ? ay - by : am - bm;
-      });
-      for (const key of periods) {
-        const list = candidatesByPeriod[key];
-        // Skip a month whose end falls past the scan window: its candidate list is
-        // incomplete, so a negative BYSETPOS (-1 = "last") would wrongly pick a
-        // mid-month day. Only apply BYSETPOS to fully-scanned months.
-        const [py, pm] = key.split('-').map(Number); // pm is 0-indexed month
-        const lastDayOfPeriod = `${py}-${String(pm+1).padStart(2,'0')}-${String(new Date(py, pm+1, 0).getDate()).padStart(2,'0')}`;
-        if (lastDayOfPeriod > scanEnd) continue;
-        for (const posRaw of rule.bysetpos) {
-          const idx = posRaw > 0 ? posRaw - 1 : list.length + posRaw; // -1 => last
-          const chosen = list[idx];
-          if (chosen && chosen >= windowStart && !exdateSet.has(chosen)) {
-            occurrences.push({ date: chosen, end_date: spanDays ? addDays(chosen, spanDays) : null });
-            count++;
-            if (rule.count && count >= rule.count) break;
-          }
-        }
-        if (rule.count && count >= rule.count) break;
-      }
-      // BYSETPOS results were gathered per-month in order; ensure global sort.
-      occurrences.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
-    }
-  } else if (rule.freq === 'DAILY') {
-    let d = base.date;
-    while (d <= hardStop && iter++ < MAX_ITER) {
-      if (d >= windowStart && !exdateSet.has(d)) {
-        occurrences.push({ date: d, end_date: spanDays ? addDays(d, spanDays) : null });
-        count++;
-      }
-      if (rule.count && count >= rule.count) break;
-      d = addDays(d, rule.interval);
-    }
-  } else {
-    // Unsupported FREQ (SECONDLY/MINUTELY/HOURLY essentially never appear for
-    // all-day personal events) — fall back to just the single base occurrence.
-    return [{ date: base.date, end_date: base.end_date }];
-  }
-
-  return occurrences.length ? occurrences : [{ date: base.date, end_date: base.end_date }];
-}
-
-async function syncFeed(feed) {
-  const icsText = await fetchUrl(feed.url);
-
-  // A real .ics response always starts with this — if it's missing, the host
-  // likely returned something else entirely (an HTML error/login page, an
-  // empty body, etc.) even with a 200 status, which silently produced "0
-  // events synced" with no visible error before this check existed.
-  if (!icsText || !icsText.includes('BEGIN:VCALENDAR')) {
-    throw new Error(
-      'Response did not look like a calendar file (no BEGIN:VCALENDAR found) — ' +
-      'the server may be blocking this kind of automated request, or the URL may be wrong.'
-    );
-  }
-
-  const parsedEvents = parseICS(icsText, feed.id, feed.color, getLocalTimezone());
-
-  // Expand recurring events (RRULE) into one row per occurrence within the sync
-  // window; non-recurring events pass through as a single occurrence unchanged.
-  const occurrences = [];
-  for (const e of parsedEvents) {
-    if (e.rrule) {
-      for (const occ of expandRecurrence(e)) {
-        occurrences.push({ ...e, date: occ.date, end_date: occ.end_date });
-      }
-    } else {
-      occurrences.push(e);
-    }
-  }
-
-  // Replace all events for this feed
-  const replace = db.transaction(() => {
-    db.prepare(`DELETE FROM ical_events WHERE feed_id = ?`).run(feed.id);
-    const insert = db.prepare(
-      `INSERT OR REPLACE INTO ical_events (uid, feed_id, title, date, end_date, start_time, end_time, notes, location)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    );
-    for (const e of occurrences) {
-      const endDate = (e.end_date && e.end_date > e.date) ? e.end_date : null;
-      insert.run(e.uid, feed.id, e.title, e.date, endDate, e.start_time || null, e.end_time || null, e.notes || '', e.location || '');
-    }
-    db.prepare(`UPDATE ical_feeds SET last_synced = datetime('now') WHERE id = ?`).run(feed.id);
-  });
-  replace();
-  console.log(`Synced feed "${feed.name}": ${parsedEvents.length} events (${occurrences.length} occurrences after expanding recurrences)`);
-  return occurrences.length;
-}
-
-// Auto-sync all enabled feeds — interval is configurable in Settings (default 30 min)
-async function syncAllFeeds() {
-  const feeds = db.prepare(`SELECT * FROM ical_feeds WHERE enabled = 1`).all();
-  for (const feed of feeds) {
-    try { await syncFeed(feed); }
-    catch (e) { console.error(`Feed sync failed for "${feed.name}":`, e.message); }
-    // Let queued HTTP requests (the display's, mostly) run between feeds instead
-    // of a whole sync monopolising the event loop.
-    await new Promise((r) => setImmediate(r));
-  }
-  if (feeds.length) broadcastUpdate('events');
-}
-
-function getSyncIntervalMs() {
-  const row = db.prepare(`SELECT value FROM settings WHERE key = 'ical_sync_minutes'`).get();
-  const minutes = parseInt(row?.value) || 30;
-  return minutes * 60 * 1000;
-}
-
-function scheduleNextSync() {
-  setTimeout(async () => {
-    await syncAllFeeds();
-    scheduleNextSync(); // reschedule using whatever the interval setting is *now*
-  }, getSyncIntervalMs());
-}
-scheduleNextSync();
-// Also sync on startup - but WHEN depends on whether there is anything to show
-// yet. A brand-new install has no events, so it syncs almost immediately (3s). A
-// device that already holds synced events (every reboot and every self-update)
-// waits 90s: the first sync parses and expands thousands of recurring events on
-// the main thread while the kiosk browser is launching and compiling a 1.2 MB
-// page on a 1 GB Pi, and measured on a Pi 3B+ that contention was the whole
-// "white screen for ~26 seconds after a reboot" (first paint takes ~5s when the
-// Pi is idle). The display shows the stored events meanwhile; broadcastUpdate
-// refreshes it when the sync lands. PIAZZA_BOOT_SYNC_DELAY_SEC overrides.
-function chooseBootSyncDelayMs(hasSyncedEvents, envValue) {
-  const override = parseInt(envValue, 10);
-  if (Number.isFinite(override) && override >= 0) return override * 1000;
-  return hasSyncedEvents ? 90 * 1000 : 3000;
-}
-setTimeout(syncAllFeeds, chooseBootSyncDelayMs(
-  !!db.prepare(`SELECT 1 FROM ical_events LIMIT 1`).get(),
-  process.env.PIAZZA_BOOT_SYNC_DELAY_SEC));
-
-// ── Pushing local events out to external calendars (iCloud + Google) ────────
-// Everything above about calendars is the PULL side: subscribe to a published
-// .ics URL and display it, read-only. Everything below is the PUSH side: when
-// someone creates a local event here, also write it to their real iCloud
-// and/or Google calendar so it shows up in Apple Calendar / Google Calendar
-// on their other devices. Both are opt-in per household, both best-effort — a
-// push that fails NEVER blocks or fails the local event's own create/update/
-// delete (the local copy is always the source of truth), it just gets
-// recorded on the row and retried by a background sweep.
-//
+// ── Shared HTTPS request helper (core: stays in server.js) ─────────────────────────
 // Shared low-level HTTP helper. Node's `https` doesn't follow redirects and
 // these need non-GET methods (PROPFIND/PUT/DELETE) with request bodies, so
 // this can't reuse httpGetJSON() — but it stays in the same raw-`https` style
@@ -9037,10 +5347,13 @@ function httpsRequest(url, method, { body = null, headers = {}, auth = null, max
       if (auth) reqHeaders['Authorization'] = 'Basic ' + Buffer.from(`${auth.user}:${auth.pass}`).toString('base64');
       const bodyBuf = body != null ? Buffer.from(body, 'utf8') : null;
       if (bodyBuf) reqHeaders['Content-Length'] = bodyBuf.length;
-      const req = https.request({
+      // PIAZZA_TEST_ALLOW_HTTP=1 lets a test point this at a plain-http fake server; in every real deployment it is unset and
+      // this client stays https-only.
+      const lib = (process.env.PIAZZA_TEST_ALLOW_HTTP === '1' && target.protocol === 'http:') ? http : https;
+      const req = lib.request({
         family: 4,
         hostname: target.hostname,
-        port: target.port || 443,
+        port: target.port || (lib === http ? 80 : 443),
         path: target.pathname + target.search,
         method,
         headers: reqHeaders,
@@ -9062,7 +5375,11 @@ function httpsRequest(url, method, { body = null, headers = {}, auth = null, max
           // per-account pNN-caldav.icloud.com host) — this is expected here
           // even though it diverges from strict 301-becomes-GET semantics.
           if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
-            return attempt(new URL(res.headers.location, currentUrl).toString(), redirectsLeft - 1);
+            let nextUrl;
+            try { nextUrl = new URL(res.headers.location, currentUrl); } catch { return reject(new Error('iCloud sent a redirect that could not be read.')); }
+            // A request carrying the Apple ID + app password must never follow a redirect off icloud.com.
+            if (auth && !icloudHostOk(nextUrl)) return reject(new Error('iCloud redirected somewhere unexpected, so your password was not sent there.'));
+            return attempt(nextUrl.toString(), redirectsLeft - 1);
           }
           resolve({ statusCode: res.statusCode, headers: res.headers, body: data, finalUrl: currentUrl });
         });
@@ -9076,705 +5393,36 @@ function httpsRequest(url, method, { body = null, headers = {}, auth = null, max
   });
 }
 
-// CalDAV servers vary which namespace prefix they put on DAV:/caldav: elements
-// (d:, D:, cal:, or none) — strip the prefixes so one set of tag-matching
-// regexes works regardless. Same hand-rolled approach as parseICS(); the
-// responses here are flat and predictable enough that a full XML parser
-// dependency isn't worth it.
-function stripXmlNsPrefixes(xml) {
-  return xml.replace(/<(\/?)[a-zA-Z0-9_.-]+:/g, '<$1');
-}
-function xmlFirstTag(xml, tag) {
-  const m = stripXmlNsPrefixes(xml).match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
-  return m ? m[1].trim() : null;
-}
-function xmlFirstHref(xml) {
-  const m = stripXmlNsPrefixes(xml).match(/<href[^>]*>([^<]+)<\/href>/i);
-  return m ? m[1].trim() : null;
-}
-
-const ICLOUD_CALDAV_ROOT = 'https://caldav.icloud.com/';
-
-// RFC 6764 discovery against iCloud: principal -> calendar-home-set -> list of
-// calendar collections that actually accept VEVENTs. Returns [{url, name}].
-async function discoverCalDAVCalendars(username, password) {
-  const auth = { user: username, pass: password };
-  const xmlHeaders = { 'Content-Type': 'text/xml; charset=utf-8', 'Depth': '0' };
-
-  // 1. current-user-principal (also resolves the per-account host via redirect)
-  const principalReq = await httpsRequest(ICLOUD_CALDAV_ROOT, 'PROPFIND', {
-    auth, headers: xmlHeaders,
-    body: `<?xml version="1.0" encoding="utf-8"?><propfind xmlns="DAV:"><prop><current-user-principal/></prop></propfind>`,
-  });
-  if (principalReq.statusCode === 401) throw new Error('iCloud rejected the Apple ID or app-specific password.');
-  if (principalReq.statusCode !== 207) throw new Error(`Unexpected response from iCloud (HTTP ${principalReq.statusCode}) while looking up the account.`);
-  const origin = new URL(principalReq.finalUrl).origin;
-  const principalHref = xmlFirstTag(principalReq.body, 'current-user-principal') && xmlFirstHref(xmlFirstTag(principalReq.body, 'current-user-principal'));
-  if (!principalHref) throw new Error('Could not find the iCloud account principal in the response.');
-
-  // 2. calendar-home-set
-  const homeReq = await httpsRequest(new URL(principalHref, origin).toString(), 'PROPFIND', {
-    auth, headers: xmlHeaders,
-    body: `<?xml version="1.0" encoding="utf-8"?><propfind xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><prop><c:calendar-home-set/></prop></propfind>`,
-  });
-  if (homeReq.statusCode !== 207) throw new Error(`Unexpected response from iCloud (HTTP ${homeReq.statusCode}) while looking up the calendar home.`);
-  const homeSetInner = xmlFirstTag(homeReq.body, 'calendar-home-set');
-  const homeHref = homeSetInner && xmlFirstHref(homeSetInner);
-  if (!homeHref) throw new Error('Could not find the iCloud calendar home in the response.');
-
-  // 3. enumerate calendar collections (Depth: 1)
-  const listReq = await httpsRequest(new URL(homeHref, origin).toString(), 'PROPFIND', {
-    auth, headers: { ...xmlHeaders, 'Depth': '1' },
-    body: `<?xml version="1.0" encoding="utf-8"?><propfind xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><prop><displayname/><resourcetype/><c:supported-calendar-component-set/></prop></propfind>`,
-  });
-  if (listReq.statusCode !== 207) throw new Error(`Unexpected response from iCloud (HTTP ${listReq.statusCode}) while listing calendars.`);
-
-  // Parse the multistatus. Deliberately lenient — iCloud varies tag
-  // attributes and namespace placement between accounts, and the failure
-  // mode of being too strict (an EMPTY picker) is far worse than being too
-  // loose (one stray non-event calendar in the list). So: keep any child
-  // collection under the home whose resourcetype names "calendar", and
-  // only drop one if its component set is present AND explicitly has no
-  // VEVENT (a VTODO-only Reminders list). A parse miss on the component
-  // set means "keep it", not "drop it".
-  const stripped = stripXmlNsPrefixes(listReq.body);
-  const normPath = (u) => { try { return new URL(u, origin).pathname.replace(/\/?$/, '/'); } catch { return String(u).replace(/\/?$/, '/'); } };
-  const homePath = normPath(homeHref);
-  const blocks = stripped.split(/<response[\s>]/i).slice(1);
-  const seenHrefs = [];
-  const calendars = [];
-  for (const block of blocks) {
-    const href = (block.match(/<href[^>]*>([^<]+)<\/href>/i) || [])[1];
-    if (!href) continue;
-    seenHrefs.push(href.trim());
-    if (normPath(href.trim()) === homePath) continue;             // the calendar-home collection itself
-    const rt = (block.match(/<resourcetype[\s>]([\s\S]*?)<\/resourcetype>/i) || [])[1] || '';
-    if (!/<calendar[\s/>]/i.test(rt)) continue;                    // not a calendar collection (inbox/outbox/dropbox/etc.)
-    const compSet = (block.match(/<supported-calendar-component-set[\s>]([\s\S]*?)<\/supported-calendar-component-set>/i) || [])[1];
-    if (compSet && !/VEVENT/i.test(compSet)) continue;             // present and definitively event-less -> skip
-    const nameMatch = block.match(/<displayname[^>]*>([^<]*)<\/displayname>/i);
-    calendars.push({
-      url: new URL(href.trim(), origin).toString(),
-      name: (nameMatch && nameMatch[1].trim()) || href.trim(),
-    });
-  }
-  if (!calendars.length) {
-    console.error('CalDAV discovery found no calendars. Raw list body:\n' + listReq.body.slice(0, 4000));
-    throw new Error(`Connected to iCloud, but couldn't match any calendars. Collections it returned: ${seenHrefs.slice(0, 20).join(', ') || '(none)'}`);
-  }
-  return calendars;
-}
-
-// ── Building the VEVENT to push ──────────────────────────────────────────────
-function escapeICSText(s) {
-  // Inverse of decodeICSText(): backslash FIRST, then the rest.
-  return String(s || '')
-    .replace(/\\/g, '\\\\')
-    .replace(/;/g, '\\;')
-    .replace(/,/g, '\\,')
-    .replace(/\r?\n/g, '\\n');
-}
-// RFC 5545: content lines must be folded at <=75 octets, continuations start
-// with a single space. `notes` can run to 500 chars, well past that.
-function foldICSLine(line) {
-  const bytes = Buffer.from(line, 'utf8');
-  if (bytes.length <= 74) return line;
-  const out = [];
-  let start = 0;
-  while (start < bytes.length) {
-    let end = Math.min(start + (out.length ? 73 : 74), bytes.length);
-    // Don't split a multi-byte UTF-8 sequence: back up while the next byte is a continuation byte (10xxxxxx).
-    while (end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
-    out.push((out.length ? ' ' : '') + bytes.slice(start, end).toString('utf8'));
-    start = end;
-  }
-  return out.join('\r\n');
-}
-function icsStamp(d = new Date()) {
-  return d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
-}
-function caldavUidFor(eventId) { return `piazzahq-local-${eventId}@piazzahq.local`; }
-
-// Turns an `events` table row into a full VCALENDAR document for a PUT.
-function buildEventICS(row) {
-  const uid = caldavUidFor(row.id);
-  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Piazza HQ//Local Event//EN', 'BEGIN:VEVENT',
-    `UID:${uid}`, `DTSTAMP:${icsStamp()}`];
-
-  if (!row.start_time) {
-    // All-day. DTEND is exclusive per RFC 5545 — one day past the last day.
-    const endExclusive = new Date((row.end_date || row.date) + 'T00:00:00');
-    endExclusive.setDate(endExclusive.getDate() + 1);
-    const endStr = `${endExclusive.getFullYear()}${String(endExclusive.getMonth() + 1).padStart(2, '0')}${String(endExclusive.getDate()).padStart(2, '0')}`;
-    lines.push(`DTSTART;VALUE=DATE:${row.date.replace(/-/g, '')}`);
-    lines.push(`DTEND;VALUE=DATE:${endStr}`);
-  } else {
-    // Timed. Floating local time (no Z, no TZID) — this app has one global
-    // timezone and treats floating times as "take as written", matching
-    // parseICSDate()'s own handling of the inbound side.
-    const startD = (row.date || '').replace(/-/g, '');
-    const startT = (row.start_time || '00:00').replace(/:/g, '') + '00';
-    lines.push(`DTSTART:${startD}T${startT}`);
-    if (row.end_time) {
-      const endD = ((row.end_date || row.date) || '').replace(/-/g, '');
-      const endT = row.end_time.replace(/:/g, '') + '00';
-      lines.push(`DTEND:${endD}T${endT}`);
-    }
-  }
-
-  lines.push(foldICSLine(`SUMMARY:${escapeICSText(row.title)}`));
-  if (row.notes) lines.push(foldICSLine(`DESCRIPTION:${escapeICSText(row.notes)}`));
-  if (row.location) lines.push(foldICSLine(`LOCATION:${escapeICSText(row.location)}`));
-  lines.push('END:VEVENT', 'END:VCALENDAR');
-  return lines.join('\r\n') + '\r\n';
-}
-
-// ── Push / delete a single event ────────────────────────────────────────────
-function getCaldavConfig() {
-  return {
-    enabled: getSetting('icloud_push_enabled') === '1',
-    username: getSetting('icloud_username') || '',
-    password: getSetting('icloud_app_password') || '',
-    calendarUrl: getSetting('icloud_calendar_url') || '',
-  };
-}
-function caldavObjectUrl(calendarUrl, eventId) {
-  return calendarUrl.replace(/\/?$/, '/') + `piazzahq-local-${eventId}.ics`;
-}
-function setEventCaldavFields(id, fields) {
-  const cols = Object.keys(fields);
-  if (!cols.length) return;
-  db.prepare(`UPDATE events SET ${cols.map(c => `${c}=?`).join(', ')} WHERE id=?`)
-    .run(...cols.map(c => fields[c]), id);
-}
-
-// Never throws to its caller — fire-and-forget from the /api/events handlers.
-// Serves both "create" and "edit" (deterministic object URL => an edit is just
-// a re-PUT to the same place). No-ops silently unless push is fully configured.
-async function pushLocalEventToCalDAV(row) {
-  if (IS_DEMO) return;
-  try {
-    const cfg = getCaldavConfig();
-    if (!cfg.username || !cfg.password) return;
-    const t = row.target_calendar || null;
-    if (t === 'local' || t === 'google') return; // explicitly not an iCloud target
-    // Which calendar: an explicit per-event choice wins (and overrides the
-    // global enable toggle — the user picked it on purpose); otherwise fall
-    // back to the configured default calendar, which does respect the toggle.
-    let calendarUrl;
-    if (t && t.startsWith('caldav:')) {
-      calendarUrl = t.slice('caldav:'.length);
-    } else {
-      if (!cfg.enabled || !cfg.calendarUrl) return;
-      calendarUrl = cfg.calendarUrl;
-    }
-    if (!calendarUrl) return;
-    const objUrl = caldavObjectUrl(calendarUrl, row.id);
-    const res = await httpsRequest(objUrl, 'PUT', {
-      auth: { user: cfg.username, pass: cfg.password },
-      headers: { 'Content-Type': 'text/calendar; charset=utf-8' },
-      body: buildEventICS(row),
-    });
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      setEventCaldavFields(row.id, {
-        caldav_uid: caldavUidFor(row.id),
-        caldav_url: objUrl,
-        caldav_pushed_at: new Date().toISOString(),
-        caldav_push_error: null,
-      });
-    } else {
-      setEventCaldavFields(row.id, { caldav_push_error: `HTTP ${res.statusCode}` });
-      console.error(`CalDAV push failed for event ${row.id}: HTTP ${res.statusCode} ${res.body.slice(0, 200)}`);
-    }
-  } catch (e) {
-    try { setEventCaldavFields(row.id, { caldav_push_error: e.message.slice(0, 300) }); } catch {}
-    console.error(`CalDAV push failed for event ${row.id}:`, e.message);
-  }
-}
-
-// Never throws. No-ops if the row was never pushed. Fired from the DELETE
-// handler AFTER the local row is already gone, so it takes the pre-delete row.
-async function deleteEventFromCalDAV(row) {
-  if (IS_DEMO) return;
-  try {
-    if (!row || !row.caldav_url) return;
-    const cfg = getCaldavConfig();
-    if (!cfg.username || !cfg.password) return; // can't authenticate; leave the remote copy, nothing better to do
-    const res = await httpsRequest(row.caldav_url, 'DELETE', {
-      auth: { user: cfg.username, pass: cfg.password },
-    });
-    if (!((res.statusCode >= 200 && res.statusCode < 300) || res.statusCode === 404)) {
-      console.error(`CalDAV delete failed for event ${row.id}: HTTP ${res.statusCode}`);
-    }
-  } catch (e) {
-    console.error(`CalDAV delete failed for event ${row.id}:`, e.message);
-  }
-}
-
-// ── Google Calendar push ───────────────────────────────────────────────────
-// Same shape as the CalDAV push above, but Google's a REST/JSON API behind
-// OAuth instead of CalDAV+app-password. Connecting uses a standard
-// authorization-code + PKCE flow, but relayed through the mothership: Google
-// redirects to https://piazzahq.com/oauth/google/callback (a stable URL this
-// wall-mounted box doesn't have), which stashes the auth code; this box polls
-// for it and does the token exchange itself. (The device/"limited input" flow
-// would need no redirect at all, but Google doesn't allow Calendar scopes
-// through it — hence the relay.) See /api/google/connect-start below.
-//
-// client_id/client_secret are a SINGLE OAuth client shared across every
-// household (owned by the project, not created per install). They're read
-// from env first (GOOGLE_OAUTH_CLIENT_ID / _SECRET, e.g. via systemd
-// EnvironmentFile) with a settings-row fallback so the mothership can push
-// them down at provision time later without a code change. The secret and the
-// PKCE verifier never leave this box — the mothership only ever sees a
-// short-lived single-use auth code, useless without them.
-const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const GOOGLE_USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo';
-const GOOGLE_CAL_API = 'https://www.googleapis.com/calendar/v3';
-// calendar.events lets us insert/update/delete events on any calendar the
-// user can access — but NOT list their calendars (that needs the broader
-// calendar/calendar.readonly scope, which drags in a heavier OAuth
-// verification). So we don't offer a picker: events go to `primary` by
-// default, with an optional manual calendar-ID override. `openid email` is
-// non-sensitive and just gives us the account address for the UI.
-const GOOGLE_SCOPE = 'openid email https://www.googleapis.com/auth/calendar.events';
-
-function getGoogleConfig() {
-  return {
-    enabled: getSetting('google_push_enabled') === '1',
-    clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || getSetting('google_oauth_client_id') || '',
-    clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET || getSetting('google_oauth_client_secret') || '',
-    refreshToken: getSetting('google_refresh_token') || '',
-    calendarId: getSetting('google_calendar_id') || '',
-  };
-}
-function googleClientConfigured() {
-  const c = getGoogleConfig();
-  return !!(c.clientId && c.clientSecret);
-}
-function setGoogleDisconnected() {
-  for (const k of ['google_refresh_token', 'google_access_token', 'google_access_token_expiry',
-                   'google_account_email', 'google_calendar_id', 'google_calendar_name']) setSetting(k, '');
-  setSetting('google_push_enabled', '0');
-}
-
-const formEncode = (obj) => Object.entries(obj).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
-
-// Returns a currently-valid access token, refreshing (and caching) if the
-// stored one is missing or within 5 min of expiry. Throws if not connected.
-async function getGoogleAccessToken() {
-  const cfg = getGoogleConfig();
-  if (!cfg.clientId || !cfg.clientSecret) throw new Error('Google OAuth client is not configured on this server.');
-  if (!cfg.refreshToken) throw new Error("Google Calendar isn't connected.");
-  const cached = getSetting('google_access_token') || '';
-  const expiry = Number(getSetting('google_access_token_expiry') || 0);
-  if (cached && Date.now() < expiry - 5 * 60 * 1000) return cached;
-  const res = await httpsRequest(GOOGLE_TOKEN_URL, 'POST', {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: formEncode({ client_id: cfg.clientId, client_secret: cfg.clientSecret, refresh_token: cfg.refreshToken, grant_type: 'refresh_token' }),
-  });
-  let data = {}; try { data = JSON.parse(res.body || '{}'); } catch {}
-  if (res.statusCode !== 200 || !data.access_token) {
-    // A revoked/expired refresh token is permanent — reflect that in the UI
-    // rather than failing every push forever against a dead credential.
-    if (data.error === 'invalid_grant') setGoogleDisconnected();
-    throw new Error('Google token refresh failed: ' + (data.error || `HTTP ${res.statusCode}`));
-  }
-  setSetting('google_access_token', data.access_token);
-  setSetting('google_access_token_expiry', String(Date.now() + (data.expires_in || 3600) * 1000));
-  return data.access_token;
-}
-
-async function googleApi(pathOrUrl, method, { token, body } = {}) {
-  const url = pathOrUrl.startsWith('http') ? pathOrUrl : GOOGLE_CAL_API + pathOrUrl;
-  const res = await httpsRequest(url, method, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body: body ? JSON.stringify(body) : null,
-  });
-  let json = null; try { json = res.body ? JSON.parse(res.body) : null; } catch {}
-  return { statusCode: res.statusCode, json, raw: res.body };
-}
-
-// The connected account's email, from the OpenID userinfo endpoint (the
-// `openid email` scope). Cosmetic — for the "Connected as X" line. Best
-// effort; returns '' if it fails.
-async function googleGetAccountEmail(token) {
-  try {
-    const res = await httpsRequest(GOOGLE_USERINFO_URL, 'GET', { headers: { 'Authorization': `Bearer ${token}` } });
-    const j = JSON.parse(res.body || '{}');
-    return (res.statusCode === 200 && j.email) ? j.email : '';
-  } catch { return ''; }
-}
-
-// Turns an `events` row into the JSON body Google's API wants. Mirrors
-// buildEventICS()'s handling of all-day vs timed and exclusive end dates.
-function googleEventBody(row) {
-  const b = { id: `phqlocal${row.id}`, summary: row.title || '(no title)' };
-  if (row.notes) b.description = row.notes;
-  if (row.location) b.location = row.location;
-  if (!row.start_time) {
-    const endExclusive = new Date((row.end_date || row.date) + 'T00:00:00');
-    endExclusive.setDate(endExclusive.getDate() + 1);
-    const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    b.start = { date: row.date };
-    b.end = { date: iso(endExclusive) };
-  } else {
-    const tz = getLocalTimezone();
-    b.start = { dateTime: `${row.date}T${row.start_time}:00`, timeZone: tz };
-    b.end = { dateTime: `${row.end_date || row.date}T${(row.end_time || row.start_time)}:00`, timeZone: tz };
-  }
-  return b;
-}
-
-async function pushLocalEventToGoogle(row) {
-  if (IS_DEMO) return;
-  try {
-    const cfg = getGoogleConfig();
-    const t = row.target_calendar || null;
-    if (t === 'local' || (t && t.startsWith('caldav:'))) return; // explicitly not a Google target
-    // An explicit 'google' choice pushes even if the global toggle is off;
-    // the default (no choice) still respects the toggle.
-    if (t !== 'google' && !cfg.enabled) return;
-    if (!cfg.refreshToken || !cfg.calendarId || !googleClientConfigured()) return;
-    const token = await getGoogleAccessToken();
-    const calId = encodeURIComponent(cfg.calendarId);
-    const gid = `phqlocal${row.id}`;
-    // Insert with our deterministic id; if it already exists (edit / retry),
-    // Google 409s and we switch to a full update at that id — same
-    // create-or-update shape as the CalDAV re-PUT.
-    let res = await googleApi(`/calendars/${calId}/events`, 'POST', { token, body: googleEventBody(row) });
-    if (res.statusCode === 409) {
-      res = await googleApi(`/calendars/${calId}/events/${gid}`, 'PUT', { token, body: googleEventBody(row) });
-    }
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      setEventCaldavFields(row.id, { google_event_id: gid, google_pushed_at: new Date().toISOString(), google_push_error: null });
-    } else {
-      const msg = (res.json && res.json.error && res.json.error.message) || `HTTP ${res.statusCode}`;
-      setEventCaldavFields(row.id, { google_push_error: String(msg).slice(0, 300) });
-      console.error(`Google push failed for event ${row.id}: ${msg}`);
-    }
-  } catch (e) {
-    try { setEventCaldavFields(row.id, { google_push_error: e.message.slice(0, 300) }); } catch {}
-    console.error(`Google push failed for event ${row.id}:`, e.message);
-  }
-}
-
-async function deleteEventFromGoogle(row) {
-  if (IS_DEMO) return;
-  try {
-    if (!row || !row.google_event_id) return;
-    const cfg = getGoogleConfig();
-    if (!cfg.refreshToken || !googleClientConfigured()) return;
-    const calId = encodeURIComponent(cfg.calendarId || 'primary');
-    const token = await getGoogleAccessToken();
-    const res = await googleApi(`/calendars/${calId}/events/${row.google_event_id}`, 'DELETE', { token });
-    if (!((res.statusCode >= 200 && res.statusCode < 300) || res.statusCode === 404 || res.statusCode === 410)) {
-      console.error(`Google delete failed for event ${row.id}: HTTP ${res.statusCode}`);
-    }
-  } catch (e) {
-    console.error(`Google delete failed for event ${row.id}:`, e.message);
-  }
-}
-
-// One sweep, both targets. Host-only — a slave proxies its event writes to
-// the host, so it never runs a push and has nothing to retry.
-async function retryFailedExternalPushes() {
-  if (IS_DEMO) return;
-  if (isSlave()) return;
-  // Gate only on having credentials, not on the enable toggle — a row can
-  // carry an explicit per-event target that should push regardless. The
-  // per-row push functions make the real decision.
-  const caldav = getCaldavConfig();
-  if (caldav.username && caldav.password) {
-    for (const row of db.prepare(`SELECT * FROM events WHERE caldav_push_error IS NOT NULL`).all()) {
-      await pushLocalEventToCalDAV(row);
-    }
-  }
-  const google = getGoogleConfig();
-  if (google.refreshToken && googleClientConfigured()) {
-    for (const row of db.prepare(`SELECT * FROM events WHERE google_push_error IS NOT NULL`).all()) {
-      await pushLocalEventToGoogle(row);
-    }
-  }
-}
-setInterval(retryFailedExternalPushes, 15 * 60 * 1000);
+// ── iCal parser ───────────────────────────────────────────────────────────────
+// This code lives in src/calendar-sync.js. It runs here, at the same place in the file as before.
+const { fetchUrl, getLocalTimezone, utcToLocalParts, parseICSDate, decodeICSText, parseICS, expandRecurrence, isGoogleFeedUrl, googleFeedUrlValid, isIcloudFeedUrl, icloudHostOk, icloudFeedUrlValid, syncFeed, discoverCalDAVCalendars, stripXmlNsPrefixes, getCaldavConfig, caldavUidFor, buildEventICS, setEventCaldavFields, pushLocalEventToCalDAV, deleteEventFromCalDAV, GOOGLE_TOKEN_URL, GOOGLE_SCOPE, getGoogleConfig, googleClientConfigured, setGoogleDisconnected, formEncode, googleGetAccountEmail, getGoogleAccessToken, googleApi, pushLocalEventToGoogle, deleteEventFromGoogle, RECURRENCE_WINDOW_PAST_DAYS, RECURRENCE_WINDOW_FUTURE_DAYS } = require('./src/calendar-sync.js')({ URL, fetchWithTimeout, IS_DEMO, db, broadcastUpdate, getTimezoneOverride, getSetting, isSlave, httpsRequest, setSetting });
 
 // ── Home Assistant condition alerts ────────────────────────────────────────
-// A small rules engine: "if entity X's state is/above/below Y for N minutes,
-// raise an alert." Alerts show as a banner on the display (which polls
-// /api/ha-alerts/active). Fire-once semantics: an alert fires when the
-// condition has held for its dwell time, and does NOT fire again until the
-// condition first goes false (or the person dismisses it, which also waits
-// for a false before it can re-fire). Host-only — a slave proxies its reads
-// to the host and never runs this loop.
-function getHaAlerts() {
-  try { const a = JSON.parse(getSetting('ha_alerts_json') || '[]'); return Array.isArray(a) ? a : []; }
-  catch { return []; }
-}
-const _haAlertRuntime = new Map();  // id -> { since, firing, dismissed }
-const _haActiveAlerts = new Map();  // id -> { id, message, entityName, firedAt }
+// This code lives in src/ha-alerts.js. It runs here, at the same place in the file as before.
+const { getHaAlerts, _haAlertRuntime, _haActiveAlerts, checkHaAlerts } = require('./src/ha-alerts.js')({ IS_DEMO, getSetting, isSlave, haRequest: (...a) => haRequest(...a), raiseNotification: (...a) => raiseNotification(...a), clearNotification: (...a) => clearNotification(...a) });
 
-function evalHaAlertCondition(op, current, value) {
-  if (op === 'eq') return String(current).toLowerCase() === String(value).toLowerCase();
-  const n = parseFloat(current), v = parseFloat(value);
-  if (!Number.isFinite(n) || !Number.isFinite(v)) return false;
-  if (op === 'above') return n > v;
-  if (op === 'below') return n < v;
-  return false;
-}
-
-async function checkHaAlerts() {
-  if (IS_DEMO) return;
-  if (isSlave()) return;
-  const base = getSetting('ha_base_url'), token = getSetting('ha_token');
-  if (!base || !token) return;
-  const alerts = getHaAlerts().filter(a => a && a.enabled && a.entityId && a.op);
-  const liveIds = new Set(alerts.map(a => a.id));
-  for (const id of [..._haAlertRuntime.keys()]) if (!liveIds.has(id)) {
-    _haAlertRuntime.delete(id); _haActiveAlerts.delete(id); clearNotification(`ha-alert:${id}`);
-  }
-  for (const a of alerts) {
-    let cur;
-    try { cur = await haRequest(`/api/states/${encodeURIComponent(a.entityId)}`); }
-    catch { continue; } // entity temporarily unreachable — leave state as-is
-    const met = evalHaAlertCondition(a.op, cur.state, a.value);
-    const rt = _haAlertRuntime.get(a.id) || { since: null, firing: false, dismissed: false };
-    if (!met) {
-      rt.since = null; rt.firing = false; rt.dismissed = false;
-      _haActiveAlerts.delete(a.id);
-      clearNotification(`ha-alert:${a.id}`);
-    } else {
-      if (rt.since == null) rt.since = Date.now();
-      const held = (Date.now() - rt.since) >= (Number(a.dwellMin) || 0) * 60000;
-      if (held && !rt.firing && !rt.dismissed) {
-        rt.firing = true;
-        const name = (cur.attributes && cur.attributes.friendly_name) || a.name || a.entityId;
-        const opText = a.op === 'eq' ? `is "${a.value}"` : a.op === 'above' ? `above ${a.value}` : `below ${a.value}`;
-        const message = (a.message && a.message.trim()) || `${name} ${opText}`;
-        _haActiveAlerts.set(a.id, { id: a.id, message, entityName: name, firedAt: Date.now() });
-        raiseNotification({ kind: 'ha-alert', key: `ha-alert:${a.id}`, title: 'Home Assistant', body: message,
-          screen: a.screen !== false, phone: a.phone !== false });
-      }
-    }
-    _haAlertRuntime.set(a.id, rt);
-  }
-}
-setInterval(checkHaAlerts, 2 * 60 * 1000);
-setTimeout(checkHaAlerts, 20 * 1000); // first pass shortly after boot
+// ── Constants shared by the notification center and the severe-weather alerts ──────────────
+// Declared here (rather than in the severe-weather section below, where they are used) because the notification center needs them as it is wired in.
+const _activeWeatherAlertIds = new Set();   // notification keys (one per warning, however many updates it gets) currently showing
+const WX_KIND = 'weather-alert';
 
 // ── Notification center — on-screen banner + optional phone relay ─────────
-// One channel every producer (HA alerts today, more later) flows through.
-// The display polls /api/notifications/active for the banner. If phone
-// alerts are on, each NEW notification is also relayed to the household's
-// phones through the mothership (the device serves plain HTTP on the LAN,
-// which isn't a secure context, so it can't do Web Push itself).
-const _activeNotifications = new Map(); // key -> { key, kind, title, body, url, firedAt }
-
-// The notification kinds that exist. The delivery-preferences UI renders
-// from this list; add a row here when a new producer is introduced.
-const NOTIF_KINDS = [
-  { id: 'ha-alert', label: 'Home Assistant alerts' },
-  { id: 'weather-alert', label: 'Severe weather alerts' },
-];
-function getNotifPrefs() {
-  let stored = {};
-  try { stored = JSON.parse(getSetting('notif_prefs_json') || '{}') || {}; } catch {}
-  const out = {};
-  for (const k of NOTIF_KINDS) {
-    const p = stored[k.id] || {};
-    out[k.id] = { screen: p.screen !== false, phone: p.phone !== false }; // default both on
-  }
-  return out;
-}
-function notifKindAllows(kind, channel) {
-  const p = getNotifPrefs()[kind];
-  if (!p) return true; // unknown kind — don't silently swallow it
-  return p[channel] !== false;
-}
-
-// `screen` / `phone` are optional per-notification overrides (a producer,
-// e.g. one HA alert rule, can force a channel off); the per-KIND preference
-// gates on top of them, and phone also needs the global toggle + the relay.
-function raiseNotification({ kind, key, title, body, url, screen, phone }) {
-  kind = kind || 'info';
-  key = key || `${kind}:${Date.now()}`;
-  const toScreen = (screen !== false) && notifKindAllows(kind, 'screen');
-  const toPhone  = (phone  !== false) && notifKindAllows(kind, 'phone');
-  const wasNew = !_activeNotifications.has(key);
-  if (toScreen) {
-    _activeNotifications.set(key, {
-      key, kind, title: title || 'Piazza HQ', body: body || '', url: url || '',
-      firedAt: wasNew ? Date.now() : _activeNotifications.get(key).firedAt,
-    });
-  } else {
-    _activeNotifications.delete(key); // screen delivery is off for this kind/rule
-  }
-  if (wasNew && toPhone) relayPushToPhones(title || 'Piazza HQ', body || '', url || '');
-}
-function clearNotification(key) { _activeNotifications.delete(key); }
-
-async function relayPushToPhones(title, body, url) {
-  try {
-    if (IS_DEMO) return;
-    if (getSetting('phone_alerts_enabled') !== '1' || isSlave()) return;
-    const license = getSetting('update_license_key');
-    const server = resolveUpdateServerUrl();
-    if (!license || !server) return;
-    await httpsRequest(`${server}/api/push/relay`, 'POST', {
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ license, title, body, url }),
-    });
-  } catch { /* best-effort — a failed phone push never affects the on-screen one */ }
-}
-
-app.get('/api/notifications/active', async (req, res) => {
-  if (isSlave()) {
-    const base = hostBaseURL();
-    if (base) { try { return res.json(await fetchJSON(`${base}/api/notifications/active`, 6000)); } catch { return res.json({ notifications: [] }); } }
-    return res.json({ notifications: [] });
-  }
-  res.json({ notifications: [..._activeNotifications.values()].sort((a, b) => b.firedAt - a.firedAt) });
-});
-app.post('/api/notifications/dismiss', (req, res) => {
-  const key = String((req.body && req.body.key) || '');
-  clearNotification(key);
-  const m = key.match(/^ha-alert:(.+)$/);
-  if (m) {
-    _haActiveAlerts.delete(m[1]);
-    const rt = _haAlertRuntime.get(m[1]);
-    if (rt) { rt.firing = false; rt.dismissed = true; _haAlertRuntime.set(m[1], rt); }
-  }
-  res.json({ ok: true });
-});
-
-app.get('/api/notif-prefs', (req, res) => {
-  res.json({ kinds: NOTIF_KINDS, prefs: getNotifPrefs() });
-});
-app.put('/api/notif-prefs', (req, res) => {
-  const incoming = (req.body && req.body.prefs) || {};
-  const clean = {};
-  for (const k of NOTIF_KINDS) {
-    const p = incoming[k.id] || {};
-    clean[k.id] = { screen: p.screen !== false, phone: p.phone !== false };
-  }
-  setSetting('notif_prefs_json', JSON.stringify(clean));
-  res.json({ ok: true, prefs: clean });
-});
+// This code lives in src/notifications.js. It runs here, at the same place in the file as before.
+const { _activeNotifications, raiseNotification, clearNotification } = require('./src/notifications.js')({ fs, app, IS_DEMO, resolveUpdateServerUrl, fetchJSON, getSetting, isSlave, hostBaseURL, httpsRequest, _haAlertRuntime, _haActiveAlerts, _activeWeatherAlertIds, WX_KIND, wxDismissThread: (...a) => wxDismissThread(...a), setSetting });
 
 // ── Severe weather alerts (NWS, free, keyless, US-only) ─────────────────────
-// A second producer into the same notification pipeline the HA alerts above
-// use — no new banner, no new delivery-prefs UI, just another thing that
-// calls raiseNotification()/clearNotification(). Polls the household's own
-// weather location, independent of whichever provider (Open-Meteo/OWM/NWS)
-// is actually chosen for the forecast display.
-// PIAZZA_NWS_ALERTS_URL overrides the base (tests only; unset in prod).
-const NWS_ALERTS_BASE = process.env.PIAZZA_NWS_ALERTS_URL || 'https://api.weather.gov';
-const SEVERITY_RANK = { Extreme: 4, Severe: 3, Moderate: 2, Minor: 1, Unknown: 0 };
-const _activeWeatherAlertIds = new Set();
+// This code lives in src/weather-alerts.js. It runs here, at the same place in the file as before.
+const { wxDismissThread, checkWeatherAlerts } = require('./src/weather-alerts.js')({ app, IS_DEMO, fetchJSON, getSetting, isSlave, hostBaseURL, _activeWeatherAlertIds, WX_KIND, setSetting, httpGetJSON, _activeNotifications, raiseNotification, clearNotification });
 
-async function checkWeatherAlerts() {
-  if (IS_DEMO || isSlave()) return;
-  if (getSetting('severe_weather_alerts_enabled') !== '1') return;
-  const lat = getSetting('weather_lat'), lon = getSetting('weather_lon');
-  if (!lat || !lon) return;
-  const minSeverity = SEVERITY_RANK[getSetting('severe_weather_min_severity') || 'Moderate'] ?? 2;
-  let alerts;
-  try {
-    const j = await httpGetJSON(`${NWS_ALERTS_BASE}/alerts/active?point=${(+lat).toFixed(4)},${(+lon).toFixed(4)}`);
-    alerts = (j && j.features) || [];
-  } catch { return; } // transient NWS failure — leave existing alerts as-is, try again next poll
-  const liveIds = new Set();
-  for (const f of alerts) {
-    const p = f.properties || {};
-    if ((SEVERITY_RANK[p.severity] ?? 0) < minSeverity) continue;
-    liveIds.add(f.id);
-    if (!_activeWeatherAlertIds.has(f.id)) {
-      raiseNotification({
-        kind: 'weather-alert', key: `weather-alert:${f.id}`,
-        title: p.event || 'Weather Alert', body: p.headline || p.description || '',
-      });
-    }
-  }
-  for (const id of _activeWeatherAlertIds) if (!liveIds.has(id)) clearNotification(`weather-alert:${id}`);
-  _activeWeatherAlertIds.clear();
-  for (const id of liveIds) _activeWeatherAlertIds.add(id);
-}
-setInterval(checkWeatherAlerts, 10 * 60 * 1000);
-setTimeout(checkWeatherAlerts, 25 * 1000); // stagger from checkHaAlerts' own 20s boot kick
+// ── Phone alert switches ────────────────────────────────────────
+// This code lives in src/phone-alerts.js. It runs here, at the same place in the file as before.
+require('./src/phone-alerts.js')({ app, resolveUpdateServerUrl, getSetting, setSetting });
 
-app.get('/api/phone-alerts', (req, res) => {
-  const license = getSetting('update_license_key') || '';
-  const server = resolveUpdateServerUrl() || '';
-  res.json({
-    enabled: getSetting('phone_alerts_enabled') || '0',
-    has_license: !!license,
-    setup_url: (server && license) ? `${server}/notify-setup?license=${encodeURIComponent(license)}` : '',
-  });
-});
-app.put('/api/phone-alerts', (req, res) => {
-  if (req.body && req.body.enabled !== undefined) {
-    setSetting('phone_alerts_enabled', String(req.body.enabled) === '1' ? '1' : '0');
-  }
-  res.json({ ok: true, enabled: getSetting('phone_alerts_enabled') || '0' });
-});
+// ── Home Assistant alert rules (routes) ──────────────────────────────
+// This code lives in src/ha-alert-routes.js. It runs here, at the same place in the file as before.
+require('./src/ha-alert-routes.js')({ crypto, app, fetchJSON, isSlave, hostBaseURL, setSetting, getHaAlerts, _haAlertRuntime, _haActiveAlerts, checkHaAlerts, clearNotification });
 
-app.get('/api/ha-alerts', (req, res) => {
-  res.json({ alerts: getHaAlerts() });
-});
-app.put('/api/ha-alerts', (req, res) => {
-  const raw = Array.isArray(req.body && req.body.alerts) ? req.body.alerts : null;
-  if (!raw) return res.status(400).json({ error: 'Body must be { alerts: [...] }.' });
-  const OPS = new Set(['eq', 'above', 'below']);
-  const clean = raw.slice(0, 40).map(a => ({
-    id: String(a.id || crypto.randomBytes(6).toString('hex')),
-    entityId: String(a.entityId || '').slice(0, 200),
-    name: String(a.name || '').slice(0, 120),
-    op: OPS.has(a.op) ? a.op : 'eq',
-    value: String(a.value == null ? '' : a.value).slice(0, 120),
-    dwellMin: Math.max(0, Math.min(1440, Math.round(Number(a.dwellMin) || 0))),
-    message: String(a.message || '').slice(0, 200),
-    enabled: a.enabled !== false,
-    screen: a.screen !== false,  // per-rule: show the banner on the display
-    phone: a.phone !== false,    // per-rule: also relay to phones
-  })).filter(a => a.entityId);
-  setSetting('ha_alerts_json', JSON.stringify(clean));
-  // Drop runtime/active for anything no longer present so a re-added rule
-  // starts fresh rather than inheriting a stale "already firing" flag.
-  const ids = new Set(clean.map(a => a.id));
-  // Also clear the on-screen banner for a removed rule — the display polls
-  // /api/notifications/active, and deleting the runtime entry here hides the
-  // id from checkHaAlerts()'s own cleanup pass, so it must happen here or a
-  // deleted alert's banner sticks until a server restart.
-  for (const id of [..._haAlertRuntime.keys()]) if (!ids.has(id)) {
-    _haAlertRuntime.delete(id); _haActiveAlerts.delete(id); clearNotification(`ha-alert:${id}`);
-  }
-  if (!isSlave()) setTimeout(checkHaAlerts, 500);
-  res.json({ ok: true, alerts: clean });
-});
-app.get('/api/ha-alerts/active', async (req, res) => {
-  // The evaluator only runs on the host, so a slave has no active alerts of
-  // its own — proxy the read so a slave display shows the same banner.
-  if (isSlave()) {
-    const base = hostBaseURL();
-    if (base) {
-      try { return res.json(await fetchJSON(`${base}/api/ha-alerts/active`, 6000)); }
-      catch { return res.json({ active: [] }); }
-    }
-    return res.json({ active: [] });
-  }
-  res.json({ active: [..._haActiveAlerts.values()].sort((a, b) => b.firedAt - a.firedAt) });
-});
-app.post('/api/ha-alerts/dismiss', (req, res) => {
-  const id = String((req.body && req.body.id) || '');
-  _haActiveAlerts.delete(id);
-  const rt = _haAlertRuntime.get(id);
-  if (rt) { rt.firing = false; rt.dismissed = true; _haAlertRuntime.set(id, rt); }
-  res.json({ ok: true });
-});
-
+// ── License cache and the periodic update check (core: stays in server.js) ──────────
 // Persists the license/trial/limits info from an update-check response locally,
 // so the browser app can read current status (for the trial-ending notice and
 // limit enforcement) without needing its own network round-trip to the central
@@ -9969,280 +5617,8 @@ function scheduleNextDailyUpdateInstall() {
 scheduleNextDailyUpdateInstall(); // arm at boot — no-op if mode is 'immediate'
 
 // ── iCloud shared-album photo sync ───────────────────────────────────────────
-// A public iCloud shared album exposes an unauthenticated web feed (the same
-// thing icloud.com renders for a shared-album link). We poll it like an iCal
-// feed: paste a URL, the server downloads the photos into the same pool as
-// uploads (source='icloud', tagged 'icloud'). Host-only; a broken album sync
-// must never affect uploaded photos — errors just land in
-// icloud_album_last_error. Highest-risk of the planned features (undocumented
-// Apple endpoint) — keep every failure path graceful.
-//
-// PIAZZA_ICLOUD_HOST overrides the sharedstreams host (tests point it at a
-// fake server; unset in every real deployment).
-
-const SHARED_ALBUM_B62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
-function parseSharedAlbumToken(url) {
-  const s = String(url || '').trim();
-  // Classic tokens are ~15 alphanumerics; newer "Copy Link" tokens are long
-  // (60-120 chars) and contain '-' / '_' (base64url). Accept both shapes.
-  let m = s.match(/icloud\.com\/sharedalbum\/#?([A-Za-z0-9._-]{8,240})/i);
-  if (m) return m[1];
-  m = s.match(/share\.icloud\.com\/photos\/([A-Za-z0-9._-]{8,240})/i);
-  if (m) return m[1];
-  return null;
-}
-function isSharedAlbumUrl(url) { return !!parseSharedAlbumToken(url); }
-// First-guess partition host from the token. Correct for classic short tokens;
-// modern long tokens derive to a low-numbered partition (p1/p2/…) that Apple
-// no longer runs, so icloudStreamPost() falls back to a list of known-live
-// partitions — whichever answers replies 330 + X-Apple-MMe-Host with the
-// album's real home, which icloudStreamFollow() then chases.
-function sharedAlbumBaseHost(token) {
-  const seg = token[0] === 'A' ? token.slice(1, 3) : token.slice(1, 2);
-  let n = 0;
-  for (const ch of seg) { const d = SHARED_ALBUM_B62.indexOf(ch); if (d < 0) { n = 0; break; } n = n * 62 + d; }
-  if (!Number.isFinite(n) || n < 1) n = 1;
-  return `p${n}-sharedstreams.icloud.com`;
-}
-// Known-live sharedstreams partitions to bootstrap from when the derived guess
-// doesn't resolve. Any of them will 330-redirect a valid token to its real
-// partition; the list is just for resilience if one is down/renamed.
-const ICLOUD_BOOTSTRAP_HOSTS = ['p23', 'p52', 'p97', 'p113', 'p143', 'p161', 'p192']
-  .map(p => `${p}-sharedstreams.icloud.com`);
-const _icloudTransient = (e) =>
-  /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|timed out|socket hang up|network|getaddrinfo/i
-    .test(String((e && e.message) || e));
-// 330 (Apple's own partition-redirect status, not a real HTTP redirect code)
-// and the x-apple-mme-host header it carries are read directly by the caller
-// (icloudStreamFollow) — fetch() doesn't treat 330 as something to auto-follow,
-// so that hop-chasing logic is untouched here.
-async function icloudStreamRequest(url, bodyObj) {
-  let u; try { u = new URL(url); } catch { throw new Error('bad iCloud url'); }
-  let res;
-  try {
-    res = await fetchWithTimeout(u, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/plain;charset=UTF-8',
-        'User-Agent': 'PiazzaHQ/1.0', 'Origin': 'https://www.icloud.com', 'Accept': '*/*',
-      },
-      body: JSON.stringify(bodyObj || {}),
-      timeoutMs: 20000,
-      timeoutMessage: 'iCloud request timed out',
-    });
-  } catch (e) {
-    // Real bug, found live (2026-09-18): fetch() throws a generic "fetch
-    // failed" with the actual DNS/connection reason nested in e.cause —
-    // left as-is, _icloudTransient() below (which pattern-matches on
-    // e.message) never recognized ENOTFOUND/etc. as transient, so it never
-    // fell through to the bootstrap hosts. A MODERN "Copy Link" token's
-    // first-guess partition host is *expected* not to resolve (see
-    // sharedAlbumBaseHost()'s own comment) — that's supposed to be exactly
-    // the transient case the fallback list exists for, but the generic
-    // message silently defeated it, so every modern-token album failed
-    // outright instead of trying the next host. Unwrap the real cause.
-    const cause = e && e.cause;
-    throw new Error(cause && cause.message ? cause.message : e.message);
-  }
-  const text = await res.text().catch(() => '');
-  let json = null;
-  try { json = JSON.parse(text); } catch {}
-  return { statusCode: res.status, headers: Object.fromEntries(res.headers.entries()), json };
-}
-const _icloudRoot = (host) => /^https?:\/\//i.test(host) ? host.replace(/\/+$/, '') : 'https://' + host;
-// One start host, chasing 330 + X-Apple-MMe-Host to the album's real partition.
-async function icloudStreamFollow(host, token, endpoint, bodyObj) {
-  for (let hop = 0; hop < 4; hop++) {
-    const r = await icloudStreamRequest(`${_icloudRoot(host)}/${token}/sharedstreams/${endpoint}`, bodyObj);
-    if (r.statusCode === 330 && r.headers['x-apple-mme-host']) { host = String(r.headers['x-apple-mme-host']); continue; }
-    if (r.statusCode !== 200 || !r.json) throw new Error(`iCloud "${endpoint}" returned HTTP ${r.statusCode}`);
-    return { host, json: r.json };
-  }
-  throw new Error(`iCloud "${endpoint}": too many partition redirects`);
-}
-async function icloudStreamPost(host, token, endpoint, bodyObj) {
-  // Try the derived guess first; on a DNS/connection failure fall through to
-  // the known-live partitions. A test host override never falls back to Apple.
-  const extra = process.env.PIAZZA_ICLOUD_HOST ? [] : ICLOUD_BOOTSTRAP_HOSTS;
-  const seen = new Set();
-  const candidates = [host, ...extra].filter((h) => {
-    const k = String(h || '').toLowerCase().replace(/^https?:\/\//, '');
-    if (!k || seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
-  let lastErr;
-  for (const start of candidates) {
-    try { return await icloudStreamFollow(start, token, endpoint, bodyObj); }
-    catch (e) { lastErr = e; if (!_icloudTransient(e)) throw e; }
-  }
-  throw lastErr || new Error(`iCloud "${endpoint}": no reachable partition host`);
-}
-// Largest derivative no taller than capPx; else the smallest available.
-function pickAlbumDerivative(derivatives, capPx) {
-  const list = Object.values(derivatives || {})
-    .map(d => ({ checksum: d && d.checksum, width: +(d && d.width) || 0, height: +(d && d.height) || 0, fileSize: +(d && d.fileSize) || 0 }))
-    .filter(d => d.checksum);
-  if (!list.length) return null;
-  const under = list.filter(d => d.height && d.height <= capPx);
-  return (under.length ? under.sort((a, b) => b.height - a.height) : list.sort((a, b) => a.height - b.height))[0];
-}
-function imageExtFromMagic(b) {
-  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpg';
-  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'png';
-  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'gif';
-  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'webp';
-  return null; // HEIC or anything a browser can't render — skip it
-}
-
-let _albumSyncing = false;
-async function syncIcloudAlbum() {
-  const out = { added: 0, removed: 0, skipped: 0 };
-  if (isSlave()) return out;
-  if (_albumSyncing) return { ...out, error: 'A sync is already running.' };
-  const token = parseSharedAlbumToken(getSetting('icloud_album_url'));
-  if (!token) return out;
-  _albumSyncing = true;
-  try {
-    let host = process.env.PIAZZA_ICLOUD_HOST || sharedAlbumBaseHost(token);
-    const ws = await icloudStreamPost(host, token, 'webstream', { streamCtag: null });
-    host = ws.host;
-    const stream = ws.json || {};
-    const newCtag = stream.streamCtag ? String(stream.streamCtag) : '';
-    const savedCtag = getSetting('icloud_album_ctag');
-
-    let photos = Array.isArray(stream.photos) ? stream.photos.filter(p => p && p.photoGuid) : [];
-    photos.sort((a, b) => String(b.dateCreated || '').localeCompare(String(a.dateCreated || '')));
-    const maxN = Math.max(1, Math.min(2000, parseInt(getSetting('icloud_album_max'), 10) || 300));
-    photos = photos.slice(0, maxN);
-    const wantGuids = new Set(photos.map(p => p.photoGuid));
-
-    // Removals first — a photo pulled from the album (or now past the cap)
-    // gets deleted locally, regardless of the ctag.
-    for (const row of db.prepare(`SELECT id, filename, ext_guid FROM photos WHERE source = 'icloud'`).all()) {
-      if (!wantGuids.has(row.ext_guid)) {
-        try { fs.unlinkSync(path.join(UPLOAD_DIR, row.filename)); } catch {}
-        db.prepare(`DELETE FROM photos WHERE id = ?`).run(row.id);
-        out.removed++;
-      }
-    }
-    const haveGuids = new Set(db.prepare(`SELECT ext_guid FROM photos WHERE source = 'icloud'`).all().map(r => r.ext_guid));
-
-    // Nothing changed and nothing missing → no-op poll.
-    if (newCtag && newCtag === savedCtag && out.removed === 0 && [...wantGuids].every(g => haveGuids.has(g))) {
-      setSetting('icloud_album_last_sync', new Date().toISOString());
-      setSetting('icloud_album_last_error', '');
-      return out;
-    }
-
-    const toAdd = photos.filter(p => !haveGuids.has(p.photoGuid));
-    const capPx = Math.max(320, Math.min(4320, parseInt(getSetting('icloud_album_max_px'), 10) || 2160));
-    for (let i = 0; i < toAdd.length; i += 20) {
-      const batch = toAdd.slice(i, i + 20);
-      const meta = new Map(); // checksum -> { guid, caption }
-      const guids = [];
-      for (const p of batch) {
-        const d = pickAlbumDerivative(p.derivatives, capPx);
-        if (!d) { out.skipped++; continue; }
-        guids.push(p.photoGuid);
-        meta.set(d.checksum, { guid: p.photoGuid, caption: String(p.caption || '').slice(0, 200) });
-      }
-      if (!guids.length) continue;
-      const au = await icloudStreamPost(host, token, 'webasseturls', { photoGuids: guids });
-      host = au.host;
-      const items = (au.json && au.json.items) || {};
-      for (const [checksum, m] of meta) {
-        const it = items[checksum];
-        if (!it || !it.url_location || !it.url_path) { out.skipped++; continue; }
-        const assetUrl = (/^https?:\/\//i.test(it.url_location) ? it.url_location : 'https://' + it.url_location) + it.url_path;
-        const safe = String(m.guid).replace(/[^A-Za-z0-9]/g, '').slice(0, 40);
-        const tmp = path.join(UPLOAD_DIR, `.icloud.dl.${safe}.${process.pid}`);
-        try {
-          await downloadFile(assetUrl, tmp, 45000);
-          const fd = fs.openSync(tmp, 'r');
-          const hb = Buffer.alloc(16);
-          fs.readSync(fd, hb, 0, 16, 0);
-          fs.closeSync(fd);
-          const ext = imageExtFromMagic(hb);
-          if (!ext) { fs.unlinkSync(tmp); out.skipped++; continue; }
-          const filename = `icloud_${safe}.${ext}`;
-          fs.renameSync(tmp, path.join(UPLOAD_DIR, filename));
-          const maxOrder = db.prepare(`SELECT MAX(sort_order) m FROM photos`).get().m || 0;
-          db.prepare(`INSERT INTO photos (filename, label, tags, sort_order, source, ext_guid) VALUES (?,?,?,?,?,?)`)
-            .run(filename, m.caption, 'icloud', maxOrder + 1, 'icloud', m.guid);
-          out.added++;
-        } catch (e) {
-          try { fs.unlinkSync(tmp); } catch {}
-          out.skipped++;
-        }
-      }
-    }
-
-    if (newCtag) setSetting('icloud_album_ctag', newCtag);
-    setSetting('icloud_album_last_sync', new Date().toISOString());
-    setSetting('icloud_album_last_error', '');
-    if (out.added || out.removed) broadcastUpdate('photos');
-    console.log(`[icloud-album] sync: +${out.added} -${out.removed} (${out.skipped} skipped)`);
-    return out;
-  } catch (e) {
-    setSetting('icloud_album_last_error', String(e && e.message || e).slice(0, 300));
-    console.error('[icloud-album] sync failed: ' + (e && e.message || e));
-    return { ...out, error: String(e && e.message || e) };
-  } finally {
-    _albumSyncing = false;
-  }
-}
-function icloudAlbumIntervalMs() {
-  const m = parseInt(getSetting('icloud_album_sync_minutes'), 10);
-  return Math.max(15, Number.isFinite(m) ? m : 60) * 60 * 1000;
-}
-function scheduleIcloudAlbumSync() {
-  setTimeout(() => {
-    (async () => { try { if (parseSharedAlbumToken(getSetting('icloud_album_url'))) await syncIcloudAlbum(); } catch {} })()
-      .finally(scheduleIcloudAlbumSync);
-  }, icloudAlbumIntervalMs());
-}
-scheduleIcloudAlbumSync();
-setTimeout(() => { try { if (parseSharedAlbumToken(getSetting('icloud_album_url'))) syncIcloudAlbum().catch(() => {}); } catch {} }, 4500);
-
-app.get('/api/photo-album', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.json({
-    url: getSetting('icloud_album_url') || '',
-    connected: !!parseSharedAlbumToken(getSetting('icloud_album_url')),
-    last_sync: getSetting('icloud_album_last_sync') || '',
-    last_error: getSetting('icloud_album_last_error') || '',
-    count: db.prepare(`SELECT COUNT(*) n FROM photos WHERE source = 'icloud'`).get().n,
-    syncing: _albumSyncing,
-  });
-});
-app.put('/api/photo-album', (req, res) => {
-  const url = String((req.body && req.body.url) || '').trim();
-  if (!url) return res.status(400).json({ error: 'A shared-album URL is required.' });
-  if (!isSharedAlbumUrl(url)) {
-    return res.status(400).json({ error: 'That doesn\'t look like an iCloud shared-album link (icloud.com/sharedalbum/#… or share.icloud.com/photos/…).' });
-  }
-  setSetting('icloud_album_url', url);
-  setSetting('icloud_album_ctag', '');
-  setSetting('icloud_album_last_error', '');
-  broadcastUpdate('settings');
-  syncIcloudAlbum().catch(() => {});
-  res.json({ ok: true });
-});
-app.post('/api/photo-album/sync', async (req, res) => {
-  if (!parseSharedAlbumToken(getSetting('icloud_album_url'))) return res.status(400).json({ error: 'No album connected.' });
-  const r = await syncIcloudAlbum();
-  res.json({ ok: !r.error, ...r });
-});
-app.delete('/api/photo-album', (req, res) => {
-  const rows = db.prepare(`SELECT id, filename FROM photos WHERE source = 'icloud'`).all();
-  for (const row of rows) { try { fs.unlinkSync(path.join(UPLOAD_DIR, row.filename)); } catch {} }
-  db.prepare(`DELETE FROM photos WHERE source = 'icloud'`).run();
-  for (const k of ['icloud_album_url', 'icloud_album_ctag', 'icloud_album_last_sync', 'icloud_album_last_error']) setSetting(k, '');
-  broadcastUpdate('photos');
-  broadcastUpdate('settings');
-  res.json({ ok: true, removed: rows.length });
-});
+// This code lives in src/shared-album.js. It runs here, at the same place in the file as before.
+const { scheduleIcloudAlbumSync } = require('./src/shared-album.js')({ path, fs, fetchWithTimeout, app, db, UPLOAD_DIR, broadcastUpdate, downloadFile, getSetting: (k) => getSetting(k), isSlave: () => isSlave(), setSetting, URL });
 
 // ── Photos API ────────────────────────────────────────────────────────────────
 
@@ -10253,3636 +5629,106 @@ app.get('/api/photos', (req, res) => {
 });
 
 // POST /api/photos — upload a new photo
-// ── Custom theme: background + up to 3 decorations ────────────────────────────
-// Deliberately global settings, not per-display — a display's "theme" picks
-// among Piazza HQ's built-in themes PLUS whichever custom theme is currently
-// loaded into these "live" slots below. See the custom_themes table above for
-// the named, saved-snapshot side of this — these settings are just the mutable
-// working copy that gets edited live and shown on displays set to "Custom".
-// Old files are removed on replacement/removal so they don't silently
-// accumulate on disk over time.
-const VALID_DECO_BEHAVIORS = new Set(['top', 'bottom', 'left', 'right', 'random']);
-function removeCustomThemeFile(settingKey) {
-  const existing = updateSetting(settingKey, '');
-  if (!existing) return;
-  const filePath = uploadFilePath(existing);
-  try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { /* best-effort */ }
-}
-// Physically copies a custom-theme file (background or decoration) to a fresh,
-// independent filename in the same directory — used any time a saved theme and
-// the live working slots need to stop sharing a file, so editing one can never
-// silently corrupt the other. urlPath is like "/uploads/custom-theme/bg_123.png";
-// returns the new url path, or '' if there was nothing to copy.
-function copyCustomThemeFile(urlPath, prefix) {
-  if (!urlPath) return '';
-  const srcPath = uploadFilePath(urlPath);
-  if (!fs.existsSync(srcPath)) return '';
-  const ext = path.extname(srcPath);
-  const newName = `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
-  const destPath = path.join(CUSTOM_THEME_DIR, newName);
-  fs.copyFileSync(srcPath, destPath);
-  return `/uploads/custom-theme/${newName}`;
-}
+// ── Setting writer ─────────────────────────────────────────────
+// Used all over the server (and by several modules in src/), so it stays here rather than inside the custom-theme code it used to sit in.
 function setSetting(key, value) {
   db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`).run(key, String(value));
 }
 
-app.post('/api/custom-theme/background', uploadCustomBg.single('image'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No image uploaded (must be JPEG, PNG, or WebP).' });
-  removeCustomThemeFile('custom_theme_bg');
-  setSetting('custom_theme_bg', `/uploads/custom-theme/${req.file.filename}`);
-  broadcastUpdate('displays');
-  res.json({ ok: true, url: `/uploads/custom-theme/${req.file.filename}` });
-});
-app.delete('/api/custom-theme/background', (req, res) => {
-  removeCustomThemeFile('custom_theme_bg');
-  setSetting('custom_theme_bg', '');
-  broadcastUpdate('displays');
-  res.json({ ok: true });
-});
+// ── Wi-Fi power saving off (Pi only) ──
+// This code lives in src/wifi-power.js. It runs here, after setSetting(); it only starts a timer and adds no routes.
+require('./src/wifi-power.js')({ fs, path, os, execFile, DEPLOYMENT, IS_DEMO, getSetting: (k) => getSetting(k), setSetting });
 
-app.post('/api/custom-theme/decoration/:slot', uploadCustomDeco.single('image'), (req, res) => {
-  const slot = Number(req.params.slot);
-  if (![1, 2, 3].includes(slot)) return res.status(400).json({ error: 'Slot must be 1, 2, or 3.' });
-  if (!req.file) return res.status(400).json({ error: 'No image uploaded (must be PNG, for transparency).' });
-  removeCustomThemeFile(`custom_theme_deco${slot}`);
-  setSetting(`custom_theme_deco${slot}`, `/uploads/custom-theme/${req.file.filename}`);
-  broadcastUpdate('displays');
-  res.json({ ok: true, url: `/uploads/custom-theme/${req.file.filename}` });
-});
-app.delete('/api/custom-theme/decoration/:slot', (req, res) => {
-  const slot = Number(req.params.slot);
-  if (![1, 2, 3].includes(slot)) return res.status(400).json({ error: 'Slot must be 1, 2, or 3.' });
-  removeCustomThemeFile(`custom_theme_deco${slot}`);
-  setSetting(`custom_theme_deco${slot}`, '');
-  broadcastUpdate('displays');
-  res.json({ ok: true });
-});
-app.put('/api/custom-theme/decoration/:slot/behavior', (req, res) => {
-  const slot = Number(req.params.slot);
-  if (![1, 2, 3].includes(slot)) return res.status(400).json({ error: 'Slot must be 1, 2, or 3.' });
-  const behavior = (req.body && req.body.behavior || '').trim();
-  if (!VALID_DECO_BEHAVIORS.has(behavior)) return res.status(400).json({ error: 'Behavior must be top, bottom, left, right, or random.' });
-  setSetting(`custom_theme_deco${slot}_behavior`, behavior);
-  broadcastUpdate('displays');
-  res.json({ ok: true });
-});
+// ── Custom theme: background + up to 3 decorations ────────────────────────────
+// This code lives in src/custom-theme-slots.js. It runs here, at the same place in the file as before.
+const { removeCustomThemeFile, copyCustomThemeFile } = require('./src/custom-theme-slots.js')({ path, fs, app, CUSTOM_THEME_DIR, uploadFilePath, uploadCustomBg, uploadCustomDeco, broadcastUpdate, setSetting, updateSetting });
 
 // ── Saved custom theme library ────────────────────────────────────────────────
-// List every saved theme (background/decorations already reflected in the live
-// slots don't need re-fetching from this response — the client already has that).
-app.get('/api/custom-themes', (req, res) => {
-  res.json(db.prepare(`SELECT * FROM custom_themes ORDER BY updated_at DESC, id DESC`).all());
-});
-// Save the CURRENT live custom-theme slots as a new named theme. Copies the
-// files rather than referencing the live ones, so later live edits can't
-// corrupt this snapshot.
-app.post('/api/custom-themes', (req, res) => {
-  const name = (req.body && req.body.name || '').trim();
-  if (!name) return res.status(400).json({ error: 'A name is required.' });
-  const live = {
-    bg: getSetting('custom_theme_bg') || '',
-    deco1: getSetting('custom_theme_deco1') || '', deco1b: getSetting('custom_theme_deco1_behavior') || 'random',
-    deco2: getSetting('custom_theme_deco2') || '', deco2b: getSetting('custom_theme_deco2_behavior') || 'random',
-    deco3: getSetting('custom_theme_deco3') || '', deco3b: getSetting('custom_theme_deco3_behavior') || 'random',
-  };
-  if (!live.bg && !live.deco1 && !live.deco2 && !live.deco3) {
-    return res.status(400).json({ error: 'Build a custom theme first — upload a background or a decoration.' });
-  }
-  const bgFile = copyCustomThemeFile(live.bg, 'saved-bg');
-  const deco1File = copyCustomThemeFile(live.deco1, 'saved-deco1');
-  const deco2File = copyCustomThemeFile(live.deco2, 'saved-deco2');
-  const deco3File = copyCustomThemeFile(live.deco3, 'saved-deco3');
-  const r = db.prepare(`INSERT INTO custom_themes
-    (name, bg_file, deco1_file, deco1_behavior, deco2_file, deco2_behavior, deco3_file, deco3_behavior)
-    VALUES (?,?,?,?,?,?,?,?)`).run(name, bgFile, deco1File, live.deco1b, deco2File, live.deco2b, deco3File, live.deco3b);
-  res.status(201).json(db.prepare(`SELECT * FROM custom_themes WHERE id = ?`).get(r.lastInsertRowid));
-});
-// Rename a saved theme.
-app.put('/api/custom-themes/:id', (req, res) => {
-  const theme = db.prepare(`SELECT * FROM custom_themes WHERE id = ?`).get(req.params.id);
-  if (!theme) return res.status(404).json({ error: 'Theme not found.' });
-  const name = (req.body && req.body.name || '').trim();
-  if (!name) return res.status(400).json({ error: 'A name is required.' });
-  db.prepare(`UPDATE custom_themes SET name = ?, updated_at = datetime('now') WHERE id = ?`).run(name, theme.id);
-  res.json(db.prepare(`SELECT * FROM custom_themes WHERE id = ?`).get(theme.id));
-});
-// Overwrite a saved theme's files with whatever is CURRENTLY in the live
-// slots — "save my edits back to this theme" after loading + tweaking it.
-app.post('/api/custom-themes/:id/update', (req, res) => {
-  const theme = db.prepare(`SELECT * FROM custom_themes WHERE id = ?`).get(req.params.id);
-  if (!theme) return res.status(404).json({ error: 'Theme not found.' });
-  // Remove this theme's OWN old files (not the live ones) before replacing them.
-  for (const f of [theme.bg_file, theme.deco1_file, theme.deco2_file, theme.deco3_file]) {
-    if (!f) continue;
-    const p = uploadFilePath(f);
-    try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {}
-  }
-  const live = {
-    bg: getSetting('custom_theme_bg') || '',
-    deco1: getSetting('custom_theme_deco1') || '', deco1b: getSetting('custom_theme_deco1_behavior') || 'random',
-    deco2: getSetting('custom_theme_deco2') || '', deco2b: getSetting('custom_theme_deco2_behavior') || 'random',
-    deco3: getSetting('custom_theme_deco3') || '', deco3b: getSetting('custom_theme_deco3_behavior') || 'random',
-  };
-  const bgFile = copyCustomThemeFile(live.bg, 'saved-bg');
-  const deco1File = copyCustomThemeFile(live.deco1, 'saved-deco1');
-  const deco2File = copyCustomThemeFile(live.deco2, 'saved-deco2');
-  const deco3File = copyCustomThemeFile(live.deco3, 'saved-deco3');
-  db.prepare(`UPDATE custom_themes SET bg_file=?, deco1_file=?, deco1_behavior=?, deco2_file=?, deco2_behavior=?,
-              deco3_file=?, deco3_behavior=?, updated_at=datetime('now') WHERE id=?`)
-    .run(bgFile, deco1File, live.deco1b, deco2File, live.deco2b, deco3File, live.deco3b, theme.id);
-  res.json(db.prepare(`SELECT * FROM custom_themes WHERE id = ?`).get(theme.id));
-});
-// Load a saved theme INTO the live working slots — copies its files into the
-// live slots (again, copies, so tweaking after loading doesn't touch the saved
-// snapshot). Any display currently set to "Custom" picks this up immediately.
-app.post('/api/custom-themes/:id/load', (req, res) => {
-  const theme = db.prepare(`SELECT * FROM custom_themes WHERE id = ?`).get(req.params.id);
-  if (!theme) return res.status(404).json({ error: 'Theme not found.' });
-  removeCustomThemeFile('custom_theme_bg');
-  removeCustomThemeFile('custom_theme_deco1');
-  removeCustomThemeFile('custom_theme_deco2');
-  removeCustomThemeFile('custom_theme_deco3');
-  setSetting('custom_theme_bg', copyCustomThemeFile(theme.bg_file, 'bg'));
-  setSetting('custom_theme_deco1', copyCustomThemeFile(theme.deco1_file, 'deco1'));
-  setSetting('custom_theme_deco1_behavior', theme.deco1_behavior || 'random');
-  setSetting('custom_theme_deco2', copyCustomThemeFile(theme.deco2_file, 'deco2'));
-  setSetting('custom_theme_deco2_behavior', theme.deco2_behavior || 'random');
-  setSetting('custom_theme_deco3', copyCustomThemeFile(theme.deco3_file, 'deco3'));
-  setSetting('custom_theme_deco3_behavior', theme.deco3_behavior || 'random');
-  broadcastUpdate('displays');
-  res.json({ ok: true, loadedThemeId: theme.id, loadedThemeName: theme.name });
-});
-app.delete('/api/custom-themes/:id', (req, res) => {
-  const theme = db.prepare(`SELECT * FROM custom_themes WHERE id = ?`).get(req.params.id);
-  if (!theme) return res.status(404).json({ error: 'Theme not found.' });
-  for (const f of [theme.bg_file, theme.deco1_file, theme.deco2_file, theme.deco3_file]) {
-    if (!f) continue;
-    const p = uploadFilePath(f);
-    try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {}
-  }
-  db.prepare(`DELETE FROM custom_themes WHERE id = ?`).run(theme.id);
-  res.json({ ok: true });
-});
+// This code lives in src/custom-themes.js. It runs here, at the same place in the file as before.
+require('./src/custom-themes.js')({ fs, app, db, uploadFilePath, broadcastUpdate, getSetting: (k) => getSetting(k), removeCustomThemeFile, copyCustomThemeFile, setSetting });
 
-app.post('/api/photos', upload.single('photo'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  const label = req.body.label || '';
-  const tags = (req.body.tags || '').split(',').map(t => t.trim()).filter(Boolean).join(',');
-  const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM photos`).get().m || 0;
-  const result = db.prepare(
-    `INSERT INTO photos (filename, label, tags, sort_order) VALUES (?, ?, ?, ?)`
-  ).run(req.file.filename, label, tags, maxOrder + 1);
-  broadcastUpdate('photos');
-  res.status(201).json(db.prepare(`SELECT * FROM photos WHERE id = ?`).get(result.lastInsertRowid));
-});
-
-// PUT /api/photos/:id — update label, tags, sort_order, or active (slideshow inclusion)
-app.put('/api/photos/:id', (req, res) => {
-  const photo = db.prepare(`SELECT * FROM photos WHERE id = ?`).get(req.params.id);
-  if (!photo) return res.status(404).json({ error: 'Photo not found' });
-  const { label, tags, sort_order, active } = req.body;
-  const normTags = tags !== undefined
-    ? String(tags).split(',').map(t => t.trim()).filter(Boolean).join(',')
-    : photo.tags;
-  db.prepare(`UPDATE photos SET label=?, tags=?, sort_order=?, active=? WHERE id=?`)
-    .run(
-      label ?? photo.label,
-      normTags,
-      sort_order ?? photo.sort_order,
-      active !== undefined ? (active ? 1 : 0) : photo.active,
-      req.params.id
-    );
-  broadcastUpdate('photos');
-  res.json(db.prepare(`SELECT * FROM photos WHERE id = ?`).get(req.params.id));
-});
-
-// PUT /api/photos-active — bulk set which photos are in the slideshow at once.
-// Body: { activeIds: [1,4,7] } — those become active, all others inactive.
-app.put('/api/photos-active', (req, res) => {
-  const ids = Array.isArray(req.body.activeIds) ? req.body.activeIds.map(Number) : null;
-  if (!ids) return res.status(400).json({ error: 'activeIds array required' });
-  const setActive = db.prepare(`UPDATE photos SET active = 1 WHERE id = ?`);
-  const allInactive = db.prepare(`UPDATE photos SET active = 0`);
-  db.transaction(() => {
-    allInactive.run();
-    for (const id of ids) setActive.run(id);
-  })();
-  broadcastUpdate('photos');
-  res.json(db.prepare(`SELECT * FROM photos ORDER BY sort_order ASC, id ASC`).all());
-});
-
-// DELETE /api/photos/:id — delete photo + file
-app.delete('/api/photos/:id', (req, res) => {
-  const photo = db.prepare(`SELECT * FROM photos WHERE id = ?`).get(req.params.id);
-  if (!photo) return res.status(404).json({ error: 'Photo not found' });
-  const filePath = path.join(UPLOAD_DIR, photo.filename);
-  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-  db.prepare(`DELETE FROM photos WHERE id = ?`).run(req.params.id);
-  broadcastUpdate('photos');
-  res.json({ ok: true });
-});
-
-// GET /api/photo-settings
-app.get('/api/photo-settings', (req, res) => {
-  const rows = db.prepare(`SELECT key, value FROM photo_settings`).all();
-  res.json(Object.fromEntries(rows.map(r => [r.key, r.value])));
-});
-
-// PUT /api/photo-settings
-app.put('/api/photo-settings', (req, res) => {
-  const upsert = db.prepare(`INSERT OR REPLACE INTO photo_settings (key, value) VALUES (?, ?)`);
-  const tx = db.transaction(pairs => { for (const [k, v] of pairs) upsert.run(k, String(v)); });
-  tx(Object.entries(req.body));
-  const rows = db.prepare(`SELECT key, value FROM photo_settings`).all();
-  broadcastUpdate('photo-settings');
-  res.json(Object.fromEntries(rows.map(r => [r.key, r.value])));
-});
+// ── Photo library routes ──────────────────────────────
+// This code lives in src/photos.js. It runs here, at the same place in the file as before.
+require('./src/photos.js')({ path, fs, app, db, UPLOAD_DIR, upload, broadcastUpdate });
 
 // ── Displays API ──────────────────────────────────────────────────────────────
-// Resolves a display from a slug (preferred, used in ?display=kitchen URLs) or
-// falls back to the first display by sort_order — keeps things working for any
-// screen/URL that doesn't specify a display at all (e.g. pre-multi-display bookmarks).
-function resolveDisplay(slugOrId) {
-  if (slugOrId) {
-    const bySlug = db.prepare(`SELECT * FROM displays WHERE slug = ?`).get(slugOrId);
-    if (bySlug) return bySlug;
-    const byId = db.prepare(`SELECT * FROM displays WHERE id = ?`).get(slugOrId);
-    if (byId) return byId;
-  }
-  return db.prepare(`SELECT * FROM displays ORDER BY sort_order ASC, id ASC LIMIT 1`).get();
-}
-
-function slugify(name) {
-  const base = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'display';
-  let slug = base, n = 1;
-  while (db.prepare(`SELECT id FROM displays WHERE slug = ?`).get(slug)) {
-    slug = `${base}-${++n}`;
-  }
-  return slug;
-}
-
-// Auto-names a preview screen identity (device_id starting with 'preview_')
-// with a descriptive name derived from the display it's previewing, rather
-// than leaving it to show as "Unnamed display" in the Devices tab —
-// confirmed as a real point of confusion, not a hypothetical: these
-// disposable, per-display identities (see SCREEN_ID's own comment in
-// display.html for why they exist at all — a dedicated, never-colliding
-// identity specifically for "Open to Edit in New Tab") were showing up
-// indistinguishable from an unconfigured real device needing attention.
-// Returns null for anything that isn't a preview-prefixed id, so callers
-// can fall back to their own existing naming logic untouched.
-function previewScreenName(screenId) {
-  if (!screenId || !screenId.startsWith('preview_')) return null;
-  const slug = screenId.slice('preview_'.length);
-  // Exact match only — resolveDisplay() deliberately falls back to the
-  // first display in the system when nothing matches, which would be
-  // actively wrong here: misnaming this preview after a display it has
-  // nothing to do with, rather than a generic fallback using the slug
-  // itself.
-  const display = db.prepare(`SELECT name FROM displays WHERE slug = ?`).get(slug);
-  return `${display ? display.name : slug} (Live Edit)`;
-}
-
-// Periodically deletes preview screen identities that haven't checked in for
-// longer than the configured threshold. Safe to delete outright, not just
-// hide: these are inherently disposable, single-purpose identities (see
-// previewScreenName()'s own comment for why they exist at all), and their
-// own settings — schedule rules, switcher targets — are entirely isolated
-// to that one specific preview session, stored per-device_id exactly like
-// a real screen's own settings are, never touching any real, deployed
-// screen's configuration. Confirmed directly, not assumed: both
-// floating_switcher_presets and floating_switcher_schedule are saved via
-// `UPDATE screens ... WHERE device_id = ?`, so deleting a stale preview_*
-// row can never affect anything a real screen depends on.
-// Threshold is configurable via the preview_screen_cleanup_days setting
-// (an ordinary key on /api/settings, not a dedicated endpoint), by explicit
-// request — ranges from a few days to a year, defaulting to 7, so
-// infrequent but intentional re-use of the same preview doesn't lose it
-// prematurely.
-function cleanupStalePreviewScreens() {
-  try {
-    const days = Number(updateSetting('preview_screen_cleanup_days', '7')) || 7;
-    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-    const result = db.prepare(`DELETE FROM screens WHERE device_id LIKE 'preview\\_%' ESCAPE '\\' AND last_seen < ?`).run(cutoff);
-    if (result.changes > 0) broadcastUpdate('screens');
-  } catch {}
-}
-setInterval(cleanupStalePreviewScreens, 6 * 60 * 60 * 1000); // every 6 hours — no need to check more often for a days-to-a-year-scale threshold
-cleanupStalePreviewScreens(); // also run once at boot, so a long-stale entry doesn't have to wait for the first interval tick
-
-app.get('/api/displays', (req, res) => {
-  res.json(db.prepare(`SELECT * FROM displays ORDER BY sort_order ASC, id ASC`).all());
-});
-
-// GET /api/display-config?display=kitchen&device=scr_xxx — the resolved render config
-// (orientation override + rotation). The physical SCREEN's own orientation/rotation, if
-// set, takes precedence over the profile's — so a sideways-mounted TV stays portrait no
-// matter which profile it shows. Unset ('' / -1) falls back to the profile's values.
-app.get('/api/display-config', (req, res) => {
-  const display = resolveDisplay(req.query.display);
-  if (!display) return res.status(404).json({ error: 'No displays exist yet' });
-
-  let force_orientation = display.force_orientation || 'auto';
-  let rotation = display.rotation || 0;
-  let screensaverTag = '';
-  let screensaverPhotoId = null;
-  let ambientMode = '';
-  let ambientClockCorner = 'bl';
-  let ambientPhotoFit = 'cover';
-  let ambientFadeTransition = true;
-  let ambientPhotoInterval = '';
-  let ambientBlurBg = true;
-  let ambientFadeDuration = '2';
-  let fxScale = '1';
-  let fxDensity = '1';
-
-  const deviceId = (req.query.device || req.query.screen || '').toString();
-  if (deviceId) {
-    const scr = db.prepare(`SELECT screen_orientation, screen_rotation, screensaver_tag, screensaver_photo_id, ambient_mode, ambient_clock_corner, ambient_photo_fit, ambient_fade_transition, ambient_photo_interval, ambient_blur_bg, ambient_fade_duration, fx_scale, fx_density FROM screens WHERE device_id = ?`).get(deviceId);
-    if (scr) {
-      if (scr.screen_orientation && scr.screen_orientation !== '') force_orientation = scr.screen_orientation;
-      if (typeof scr.screen_rotation === 'number' && scr.screen_rotation >= 0) rotation = scr.screen_rotation;
-      screensaverTag = scr.screensaver_tag || '';
-      screensaverPhotoId = scr.screensaver_photo_id || null;
-      ambientMode = scr.ambient_mode || '';
-      ambientClockCorner = scr.ambient_clock_corner || 'bl';
-      ambientPhotoFit = scr.ambient_photo_fit || 'cover';
-      ambientFadeTransition = scr.ambient_fade_transition !== '0';
-      ambientPhotoInterval = scr.ambient_photo_interval || '';
-      ambientBlurBg = scr.ambient_blur_bg !== '0';
-      ambientFadeDuration = scr.ambient_fade_duration || '2';
-      fxScale = scr.fx_scale || '1';
-      fxDensity = scr.fx_density || '1';
-    }
-  }
-
-  res.json({
-    id: display.id,
-    name: display.name,
-    slug: display.slug,
-    force_orientation,
-    rotation,
-    theme: display.theme || '',
-    fontFamily: display.font_family || '',
-    screensaverTag,
-    screensaverPhotoId,
-    ambientMode,
-    ambientClockCorner,
-    ambientPhotoFit,
-    ambientFadeTransition,
-    ambientPhotoInterval,
-    ambientBlurBg,
-    ambientFadeDuration,
-    fxScale,
-    fxDensity,
-    customBg: updateSetting('custom_theme_bg', ''),
-    customDeco1: updateSetting('custom_theme_deco1', ''),
-    customDeco2: updateSetting('custom_theme_deco2', ''),
-    customDeco3: updateSetting('custom_theme_deco3', ''),
-    customDeco1Behavior: updateSetting('custom_theme_deco1_behavior', 'random'),
-    customDeco2Behavior: updateSetting('custom_theme_deco2_behavior', 'random'),
-    customDeco3Behavior: updateSetting('custom_theme_deco3_behavior', 'random'),
-  });
-});
-
-app.post('/api/displays', (req, res) => {
-  const { name } = req.body;
-  if (!name || !name.trim()) return res.status(400).json({ error: 'A display name is required' });
-  const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM displays`).get().m || 0;
-  const slug = slugify(name);
-  const result = db.prepare(`INSERT INTO displays (name, slug, sort_order) VALUES (?, ?, ?)`)
-    .run(name.trim(), slug, maxOrder + 1);
-  seedDefaultLayoutsForDisplay(result.lastInsertRowid);
-  res.status(201).json(db.prepare(`SELECT * FROM displays WHERE id = ?`).get(result.lastInsertRowid));
-});
-
-app.put('/api/displays/:id', (req, res) => {
-  const existing = db.prepare(`SELECT * FROM displays WHERE id = ?`).get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Display not found' });
-  const { name, force_orientation, rotation, theme, fontFamily } = req.body;
-  // Slug is intentionally NOT changed on rename — the physical screen's bookmarked
-  // URL (?display=old-slug) would otherwise silently break.
-  const validOrientations = ['auto', 'landscape', 'portrait'];
-  const validRotations = [0, 90, 180, 270];
-  const newOrientation = (force_orientation !== undefined && validOrientations.includes(force_orientation))
-    ? force_orientation : existing.force_orientation;
-  const newRotation = (rotation !== undefined && validRotations.includes(Number(rotation)))
-    ? Number(rotation) : existing.rotation;
-  const newTheme = (theme !== undefined) ? String(theme) : existing.theme;
-  const newFontFamily = (fontFamily !== undefined) ? String(fontFamily) : existing.font_family;
-  db.prepare(`UPDATE displays SET name=?, force_orientation=?, rotation=?, theme=?, font_family=? WHERE id=?`).run(
-    name !== undefined ? name.trim() : existing.name,
-    newOrientation,
-    newRotation,
-    newTheme,
-    newFontFamily,
-    req.params.id
-  );
-  broadcastUpdate('displays');
-  res.json(db.prepare(`SELECT * FROM displays WHERE id = ?`).get(req.params.id));
-});
+// This code lives in src/displays.js. It runs here, at the same place in the file as before.
+const { resolveDisplay, slugify, previewScreenName } = require('./src/displays.js')({ app, db, seedDefaultLayoutsForDisplay, broadcastUpdate, updateSetting });
 
 // ── Templates ─────────────────────────────────────────────────────────────────
-// Ready-made themed starting points. Applying one creates a NEW display (the
-// user's existing displays are never modified), seeds both orientation layouts
-// from the template, and stamps the theme so the display renders the matching
-// generated background + calendar decorations.
-
-app.get('/api/templates', (req, res) => {
-  res.json(getTemplateSummaries());
-});
-
-app.post('/api/templates/apply', (req, res) => {
-  const { templateId, name } = req.body;
-  const tpl = getTemplate(templateId);
-  if (!tpl) return res.status(404).json({ error: 'Unknown template' });
-
-  const displayName = (name && name.trim()) ? name.trim() : tpl.name;
-  const slug = slugify(displayName);
-  const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM displays`).get().m || 0;
-
-  const landscape = JSON.stringify(materializeWidgets(tpl.landscape, tpl.calDecor));
-  const portrait  = JSON.stringify(materializeWidgets(tpl.portrait,  tpl.calDecor));
-
-  const tx = db.transaction(() => {
-    const result = db.prepare(
-      `INSERT INTO displays (name, slug, sort_order, theme) VALUES (?, ?, ?, ?)`
-    ).run(displayName, slug, maxOrder + 1, tpl.id);
-    const id = result.lastInsertRowid;
-    db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'landscape', ?)`).run(id, landscape);
-    db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'portrait', ?)`).run(id, portrait);
-    return id;
-  });
-  const newId = tx();
-
-  broadcastUpdate('displays');
-  res.status(201).json(db.prepare(`SELECT * FROM displays WHERE id = ?`).get(newId));
-});
+// This code lives in src/templates-api.js. It runs here, at the same place in the file as before.
+require('./src/templates-api.js')({ app, db, broadcastUpdate, slugify, getTemplateSummaries, getTemplate, materializeWidgets });
 
 // ── Layout Library (user-saved presets) ──────────────────────────────────────
-// A saved layout is a complete snapshot (both orientations + theme), not tied to
-// any display. It can be applied onto an existing display or used to create a new
-// one — the user picks at apply time.
-
-// Helper: create a new display from explicit layout JSON strings + theme.
-function createDisplayFromLayouts(name, landscapeJson, portraitJson, theme) {
-  const displayName = (name && name.trim()) ? name.trim() : 'Display';
-  const slug = slugify(displayName);
-  const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM displays`).get().m || 0;
-  const tx = db.transaction(() => {
-    const result = db.prepare(
-      `INSERT INTO displays (name, slug, sort_order, theme) VALUES (?, ?, ?, ?)`
-    ).run(displayName, slug, maxOrder + 1, theme || '');
-    const id = result.lastInsertRowid;
-    db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'landscape', ?)`).run(id, landscapeJson);
-    db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'portrait', ?)`).run(id, portraitJson);
-    return id;
-  });
-  return tx();
-}
-
-// Duplicate an existing display (its layouts + theme) into a new "… (copy)" profile.
-app.post('/api/displays/:id/duplicate', (req, res) => {
-  const src = db.prepare(`SELECT * FROM displays WHERE id = ?`).get(req.params.id);
-  if (!src) return res.status(404).json({ error: 'Display not found' });
-  const land = db.prepare(`SELECT widgets FROM layouts WHERE display_id = ? AND orientation = 'landscape'`).get(src.id);
-  const port = db.prepare(`SELECT widgets FROM layouts WHERE display_id = ? AND orientation = 'portrait'`).get(src.id);
-  // Find a non-colliding name like "Kitchen (copy)", "Kitchen (copy 2)", …
-  let base = `${src.name} (copy)`, name = base, n = 2;
-  while (db.prepare(`SELECT id FROM displays WHERE name = ?`).get(name)) { name = `${src.name} (copy ${n++})`; }
-  const newId = createDisplayFromLayouts(
-    name,
-    land?.widgets || '[]',
-    port?.widgets || '[]',
-    src.theme || ''
-  );
-  broadcastUpdate('displays');
-  const created = db.prepare(`SELECT slug FROM displays WHERE id = ?`).get(newId);
-  res.json({ ok: true, id: newId, name, slug: created?.slug });
-});
-
-app.get('/api/saved-layouts', (req, res) => {
-  const rows = db.prepare(`SELECT id, name, theme, created_at FROM saved_layouts ORDER BY created_at DESC, id DESC`).all();
-  res.json(rows);
-});
-
-// Full detail for ONE saved layout, including its widget data — the list
-// endpoint above deliberately omits this to stay lightweight for a picker
-// UI. Used by the Layout Switcher (widget and floating, display.html) to
-// pre-fetch what a target preset actually contains, ahead of when someone
-// taps to switch to it.
-app.get('/api/saved-layouts/:id', (req, res) => {
-  const row = db.prepare(`SELECT * FROM saved_layouts WHERE id = ?`).get(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Saved layout not found' });
-  res.json({
-    id: row.id, name: row.name, theme: row.theme || '', created_at: row.created_at,
-    widgets_landscape: JSON.parse(row.widgets_landscape || '[]'),
-    widgets_portrait: JSON.parse(row.widgets_portrait || '[]'),
-  });
-});
-
-// Save the CURRENT layout of a display (both orientations + its theme) as a preset.
-app.post('/api/saved-layouts', (req, res) => {
-  const { name, display } = req.body;
-  if (!name || !name.trim()) return res.status(400).json({ error: 'A name is required' });
-  const disp = resolveDisplay(display);
-  if (!disp) return res.status(404).json({ error: 'Display not found' });
-
-  const land = db.prepare(`SELECT widgets FROM layouts WHERE display_id = ? AND orientation = 'landscape'`).get(disp.id);
-  const port = db.prepare(`SELECT widgets FROM layouts WHERE display_id = ? AND orientation = 'portrait'`).get(disp.id);
-  const landscape = land ? land.widgets : '[]';
-  const portrait  = port ? port.widgets : '[]';
-
-  const result = db.prepare(
-    `INSERT INTO saved_layouts (name, widgets_landscape, widgets_portrait, theme) VALUES (?, ?, ?, ?)`
-  ).run(name.trim(), landscape, portrait, disp.theme || '');
-  res.status(201).json(db.prepare(`SELECT id, name, theme, created_at FROM saved_layouts WHERE id = ?`).get(result.lastInsertRowid));
-});
-
-// Apply a saved layout. mode='current' overwrites an existing display (its
-// arrangement AND theme); mode='new' creates a fresh display from the preset.
-// Core of "apply a saved layout to a live display" (mode:'current' below),
-// factored out so both the HTTP route and the MQTT bridge's layout `select`
-// entity (see mqtt-bridge.js) call the exact same logic rather than one of
-// them re-implementing it. Returns { ok:true, display_id } on success, or
-// { ok:false, status, error } — never throws, so a caller with no HTTP
-// response to write to (the MQTT bridge) doesn't need its own try/catch
-// around DB errors it can't otherwise anticipate.
-function applySavedLayoutToDisplay(presetId, displaySlugOrId) {
-  const preset = db.prepare(`SELECT * FROM saved_layouts WHERE id = ?`).get(presetId);
-  if (!preset) return { ok: false, status: 404, error: 'Saved layout not found' };
-  // Same hardening as PUT /api/layouts/:orientation, and for the identical
-  // reason — resolveDisplay() falls back to "the first display in the
-  // database" for ANY unresolved slug (empty, missing, or simply not
-  // matching), which is fine for a read but means a write with a bad slug
-  // silently overwrites some OTHER, unrelated display instead of failing.
-  // This is the DESTINATION of an apply — getting it wrong here is exactly
-  // the "layouts got swapped" failure mode this was built to rule out.
-  if (!displaySlugOrId) return { ok: false, status: 400, error: 'A target display slug is required.' };
-  const disp = resolveDisplay(displaySlugOrId);
-  if (!disp || (disp.slug !== displaySlugOrId && String(disp.id) !== String(displaySlugOrId))) {
-    return { ok: false, status: 404, error: 'Target display not found' };
-  }
-  const tx = db.transaction(() => {
-    db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'landscape', ?)`).run(disp.id, preset.widgets_landscape);
-    db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'portrait', ?)`).run(disp.id, preset.widgets_portrait);
-    db.prepare(`UPDATE displays SET theme = ? WHERE id = ?`).run(preset.theme || '', disp.id);
-  });
-  tx();
-  broadcastUpdate('displays');
-  broadcastUpdate('layout', disp.id);
-  return { ok: true, display_id: disp.id };
-}
-
-app.post('/api/saved-layouts/:id/apply', (req, res) => {
-  const preset = db.prepare(`SELECT * FROM saved_layouts WHERE id = ?`).get(req.params.id);
-  if (!preset) return res.status(404).json({ error: 'Saved layout not found' });
-  const { mode, display, name } = req.body;
-
-  if (mode === 'new') {
-    const newId = createDisplayFromLayouts(
-      name || preset.name, preset.widgets_landscape, preset.widgets_portrait, preset.theme
-    );
-    broadcastUpdate('displays');
-    return res.status(201).json(db.prepare(`SELECT * FROM displays WHERE id = ?`).get(newId));
-  }
-
-  // mode === 'current' (default): overwrite the target display
-  const result = applySavedLayoutToDisplay(req.params.id, display);
-  if (!result.ok) return res.status(result.status).json({ error: result.error });
-  res.json({ ok: true, display_id: result.display_id });
-});
-
-// Full detail for ONE live display — both orientations' widgets + theme, in
-// the same shape GET /api/saved-layouts/:id already returns for templates.
-// Needed for the Layout Switcher to point at a live display directly, not
-// just a saved template — the pre-fetch cache reads whichever endpoint
-// matches the target's type but treats the result the same way either way.
-app.get('/api/displays/:slug/full', (req, res) => {
-  const disp = resolveDisplay(req.params.slug);
-  if (!disp) return res.status(404).json({ error: 'Display not found' });
-  const land = db.prepare(`SELECT widgets FROM layouts WHERE display_id = ? AND orientation = 'landscape'`).get(disp.id);
-  const port = db.prepare(`SELECT widgets FROM layouts WHERE display_id = ? AND orientation = 'portrait'`).get(disp.id);
-  res.json({
-    slug: disp.slug, name: disp.name, theme: disp.theme || '',
-    widgets_landscape: JSON.parse(land?.widgets || '[]'),
-    widgets_portrait: JSON.parse(port?.widgets || '[]'),
-  });
-});
-
-// Copies THIS display's current layout (both orientations + theme) onto
-// another display — the live-display equivalent of
-// POST /api/saved-layouts/:id/apply's mode:'current'. Used both by Layout
-// Switcher (switching TO a live display copies that display's current
-// arrangement onto the screen doing the switching) and available generally
-// for the same "clone one display onto another" use a saved-layout preset
-// already offers.
-app.post('/api/displays/:slug/apply-to', (req, res) => {
-  const source = resolveDisplay(req.params.slug);
-  if (!source) return res.status(404).json({ error: 'Source display not found' });
-  // Same hardening as the two endpoints above, same reason — this is the
-  // DESTINATION of an apply (the display about to be overwritten), so an
-  // unresolved slug falling back to "whichever display sorts first" here
-  // is exactly the failure mode this whole pattern exists to rule out. The
-  // SOURCE (req.params.slug, from the URL path) doesn't need this same
-  // guard — an Express route param can't arrive empty the way a body field
-  // can, and it was already checked as resolved above.
-  const targetSlug = req.body && req.body.display;
-  if (!targetSlug) return res.status(400).json({ error: 'A target display slug is required.' });
-  const target = resolveDisplay(targetSlug);
-  if (!target || (target.slug !== targetSlug && String(target.id) !== String(targetSlug))) {
-    return res.status(404).json({ error: 'Target display not found' });
-  }
-  if (source.id === target.id) return res.status(400).json({ error: 'Source and target are the same display' });
-  const land = db.prepare(`SELECT widgets FROM layouts WHERE display_id = ? AND orientation = 'landscape'`).get(source.id);
-  const port = db.prepare(`SELECT widgets FROM layouts WHERE display_id = ? AND orientation = 'portrait'`).get(source.id);
-  const tx = db.transaction(() => {
-    db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'landscape', ?)`).run(target.id, land?.widgets || '[]');
-    db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, 'portrait', ?)`).run(target.id, port?.widgets || '[]');
-    db.prepare(`UPDATE displays SET theme = ? WHERE id = ?`).run(source.theme || '', target.id);
-  });
-  tx();
-  broadcastUpdate('displays');
-  broadcastUpdate('layout', target.id);
-  res.json({ ok: true, display_id: target.id });
-});
-
-app.delete('/api/saved-layouts/:id', (req, res) => {
-  const result = db.prepare(`DELETE FROM saved_layouts WHERE id = ?`).run(req.params.id);
-  if (result.changes === 0) return res.status(404).json({ error: 'Saved layout not found' });
-  res.json({ ok: true });
-});
+// This code lives in src/layout-library.js. It runs here, at the same place in the file as before.
+const { applySavedLayoutToDisplay } = require('./src/layout-library.js')({ app, db, broadcastUpdate, resolveDisplay, slugify });
 
 // ── Screens manager ───────────────────────────────────────────────────────────
-// Physical Pi screens register themselves (see /api/live and /api/screen-config).
-// The app lists them, names them, and assigns each a display profile — switching
-// it live over SSE.
-
-// List all known screens with online status and resolved profile name.
-app.get('/api/screens', (req, res) => {
-  const now = Date.now();
-  const rows = db.prepare(`SELECT * FROM screens ORDER BY created_at ASC`).all();
-  const screens = rows.map(s => {
-    const disp = s.assigned_display_slug ? resolveDisplay(s.assigned_display_slug) : null;
-    return {
-      device_id: s.device_id,
-      name: s.name || '',
-      assigned_display_slug: s.assigned_display_slug || '',
-      assigned_display_name: disp ? disp.name : '',
-      info_corner: s.info_corner || '',
-      // Per-screen overrides — must be included here or the app's dropdowns can never
-      // reflect a saved value and will always fall back to their defaults on redraw.
-      screen_orientation: s.screen_orientation || '',
-      screen_rotation: (s.screen_rotation === null || s.screen_rotation === undefined) ? -1 : s.screen_rotation,
-      screensaver_tag: s.screensaver_tag || '',
-      screensaver_photo_id: s.screensaver_photo_id || null,
-      ambient_clock_corner: s.ambient_clock_corner || 'bl',
-      ambient_photo_fit: s.ambient_photo_fit || 'cover',
-      ambient_fade_transition: s.ambient_fade_transition !== '0',
-      ambient_photo_interval: s.ambient_photo_interval || '',
-      ambient_blur_bg: s.ambient_blur_bg !== '0',
-      ambient_fade_duration: s.ambient_fade_duration || '2',
-      fx_scale: s.fx_scale || '1',
-      fx_density: s.fx_density || '1',
-      tv_control_type: s.tv_control_type || '',
-      tv_ip: s.tv_ip || '',
-      tv_paired: !!s.tv_samsung_token,
-      tv_schedule_slots: db.prepare(`SELECT id, time, action FROM tv_schedule_slots WHERE device_id = ? ORDER BY time`).all(s.device_id),
-      ambient_mode: s.ambient_mode || '',
-      screen_version: s.screen_version || '',
-      floating_switcher_enabled: !!s.floating_switcher_enabled,
-      floating_switcher_presets: (() => { try { return JSON.parse(s.floating_switcher_presets || '[]'); } catch { return []; } })(),
-      floating_switcher_schedule: (() => { try { return JSON.parse(s.floating_switcher_schedule || '[]'); } catch { return []; } })(),
-      floating_switcher_edge: s.floating_switcher_edge || 'bottom',
-      floating_switcher_icon: s.floating_switcher_icon || '🔀',
-      floating_switcher_color: s.floating_switcher_color || '#0a0e1a',
-      floating_switcher_style: s.floating_switcher_style || 'circles',
-      floating_switcher_bar_mode: s.floating_switcher_bar_mode || 'icons',
-      floating_switcher_reveal: s.floating_switcher_reveal || 'always',
-      alert_banner_position: s.alert_banner_position || 'top',
-      alert_banner_size: s.alert_banner_size || 'm',
-      alert_banner_style: s.alert_banner_style || 'solid',
-      online: (now - (s.last_seen || 0)) < SCREEN_ONLINE_MS,
-      last_seen: s.last_seen || 0,
-      is_remote: !!s.is_remote,
-      // Self-reported by a slave during its own check-in (see
-      // /api/screen-checkin) — never set for the host's own local screen,
-      // since that check-in never has a meaningful "address" to report
-      // (it's this same process talking to itself). Captured a while ago
-      // but never actually shown anywhere; real feedback (#32) asked for
-      // exactly this kind of "which physical box is this" identifier.
-      remote_addr: s.remote_addr || '',
-    };
-  });
-  res.json(screens);
-});
-
-// Rename a screen (also used to set its name the first time).
-app.put('/api/screens/:deviceId', (req, res) => {
-  const { name, info_corner, screen_orientation, screen_rotation, screensaver_tag, screensaver_photo_id, ambient_mode, ambient_clock_corner, ambient_photo_fit, ambient_fade_transition, ambient_fade_duration, ambient_photo_interval, ambient_blur_bg, fx_scale, fx_density, tv_control_type, tv_ip, floating_switcher_enabled, floating_switcher_presets, floating_switcher_schedule, floating_switcher_edge, floating_switcher_icon, floating_switcher_color, floating_switcher_style, floating_switcher_bar_mode, floating_switcher_reveal, alert_banner_position, alert_banner_size, alert_banner_style } = req.body;
-  const existing = db.prepare(`SELECT device_id FROM screens WHERE device_id = ?`).get(req.params.deviceId);
-  if (!existing) return res.status(404).json({ error: 'Screen not found' });
-  if (name !== undefined) {
-    db.prepare(`UPDATE screens SET name = ? WHERE device_id = ?`).run(String(name).trim(), req.params.deviceId);
-  }
-  if (info_corner !== undefined) {
-    const valid = ['', 'tl', 'tr', 'bl', 'br'];
-    const corner = valid.includes(info_corner) ? info_corner : '';
-    db.prepare(`UPDATE screens SET info_corner = ? WHERE device_id = ?`).run(corner, req.params.deviceId);
-    // Push the change live so the overlay appears/moves without a reload.
-    sendScreenCommand(req.params.deviceId, 'set-info-corner', { corner });
-  }
-  let orientationChanged = false;
-  if (screen_orientation !== undefined) {
-    const valid = ['', 'auto', 'landscape', 'portrait'];
-    const o = valid.includes(screen_orientation) ? screen_orientation : '';
-    db.prepare(`UPDATE screens SET screen_orientation = ? WHERE device_id = ?`).run(o, req.params.deviceId);
-    orientationChanged = true;
-  }
-  if (screen_rotation !== undefined) {
-    const valid = [-1, 0, 90, 180, 270];
-    const r = valid.includes(Number(screen_rotation)) ? Number(screen_rotation) : -1;
-    db.prepare(`UPDATE screens SET screen_rotation = ? WHERE device_id = ?`).run(r, req.params.deviceId);
-    orientationChanged = true;
-  }
-  let screensaverChanged = false;
-  if (screensaver_tag !== undefined) {
-    db.prepare(`UPDATE screens SET screensaver_tag = ? WHERE device_id = ?`)
-      .run(String(screensaver_tag || '').trim(), req.params.deviceId);
-    screensaverChanged = true;
-  }
-  if (screensaver_photo_id !== undefined) {
-    // Empty/null = go back to tag-based slideshow. Set = show just this one photo.
-    const pid = (screensaver_photo_id === '' || screensaver_photo_id === null) ? null : Number(screensaver_photo_id);
-    db.prepare(`UPDATE screens SET screensaver_photo_id = ? WHERE device_id = ?`).run(pid, req.params.deviceId);
-    screensaverChanged = true;
-  }
-  if (ambient_mode !== undefined) {
-    const valid = ['', 'photo', 'photo_datetime'];
-    const m = valid.includes(ambient_mode) ? ambient_mode : '';
-    db.prepare(`UPDATE screens SET ambient_mode = ? WHERE device_id = ?`).run(m, req.params.deviceId);
-    // Instant, no reload needed — same lightweight live-command pattern as the
-    // info-corner toggle above, since this is meant to be flipped casually
-    // (e.g. "photo mode for tonight") without the display blinking through a
-    // full page reload each time.
-    sendScreenCommand(req.params.deviceId, 'set-ambient-mode', { mode: m });
-  }
-  if (ambient_clock_corner !== undefined) {
-    const valid = ['tl', 'tr', 'bl', 'br'];
-    const c = valid.includes(ambient_clock_corner) ? ambient_clock_corner : 'bl';
-    db.prepare(`UPDATE screens SET ambient_clock_corner = ? WHERE device_id = ?`).run(c, req.params.deviceId);
-    // Live-rebuilds the ambient layout if it's currently showing (see the
-    // refresh-photos handler on the display side, reused here rather than
-    // adding a near-identical third command for this one setting).
-    sendScreenCommand(req.params.deviceId, 'refresh-photos', {});
-  }
-  if (ambient_photo_fit !== undefined) {
-    const valid = ['cover', 'width', 'height', 'auto'];
-    const f = valid.includes(ambient_photo_fit) ? ambient_photo_fit : 'cover';
-    db.prepare(`UPDATE screens SET ambient_photo_fit = ? WHERE device_id = ?`).run(f, req.params.deviceId);
-    sendScreenCommand(req.params.deviceId, 'refresh-photos', {});
-  }
-  if (ambient_fade_transition !== undefined) {
-    db.prepare(`UPDATE screens SET ambient_fade_transition = ? WHERE device_id = ?`)
-      .run(ambient_fade_transition ? '1' : '0', req.params.deviceId);
-    sendScreenCommand(req.params.deviceId, 'refresh-photos', {});
-  }
-  if (ambient_fade_duration !== undefined) {
-    const d = parseFloat(ambient_fade_duration);
-    if (!isNaN(d) && d >= 0.5 && d <= 10) {
-      db.prepare(`UPDATE screens SET ambient_fade_duration = ? WHERE device_id = ?`).run(String(d), req.params.deviceId);
-      sendScreenCommand(req.params.deviceId, 'refresh-photos', {});
-    }
-  }
-  if (ambient_photo_interval !== undefined) {
-    const iv = String(ambient_photo_interval || '').trim();
-    if (iv === '' || /^\d+$/.test(iv)) {
-      db.prepare(`UPDATE screens SET ambient_photo_interval = ? WHERE device_id = ?`).run(iv, req.params.deviceId);
-      sendScreenCommand(req.params.deviceId, 'refresh-photos', {});
-    }
-  }
-  if (ambient_blur_bg !== undefined) {
-    db.prepare(`UPDATE screens SET ambient_blur_bg = ? WHERE device_id = ?`)
-      .run(ambient_blur_bg ? '1' : '0', req.params.deviceId);
-    sendScreenCommand(req.params.deviceId, 'refresh-photos', {});
-  }
-  if (fx_scale !== undefined) {
-    const f = parseFloat(fx_scale);
-    if (!isNaN(f) && f >= 0.5 && f <= 3) {
-      db.prepare(`UPDATE screens SET fx_scale = ? WHERE device_id = ?`).run(String(f), req.params.deviceId);
-      broadcastUpdate('displays'); // triggers applyTheme() live on that screen, no full reload needed
-    }
-  }
-  if (fx_density !== undefined) {
-    const f = parseFloat(fx_density);
-    if (!isNaN(f) && f >= 0 && f <= 3) {
-      db.prepare(`UPDATE screens SET fx_density = ? WHERE device_id = ?`).run(String(f), req.params.deviceId);
-      broadcastUpdate('displays');
-    }
-  }
-  if (tv_control_type !== undefined) {
-    const valid = ['', 'cec', 'hdmi-signal', 'roku', 'samsung'];
-    const t = valid.includes(tv_control_type) ? tv_control_type : '';
-    // Changing away from Samsung (or clearing control entirely) invalidates any
-    // stored pairing token — it's meaningless for anything else.
-    if (t !== 'samsung') {
-      db.prepare(`UPDATE screens SET tv_control_type = ?, tv_samsung_token = '' WHERE device_id = ?`).run(t, req.params.deviceId);
-    } else {
-      db.prepare(`UPDATE screens SET tv_control_type = ? WHERE device_id = ?`).run(t, req.params.deviceId);
-    }
-  }
-  if (tv_ip !== undefined) {
-    // A changed IP means a different (or freshly-reset) device — the old
-    // Samsung pairing token, if any, would be for whatever was at the old
-    // address and needs to be re-paired.
-    db.prepare(`UPDATE screens SET tv_ip = ?, tv_samsung_token = '' WHERE device_id = ?`)
-      .run(String(tv_ip || '').trim(), req.params.deviceId);
-  }
-  // Orientation/rotation are read at page load, so reload the screen to apply them.
-  if (orientationChanged) sendScreenCommand(req.params.deviceId, 'reload', {});
-  // The screensaver filter is read live from cached state, so a lighter refresh works.
-  if (screensaverChanged) sendScreenCommand(req.params.deviceId, 'refresh-photos', {});
-  if (floating_switcher_enabled !== undefined) {
-    db.prepare(`UPDATE screens SET floating_switcher_enabled = ? WHERE device_id = ?`)
-      .run(floating_switcher_enabled ? 1 : 0, req.params.deviceId);
-  }
-  if (floating_switcher_presets !== undefined) {
-    // Accepts either shape: a bare number/numeric-string (legacy — always
-    // meant a saved_layout id, kept working for anything already saved
-    // during the beta before this expansion) or the newer
-    // {type:'saved'|'display', id, icon} object (id is a saved_layout id
-    // for 'saved', a display slug for 'display'; icon is an optional
-    // per-target emoji/character the person picked, capped defensively the
-    // same way the old single floating_switcher_icon field was). Never
-    // trust the client's own 'type' framing without re-validating the
-    // shape of 'id' matches it.
-    const sanitizeIcon = (icon) => (typeof icon === 'string' && icon.trim()) ? icon.trim().slice(0, 8) : '';
-    const targets = Array.isArray(floating_switcher_presets) ? floating_switcher_presets.map(t => {
-      if (typeof t === 'number' || (typeof t === 'string' && /^\d+$/.test(t))) return { type: 'saved', id: Number(t) };
-      if (t && t.type === 'saved' && Number.isInteger(Number(t.id))) return { type: 'saved', id: Number(t.id), icon: sanitizeIcon(t.icon) };
-      if (t && t.type === 'display' && typeof t.id === 'string' && t.id) return { type: 'display', id: t.id, icon: sanitizeIcon(t.icon) };
-      return null;
-    }).filter(Boolean) : [];
-    db.prepare(`UPDATE screens SET floating_switcher_presets = ? WHERE device_id = ?`)
-      .run(JSON.stringify(targets), req.params.deviceId);
-  }
-  if (floating_switcher_schedule !== undefined) {
-    // Each rule's ACTIVE mode is ONE OF: 'time' (needs time), 'interval'
-    // (needs intervalValue/intervalUnit + target), or 'rotation' (needs
-    // intervalValue/intervalUnit + targets, 2+). mode defaults to 'time'
-    // for anything saved before 'interval'/'rotation' existed — those rows
-    // have no mode field at all, and should keep meaning exactly what
-    // they always meant.
-    //
-    // Every other field a rule might ALSO be carrying (from a mode it was
-    // in before, but currently isn't) is preserved here if it's present
-    // and independently valid, not discarded just because it isn't the
-    // active mode's own field. Found from a real, reproducible incident,
-    // not a hypothetical: the previous version of this validation only
-    // ever returned the active mode's own fields — so switching a
-    // rotation rule to "At a time" and saving permanently discarded its
-    // targets array server-side; the client's own in-memory state still
-    // remembered it until the next re-fetch, at which point switching
-    // back to Rotate only recovered a single carried-forward target, not
-    // the original list, looking exactly like "my settings didn't save."
-    // Reuses the exact same target validation as floating_switcher_presets
-    // above — a schedule rule's target follows the identical shape rules.
-    const validTarget = (t) => {
-      if (t && t.type === 'saved' && Number.isInteger(Number(t.id))) return { type: 'saved', id: Number(t.id) };
-      if (t && t.type === 'display' && typeof t.id === 'string' && t.id) return { type: 'display', id: t.id };
-      return null;
-    };
-    // Shared by both interval and rotation modes — same clamp-up-to-floor
-    // reasoning either way (see interval's own inline comment below for
-    // the full rationale): the check loop can't fire more precisely than
-    // every 5s regardless of what shorter value was configured, so losing
-    // an entire rule over too-fast a number would be a confusing surprise
-    // rather than a helpful validation.
-    const clampInterval = (value, unit) => {
-      const msPerUnit = unit === 'seconds' ? 1000 : unit === 'hours' ? 3600000 : 60000;
-      const ms = Math.max(value * msPerUnit, 5000);
-      return ms / msPerUnit;
-    };
-    const rules = Array.isArray(floating_switcher_schedule) ? floating_switcher_schedule.map(r => {
-      if (!r) return null;
-      const days = Array.isArray(r.daysOfWeek) ? [...new Set(r.daysOfWeek.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 6))] : [];
-      if (!days.length) return null;
-      const mode = ['interval', 'rotation'].includes(r.mode) ? r.mode : 'time';
-      // Every field validated independently of which mode is currently
-      // active — carried through whenever it's present and valid, so a
-      // mode this rule isn't in right now doesn't lose its own data.
-      const target = validTarget(r.target); // null if absent/invalid — fine for dormant preservation, required only if this IS the active single-target mode
-      const targets = Array.isArray(r.targets) ? r.targets.map(validTarget).filter(Boolean) : [];
-      const time = (typeof r.time === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(r.time)) ? r.time : null;
-      const intervalValueRaw = Number(r.intervalValue);
-      const hasValidInterval = Number.isFinite(intervalValueRaw) && intervalValueRaw > 0;
-      const intervalUnit = ['seconds', 'minutes', 'hours'].includes(r.intervalUnit) ? r.intervalUnit : 'minutes';
-      const intervalValue = hasValidInterval ? clampInterval(intervalValueRaw, intervalUnit) : null;
-      // The active mode's own requirement is what can reject the WHOLE
-      // rule — everything else above is preserved if valid, regardless.
-      if (mode === 'rotation' && targets.length < 2) return null; // need at least 2 distinct, valid targets to rotate between at all
-      if (mode === 'rotation' && !hasValidInterval) return null;
-      if (mode === 'interval' && (!target || !hasValidInterval)) return null;
-      if (mode === 'time' && (!target || !time)) return null;
-      const out = { mode, daysOfWeek: days };
-      if (target) out.target = target;
-      if (targets.length) out.targets = targets;
-      if (time) out.time = time;
-      if (intervalValue !== null) { out.intervalValue = intervalValue; out.intervalUnit = intervalUnit; }
-      // Explicit !== false, not a truthiness coercion — a rule with no
-      // enabled field at all (anything saved before this feature existed)
-      // should be treated as enabled, same as checkSchedules()'s own
-      // client-side check does. Only writes the field at all when it's
-      // actually false, keeping the common (enabled) case's stored shape
-      // unchanged from before this feature existed.
-      if (r.enabled === false) out.enabled = false;
-      return out;
-    }).filter(Boolean) : [];
-    db.prepare(`UPDATE screens SET floating_switcher_schedule = ? WHERE device_id = ?`)
-      .run(JSON.stringify(rules), req.params.deviceId);
-  }
-  if (floating_switcher_edge !== undefined) {
-    const edge = ['top', 'bottom', 'left', 'right'].includes(floating_switcher_edge) ? floating_switcher_edge : 'bottom';
-    db.prepare(`UPDATE screens SET floating_switcher_edge = ? WHERE device_id = ?`).run(edge, req.params.deviceId);
-  }
-  if (floating_switcher_icon !== undefined) {
-    // A single emoji/character is the intent, but this doesn't strictly
-    // enforce single-grapheme — just caps length defensively (an emoji
-    // with modifiers/ZWJ sequences can be several UTF-16 code units) so an
-    // unexpectedly long string can't get stored here.
-    const icon = (typeof floating_switcher_icon === 'string' && floating_switcher_icon.trim()) ? floating_switcher_icon.trim().slice(0, 8) : '🔀';
-    db.prepare(`UPDATE screens SET floating_switcher_icon = ? WHERE device_id = ?`).run(icon, req.params.deviceId);
-  }
-  if (floating_switcher_color !== undefined) {
-    const color = (typeof floating_switcher_color === 'string' && /^#[0-9a-fA-F]{6}$/.test(floating_switcher_color)) ? floating_switcher_color : '#0a0e1a';
-    db.prepare(`UPDATE screens SET floating_switcher_color = ? WHERE device_id = ?`).run(color, req.params.deviceId);
-  }
-  if (floating_switcher_style !== undefined) {
-    const style = ['circles', 'bar'].includes(floating_switcher_style) ? floating_switcher_style : 'circles';
-    db.prepare(`UPDATE screens SET floating_switcher_style = ? WHERE device_id = ?`).run(style, req.params.deviceId);
-  }
-  if (floating_switcher_bar_mode !== undefined) {
-    const barMode = ['icons', 'names'].includes(floating_switcher_bar_mode) ? floating_switcher_bar_mode : 'icons';
-    db.prepare(`UPDATE screens SET floating_switcher_bar_mode = ? WHERE device_id = ?`).run(barMode, req.params.deviceId);
-  }
-  if (floating_switcher_reveal !== undefined) {
-    const reveal = ['always', 'tap'].includes(floating_switcher_reveal) ? floating_switcher_reveal : 'always';
-    db.prepare(`UPDATE screens SET floating_switcher_reveal = ? WHERE device_id = ?`).run(reveal, req.params.deviceId);
-  }
-  if (floating_switcher_enabled !== undefined || floating_switcher_presets !== undefined || floating_switcher_schedule !== undefined || floating_switcher_edge !== undefined || floating_switcher_icon !== undefined || floating_switcher_color !== undefined || floating_switcher_style !== undefined || floating_switcher_bar_mode !== undefined || floating_switcher_reveal !== undefined) {
-    // Instant show/hide/reconfigure, no reload — same lightweight live-command
-    // pattern as info_corner/ambient_mode above, since this is meant to be
-    // toggled casually from the app while looking at the screen.
-    sendScreenCommand(req.params.deviceId, 'refresh-floating-switcher', {});
-  }
-  if (alert_banner_position !== undefined) {
-    const v = ['top', 'bottom', 'center'].includes(alert_banner_position) ? alert_banner_position : 'top';
-    db.prepare(`UPDATE screens SET alert_banner_position = ? WHERE device_id = ?`).run(v, req.params.deviceId);
-  }
-  if (alert_banner_size !== undefined) {
-    const v = ['s', 'm', 'l', 'xl', 'xxl'].includes(alert_banner_size) ? alert_banner_size : 'm';
-    db.prepare(`UPDATE screens SET alert_banner_size = ? WHERE device_id = ?`).run(v, req.params.deviceId);
-  }
-  if (alert_banner_style !== undefined) {
-    const v = ['solid', 'bar', 'toast', 'outline', 'amber', 'strong'].includes(alert_banner_style) ? alert_banner_style : 'solid';
-    db.prepare(`UPDATE screens SET alert_banner_style = ? WHERE device_id = ?`).run(v, req.params.deviceId);
-  }
-  if (alert_banner_position !== undefined || alert_banner_size !== undefined || alert_banner_style !== undefined) {
-    sendScreenCommand(req.params.deviceId, 'refresh-alert-banner', {});
-  }
-  broadcastUpdate('screens');
-  res.json({ ok: true });
-});
-
-// Assign a display profile to a screen and switch it live. The assignment is
-// remembered (survives reboot); the live command makes the change immediate.
-app.post('/api/screens/:deviceId/assign', (req, res) => {
-  const { display, selfInitiated } = req.body; // a display slug, or '' for the default
-  const existing = db.prepare(`SELECT device_id FROM screens WHERE device_id = ?`).get(req.params.deviceId);
-  if (!existing) return res.status(404).json({ error: 'Screen not found' });
-
-  let slug = '';
-  if (display) {
-    const disp = resolveDisplay(display);
-    if (!disp) return res.status(404).json({ error: 'Display profile not found' });
-    slug = disp.slug;
-  }
-  db.prepare(`UPDATE screens SET assigned_display_slug = ? WHERE device_id = ?`).run(slug, req.params.deviceId);
-
-  // Push the switch to the screen now (if it's connected) — UNLESS the
-  // screen assigned itself (the Layout Switcher's own pointer-reassignment
-  // persist step, see switchToLayoutTarget() in display.html). In that
-  // case it's already showing the target's content live, applied locally
-  // and instantly the moment it was tapped — pushing switch-profile back
-  // to the same screen that just called this would only trigger a
-  // redundant, visible reload of content it's already correctly
-  // displaying. Screens management's normal usage (reassigning some OTHER
-  // screen from the app) never sends this flag and gets the exact same
-  // push-and-reload behavior as before.
-  const delivered = selfInitiated ? false : sendScreenCommand(req.params.deviceId, 'switch-profile', { display: slug });
-  broadcastUpdate('screens');
-  res.json({ ok: true, delivered });
-});
-
-// Forget a screen (e.g. a Pi that's gone). It will re-register if it reconnects.
-app.delete('/api/screens/:deviceId', (req, res) => {
-  db.prepare(`DELETE FROM screens WHERE device_id = ?`).run(req.params.deviceId);
-  broadcastUpdate('screens');
-  res.json({ ok: true });
-});
-
-// Called by a screen on boot to learn which profile it should show. Also registers
-// the screen if it's new and refreshes last_seen. Returns the assigned slug ('' =
-// default display).
-// Lightweight check-in: the display calls this on a timer as a backstop so a screen
-// stays "online" even if its SSE connection is briefly dropped or throttled (common
-// over remote/Tailscale or when a tab is backgrounded). Cheap and idempotent.
-app.post('/api/screen-checkin', (req, res) => {
-  const screenId = req.query.screen ? String(req.query.screen) : (req.body && req.body.screen);
-  if (!screenId) return res.json({ ok: false });
-  const now = Date.now();
-  // A slave registering with its host marks itself remote and may send a friendly
-  // default name + its reachable address (so the host could reach back if needed).
-  const isRemote = req.query.remote === '1' ? 1 : 0;
-  const remoteAddr = req.query.addr ? String(req.query.addr).slice(0, 100) : '';
-  const defaultName = req.query.name ? String(req.query.name).slice(0, 60) : '';
-  const reportedVersion = req.query.version ? String(req.query.version).slice(0, 20) : '';
-
-  const existing = db.prepare(`SELECT device_id, name FROM screens WHERE device_id = ?`).get(screenId);
-
-  // Enforce the device limit for non-active (trial/lapsed/unlicensed) accounts —
-  // only blocks registering a genuinely NEW screen; a screen that's already
-  // registered can always keep checking in, so this can't retroactively lock
-  // someone out of a screen they had before a limit ever applied to them.
-  if (!existing) {
-    try {
-      const limitsRaw = updateSetting('limits_cache', '');
-      const limits = limitsRaw ? JSON.parse(limitsRaw) : null;
-      if (limits && typeof limits.maxDevices === 'number') {
-        const currentCount = db.prepare(`SELECT COUNT(*) AS n FROM screens`).get().n;
-        if (currentCount >= limits.maxDevices) {
-          return res.status(403).json({
-            ok: false,
-            error: `This account is limited to ${limits.maxDevices} screen${limits.maxDevices === 1 ? '' : 's'}.`,
-          });
-        }
-      }
-    } catch { /* if the cache is missing/malformed, fail open rather than block a legitimate registration */ }
-  }
-
-  if (existing) {
-    db.prepare(`UPDATE screens SET last_seen = ?, is_remote = ?, remote_addr = ?, screen_version = ? WHERE device_id = ?`)
-      .run(now, isRemote, remoteAddr, reportedVersion, screenId);
-    // For a REMOTE screen, the slave owns its own name — keep the host's copy in sync
-    // when the slave sends a real name and it differs (fixes "Home" vs "Mirror" drift).
-    if (isRemote && defaultName && defaultName !== existing.name) {
-      db.prepare(`UPDATE screens SET name = ? WHERE device_id = ?`).run(defaultName, screenId);
-      broadcastUpdate('screens');
-    }
-  } else {
-    db.prepare(`INSERT INTO screens (device_id, name, last_seen, is_remote, remote_addr, screen_version) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(screenId, previewScreenName(screenId) || defaultName, now, isRemote, remoteAddr, reportedVersion);
-    broadcastUpdate('screens');
-  }
-  // Physical resolution: only the device's OWN server should store its resolution
-  // setting. A remote check-in must NOT overwrite the host's local display_res.
-  const sw = parseInt(req.query.sw), sh = parseInt(req.query.sh);
-  if (!isRemote && sw > 0 && sh > 0) {
-    const upsert = db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`);
-    upsert.run('display_res_w', String(sw));
-    upsert.run('display_res_h', String(sh));
-  }
-  // Return this screen's full per-screen config (not just the assigned profile) —
-  // a remote slave's own local database otherwise never learns about ANY setting
-  // changed via the app (ambient mode, screensaver source, TV control, corner,
-  // orientation...) since this check-in is the only sync channel a slave has back
-  // to the host. Previously only assigned_display_slug came back here, which
-  // meant every other per-screen setting silently never reached a slave's own
-  // local database at all — invisible during earlier testing because that mostly
-  // exercised the host's own screen, where no cross-device sync is needed.
-  const full = db.prepare(`SELECT * FROM screens WHERE device_id = ?`).get(screenId);
-  res.json({
-    ok: true,
-    assigned_display_slug: full ? (full.assigned_display_slug || '') : '',
-    config: full ? {
-      info_corner: full.info_corner || '',
-      screen_orientation: full.screen_orientation || '',
-      screen_rotation: (full.screen_rotation === null || full.screen_rotation === undefined) ? -1 : full.screen_rotation,
-      screensaver_tag: full.screensaver_tag || '',
-      screensaver_photo_id: full.screensaver_photo_id || null,
-      ambient_mode: full.ambient_mode || '',
-      ambient_clock_corner: full.ambient_clock_corner || 'bl',
-      ambient_photo_fit: full.ambient_photo_fit || 'cover',
-      tv_control_type: full.tv_control_type || '',
-      tv_ip: full.tv_ip || '',
-      tv_schedule_on: full.tv_schedule_on || '',
-      tv_schedule_off: full.tv_schedule_off || '',
-    } : null,
-  });
-});
-
-// In demo mode every visitor's screen is fresh and unconfigured, so
-// synthesize a "flip between layouts" switcher from the seeded profiles —
-// this is the demo's layout picker. Returns null (no override) outside demo
-// or if there's only one profile. Icons are a best-effort per-template map.
-const DEMO_SWITCHER_ICONS = { 'home-hub': '🏠', 'summer-days': '☀️', 'aviation': '✈️', 'command-center': '🎛️', 'daily-digest': '📋', 'minimalist': '▫️', 'modern-dark': '🌙', 'photo-frame': '🖼️' };
-function demoSwitcherOverride() {
-  if (!IS_DEMO) return null;
-  const rows = db.prepare(`SELECT slug FROM displays ORDER BY sort_order ASC, id ASC`).all();
-  if (rows.length < 2) return null;
-  return {
-    floating_switcher_enabled: true,
-    floating_switcher_presets: rows.map(r => ({ type: 'display', id: r.slug, icon: DEMO_SWITCHER_ICONS[r.slug] || '🖥️' })),
-    floating_switcher_schedule: [],
-    floating_switcher_edge: 'bottom',
-    floating_switcher_icon: '🔀',
-    floating_switcher_color: '#0a0e1a',
-    floating_switcher_style: 'bar',
-    floating_switcher_bar_mode: 'names',
-    floating_switcher_reveal: 'always',
-  };
-}
-
-app.get('/api/screen-config', (req, res) => {
-  const screenId = req.query.screen ? String(req.query.screen) : null;
-  const addrs = getReachableAddresses();
-  const port = PORT;
-  // The canonical, server-persisted identity of THIS Pi. The display adopts this
-  // so it stays the same screen across cache wipes, URL changes, and updates.
-  const canonicalId = DEVICE_ID;
-  // Real TV resolution (reported by the Pi) so previews can render at true size.
-  const resRow = db.prepare(`SELECT key, value FROM settings WHERE key IN ('display_res_w','display_res_h')`).all();
-  const resMap = Object.fromEntries(resRow.map(r => [r.key, r.value]));
-  const displayRes = (resMap.display_res_w && resMap.display_res_h)
-    ? { w: parseInt(resMap.display_res_w), h: parseInt(resMap.display_res_h) } : null;
-  if (!screenId) {
-    // Even without a screen param, a SLAVE has exactly one identity, so it can still
-    // report the profile the host assigned it. (A host with multiple screens needs
-    // the id to disambiguate, so it still returns empty here.)
-    if (isSlave()) {
-      let slug = getSetting('assigned_display_slug_remote') || '';
-      return res.json({ assigned_display_slug: slug, addresses: addrs, port, canonicalId, displayRes, role: 'slave' });
-    }
-    return res.json({ assigned_display_slug: '', addresses: addrs, port, canonicalId, displayRes });
-  }
-  const now = Date.now();
-
-  // Self-heal: when a display registers under THIS Pi's canonical id, remove stray
-  // UNNAMED screen rows. Those orphans are the leftovers from earlier identity
-  // schemes (e.g. a localStorage id wiped by an update) — they're really this same
-  // Pi showing up under a different id. We only ever delete unnamed rows, so any
-  // screen the user deliberately named is always preserved.
-  //
-  // Explicitly excludes 'preview_*' rows — the dedicated, deterministic identity
-  // the "Open to Edit in New Tab" context uses (see SCREEN_ID's own declaration in
-  // display.html for the full reasoning: never sharing identity with a real screen
-  // is the whole point of that mechanism). Without this exclusion, this sweep — which
-  // runs every time the host's own real screen checks in, roughly every 20s for an
-  // always-on kiosk — matches every preview_* row on all three of its own conditions
-  // (unnamed, not remote, no remote address) and deletes it. The preview session's
-  // own next poll then silently recreates it from scratch with schema defaults,
-  // discarding whatever was just configured through it. Confirmed as a real,
-  // reproducible incident: a screen-level setting (the floating switcher) enabled
-  // through this context would get silently reset within roughly 20 seconds, on a
-  // loop, with the person having no visible indication anything was being undone.
-  if (screenId === canonicalId) {
-    try {
-      // Only sweep rows that are unmistakably LOCAL leftovers of THIS Pi: unnamed,
-      // not flagged remote, with no remote address, AND not a deliberately-separate
-      // preview identity. A remote slave is excluded by the first three conditions;
-      // a preview session is excluded by the fourth. (Belt and suspenders — any one
-      // condition would protect a given row; we require all four to be safe.)
-      const orphans = db.prepare(
-        `SELECT device_id FROM screens
-           WHERE device_id != ?
-             AND (name IS NULL OR name = '')
-             AND COALESCE(is_remote,0) = 0
-             AND COALESCE(remote_addr,'') = ''
-             AND device_id NOT LIKE 'preview\_%' ESCAPE '\'`
-      ).all(canonicalId);
-      if (orphans.length) {
-        db.prepare(
-          `DELETE FROM screens
-             WHERE device_id != ?
-               AND (name IS NULL OR name = '')
-               AND COALESCE(is_remote,0) = 0
-               AND COALESCE(remote_addr,'') = ''
-               AND device_id NOT LIKE 'preview\_%' ESCAPE '\'`
-        ).run(canonicalId);
-        broadcastUpdate('screens');
-      }
-    } catch (e) { /* non-fatal */ }
-  }
-
-  const existing = db.prepare(`SELECT * FROM screens WHERE device_id = ?`).get(screenId);
-  // On a SLAVE, the profile is assigned by the HOST (synced into this setting). It
-  // overrides any local screens-table value so the host has full control.
-  const remoteSlug = isSlave() ? (getSetting('assigned_display_slug_remote') || '') : null;
-  if (existing) {
-    db.prepare(`UPDATE screens SET last_seen = ? WHERE device_id = ?`).run(now, screenId);
-    // If the assigned profile no longer exists, fall back to default — but on a SLAVE
-    // keep the host's assigned slug even if its profile row hasn't synced yet (the
-    // display will resolve it once the next data sync lands the profile).
-    let slug = (remoteSlug !== null ? remoteSlug : (existing.assigned_display_slug || ''));
-    if (slug && remoteSlug === null && !resolveDisplay(slug)) slug = '';
-    // Demo: every visitor's browser is a fresh, unassigned screen — point it
-    // at the sole seeded profile so widget edits have a slug to save against
-    // (without this the display refuses every layout save as "no display
-    // selected"). Harmless outside demo; only fills an otherwise-empty slug.
-    if (IS_DEMO && !slug) { const d0 = db.prepare(`SELECT slug FROM displays ORDER BY sort_order ASC, id ASC LIMIT 1`).get(); if (d0) slug = d0.slug; }
-    let switcherPresets = [];
-    try { switcherPresets = JSON.parse(existing.floating_switcher_presets || '[]'); } catch {}
-    let switcherSchedule = [];
-    try { switcherSchedule = JSON.parse(existing.floating_switcher_schedule || '[]'); } catch {}
-    res.json({ assigned_display_slug: slug, named: !!existing.name, info_corner: existing.info_corner || '', addresses: addrs, port, canonicalId, displayRes,
-      floating_switcher_enabled: !!existing.floating_switcher_enabled, floating_switcher_presets: switcherPresets, floating_switcher_schedule: switcherSchedule,
-      floating_switcher_edge: existing.floating_switcher_edge || 'bottom', floating_switcher_icon: existing.floating_switcher_icon || '🔀', floating_switcher_color: existing.floating_switcher_color || '#0a0e1a',
-      floating_switcher_style: existing.floating_switcher_style || 'circles', floating_switcher_bar_mode: existing.floating_switcher_bar_mode || 'icons',
-      floating_switcher_reveal: existing.floating_switcher_reveal || 'always',
-      alert_banner_position: existing.alert_banner_position || 'top', alert_banner_size: existing.alert_banner_size || 'm', alert_banner_style: existing.alert_banner_style || 'solid',
-      ...(demoSwitcherOverride() || {}) });
-  } else {
-    db.prepare(`INSERT INTO screens (device_id, name, last_seen) VALUES (?, ?, ?)`).run(screenId, previewScreenName(screenId), now);
-    broadcastUpdate('screens');
-    let slug = (remoteSlug !== null ? remoteSlug : '');
-    if (slug && remoteSlug === null && !resolveDisplay(slug)) slug = '';
-    if (IS_DEMO && !slug) { const d0 = db.prepare(`SELECT slug FROM displays ORDER BY sort_order ASC, id ASC LIMIT 1`).get(); if (d0) slug = d0.slug; }
-    res.json({ assigned_display_slug: slug, named: false, info_corner: '', addresses: addrs, port, canonicalId, displayRes,
-      floating_switcher_enabled: false, floating_switcher_presets: [], floating_switcher_schedule: [],
-      floating_switcher_edge: 'bottom', floating_switcher_icon: '🔀', floating_switcher_color: '#0a0e1a',
-      floating_switcher_style: 'circles', floating_switcher_bar_mode: 'icons', floating_switcher_reveal: 'always',
-      alert_banner_position: 'top', alert_banner_size: 'm', alert_banner_style: 'solid',
-      ...(demoSwitcherOverride() || {}) });
-  }
-});
-
-app.delete('/api/displays/:id', (req, res) => {
-  const count = db.prepare(`SELECT COUNT(*) as c FROM displays`).get().c;
-  if (count <= 1) return res.status(400).json({ error: 'At least one display must exist' });
-  const result = db.prepare(`DELETE FROM displays WHERE id = ?`).run(req.params.id);
-  if (result.changes === 0) return res.status(404).json({ error: 'Display not found' });
-  db.prepare(`DELETE FROM layouts WHERE display_id = ?`).run(req.params.id);
-  broadcastUpdate('displays');
-  res.json({ ok: true });
-});
+// This code lives in src/screens.js. It runs here, at the same place in the file as before.
+require('./src/screens.js')({ getReachableAddresses, app, PORT, IS_DEMO, db, broadcastUpdate, sendScreenCommand, SCREEN_ONLINE_MS, DEVICE_ID, getSetting, isSlave, resolveDisplay, previewScreenName, updateSetting });
 
 // ── Layout API ────────────────────────────────────────────────────────────────
-// Layouts are scoped per display. ?display=<slug-or-id> selects which one;
-// omitting it falls back to the first display (keeps old bookmarked display
-// URLs and the control app's default view working without changes).
-
-// GET /api/layouts/:orientation?display=kitchen
-app.get('/api/layouts/:orientation', (req, res) => {
-  const display = resolveDisplay(req.query.display);
-  if (!display) return res.status(404).json({ error: 'No displays exist yet' });
-  const row = db.prepare(`SELECT * FROM layouts WHERE display_id = ? AND orientation = ?`)
-    .get(display.id, req.params.orientation);
-  if (!row) return res.status(404).json({ error: 'Layout not found' });
-  res.json({ orientation: row.orientation, widgets: JSON.parse(row.widgets), display_id: display.id, display_name: display.name });
-});
-
-// PUT /api/layouts/:orientation?display=kitchen
-app.put('/api/layouts/:orientation', (req, res) => {
-  // A WRITE must never fall back to resolveDisplay()'s own "first display in
-  // the database" default the way a read reasonably can — that default
-  // exists so a read shows something sensible rather than erroring out, but
-  // applied to a save it means any request that omits, mis-sends, or sends a
-  // stale/typo'd 'display' silently overwrites some OTHER, unrelated, and
-  // often arbitrary display's real content instead of failing loudly.
-  // Confirmed as a real, reported incident: a display's own layout got
-  // silently replaced with a completely different one's widgets, with no
-  // error and no indication anything had gone wrong, while this fallback
-  // landing on whichever display happens to sort first was never ruled out
-  // as the mechanism. Checking resolveDisplay()'s return isn't enough on its
-  // own — it returns a display in BOTH the "slug matched" and "nothing
-  // matched, here's the fallback" cases, so the only way to tell them apart
-  // is to verify the slug/id actually sent was actually what came back.
-  const requested = req.query.display;
-  if (!requested) return res.status(400).json({ error: 'A display slug is required to save a layout.' });
-  const display = resolveDisplay(requested);
-  if (!display || (display.slug !== requested && String(display.id) !== String(requested))) {
-    return res.status(404).json({ error: 'That display could not be found.' });
-  }
-  const { widgets } = req.body;
-  if (!Array.isArray(widgets)) return res.status(400).json({ error: 'widgets must be an array' });
-
-  // Enforce the widget limit for non-active accounts — but only block genuinely
-  // ADDING widgets beyond what this layout already had, same "never retroactively
-  // lock someone out" principle as the device limit above. A layout that's
-  // already over the limit (e.g. from before a limit applied, or after a
-  // downgrade) can still be edited/rearranged — this only stops growing it further.
-  try {
-    const limitsRaw = updateSetting('limits_cache', '');
-    const limits = limitsRaw ? JSON.parse(limitsRaw) : null;
-    if (limits && typeof limits.maxWidgets === 'number') {
-      const existingRow = db.prepare(`SELECT widgets FROM layouts WHERE display_id = ? AND orientation = ?`).get(display.id, req.params.orientation);
-      const previousCount = existingRow ? (JSON.parse(existingRow.widgets || '[]').length || 0) : 0;
-      if (widgets.length > limits.maxWidgets && widgets.length > previousCount) {
-        return res.status(403).json({
-          error: `This account is limited to ${limits.maxWidgets} widgets.`,
-        });
-      }
-    }
-  } catch { /* if the cache is missing/malformed, fail open rather than block a legitimate save */ }
-
-  db.prepare(`INSERT OR REPLACE INTO layouts (display_id, orientation, widgets) VALUES (?, ?, ?)`)
-    .run(display.id, req.params.orientation, JSON.stringify(widgets));
-  markHostEditing();           // frequent layout saves = active editing; slaves speed up
-  broadcastUpdate('layout', display.id);
-  // A camera widget may have just been added or removed anywhere in the fleet —
-  // (re)start or stop the local go2rtc media process to match.
-  reloadCameraService();
-  res.json({ ok: true });
-});
+// This code lives in src/layout-api.js. It runs here, at the same place in the file as before.
+require('./src/layout-api.js')({ app, db, markHostEditing, broadcastUpdate, reloadCameraService, resolveDisplay, updateSetting });
 
 // ── Todoist proxy — uses personal API token ───────────────────────────────────
-// Was read-only originally; now also supports completing a task (the one
-// write this app needs — nothing else here creates/edits/deletes Todoist
-// data). Note: Todoist deprecated the old REST v2 API (api.todoist.com/rest/v2/...).
-// The current API lives under /api/v1/ and wraps list responses as { results: [...], next_cursor }.
-async function todoistGet(token, path) {
-  let res;
-  try {
-    res = await fetchWithTimeout(`https://api.todoist.com${path}`, {
-      headers: { 'Authorization': `Bearer ${token}` },
-      timeoutMs: 10000,
-      timeoutMessage: 'Timed out contacting Todoist',
-    });
-  } catch (e) { throw { status: 500, message: e.message }; }
-  if (res.status === 401 || res.status === 403) throw { status: 401, message: 'Invalid Todoist token' };
-  if (res.status >= 400) throw { status: 500, message: `Todoist returned status ${res.status}` };
-  let parsed;
-  try { parsed = await res.json(); }
-  catch { throw { status: 500, message: 'Failed to parse Todoist response' }; }
-  // New API wraps results: { results: [...], next_cursor }. Treat bare arrays as already-unwrapped.
-  return Array.isArray(parsed) ? parsed : (parsed.results || []);
-}
-
-// POST helper for the one write operation this app makes to Todoist —
-// completing a task. Same token/auth as todoistGet above, just a different
-// HTTP method; a real request body was never needed for /close (Todoist's
-// endpoint takes the task id from the URL path alone), so this stays a
-// simple no-body POST rather than a more general "send any payload" helper.
-async function todoistPost(token, path) {
-  let res;
-  try {
-    res = await fetchWithTimeout(`https://api.todoist.com${path}`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}` },
-      timeoutMs: 10000,
-      timeoutMessage: 'Timed out contacting Todoist',
-    });
-  } catch (e) { throw { status: 500, message: e.message }; }
-  if (res.status === 401 || res.status === 403) throw { status: 401, message: 'Invalid Todoist token' };
-  if (res.status >= 400) throw { status: 500, message: `Todoist returned status ${res.status}` };
-  // A successful close returns 204 No Content — nothing to parse, and
-  // trying to JSON.parse an empty body would throw for no reason.
-  return true;
-}
-
-// GET /api/todoist/tasks?project_id=XXXX  (project_id optional — omit for all projects)
-app.get('/api/todoist/tasks', async (req, res) => {
-  const row = db.prepare(`SELECT value FROM settings WHERE key = 'todoist_token'`).get();
-  const token = row?.value;
-  if (!token) return res.status(400).json({ error: 'No Todoist token configured — add one in Settings' });
-
-  let path = '/api/v1/tasks';
-  if (req.query.project_id) path += `?project_id=${encodeURIComponent(req.query.project_id)}`;
-
-  try {
-    const tasks = await todoistGet(token, path);
-    res.json(tasks);
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
-  }
-});
-
-// POST /api/todoist/tasks/:id/close — marks a task complete on Todoist
-// itself, not just locally. This app never shows completed tasks again
-// once they're gone from Todoist's own "active tasks" list (there's no
-// local record of them to reopen from here), which is the right behavior
-// for a wall display — tapping a task off is meant to be the same as
-// checking it off in the real Todoist app, not a display-only hide.
-app.post('/api/todoist/tasks/:id/close', async (req, res) => {
-  const row = db.prepare(`SELECT value FROM settings WHERE key = 'todoist_token'`).get();
-  const token = row?.value;
-  if (!token) return res.status(400).json({ error: 'No Todoist token configured — add one in Settings' });
-  try {
-    await todoistPost(token, `/api/v1/tasks/${encodeURIComponent(req.params.id)}/close`);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
-  }
-});
-
-// GET /api/todoist/projects — used to populate the project picker dropdown
-app.get('/api/todoist/projects', async (req, res) => {
-  const row = db.prepare(`SELECT value FROM settings WHERE key = 'todoist_token'`).get();
-  const token = row?.value;
-  if (!token) return res.status(400).json({ error: 'No Todoist token configured — add one in Settings' });
-
-  try {
-    const projects = await todoistGet(token, '/api/v1/projects');
-    res.json(projects);
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
-  }
-});
+// This code lives in src/todoist.js. It runs here, at the same place in the file as before.
+const { todoistGet } = require('./src/todoist.js')({ path, fetchWithTimeout, app, db });
 
 // ── Home Assistant (Tier 1: read-only Entity Status widget) ──────────────────
-// Same shape as the Todoist/Weather integrations above: the base URL + token live
-// in settings and are used ONLY server-side — the browser/display never sees the
-// token, only ever talks to these proxy endpoints. Unlike Todoist (a fixed
-// hostname), Home Assistant is self-hosted at a URL the user provides, so the
-// request helper parses it dynamically (same pattern as centralRequest() above)
-// rather than assuming a hostname.
-function haRequest(pathAndQuery) {
-  return haRequestWith(getSetting('ha_base_url'), getSetting('ha_token'), pathAndQuery);
-}
-// Last outcome of a real HA REST interaction — powers the `ha` field in the
-// fleet check-in (fetchUpdateInfo). null = this device has never talked to
-// HA (either not configured, or configured but nothing's polled yet).
-let _haHealth = null; // { ok: boolean, at: epochMs } | null
-function haRequestWith(baseUrl, token, pathAndQuery, method = 'GET', body = null, opts = {}) {
-  const configured = !!(baseUrl && token);
-  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 8000;
-  const p = (async () => {
-    if (!baseUrl || !token) throw { status: 400, message: 'Home Assistant isn\'t configured yet — add a URL and token in Settings' };
-    let target;
-    try { target = new URL(baseUrl.replace(/\/+$/, '') + pathAndQuery); } catch { throw { status: 400, message: 'Invalid Home Assistant URL' }; }
-    const bodyStr = body ? JSON.stringify(body) : null;
-    const headers = { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' };
-    if (bodyStr) headers['Content-Type'] = 'application/json';
-    let res;
-    try {
-      res = await fetchWithTimeout(target, { method, headers, body: bodyStr, timeoutMs, timeoutMessage: 'Home Assistant request timed out' });
-    } catch (e) { throw { status: 502, message: `Could not reach Home Assistant: ${e.message}` }; }
-    if (res.status === 401 || res.status === 403) {
-      throw { status: 401, message: 'Home Assistant rejected the token — check it\'s still valid' };
-    }
-    if (res.status === 404) throw { status: 404, message: 'Entity not found' };
-    if (res.status >= 400) throw { status: 502, message: `Home Assistant returned status ${res.status}` };
-    const data = await res.text();
-    // A successful service call can return an empty body (204-shaped 200) or a
-    // JSON array of the entities it affected — either is fine, only genuinely
-    // malformed JSON (when a body was actually sent back) is an error.
-    if (!data.trim()) return null;
-    try { return JSON.parse(data); }
-    catch { throw { status: 502, message: 'Could not parse Home Assistant\'s response' }; }
-  })();
-  // Only "HA is configured but we couldn't reach/authenticate it" is a health
-  // signal — the not-configured reject above isn't. A token/permission error
-  // (status 401) counts as unhealthy; so does any transport failure.
-  if (!configured) return p;
-  return p.then(
-    (v) => { _haHealth = { ok: true, at: Date.now() }; return v; },
-    (e) => { _haHealth = { ok: false, at: Date.now() }; throw e; }
-  );
-}
-
-// GET /api/ha/discover — best-effort auto-detection of a Home Assistant
-// instance on the local network, for the Settings "Detect automatically"
-// button. Tries, in order: this machine itself (covers the common case of HA
-// running in Docker on the same box as this server), the well-known mDNS
-// hostname most home networks resolve automatically, this machine's own LAN
-// subnet (a fast, concurrency-limited port-8123 sweep), and — if the
-// `tailscale` CLI is present — every peer on this device's own tailnet,
-// since Tailscale IPs aren't guessable by subnet-scanning the way a LAN is.
-// Confirmed via HA's unauthenticated /manifest.json, which is a stable,
-// public fingerprint (name: "Home Assistant") — no token needed to detect
-// it, only to actually use it afterward.
-function probeHaCandidate(hostname, port) {
-  return new Promise((resolve) => {
-    const req = http.get({ hostname, port, path: '/manifest.json', timeout: 600 }, (res) => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed && typeof parsed.name === 'string' && parsed.name.toLowerCase().includes('home assistant')) {
-            resolve({ url: `http://${hostname}:${port}`, name: parsed.name });
-          } else resolve(null);
-        } catch { resolve(null); }
-      });
-    });
-    req.on('timeout', () => req.destroy());
-    req.on('error', () => resolve(null));
-  });
-}
-// Runs a batch of candidate probes with a concurrency cap, since a full /24
-// sweep is 254 hosts — doing them all at once would be an unnecessary burst
-// of simultaneous connections for what's a one-tap, non-urgent action.
-async function probeInBatches(candidates, concurrency = 24) {
-  const found = [];
-  for (let i = 0; i < candidates.length; i += concurrency) {
-    const batch = candidates.slice(i, i + concurrency);
-    const results = await Promise.all(batch.map(c => probeHaCandidate(c.hostname, c.port)));
-    results.forEach(r => { if (r) found.push(r); });
-  }
-  return found;
-}
-function localIPv4Subnets() {
-  // Returns { selfIps, subnetPrefixes } — every non-internal IPv4 this
-  // machine has, and the /24 prefix of each, deduplicated. Multiple
-  // interfaces (e.g. Wi-Fi + Ethernet, or a Tailscale interface which also
-  // shows up here but is deliberately excluded from subnet-scanning — see
-  // the Tailscale peer lookup below instead, since its /10 CGNAT range is
-  // far too large to brute-force).
-  const selfIps = [];
-  const prefixes = new Set();
-  Object.values(os.networkInterfaces()).flat().forEach(iface => {
-    if (!iface || iface.internal || iface.family !== 'IPv4') return;
-    if (iface.address.startsWith('100.')) return; // Tailscale CGNAT range — handled separately
-    selfIps.push(iface.address);
-    prefixes.add(iface.address.split('.').slice(0, 3).join('.'));
-  });
-  return { selfIps, prefixes: [...prefixes] };
-}
-function tailscalePeerIps() {
-  // Best-effort only — silently returns [] if the `tailscale` CLI isn't
-  // installed or the daemon isn't running, both totally normal (most
-  // installs won't have it), rather than treating either as an error.
-  try {
-    const out = execFileSync('tailscale', ['status', '--json'], { timeout: 3000 }).toString();
-    const status = JSON.parse(out);
-    return Object.values(status.Peer || {})
-      .map(p => (p.TailscaleIPs || [])[0])
-      .filter(ip => ip && ip.includes('.'));
-  } catch { return []; }
-}
-// This machine's OWN Tailscale IP (not a peer's) — used by the "Add a
-// Display" flow so the generated URL/QR code works regardless of what
-// network the NEW device is actually on, as long as it's also joined to
-// the same tailnet. A LAN-only URL (this admin's own current
-// window.location.origin) would only work if the new device happens to be
-// on the same Wi-Fi — not a safe assumption for something like a Fire
-// Stick that might get moved between rooms/networks.
-function tailscaleSelfIp() {
-  try {
-    const out = execFileSync('tailscale', ['status', '--json'], { timeout: 3000 }).toString();
-    const status = JSON.parse(out);
-    const ips = (status.Self && status.Self.TailscaleIPs) || [];
-    return ips.find(ip => ip.includes('.')) || null;
-  } catch { return null; }
-}
-// GET /api/tailscale-status — powers the "Add a Display" section in the
-// Devices tab: whether Tailscale is actually installed/running on THIS
-// machine (not assumed), and its IP if so, so the UI can build a URL
-// that'll actually work from a device on a different network, and can
-// give an honest "not detected" message rather than a URL that silently
-// won't work when the new device isn't on the same Wi-Fi.
-app.get('/api/tailscale-status', (req, res) => {
-  const ip = tailscaleSelfIp();
-  res.json({ installed: !!ip, ip, port: PORT });
-});
-app.get('/api/ha/discover', async (req, res) => {
-  try {
-    const candidates = [
-      { hostname: 'localhost', port: 8123 },
-      { hostname: 'homeassistant.local', port: 8123 },
-    ];
-    const { prefixes } = localIPv4Subnets();
-    prefixes.forEach(prefix => {
-      for (let host = 1; host <= 254; host++) candidates.push({ hostname: `${prefix}.${host}`, port: 8123 });
-    });
-    tailscalePeerIps().forEach(ip => candidates.push({ hostname: ip, port: 8123 }));
-
-    const found = await probeInBatches(candidates);
-    found.forEach(f => { if (/^https?:\/\/100\./.test(f.url)) f.viaTailscale = true; });
-    // Dedupe (the same instance can legitimately be found twice — e.g. via
-    // both "localhost" and this machine's own LAN IP).
-    const seen = new Set();
-    const unique = found.filter(f => (seen.has(f.url) ? false : (seen.add(f.url), true)));
-    res.json({ found: unique });
-  } catch (e) {
-    res.status(500).json({ found: [], error: e.message });
-  }
-});
-
-// GET /api/ha/test — validates the configured URL+token, for a Settings "Test
-// Connection" button. Accepts optional ?url=&token= to test values the person
-// just typed but hasn't necessarily saved yet (same reasoning as the weather
-// ZIP lookup's ?save=0 — testing shouldn't depend on the debounced auto-save
-// having already fired by the time someone clicks the button). Falls back to
-// the saved settings when neither is provided. HA's /api/ endpoint just
-// confirms the API is up and the token is valid; it doesn't return anything
-// the UI needs beyond that.
-app.get('/api/ha/test', async (req, res) => {
-  const urlOverride = req.query.url;
-  const tokenOverride = req.query.token;
-  try {
-    if (urlOverride !== undefined || tokenOverride !== undefined) {
-      await haRequestWith(urlOverride ?? getSetting('ha_base_url'), tokenOverride ?? getSetting('ha_token'), '/api/');
-    } else {
-      await haRequest('/api/');
-    }
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(e.status || 500).json({ ok: false, error: e.message });
-  }
-});
-
-// GET /api/ha/entities — the FULL entity list, trimmed to just what a picker
-// needs. Used interactively (opening the entity picker in Settings/widget
-// config), never polled, so no caching here — unlike /api/ha/state/:id below,
-// which display.html hits on a refresh timer and specifically needs caching to
-// avoid hammering someone's Home Assistant instance from multiple displays.
-app.get('/api/ha/entities', async (req, res) => {
-  try {
-    const all = await haRequest('/api/states');
-    const trimmed = (Array.isArray(all) ? all : []).map(e => ({
-      entity_id: e.entity_id,
-      state: e.state,
-      friendly_name: (e.attributes && e.attributes.friendly_name) || e.entity_id,
-      unit: (e.attributes && e.attributes.unit_of_measurement) || '',
-    })).sort((a, b) => a.friendly_name.localeCompare(b.friendly_name));
-    res.json(trimmed);
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
-  }
-});
+// This code lives in src/ha-core.js. It runs here, at the same place in the file as before.
+const { haRequest, haRequestWith, getHaHealth } = require('./src/ha-core.js')({ URL, path, http, fetchWithTimeout, os, app, PORT, getSetting, execFileSync });
 
 // ── Home Assistant Areas (WebSocket-only) ───────────────────────────────────
-// HA's REST API (what haRequest()/haRequestWith() above use for everything
-// else) has no endpoint for the area/entity/device registries — genuinely
-// not there, confirmed against HA's own docs and a still-open community
-// feature request for exactly this. The ONLY way to get "which area is
-// entity X actually in" is HA's WebSocket API. This is a one-shot
-// connection (auth, ask for what we need, close) rather than a persistent
-// one — area assignments change rarely enough that the short cache below is
-// far simpler than keeping a live socket open for the life of the process.
-//
-// Resolving an entity's EFFECTIVE area takes two lookups, not one: HA lets
-// an entity either have its own direct area_id, OR inherit one from its
-// device (most entities go this route — a device gets placed in a room, and
-// every entity that device exposes inherits that placement unless
-// individually overridden). Skipping the device fallback would leave most
-// real installs showing almost nothing grouped, since a direct per-entity
-// area_id is the less common case in practice.
-function haWsRequest(baseUrl, token, commandTypes) {
-  return new Promise((resolve, reject) => {
-    if (!WebSocketClient) return reject({ status: 500, message: 'The "ws" module isn\'t installed on this device yet — apply the latest update, then try again.' });
-    if (!baseUrl || !token) return reject({ status: 400, message: 'Home Assistant isn\'t configured yet — add a URL and token in Settings' });
-    let wsUrl;
-    try {
-      const u = new URL(baseUrl.replace(/\/+$/, ''));
-      wsUrl = `${u.protocol === 'https:' ? 'wss' : 'ws'}://${u.host}/api/websocket`;
-    } catch { return reject({ status: 400, message: 'Invalid Home Assistant URL' }); }
-
-    let sock;
-    try { sock = new WebSocketClient(wsUrl); }
-    catch (e) { return reject({ status: 502, message: `Could not reach Home Assistant: ${e.message}` }); }
-
-    const results = {};
-    const pending = new Map(); // request id -> command type, so a result can be routed back to the right key
-    let nextId = 1;
-    let done = false;
-    const timer = setTimeout(() => {
-      if (done) return;
-      done = true;
-      try { sock.terminate(); } catch {}
-      reject({ status: 502, message: 'Home Assistant WebSocket request timed out' });
-    }, 8000);
-    const finish = (err, val) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      try { sock.close(); } catch {}
-      if (err) reject(err); else resolve(val);
-    };
-    sock.on('error', (err) => finish({ status: 502, message: `Could not reach Home Assistant: ${err.message}` }));
-    sock.on('close', () => finish({ status: 502, message: 'Home Assistant closed the connection unexpectedly' }));
-    sock.on('message', (raw) => {
-      let msg;
-      try { msg = JSON.parse(raw); } catch { return; }
-      if (msg.type === 'auth_required') {
-        sock.send(JSON.stringify({ type: 'auth', access_token: token }));
-      } else if (msg.type === 'auth_invalid') {
-        finish({ status: 401, message: 'Home Assistant rejected the token — check it\'s still valid' });
-      } else if (msg.type === 'auth_ok') {
-        commandTypes.forEach(type => {
-          const id = nextId++;
-          pending.set(id, type);
-          sock.send(JSON.stringify({ id, type }));
-        });
-      } else if (msg.type === 'result' && pending.has(msg.id)) {
-        const type = pending.get(msg.id);
-        pending.delete(msg.id);
-        // Best-effort per-command: a single registry query failing (unlikely,
-        // but e.g. a permissions issue on an unusually locked-down token)
-        // degrades that one piece to "nothing found" rather than failing the
-        // whole areas feature outright.
-        results[type] = msg.success ? msg.result : [];
-        if (pending.size === 0) finish(null, results);
-      }
-    });
-  });
-}
-
-// GET /api/ha/areas — real Home Assistant areas, plus which area each
-// entity effectively belongs to (direct assignment, or inherited from its
-// device). Cached for 5 minutes — area layout changes rarely, and every
-// open of an entity picker shouldn't cost a fresh WebSocket round-trip.
-let haAreasCache = null; // { data, fetchedAt }
-const HA_AREAS_CACHE_MS = 5 * 60 * 1000;
-app.get('/api/ha/areas', async (req, res) => {
-  if (haAreasCache && (Date.now() - haAreasCache.fetchedAt) < HA_AREAS_CACHE_MS) {
-    return res.json(haAreasCache.data);
-  }
-  try {
-    const results = await haWsRequest(getSetting('ha_base_url'), getSetting('ha_token'), [
-      'config/area_registry/list',
-      'config/device_registry/list',
-      'config/entity_registry/list',
-    ]);
-    const areas = (results['config/area_registry/list'] || [])
-      .map(a => ({ id: a.area_id, name: a.name }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-    const deviceArea = new Map(); // device_id -> area_id
-    (results['config/device_registry/list'] || []).forEach(d => { if (d.area_id) deviceArea.set(d.id, d.area_id); });
-    const entityAreas = {}; // entity_id -> area_id
-    (results['config/entity_registry/list'] || []).forEach(e => {
-      const areaId = e.area_id || (e.device_id ? deviceArea.get(e.device_id) : null);
-      if (areaId) entityAreas[e.entity_id] = areaId;
-    });
-    const data = { areas, entityAreas };
-    haAreasCache = { data, fetchedAt: Date.now() };
-    res.json(data);
-  } catch (e) {
-    // Degrade gracefully rather than break the picker: an old HA version, a
-    // locked-down token, or ws being unavailable (see WebSocketClient guard
-    // above) all mean "no area data available," not "the picker is broken" —
-    // the entity list itself still comes from the REST endpoint either way.
-    res.status(e.status || 500).json({ error: e.message, areas: [], entityAreas: {} });
-  }
-});
-
-// GET /api/ha/state/:entityId — one entity's current value, for the widget
-// itself. Cached briefly (10s) since multiple displays (or multiple widgets
-// showing the same entity) polling independently could otherwise add up to a
-// lot of requests against someone's home server for data that barely changes
-// that fast.
-const haStateCache = new Map(); // entity_id -> { data, fetchedAt }
-// 4s — short enough that a change made elsewhere (the HA app, an automation)
-// shows on the wall within a few seconds, still long enough to absorb the
-// overlap when several displays poll the same entity. Cleared outright after
-// an action so a tap's confirm read is always live.
-const HA_STATE_CACHE_MS = 4_000;
-app.get('/api/ha/state/:entityId', async (req, res) => {
-  const id = req.params.entityId;
-  const cached = haStateCache.get(id);
-  if (cached && (Date.now() - cached.fetchedAt) < HA_STATE_CACHE_MS) {
-    return res.json(cached.data);
-  }
-  try {
-    const e = await haRequest(`/api/states/${encodeURIComponent(id)}`);
-    const attrs = e.attributes || {};
-    const trimmed = {
-      entity_id: e.entity_id,
-      state: e.state,
-      friendly_name: attrs.friendly_name || e.entity_id,
-      unit: attrs.unit_of_measurement || '',
-    };
-    // Climate-specific extras, only included when actually present (a light
-    // or switch entity simply won't have these fields, so this stays a no-op
-    // trim for every domain except climate) — needed by the thermostat
-    // stepper UI to know the current target, the live sensed temperature,
-    // and the safe range/step to move it in. Never trust a client-supplied
-    // range instead of what HA itself reports for this specific device.
-    if (attrs.temperature !== undefined) trimmed.targetTemp = attrs.temperature;
-    if (attrs.current_temperature !== undefined) trimmed.currentTemp = attrs.current_temperature;
-    if (attrs.min_temp !== undefined) trimmed.minTemp = attrs.min_temp;
-    if (attrs.max_temp !== undefined) trimmed.maxTemp = attrs.max_temp;
-    if (attrs.target_temp_step !== undefined) trimmed.tempStep = attrs.target_temp_step;
-    // Light brightness (0-255) for the dimmer slider — only present on a
-    // dimmable light that's currently on, a no-op trim for everything else.
-    if (attrs.brightness !== undefined && attrs.brightness !== null) trimmed.brightness = attrs.brightness;
-    // Light colour: temp (kelvin) + range for the warm/cool slider, and the
-    // supported modes so the client knows whether to offer temp / swatches.
-    if (attrs.color_temp_kelvin !== undefined && attrs.color_temp_kelvin !== null) trimmed.colorTempK = attrs.color_temp_kelvin;
-    if (attrs.min_color_temp_kelvin !== undefined) trimmed.minColorTempK = attrs.min_color_temp_kelvin;
-    if (attrs.max_color_temp_kelvin !== undefined) trimmed.maxColorTempK = attrs.max_color_temp_kelvin;
-    if (Array.isArray(attrs.supported_color_modes)) trimmed.colorModes = attrs.supported_color_modes;
-    if (Array.isArray(attrs.rgb_color)) trimmed.rgbColor = attrs.rgb_color;
-    // media_player extras for the transport + volume controls.
-    if (attrs.media_title !== undefined && attrs.media_title !== null) trimmed.mediaTitle = String(attrs.media_title);
-    if (attrs.volume_level !== undefined && attrs.volume_level !== null) trimmed.volumeLevel = attrs.volume_level;
-    if (attrs.is_volume_muted !== undefined) trimmed.volumeMuted = !!attrs.is_volume_muted;
-    // Fan speed (0-100) for the speed slider — only on a variable-speed fan.
-    if (attrs.percentage !== undefined && attrs.percentage !== null) trimmed.fanPercentage = attrs.percentage;
-    haStateCache.set(id, { data: trimmed, fetchedAt: Date.now() });
-    res.json(trimmed);
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
-  }
-});
-
-// Recent numeric history for one entity, for the Entity Status widget's
-// sparkline. History is heavier than a state poll, so it's cached longer and
-// downsampled server-side. Returns { points: [{t, v}] } (t = epoch ms).
-const haHistoryCache = new Map(); // key `${id}|${hours}` -> { data, fetchedAt }
-const HA_HISTORY_CACHE_MS = 5 * 60 * 1000;
-app.get('/api/ha/history/:entityId', async (req, res) => {
-  const id = req.params.entityId;
-  let hours = parseInt(req.query.hours, 10);
-  if (!Number.isFinite(hours) || hours < 1 || hours > 168) hours = 24;
-  const key = `${id}|${hours}`;
-  const cached = haHistoryCache.get(key);
-  if (cached && (Date.now() - cached.fetchedAt) < HA_HISTORY_CACHE_MS) return res.json(cached.data);
-  try {
-    const start = new Date(Date.now() - hours * 3600 * 1000).toISOString();
-    const raw = await haRequest(`/api/history/period/${encodeURIComponent(start)}?filter_entity_id=${encodeURIComponent(id)}&minimal_response&no_attributes&significant_changes_only`);
-    const series = Array.isArray(raw) && Array.isArray(raw[0]) ? raw[0] : [];
-    let points = [];
-    for (const p of series) {
-      const v = parseFloat(p.state);
-      if (!Number.isFinite(v)) continue; // skip 'unavailable'/'unknown'/text
-      const t = Date.parse(p.last_changed || p.last_updated || '');
-      if (!Number.isFinite(t)) continue;
-      points.push({ t, v });
-    }
-    // Downsample to at most ~100 points so the payload + the SVG stay small.
-    const MAX = 100;
-    if (points.length > MAX) {
-      const step = points.length / MAX;
-      const out = [];
-      for (let i = 0; i < MAX; i++) out.push(points[Math.floor(i * step)]);
-      out.push(points[points.length - 1]);
-      points = out;
-    }
-    const data = { points, hours };
-    haHistoryCache.set(key, { data, fetchedAt: Date.now() });
-    res.json(data);
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
-  }
-});
+// This code lives in src/ha-areas.js. It runs here, at the same place in the file as before.
+const { haWsRequest, haStateCache } = require('./src/ha-areas.js')({ URL, WebSocketClient, app, getSetting, haRequest });
 
 // ── Home Assistant Tier 2: controlling devices, not just reading them ──────
-// POST /api/ha/call-action — the client NEVER gets to specify an arbitrary HA
-// domain/service. It sends only { entityId, action, ...extra }, where action
-// is one of a small fixed whitelist decided right here — the actual HA
-// service call (domain + service name) is derived server-side from that
-// action plus the entity's own domain (parsed from its id, e.g. "light." in
-// "light.living_room"), never trusted from the request. This is deliberately
-// more conservative than just proxying whatever service name a client sends:
-// a bug or a malicious request on the client side can only ever trigger one
-// of these specific, known-safe actions, never an arbitrary HA service call.
-const HA_ACTIONS = {
-  // Generic on/off/toggle — HA's own domain-agnostic services, dispatch
-  // correctly for light/switch/fan/etc. without needing per-domain handling.
-  turn_on:  () => ({ domain: 'homeassistant', service: 'turn_on' }),
-  turn_off: () => ({ domain: 'homeassistant', service: 'turn_off' }),
-  toggle:   () => ({ domain: 'homeassistant', service: 'toggle' }),
-  // Climate: HA has no generic "set_temperature", it's domain-specific.
-  set_temperature: () => ({ domain: 'climate', service: 'set_temperature' }),
-  // Scenes/scripts don't have a generic "trigger" service either — the actual
-  // convention IS <domain>.turn_on for both, so the entity's own domain
-  // (parsed below, not trusted from the client) decides which.
-  trigger: (domain) => ({ domain, service: 'turn_on' }),
-  // Covers (garage doors, blinds, shades) and locks — domain-specific
-  // services, like set_temperature. The route below rejects these unless the
-  // target entity is actually of the matching domain (see DOMAIN_LOCKED_ACTIONS).
-  open_cover:  () => ({ domain: 'cover', service: 'open_cover' }),
-  close_cover: () => ({ domain: 'cover', service: 'close_cover' }),
-  stop_cover:  () => ({ domain: 'cover', service: 'stop_cover' }),
-  lock:        () => ({ domain: 'lock', service: 'lock' }),
-  unlock:      () => ({ domain: 'lock', service: 'unlock' }),
-  // Dimming: light.turn_on carrying brightness_pct (added to the service
-  // data in the route). Same create-or-adjust semantics HA uses.
-  set_brightness: () => ({ domain: 'light', service: 'turn_on' }),
-  // media_player transport + volume.
-  media_play_pause:     () => ({ domain: 'media_player', service: 'media_play_pause' }),
-  media_next_track:     () => ({ domain: 'media_player', service: 'media_next_track' }),
-  media_previous_track: () => ({ domain: 'media_player', service: 'media_previous_track' }),
-  volume_set:           () => ({ domain: 'media_player', service: 'volume_set' }),
-  // Fan variable speed: fan.set_percentage carrying `percentage` (added in
-  // the route from fan_pct).
-  set_fan_speed:        () => ({ domain: 'fan', service: 'set_percentage' }),
-  // Light colour: both are light.turn_on with a colour arg added in the route.
-  set_color_temp:       () => ({ domain: 'light', service: 'turn_on' }),
-  set_color:            () => ({ domain: 'light', service: 'turn_on' }),
-};
-// Actions that only make sense aimed at one specific entity domain — a guard
-// so "unlock" can't be fired at a light, etc. (HA would just error, but this
-// gives a clear message and never dispatches a nonsensical call).
-const DOMAIN_LOCKED_ACTIONS = {
-  open_cover: 'cover', close_cover: 'cover', stop_cover: 'cover',
-  lock: 'lock', unlock: 'lock',
-  set_brightness: 'light',
-  media_play_pause: 'media_player', media_next_track: 'media_player',
-  media_previous_track: 'media_player', volume_set: 'media_player',
-  set_fan_speed: 'fan',
-  set_color_temp: 'light', set_color: 'light',
-};
-// Read-only domains: no actionable service exists, so an on/off/toggle/trigger
-// aimed at one means a mis-picked entity (a sensor dropped into a switch
-// widget slot, say). HA silently no-ops the call and returns ok, which looks
-// like it worked — reject it here so the mistake is visible instead.
-const HA_READ_ONLY_DOMAINS = new Set(['sensor', 'binary_sensor', 'weather', 'sun', 'air_quality', 'zone']);
-const HA_UNTARGETED_ACTIONS = new Set(['turn_on', 'turn_off', 'toggle', 'trigger']);
-
-// Fire an HA service call without making the client wait for its full
-// completion. HA's REST /api/services endpoint holds the HTTP response until
-// the service action AND everything listening for the resulting state change
-// have finished — for a cover that's the whole travel time, several seconds.
-// HA's own UI doesn't feel this because it calls services over the websocket
-// API, which returns as soon as the call is scheduled. This mirrors that: we
-// wait a short window for a *fast* failure (bad token, unknown entity, HA
-// unreachable — all resolve well under it), then answer the client
-// optimistically and let the request finish in the background, logging only a
-// genuine late failure. A generous ceiling still bounds the background request
-// (covers the old 8s timeout being too short for a slow cover, without
-// letting it hang forever).
-const HA_ACTION_SOFT_ACK_MS = 1500;
-const HA_ACTION_HARD_TIMEOUT_MS = 35000;
-async function fireHaServiceCall(servicePath, body, onSettle) {
-  const call = haRequestWith(
-    getSetting('ha_base_url'), getSetting('ha_token'),
-    servicePath, 'POST', body, { timeoutMs: HA_ACTION_HARD_TIMEOUT_MS },
-  );
-  let settled = null; // null = still running, 'ok' = done, Error-ish = failed
-  call.then(
-    () => { settled = 'ok'; try { onSettle(); } catch {} },
-    (e) => { settled = e || new Error('failed'); console.warn(`HA ${servicePath} did not complete cleanly: ${(e && e.message) || e}`); },
-  );
-  await new Promise(r => setTimeout(r, HA_ACTION_SOFT_ACK_MS));
-  if (settled && settled !== 'ok') {
-    const err = new Error(settled.message || 'Home Assistant rejected the command');
-    err.status = settled.status || 502;
-    throw err;
-  }
-  // Drop the cached state now too, so the client's follow-up poll (~700ms
-  // later) reads fresh rather than the stale pre-action value.
-  try { onSettle(); } catch {}
-  return { ok: true, pending: settled !== 'ok' };
-}
-
-app.post('/api/ha/call-action', async (req, res) => {
-  const { entityId, action, temperature } = req.body || {};
-  if (!entityId || typeof entityId !== 'string' || !entityId.includes('.')) {
-    return res.status(400).json({ error: 'Missing or invalid entityId.' });
-  }
-  if (!Object.prototype.hasOwnProperty.call(HA_ACTIONS, action)) {
-    return res.status(400).json({ error: `Unknown action "${action}".` });
-  }
-  const domain = entityId.split('.')[0];
-  if (DOMAIN_LOCKED_ACTIONS[action] && domain !== DOMAIN_LOCKED_ACTIONS[action]) {
-    return res.status(400).json({ error: `"${action}" is only valid for ${DOMAIN_LOCKED_ACTIONS[action]} entities.` });
-  }
-  if (HA_UNTARGETED_ACTIONS.has(action) && HA_READ_ONLY_DOMAINS.has(domain)) {
-    return res.status(400).json({ error: `${domain} entities are read-only — no on/off/toggle control.` });
-  }
-  const { domain: svcDomain, service } = HA_ACTIONS[action](domain);
-  const data = { entity_id: entityId };
-  if (action === 'set_temperature') {
-    const t = Number(temperature);
-    if (!Number.isFinite(t)) return res.status(400).json({ error: 'set_temperature needs a numeric temperature.' });
-    data.temperature = t;
-  }
-  if (action === 'set_brightness') {
-    const p = Number(req.body && req.body.brightness_pct);
-    if (!Number.isFinite(p) || p < 1 || p > 100) return res.status(400).json({ error: 'set_brightness needs brightness_pct between 1 and 100.' });
-    data.brightness_pct = Math.round(p);
-  }
-  if (action === 'volume_set') {
-    const v = Number(req.body && req.body.volume_pct);
-    if (!Number.isFinite(v) || v < 0 || v > 100) return res.status(400).json({ error: 'volume_set needs volume_pct between 0 and 100.' });
-    data.volume_level = Math.round(v) / 100;
-  }
-  if (action === 'set_fan_speed') {
-    const p = Number(req.body && req.body.fan_pct);
-    if (!Number.isFinite(p) || p < 1 || p > 100) return res.status(400).json({ error: 'set_fan_speed needs fan_pct between 1 and 100.' });
-    data.percentage = Math.round(p);
-  }
-  if (action === 'set_color_temp') {
-    const k = Number(req.body && req.body.kelvin);
-    if (!Number.isFinite(k) || k < 1000 || k > 10000) return res.status(400).json({ error: 'set_color_temp needs kelvin between 1000 and 10000.' });
-    data.color_temp_kelvin = Math.round(k);
-  }
-  if (action === 'set_color') {
-    const parts = String((req.body && req.body.rgb) || '').split(',').map(n => parseInt(n, 10));
-    if (parts.length !== 3 || parts.some(n => !Number.isFinite(n) || n < 0 || n > 255)) {
-      return res.status(400).json({ error: 'set_color needs rgb as "r,g,b" with each 0-255.' });
-    }
-    data.rgb_color = parts;
-  }
-  try {
-    // Fire-and-forget: reply as soon as HA accepts the call (or a fast error
-    // comes back), not after the cover/lock/etc. physically finishes. The
-    // cache drop lets the next /api/ha/state/:entityId poll (a few seconds
-    // out, not the full 10s window) reflect the real new state.
-    const out = await fireHaServiceCall(`/api/services/${svcDomain}/${service}`, data, () => haStateCache.delete(entityId));
-    res.json(out);
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
-  }
-});
-
-// POST /api/ha/call-group-action — for the Group Control widget (turn a
-// whole set of entities on/off with one tap, e.g. "turn a whole floor
-// off"). Deliberately a SEPARATE endpoint from call-action above rather than
-// letting entityId also accept an array there: only turn_on/turn_off are
-// allowed here, NOT toggle — HA's own toggle service, given multiple
-// entity_ids, toggles each one independently based on its OWN current
-// state, which is wrong for a group tile (a mixed on/off group would end up
-// with the on ones turning off and the off ones turning on, the opposite of
-// "one clear group action"). The client already has every member's current
-// state loaded (it's rendering the tile from it), so it decides the target
-// action itself — if anything in the group is on, send turn_off; only if
-// everything is off does it send turn_on — and this endpoint just executes
-// whichever one it's told, the same restrained "client decides, server
-// only ever runs one of a few known-safe things" split already used by
-// call-action above. One real HA service call with entity_id as an array,
-// not N separate calls — turn_on/turn_off are HA's domain-agnostic
-// dispatch services, so a group spanning light/switch/fan entities in one
-// call is normal, supported usage, not a hack.
-app.post('/api/ha/call-group-action', async (req, res) => {
-  const { entityIds, action } = req.body || {};
-  if (!Array.isArray(entityIds) || !entityIds.length || entityIds.some(id => typeof id !== 'string' || !id.includes('.'))) {
-    return res.status(400).json({ error: 'entityIds must be a non-empty array of valid entity ids.' });
-  }
-  if (action !== 'turn_on' && action !== 'turn_off') {
-    return res.status(400).json({ error: `Unsupported group action "${action}" — only turn_on/turn_off are allowed here.` });
-  }
-  try {
-    // Same fire-and-forget treatment as call-action — a group turn_on/off
-    // spanning several entities can take HA a moment to fully settle.
-    const out = await fireHaServiceCall(`/api/services/homeassistant/${action}`, { entity_id: entityIds }, () => entityIds.forEach(id => haStateCache.delete(id)));
-    res.json(out);
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
-  }
-});
+// This code lives in src/ha-actions.js. It runs here, at the same place in the file as before.
+require('./src/ha-actions.js')({ app, getSetting, haRequestWith, haStateCache });
 
 // ── News (Google News RSS — no key required) ──────────────────────────────────
-// Cached in-memory since Google may rate-limit/block frequent polling; the display
-// only needs a refresh every 15-30 minutes anyway for a headline ticker. The cache
-// is keyed on the source configuration so changing sources refetches immediately.
-let newsCache = { items: [], fetchedAt: 0, key: '' };
-const NEWS_CACHE_MS = 15 * 60 * 1000; // 15 minutes
-const NEWS_LOCALE = 'hl=en-US&gl=US&ceid=US:en';
-
-function parseNewsRSS(xml) {
-  const items = [];
-  const itemBlocks = xml.split('<item>').slice(1);
-  for (const block of itemBlocks) {
-    const titleMatch = block.match(/<title>([\s\S]*?)<\/title>/);
-    const linkMatch = block.match(/<link>([\s\S]*?)<\/link>/);
-    const pubDateMatch = block.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
-    const sourceMatch = block.match(/<source[^>]*>([\s\S]*?)<\/source>/);
-    if (!titleMatch) continue;
-
-    let title = titleMatch[1].trim();
-    // Decode common XML/HTML entities and strip CDATA wrappers
-    title = title.replace(/^<!\[CDATA\[/, '').replace(/\]\]>$/, '');
-    title = title.replace(/&amp;/g, '&').replace(/&apos;/g, "'").replace(/&quot;/g, '"')
-                 .replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-
-    let link = linkMatch ? linkMatch[1].trim() : '';
-    link = link.replace(/^<!\[CDATA\[/, '').replace(/\]\]>$/, '');
-
-    // Google News RSS titles are usually "Headline - Source Name"; split it apart
-    // since we already get the source separately and don't want it duplicated.
-    let source = sourceMatch ? sourceMatch[1].trim() : '';
-    if (!source && title.includes(' - ')) {
-      const parts = title.split(' - ');
-      source = parts[parts.length - 1].trim();
-      title = parts.slice(0, -1).join(' - ').trim();
-    }
-
-    items.push({
-      title,
-      source,
-      link,
-      pubDate: pubDateMatch ? pubDateMatch[1].trim() : null,
-    });
-  }
-  return items;
-}
-
-// Reads the configured news sources from settings and returns a list of
-// { url, label, priority } source descriptors to fetch.
-function getNewsSources() {
-  const get = (k) => (db.prepare(`SELECT value FROM settings WHERE key = ?`).get(k)?.value ?? '');
-  const on = (k) => get(k) === '1';
-  const sources = [];
-
-  if (on('news_world_enabled')) {
-    // Google News "World" topic feed.
-    sources.push({
-      url: `https://news.google.com/rss/headlines/section/topic/WORLD?${NEWS_LOCALE}`,
-      label: 'World',
-      priority: on('news_world_priority'),
-    });
-  }
-
-  if (on('news_national_enabled')) {
-    sources.push({
-      url: `https://news.google.com/rss?${NEWS_LOCALE}`,
-      label: 'National',
-      priority: on('news_national_priority'),
-    });
-  }
-
-  if (on('news_local_enabled')) {
-    const loc = get('news_local_location').trim();
-    if (loc) {
-      // Search feed is more reliable for arbitrary place names than the geo section feed.
-      sources.push({
-        url: `https://news.google.com/rss/search?q=${encodeURIComponent(loc)}&${NEWS_LOCALE}`,
-        label: loc,
-        priority: on('news_local_priority'),
-      });
-    }
-  }
-
-  if (on('news_keywords_enabled')) {
-    const kw = get('news_keywords').trim();
-    if (kw) {
-      // Each comma-separated term becomes its own labeled group, labeled with the term itself.
-      const priority = on('news_keywords_priority');
-      for (const term of kw.split(',').map(t => t.trim()).filter(Boolean)) {
-        sources.push({
-          url: `https://news.google.com/rss/search?q=${encodeURIComponent(term)}&${NEWS_LOCALE}`,
-          label: term,
-          priority,
-        });
-      }
-    }
-  }
-
-  return sources;
-}
-
-// Interleaves headlines from multiple sources, giving priority sources their
-// reserved slots first so they can't be crowded out, then filling the rest
-// round-robin from all sources. `limit` caps the total (a generous superset of
-// what any widget will display; the widget applies its own max).
-function assembleNews(perSource, limit) {
-  const result = [];
-  const seen = new Set();
-  const pushUnique = (item) => {
-    const k = item.link || item.title;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    result.push(item);
-    return true;
-  };
-
-  // 1) Reserve slots for priority sources first. Give each priority source a fair
-  //    guaranteed share of the limit before non-priority sources get any room.
-  const priority = perSource.filter(s => s.priority && s.items.length);
-  if (priority.length) {
-    const reservePerSource = Math.max(1, Math.floor((limit * 0.6) / priority.length));
-    for (const s of priority) {
-      for (let i = 0; i < reservePerSource && i < s.items.length; i++) {
-        if (result.length >= limit) break;
-        pushUnique(s.items[i]);
-      }
-      s._taken = Math.min(reservePerSource, s.items.length);
-    }
-  }
-
-  // 2) Fill remaining slots round-robin across ALL enabled sources (priority first
-  //    in ordering, continuing past whatever was already reserved).
-  const ordered = [...perSource].sort((a, b) => (b.priority === a.priority ? 0 : b.priority ? 1 : -1));
-  let added = true;
-  let round = 0;
-  while (result.length < limit && added) {
-    added = false;
-    for (const s of ordered) {
-      const start = s._taken || 0;
-      const idx = start + round;
-      if (idx < s.items.length) {
-        if (pushUnique(s.items[idx])) added = true;
-        if (result.length >= limit) break;
-      }
-    }
-    round++;
-  }
-  return result;
-}
-
-async function getNews() {
-  const now = Date.now();
-  const sources = getNewsSources();
-
-  // Fall back to National if somehow nothing is enabled, so the widget is never empty.
-  if (!sources.length) {
-    sources.push({ url: `https://news.google.com/rss?${NEWS_LOCALE}`, label: 'National', priority: false });
-  }
-
-  const cacheKey = JSON.stringify(sources.map(s => [s.url, s.label, s.priority]));
-  if (newsCache.items.length && newsCache.key === cacheKey && (now - newsCache.fetchedAt) < NEWS_CACHE_MS) {
-    return { items: newsCache.items, cached: true };
-  }
-
-  try {
-    // Fetch all sources in parallel; tolerate individual source failures.
-    const perSource = await Promise.all(sources.map(async (s) => {
-      try {
-        const xml = await fetchUrl(s.url);
-        const items = parseNewsRSS(xml).slice(0, 15).map(it => ({ ...it, group: s.label }));
-        return { ...s, items };
-      } catch {
-        return { ...s, items: [] };
-      }
-    }));
-
-    const items = assembleNews(perSource, 25);
-    if (!items.length) throw new Error('No headlines returned from any source');
-    newsCache = { items, fetchedAt: now, key: cacheKey };
-    return { items, cached: false };
-  } catch (e) {
-    if (newsCache.items.length) {
-      return { items: newsCache.items, cached: true, stale: true };
-    }
-    throw e;
-  }
-}
-
-app.get('/api/news', async (req, res) => {
-  try {
-    res.json(await getNews());
-  } catch (e) {
-    res.status(500).json({ error: 'Could not fetch news: ' + e.message });
-  }
-});
+// This code lives in src/news.js. It runs here, at the same place in the file as before.
+const { getNews, parseNewsRSS } = require('./src/news.js')({ app, db, fetchUrl });
 
 // ── Stocks (Stooq — no key required) ──────────────────────────────────────────
-// Stooq's quote endpoint accepts comma-separated symbols in a single request and
-// Stock/index quotes via Finnhub (https://finnhub.io) — free tier, 60 requests/min,
-// no credit card required. Requires the user's own API key (Settings > Stocks),
-// since Finnhub is per-account rather than fully anonymous.
-//
-// Switched from Stooq in mid-2026 after Stooq's quote endpoint started returning
-// "page does not exist" for programmatic requests — Stooq disabled automated/CAPTCHA-free
-// access back in Dec 2020 and was never a reliable foundation.
-//
-// Briefly tried Finnhub with index-tracking ETFs (DIA/QQQ/SPY) as a stand-in for the
-// real indices, since free tiers don't offer raw index data — but the ETF share price
-// doesn't resemble the real index value (e.g. DIA trades around $515, not "51,564"),
-// which looked broken even though the percent-change was a reasonable approximation.
-//
-// Now using Yahoo Finance's unofficial chart endpoint instead, which DOES return the
-// real index values (^DJI, ^IXIC, ^GSPC) for free with no API key or signup at all.
-// This is genuinely unofficial — Yahoo doesn't publish or support it, reverse-engineered
-// by the community, and it CAN change or break without notice (it already has at least
-// once, per public module changelogs). Accepting that risk in exchange for real numbers
-// and zero setup. If Yahoo breaks this again in the future, that's the next thing to fix.
-let stockCache = { quotes: [], fetchedAt: 0, cacheKey: '' };
-const STOCK_CACHE_MS = 5 * 60 * 1000; // 5 minutes — markets move faster than news, but no need for real-time on a wall display
+// This code lives in src/stocks.js. It runs here, at the same place in the file as before.
+const { getStocks, getAllStockTickersFromLayouts } = require('./src/stocks.js')({ fetchWithTimeout, app, db });
 
-const STOCK_INDICES = [
-  { symbol: '^DJI',  label: 'Dow Jones' },
-  { symbol: '^IXIC', label: 'Nasdaq' },
-  { symbol: '^GSPC', label: 'S&P 500' },
-];
-
-// Yahoo's endpoint rejects non-browser User-Agents, so this uses its own fetch
-// (rather than the shared fetchUrl helper, which sends a generic UA fine for
-// every other source we talk to) to avoid touching code other features depend on.
-// Real bug fixed here in the same pass as the fetch() migration: this never
-// had a timeout at all (unlike every other fetcher in this file) — a stalled
-// Yahoo connection hung the stocks widget forever instead of just failing.
-// Redirects are handled by fetch() itself now too.
-async function fetchYahooUrl(urlStr) {
-  const res = await fetchWithTimeout(urlStr, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    },
-    timeoutMs: 10000,
-    timeoutMessage: 'Timed out fetching from Yahoo Finance',
-  });
-  const body = await res.text();
-  return { status: res.status, body };
-}
-
-async function fetchYahooQuote(symbol) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`;
-  const { status, body } = await fetchYahooUrl(url);
-  if (status !== 200) {
-    throw new Error(`Yahoo Finance returned an error (HTTP ${status}) — it may be temporarily unavailable.`);
-  }
-  let data;
-  try {
-    data = JSON.parse(body);
-  } catch {
-    throw new Error('Yahoo Finance returned an unexpected response — the unofficial endpoint may have changed.');
-  }
-  const result = data?.chart?.result?.[0];
-  if (!result || !result.meta || typeof result.meta.regularMarketPrice !== 'number') {
-    return null; // unrecognized symbol or no data for it
-  }
-  const close = result.meta.regularMarketPrice;
-  const prevClose = result.meta.chartPreviousClose ?? result.meta.previousClose;
-  const change = (typeof prevClose === 'number') ? close - prevClose : null;
-  const changePct = (typeof prevClose === 'number' && prevClose !== 0) ? (change / prevClose) * 100 : null;
-  return { close, open: prevClose ?? null, change, changePct };
-}
-
-// customTickers: the UNION of every Stock widget's own `stockTickers` list,
-// passed in per-request from the client (see fetchStocks() in display.html/
-// app.html) — tracking individual tickers moved from being one device-wide
-// Data Sources setting to a per-widget Stock widget setting in v1.77.77, so
-// there's no longer a single "the" ticker list to read from the DB. `null`
-// means the request didn't specify any (an older, not-yet-updated client),
-// in which case we fall back to the old DB value so that client doesn't
-// regress to seeing zero custom tickers mid-rollout across a multi-device
-// household.
-// The union of every Stock widget's own `stockTickers` across every display's
-// layout (both orientations) — used by the Daily Briefing email, which has no
-// single widget to ask (it's one device-wide digest, not tied to a display).
-// Falls back to the legacy DB-wide list only if genuinely no widget anywhere
-// defines its own list yet (pre-migration, or no Stock widget in use at all).
-function getAllStockTickersFromLayouts() {
-  const rows = db.prepare(`SELECT widgets FROM layouts`).all();
-  const set = new Set();
-  let sawAnyStockWidget = false;
-  for (const row of rows) {
-    let widgets;
-    try { widgets = JSON.parse(row.widgets); } catch { continue; }
-    if (!Array.isArray(widgets)) continue;
-    for (const w of widgets) {
-      if (w && w.type === 'stocks') {
-        sawAnyStockWidget = true;
-        (Array.isArray(w.stockTickers) ? w.stockTickers : []).forEach(t => {
-          if (t) set.add(String(t).trim().toUpperCase());
-        });
-      }
-    }
-  }
-  if (!sawAnyStockWidget) return null; // no Stock widget anywhere yet — let getStocks() fall back to the legacy DB value
-  return [...set];
-}
-
-async function getStocks(customTickers) {
-  if (customTickers === null) {
-    const row = db.prepare(`SELECT value FROM settings WHERE key = 'stock_tickers'`).get();
-    customTickers = (row?.value || '').split(',').map(t => t.trim()).filter(Boolean);
-  }
-  // Indices the user has unchecked (e.g. "^DJI") are excluded entirely.
-  const disabledRow = db.prepare(`SELECT value FROM settings WHERE key = 'stock_indices_disabled'`).get();
-  const disabled = new Set((disabledRow?.value || '').split(',').map(t => t.trim()).filter(Boolean));
-  const activeIndices = STOCK_INDICES.filter(i => !disabled.has(i.symbol));
-
-  const now = Date.now();
-  const cacheKey = customTickers.join(',') + '|' + [...disabled].sort().join(',');
-  if (stockCache.quotes.length && stockCache.cacheKey === cacheKey && (now - stockCache.fetchedAt) < STOCK_CACHE_MS) {
-    return { quotes: stockCache.quotes, cached: true };
-  }
-
-  const allSymbols = [
-    ...activeIndices.map(i => ({ symbol: i.symbol, label: i.label, isIndex: true })),
-    ...customTickers.map(t => {
-      const symbol = t.toUpperCase();
-      // Yahoo's crypto pairs are always "COIN-USD" (or -EUR etc.) — no equity ticker
-      // uses a hyphen, so this is a reliable way to tell them apart for display styling.
-      const isCrypto = /^[A-Z0-9]+-[A-Z]{3}$/.test(symbol);
-      return { symbol, label: symbol.replace(/-[A-Z]{3}$/, ''), isIndex: false, isCrypto };
-    }),
-  ];
-
-  try {
-    // One request per symbol — Yahoo's chart endpoint doesn't offer a bulk-quote
-    // call on the unofficial surface, but this is a handful of symbols refreshed
-    // every 5 minutes, nowhere near anything that would trigger rate limiting.
-    const quotes = [];
-    for (const { symbol, label, isIndex, isCrypto } of allSymbols) {
-      const q = await fetchYahooQuote(symbol);
-      if (q) quotes.push({ ...q, symbol, label, isIndex, isCrypto: !!isCrypto });
-    }
-    if (!quotes.length) throw new Error('No quotes returned from Yahoo Finance — it may be temporarily unavailable.');
-    stockCache = { quotes, fetchedAt: now, cacheKey };
-    return { quotes, cached: false };
-  } catch (e) {
-    if (stockCache.quotes.length) {
-      return { quotes: stockCache.quotes, cached: true, stale: true };
-    }
-    throw e;
-  }
-}
-
-app.get('/api/stocks', async (req, res) => {
-  try {
-    // req.query.tickers, when present (even as ''), means the client already
-    // knows per-widget tickers and is telling us the union explicitly — only
-    // fall back to the legacy DB-wide list when the param is missing entirely.
-    const customTickers = (req.query.tickers !== undefined)
-      ? req.query.tickers.split(',').map(t => t.trim()).filter(Boolean)
-      : null;
-    res.json(await getStocks(customTickers));
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Server-side mirror of reminderOccursOnDate() in display.html/app.html —
-// same two schedule types, same logic, kept in sync deliberately rather
-// than shared via a module, matching how this codebase already keeps
-// date-formatting helpers duplicated per file rather than centralized.
-// Needed here specifically for the Daily Briefing email, which has no
-// browser/client context to call into.
 // ── Reminder recurrence engine ──────────────────────────────────────────────
-// Modeled on iOS Calendar's custom-recurrence picker (Repeat → Custom),
-// added on top of the original two-pattern system (weekly / interval) to
-// also support monthly, yearly, and a universal end condition. Every new
-// field is additive and optional — a reminder saved before this existed has
-// none of them, and every branch below treats their absence as "no
-// constraint," so old reminders keep behaving exactly as they always did.
-//
-// schedule_type: 'weekly' | 'interval' (daily) | 'monthly' | 'yearly'
-// schedule_config, universal fields (all types):
-//   startDate: 'YYYY-MM-DD' — anchor for interval counting and end conditions.
-//     Always required going forward for anything besides plain weekly, but
-//     optional/ignored for weekly's own day-of-week check (backward compat).
-//   endType: 'never' (default) | 'onDate' | 'afterCount'
-//   endDate: 'YYYY-MM-DD' — used when endType='onDate'
-//   endCount: integer — used when endType='afterCount', counts pattern
-//     matches from startDate up to and including the date being checked
-// schedule_config, per schedule_type:
-//   weekly:   daysOfWeek:[0-6,...], weekInterval:N (default 1, "every N weeks")
-//   interval: intervalDays:N ("every N days" — the original/only pattern
-//             this type ever had; kept under this name for backward compat
-//             rather than renamed to something like 'daily')
-//   monthly:  monthlyMode:'dayOfMonth'|'nthWeekday', monthInterval:N (default 1),
-//             dayOfMonth:1-31 (dayOfMonth mode), nthWeek:1-4|-1 + nthWeekday:0-6
-//             (nthWeekday mode, -1 = "last")
-//   yearly:   yearlyMonth:1-12, yearInterval:N (default 1),
-//             yearlyMode:'date'|'nthWeekday', yearlyDay:1-31 (date mode),
-//             yearlyNthWeek:1-4|-1 + yearlyNthWeekday:0-6 (nthWeekday mode)
-//
-// A day-by-day scan is used for 'afterCount' rather than a closed-form
-// occurrence-number formula — reminders are a small, low-frequency dataset
-// (this runs against a handful of rows, not thousands), and a bounded scan
-// is far less error-prone to get right across four different recurrence
-// shapes than four separate closed-form counting formulas would be. Capped
-// at 10 years so a malformed/missing startDate can't scan effectively
-// forever.
-const REMINDER_COUNT_SCAN_CAP_DAYS = 3650;
-
-function reminderDaysBetween(a, b) { return Math.round((b - a) / 86400000); }
-function reminderStartOfWeek(d) { const x = new Date(d); x.setDate(x.getDate() - x.getDay()); return x; }
-// nth: 1-4 for 1st-4th occurrence of that weekday in the month, -1 for the
-// last. Returns null if that occurrence doesn't exist (e.g. a 5th Monday in
-// a month that only has 4) — the caller treats null as "no match," not an
-// error, since this can legitimately happen for `nth` in 1-4 depending on
-// how the month falls.
-function reminderNthWeekdayOfMonth(year, month0, weekday, nth) {
-  if (nth === -1) {
-    const last = new Date(year, month0 + 1, 0);
-    const offset = (last.getDay() - weekday + 7) % 7;
-    return new Date(year, month0, last.getDate() - offset);
-  }
-  const first = new Date(year, month0, 1);
-  const offset = (weekday - first.getDay() + 7) % 7;
-  const day = 1 + offset + (nth - 1) * 7;
-  const d = new Date(year, month0, day);
-  return d.getMonth() === month0 ? d : null;
-}
-// Whether the recurrence PATTERN itself lands on this date — ignores the end
-// condition entirely (reminderOccursOnDateServer, below, layers that on top).
-// Kept as its own function because 'afterCount' needs to re-run this in a
-// scan without recursively re-checking the end condition on every step.
-function reminderMatchesPatternServer(reminder, d) {
-  const cfg = reminder.schedule_config || {};
-  const type = reminder.schedule_type;
-  if (type === 'weekly') {
-    if (!Array.isArray(cfg.daysOfWeek) || !cfg.daysOfWeek.includes(d.getDay())) return false;
-    if (cfg.startDate) {
-      const start = new Date(cfg.startDate + 'T00:00:00');
-      if (d < start) return false;
-      const interval = cfg.weekInterval || 1;
-      if (interval > 1) {
-        const weeks = reminderDaysBetween(reminderStartOfWeek(start), reminderStartOfWeek(d)) / 7;
-        if (weeks % interval !== 0) return false;
-      }
-    }
-    return true;
-  }
-  if (type === 'interval') {
-    if (!cfg.startDate || !cfg.intervalDays) return false;
-    const start = new Date(cfg.startDate + 'T00:00:00');
-    const diff = reminderDaysBetween(start, d);
-    return diff >= 0 && diff % cfg.intervalDays === 0;
-  }
-  if (type === 'monthly') {
-    if (!cfg.startDate) return false;
-    const start = new Date(cfg.startDate + 'T00:00:00');
-    if (d < start) return false;
-    const interval = cfg.monthInterval || 1;
-    if (interval > 1) {
-      const monthsDiff = (d.getFullYear() - start.getFullYear()) * 12 + (d.getMonth() - start.getMonth());
-      if (monthsDiff % interval !== 0) return false;
-    }
-    if (cfg.monthlyMode === 'nthWeekday') {
-      const target = reminderNthWeekdayOfMonth(d.getFullYear(), d.getMonth(), cfg.nthWeekday, cfg.nthWeek);
-      return !!target && target.getDate() === d.getDate();
-    }
-    return d.getDate() === cfg.dayOfMonth; // naturally skips months without that day (e.g. 31st in Feb)
-  }
-  if (type === 'yearly') {
-    if (!cfg.startDate) return false;
-    const start = new Date(cfg.startDate + 'T00:00:00');
-    if (d < start) return false;
-    if (d.getMonth() + 1 !== cfg.yearlyMonth) return false;
-    const interval = cfg.yearInterval || 1;
-    if (interval > 1) {
-      const yearsDiff = d.getFullYear() - start.getFullYear();
-      if (yearsDiff % interval !== 0) return false;
-    }
-    if (cfg.yearlyMode === 'nthWeekday') {
-      const target = reminderNthWeekdayOfMonth(d.getFullYear(), d.getMonth(), cfg.yearlyNthWeekday, cfg.yearlyNthWeek);
-      return !!target && target.getDate() === d.getDate();
-    }
-    return d.getDate() === cfg.yearlyDay;
-  }
-  return false;
-}
-function reminderOccursOnDateServer(reminder, dateStr) {
-  const cfg = reminder.schedule_config || {};
-  const d = new Date(dateStr + 'T00:00:00');
-  if (!reminderMatchesPatternServer(reminder, d)) return false;
-  const endType = cfg.endType || 'never';
-  if (endType === 'onDate') {
-    return !cfg.endDate || dateStr <= cfg.endDate;
-  }
-  if (endType === 'afterCount') {
-    if (!cfg.endCount || !cfg.startDate) return true;
-    const start = new Date(cfg.startDate + 'T00:00:00');
-    let count = 0;
-    for (let i = 0; i <= REMINDER_COUNT_SCAN_CAP_DAYS; i++) {
-      const cur = new Date(start);
-      cur.setDate(cur.getDate() + i);
-      if (cur > d) break;
-      if (reminderMatchesPatternServer(reminder, cur)) count++;
-    }
-    return count <= cfg.endCount;
-  }
-  return true;
-}
+// This code lives in src/reminder-recurrence.js. It runs here, at the same place in the file as before.
+const { reminderOccursOnDateServer } = require('./src/reminder-recurrence.js')({});
 
 // ── Daily Briefing email ───────────────────────────────────────────────────────
-// Assembles today's events, tasks, news, and weather into one email, sent at a
-// configured time each day. Gmail SMTP is the only provider wired up right now,
-// but the transporter is built from a `provider` setting so adding others later
-// (Outlook, Yahoo, custom SMTP) just means adding another case below — no rewrite.
-
-function getEmailSettings() {
-  const keys = ['briefing_enabled', 'briefing_time', 'briefing_provider',
-                'briefing_email_user', 'briefing_email_pass', 'briefing_last_sent',
-                'display_name', 'briefing_todoist_project_ids', 'briefing_task_scope',
-                'briefing_weather_format', 'briefing_include_news', 'briefing_news_per_section',
-                'briefing_include_stocks', 'briefing_include_reminders'];
-  const rows = db.prepare(`SELECT key, value FROM settings WHERE key IN (${keys.map(()=>'?').join(',')})`).all(...keys);
-  return Object.fromEntries(rows.map(r => [r.key, r.value]));
-}
-
-function getBriefingRecipients(onlyEnabled = true) {
-  const query = onlyEnabled
-    ? `SELECT * FROM briefing_recipients WHERE enabled = 1 ORDER BY sort_order ASC, id ASC`
-    : `SELECT * FROM briefing_recipients ORDER BY sort_order ASC, id ASC`;
-  return db.prepare(query).all();
-}
-
-function greetingForTime(date = new Date()) {
-  const h = date.getHours();
-  if (h < 12) return 'Good morning';
-  if (h < 17) return 'Good afternoon';
-  return 'Good evening';
-}
-
-function buildMailTransporter(s) {
-  if (s.briefing_provider === 'gmail') {
-    return nodemailer.createTransport({
-      service: 'gmail', // shortcut for smtp.gmail.com:587 with STARTTLS
-      auth: { user: s.briefing_email_user, pass: s.briefing_email_pass },
-      // Force IPv4. Without this, Node's DNS resolution can hand back an IPv6
-      // address for smtp.gmail.com, and on any network with partial/broken
-      // outbound IPv6 (common — many home ISPs/routers are like this) the
-      // connection fails outright with ENETUNREACH before ever reaching the
-      // login step. Unlike a browser, Node doesn't automatically retry on IPv4
-      // ("happy eyeballs") — it just fails. This looks exactly like an auth
-      // problem at a glance (mail just won't send) but has nothing to do with
-      // the app password; forcing IPv4 sidesteps it entirely.
-      family: 4,
-    });
-  }
-  // Future providers (Outlook, Yahoo, custom SMTP) would add cases here, e.g.:
-  // if (s.briefing_provider === 'outlook') return nodemailer.createTransport({ service: 'hotmail', ... });
-  throw new Error(`Unsupported email provider: ${s.briefing_provider}`);
-}
-
-// Translates a raw Node/nodemailer error into something a parent can actually act
-// on, instead of a string like "connect ENETUNREACH 2607:f8b0:... - Local (:::0)"
-// that reads exactly like a credentials problem but usually isn't one.
-function friendlyMailError(e) {
-  const code = e && e.code;
-  const msg = String((e && e.message) || e || '');
-  if (code === 'EAUTH' || /invalid login|username and password not accepted|BadCredentials/i.test(msg)) {
-    return 'Gmail rejected the login — the app password is likely wrong, expired, or was revoked. Generate a fresh one at myaccount.google.com/apppasswords and re-enter it in Settings.';
-  }
-  if (code === 'ENETUNREACH') {
-    return 'Could not reach Gmail\u2019s mail server over the network (this Pi may have broken/partial IPv6 connectivity). This is not an app-password problem.';
-  }
-  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
-    return 'Could not resolve smtp.gmail.com — this Pi may not have working internet/DNS access right now.';
-  }
-  if (code === 'ECONNREFUSED') {
-    return 'The connection to Gmail was refused — a firewall on this network may be blocking outbound mail (port 587).';
-  }
-  if (code === 'ETIMEDOUT' || code === 'ESOCKET') {
-    return 'The connection to Gmail timed out — check this Pi\u2019s internet connection.';
-  }
-  return msg; // fall back to the raw message for anything not specifically recognized
-}
-
-// Pulls together everything the briefing needs. Reuses the same data-fetching
-// functions the API routes and display use, so the briefing always matches
-// what's actually configured (calendars, Todoist project filters aren't applied
-// here on purpose — the briefing intentionally shows ALL events/tasks for the day).
-async function assembleBriefingContent() {
-  const today = localDateStr();
-
-  // Events happening today (span-aware, same logic as the calendar widgets)
-  const events = db.prepare(`
-    SELECT title, date, end_date, start_time, end_time, color, notes, 'local' as source
-    FROM events
-    WHERE date <= ? AND COALESCE(end_date, date) >= ?
-    ORDER BY start_time ASC
-  `).all(today, today);
-  const icalEvents = db.prepare(`
-    SELECT ie.title, ie.date, ie.end_date, ie.start_time, ie.end_time, ie.notes,
-           f.name as feed_name, 'ical' as source
-    FROM ical_events ie
-    JOIN ical_feeds f ON f.id = ie.feed_id
-    WHERE f.enabled = 1 AND ie.date <= ? AND COALESCE(ie.end_date, ie.date) >= ?
-    ORDER BY ie.start_time ASC
-  `).all(today, today);
-  const allEvents = [...events, ...icalEvents].sort((a, b) => {
-    if (!a.start_time) return -1;
-    if (!b.start_time) return 1;
-    return a.start_time < b.start_time ? -1 : 1;
-  });
-
-  // Tasks from Todoist — filtered to selected projects if configured, otherwise all
-  // projects. Scope controls due-date filtering: 'all' (default) includes every task
-  // regardless of due date; 'today' narrows to tasks due today or overdue.
-  let tasks = [];
-  let tasksError = null;
-  const tokenRow = db.prepare(`SELECT value FROM settings WHERE key = 'todoist_token'`).get();
-  const projectFilterRow = db.prepare(`SELECT value FROM settings WHERE key = 'briefing_todoist_project_ids'`).get();
-  const projectFilterIds = (projectFilterRow?.value || '').split(',').map(s => s.trim()).filter(Boolean);
-  const taskScopeRow = db.prepare(`SELECT value FROM settings WHERE key = 'briefing_task_scope'`).get();
-  const taskScope = taskScopeRow?.value === 'today' ? 'today' : 'all';
-  if (tokenRow?.value) {
-    try {
-      const result = await todoistGet(tokenRow.value, '/api/v1/tasks');
-      tasks = result;
-      if (taskScope === 'today') {
-        tasks = tasks.filter(t => t.due && t.due.date <= today); // due today or overdue
-      }
-      if (projectFilterIds.length) {
-        tasks = tasks.filter(t => projectFilterIds.includes(t.project_id));
-      }
-    } catch (e) {
-      tasksError = e.message;
-    }
-  }
-
-  // Email content options
-  const getS = (k) => db.prepare(`SELECT value FROM settings WHERE key = ?`).get(k)?.value;
-  const includeNews = getS('briefing_include_news') !== '0';
-  const perSection = Math.max(1, Math.min(15, parseInt(getS('briefing_news_per_section')) || 3));
-  const includeStocks = getS('briefing_include_stocks') === '1';
-  const includeReminders = getS('briefing_include_reminders') !== '0';
-  const weatherFormat = getS('briefing_weather_format') === 'hourly' ? 'hourly' : 'summary';
-
-  // Reminders due today — same shared schedule logic every other reminder
-  // surface in the app reads from (see reminderOccursOnDateServer() above),
-  // so the email can never disagree with the Reminders widget or the
-  // calendar-grid badges about what's due.
-  let dueReminders = [];
-  if (includeReminders) {
-    try {
-      const allReminders = db.prepare(`SELECT * FROM reminders WHERE active = 1`).all()
-        .map(r => ({ ...r, schedule_config: JSON.parse(r.schedule_config) }));
-      dueReminders = allReminders.filter(r => reminderOccursOnDateServer(r, today));
-    } catch { dueReminders = []; }
-  }
-
-  // News — grouped by section (World / National / Local / each keyword), capped at
-  // the user's chosen max per section. Uses the same sources configured for the
-  // display (Settings → News), so the email mirrors what's on the wall.
-  let newsSections = [];
-  let newsError = null;
-  if (includeNews) {
-    try {
-      const result = await getNews();
-      const items = result.items || [];
-      // Preserve the order sections first appear, then cap each.
-      const order = [];
-      const byGroup = {};
-      for (const it of items) {
-        const g = it.group || 'News';
-        if (!byGroup[g]) { byGroup[g] = []; order.push(g); }
-        if (byGroup[g].length < perSection) byGroup[g].push(it);
-      }
-      newsSections = order.map(g => ({ label: g, items: byGroup[g] }));
-    } catch (e) {
-      newsError = e.message;
-    }
-  }
-
-  // Weather
-  let weather = null;
-  let weatherError = null;
-  const latRow = db.prepare(`SELECT value FROM settings WHERE key = 'weather_lat'`).get();
-  const lonRow = db.prepare(`SELECT value FROM settings WHERE key = 'weather_lon'`).get();
-  if (latRow?.value && lonRow?.value) {
-    try {
-      weather = await getWeatherResolved(latRow.value, lonRow.value);
-    } catch (e) {
-      weatherError = e.message;
-    }
-  }
-
-  // Stocks (previous-day close) — optional.
-  let stocks = null;
-  if (includeStocks) {
-    try { const r = await getStocks(getAllStockTickersFromLayouts()); stocks = r.quotes || null; } catch { stocks = null; }
-  }
-
-  return { today, events: allEvents, tasks, tasksError, taskScope,
-           newsSections, newsError, includeNews, weather, weatherError, weatherFormat,
-           stocks, includeStocks, dueReminders, includeReminders };
-}
-
-// Fetches news for a specific scope override used only by the email. Reuses the
-// existing Google News RSS plumbing with a scope-appropriate query/label.
-async function getNewsForScope(scope) {
-  const NEWS_LOCALE = 'hl=en-US&gl=US&ceid=US:en';
-  let url, label;
-  if (scope === 'world') {
-    url = `https://news.google.com/rss/headlines/section/topic/WORLD?${NEWS_LOCALE}`; label = 'World';
-  } else if (scope === 'national') {
-    url = `https://news.google.com/rss/headlines/section/topic/NATION?${NEWS_LOCALE}`; label = 'National';
-  } else if (scope === 'local') {
-    const loc = (db.prepare(`SELECT value FROM settings WHERE key='news_local_location'`).get()?.value || '').trim();
-    if (!loc) return [];
-    url = `https://news.google.com/rss/search?q=${encodeURIComponent(loc)}&${NEWS_LOCALE}`; label = loc;
-  } else if (scope === 'keywords') {
-    const kw = (db.prepare(`SELECT value FROM settings WHERE key='news_keywords'`).get()?.value || '').trim();
-    if (!kw) return [];
-    url = `https://news.google.com/rss/search?q=${encodeURIComponent(kw)}&${NEWS_LOCALE}`; label = kw;
-  } else {
-    url = `https://news.google.com/rss?${NEWS_LOCALE}`; label = 'Top Stories';
-  }
-  const xml = await fetchUrl(url);
-  return parseNewsRSS(xml).slice(0, 10).map(it => ({ ...it, group: label }));
-}
-
-function fmtBriefingTime(t) {
-  if (!t) return '';
-  const [h, m] = t.split(':').map(Number);
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  const h12 = h % 12 || 12;
-  return `${h12}:${String(m).padStart(2,'0')} ${ampm}`;
-}
-
-function renderBriefingHTML(content, displayName, recipientName) {
-  const dateLabel = new Date(content.today + 'T00:00:00').toLocaleDateString('en-US', {
-    weekday: 'long', month: 'long', day: 'numeric'
-  });
-  const greeting = greetingForTime() + (recipientName ? `, ${recipientName}` : '');
-
-  const eventsHtml = content.events.length ? content.events.map(e => `
-    <tr>
-      <td style="padding:8px 0;border-bottom:1px solid #2a3142;width:90px;color:#8b93a7;font-size:13px;vertical-align:top">
-        ${e.end_date && e.end_date > e.date ? 'All day' : (e.start_time ? fmtBriefingTime(e.start_time) : 'All day')}
-      </td>
-      <td style="padding:8px 0;border-bottom:1px solid #2a3142;font-size:14px;color:#e8edf5">
-        ${e.title}${e.feed_name ? `<span style="color:#8b93a7;font-size:12px"> · ${e.feed_name}</span>` : ''}
-      </td>
-    </tr>`).join('') : `<tr><td style="padding:8px 0;color:#8b93a7;font-size:13px">Nothing on the calendar today.</td></tr>`;
-
-  // Only rendered as a section at all when something's actually due (see the
-  // template below) — unlike Events/Tasks, absence is the COMMON case here
-  // (trash day is maybe once or twice a week), so an empty-state row every
-  // single day would just be daily clutter rather than useful information.
-  // Icon needs its own handling here rather than reusing reminderIconHtml()
-  // (display.html-only, browser-side) — an email has no relative-URL base to
-  // resolve "/uploads/..." against, and this same function also backs the
-  // browser-rendered preview endpoint, so build an absolute URL once and use
-  // it for both rather than special-casing email vs. preview.
-  const briefingBaseUrl = (() => {
-    const addrs = getReachableAddresses();
-    return `http://${addrs.tailscale || addrs.lan || 'localhost'}:${PORT}`;
-  })();
-  const remindersHtml = content.dueReminders.map(r => {
-    const iconHtml = r.icon_type === 'image' && r.icon_image
-      ? `<img src="${briefingBaseUrl}/uploads/${encodeURIComponent(r.icon_image)}" alt="" style="width:16px;height:16px;object-fit:contain;vertical-align:middle;border-radius:2px">`
-      : (r.icon || '📌');
-    return `
-    <tr>
-      <td style="padding:6px 0;border-bottom:1px solid #2a3142;font-size:14px;color:#e8edf5">
-        ${iconHtml} ${r.name}
-      </td>
-    </tr>`;
-  }).join('');
-
-  const fmtTaskDue = (t) => {
-    if (!t.due || !t.due.date) return '';
-    if (t.due.date < content.today) return ' <span style="color:#f87171;font-size:12px">(overdue)</span>';
-    if (t.due.date === content.today) return ' <span style="color:#8b93a7;font-size:12px">(today)</span>';
-    // Future due date — show it (only relevant when scope is "all")
-    const d = new Date(t.due.date + 'T00:00:00');
-    const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    return ` <span style="color:#8b93a7;font-size:12px">(due ${label})</span>`;
-  };
-  const noTasksMsg = content.taskScope === 'today' ? 'No tasks due today. 🎉' : 'No tasks. 🎉';
-  const tasksHtml = content.tasksError
-    ? `<p style="color:#8b93a7;font-size:13px">Tasks unavailable: ${content.tasksError}</p>`
-    : (content.tasks.length ? content.tasks.map(t => `
-        <tr>
-          <td style="padding:6px 0;border-bottom:1px solid #2a3142;font-size:14px;color:#e8edf5">
-            • ${t.content}${fmtTaskDue(t)}
-          </td>
-        </tr>`).join('') : `<tr><td style="padding:6px 0;color:#8b93a7;font-size:13px">${noTasksMsg}</td></tr>`);
-
-  // News, grouped into sections (World / National / Local / each keyword), each with
-  // a heading and capped at the user's per-section max.
-  const newsSectionsHtml = content.newsError
-    ? `<p style="color:#8b93a7;font-size:13px">News unavailable: ${content.newsError}</p>`
-    : (content.newsSections || []).map(section => {
-        const rows = section.items.map(n => {
-          const titleHtml = n.link
-            ? `<a href="${n.link}" style="color:#e8edf5;text-decoration:none" target="_blank" rel="noopener">${n.title}</a>`
-            : n.title;
-          const publisher = n.source ? `<br><span style="color:#8b93a7;font-size:11px;text-transform:uppercase">${n.source}</span>` : '';
-          return `<tr><td style="padding:6px 0;border-bottom:1px solid #2a3142;font-size:13px;color:#e8edf5">${titleHtml}${publisher}</td></tr>`;
-        }).join('');
-        return `
-          <p style="margin:14px 0 6px;color:#7c5cff;font-size:12px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase">${section.label}</p>
-          <table width="100%" cellpadding="0" cellspacing="0">${rows}</table>`;
-      }).join('');
-
-  // Stocks rows (previous-day close). getStocks() returns an array of indices/tickers.
-  const stocksHtml = (content.stocks && content.stocks.length)
-    ? content.stocks.map(s => {
-        const up = (s.change ?? 0) >= 0;
-        const arrow = up ? '▲' : '▼';
-        const color = up ? '#34c759' : '#ff5d5d';
-        const chg = s.changePct != null ? `${up?'+':''}${s.changePct.toFixed(2)}%` : '';
-        const price = s.close != null ? Math.round(s.close * 100) / 100 : null;
-        return `<tr>
-          <td style="padding:5px 0;border-bottom:1px solid #2a3142;font-size:13px;color:#e8edf5">${s.label || s.symbol}</td>
-          <td style="padding:5px 0;border-bottom:1px solid #2a3142;font-size:13px;color:#e8edf5;text-align:right">${price != null ? price.toLocaleString() : '—'}</td>
-          <td style="padding:5px 0 5px 12px;border-bottom:1px solid #2a3142;font-size:13px;color:${color};text-align:right;white-space:nowrap">${arrow} ${chg}</td>
-        </tr>`;
-      }).join('')
-    : `<tr><td style="padding:5px 0;color:#8b93a7;font-size:13px">Markets data unavailable</td></tr>`;
-
-  // Robust weather for the email. 'summary' groups the day's hourly forecast into
-  // morning (6-12), afternoon (12-18), and evening/night (18-24); 'hourly' shows a
-  // compact every-3-hours strip. Falls back to the simple high/low if hourly data
-  // isn't present.
-  let weatherHtml = '';
-  if (content.weather) {
-    const cur = content.weather.current;
-    const todayMax = content.weather.daily.temperature_2m_max[0];
-    const todayMin = content.weather.daily.temperature_2m_min[0];
-    const fmt = content.weatherFormat || 'summary';
-    const hourly = content.weather.hourly;
-    const headline = `<p style="font-size:28px;font-weight:300;color:#e8edf5;margin:0">${emailFormatTemp(cur.temperature_2m)}${emailTempUnitLabel()}</p>
-      <p style="font-size:13px;color:#8b93a7;margin:4px 0 10px">High ${emailFormatTemp(todayMax)} · Low ${emailFormatTemp(todayMin)}</p>`;
-
-    let detail = '';
-    if (hourly && hourly.time && hourly.temperature_2m) {
-      // Build index map for today's hours (the API returns hourly from 00:00 today).
-      const temps = hourly.temperature_2m, codes = hourly.weather_code || [], pops = hourly.precipitation_probability || [];
-      const desc = (c) => (WMO_DESC[c] || '');
-      if (fmt === 'hourly') {
-        const cells = [];
-        for (let h = 6; h <= 21; h += 3) {
-          if (temps[h] == null) continue;
-          const hr = h % 12 || 12, ap = h < 12 ? 'AM' : 'PM';
-          const pop = pops[h] != null ? ` · ${pops[h]}%` : '';
-          cells.push(`<tr>
-            <td style="padding:3px 10px 3px 0;color:#8b93a7;font-size:13px;white-space:nowrap">${hr} ${ap}</td>
-            <td style="padding:3px 0;color:#e8edf5;font-size:13px">${emailFormatTemp(temps[h])} &nbsp;${desc(codes[h])}<span style="color:#8b93a7">${pop}</span></td>
-          </tr>`);
-        }
-        detail = `<table style="border-collapse:collapse;margin-top:2px">${cells.join('')}</table>`;
-      } else {
-        // summary: average each block
-        const block = (a, b, label) => {
-          const t = [], c = [], p = [];
-          for (let h = a; h < b; h++) { if (temps[h] != null) { t.push(temps[h]); c.push(codes[h]); if (pops[h]!=null) p.push(pops[h]); } }
-          if (!t.length) return '';
-          const avg = t.reduce((x,y)=>x+y,0)/t.length; // raw average — emailFormatTemp() does the only rounding, after unit conversion
-          // pick the "worst"/most-notable code in the block (highest code ~ more significant)
-          const code = c.sort((x,y)=>y-x)[0];
-          const maxPop = p.length ? Math.max(...p) : null;
-          const popTxt = (maxPop != null && maxPop >= 20) ? ` · ${maxPop}% precip` : '';
-          return `<tr>
-            <td style="padding:4px 12px 4px 0;color:#8b93a7;font-size:13px;white-space:nowrap">${label}</td>
-            <td style="padding:4px 0;color:#e8edf5;font-size:13px">${emailFormatTemp(avg)} &nbsp;${desc(code)}<span style="color:#8b93a7">${popTxt}</span></td>
-          </tr>`;
-        };
-        detail = `<table style="border-collapse:collapse;margin-top:2px">
-          ${block(6,12,'Morning')}${block(12,18,'Afternoon')}${block(18,24,'Evening')}
-        </table>`;
-      }
-    }
-    weatherHtml = headline + detail;
-  } else if (content.weatherError) {
-    weatherHtml = `<p style="color:#8b93a7;font-size:13px">Weather unavailable</p>`;
-  } else {
-    weatherHtml = `<p style="color:#8b93a7;font-size:13px">No location configured</p>`;
-  }
-
-  return `
-<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#0f1320;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f1320;padding:24px 0">
-    <tr><td align="center">
-      <table width="100%" style="max-width:560px;background:#161b29;border-radius:16px;overflow:hidden;border:1px solid #2a3142">
-
-        <tr><td style="padding:28px 28px 20px;border-bottom:1px solid #2a3142">
-          <p style="margin:0;color:#8b93a7;font-size:12px;font-weight:600;letter-spacing:2px;text-transform:uppercase">
-            ${displayName || 'Daily Briefing'}
-          </p>
-          <h1 style="margin:6px 0 0;color:#e8edf5;font-size:22px;font-weight:600">${greeting} 👋</h1>
-          <p style="margin:4px 0 0;color:#8b93a7;font-size:14px">${dateLabel}</p>
-        </td></tr>
-
-        <tr><td style="padding:20px 28px 4px">
-          ${weatherHtml}
-        </td></tr>
-
-        <tr><td style="padding:20px 28px 8px">
-          <p style="margin:0 0 8px;color:#8b93a7;font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase">📅 Today's Events</p>
-          <table width="100%" cellpadding="0" cellspacing="0">${eventsHtml}</table>
-        </td></tr>
-
-        ${content.includeReminders && content.dueReminders.length ? `<tr><td style="padding:20px 28px 8px">
-          <p style="margin:0 0 8px;color:#8b93a7;font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase">🗑️ Reminders</p>
-          <table width="100%" cellpadding="0" cellspacing="0">${remindersHtml}</table>
-        </td></tr>` : ''}
-
-        <tr><td style="padding:20px 28px 8px">
-          <p style="margin:0 0 8px;color:#8b93a7;font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase">✅ ${content.taskScope === 'today' ? 'Tasks Due Today' : 'Tasks'}</p>
-          <table width="100%" cellpadding="0" cellspacing="0">${tasksHtml}</table>
-        </td></tr>
-
-        ${content.includeStocks && content.stocks ? `<tr><td style="padding:20px 28px 8px">
-          <p style="margin:0 0 8px;color:#8b93a7;font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase">📈 Markets (prev. close)</p>
-          <table width="100%" cellpadding="0" cellspacing="0">${stocksHtml}</table>
-        </td></tr>` : ''}
-
-        ${content.includeNews ? `<tr><td style="padding:20px 28px 28px">
-          <p style="margin:0 0 4px;color:#8b93a7;font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase">📰 News</p>
-          ${newsSectionsHtml}
-        </td></tr>` : ''}
-
-        <tr><td style="padding:16px 28px;background:#0f1320">
-          <p style="margin:0;color:#5a6178;font-size:11px;text-align:center">Sent by your Piazza HQ</p>
-        </td></tr>
-
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
-}
-
-function renderBriefingText(content, recipientName) {
-  const dateLabel = new Date(content.today + 'T00:00:00').toLocaleDateString('en-US', {
-    weekday: 'long', month: 'long', day: 'numeric'
-  });
-  const greeting = greetingForTime() + (recipientName ? `, ${recipientName}` : '');
-  const lines = [`${greeting}! Here's your briefing for ${dateLabel}.`, ''];
-
-  if (content.weather) {
-    const cur = content.weather.current;
-    lines.push(`WEATHER: ${emailFormatTemp(cur.temperature_2m)}${emailTempUnitLabel()} (High ${emailFormatTemp(content.weather.daily.temperature_2m_max[0])} / Low ${emailFormatTemp(content.weather.daily.temperature_2m_min[0])})`, '');
-  }
-
-  lines.push('EVENTS TODAY:');
-  if (content.events.length) {
-    content.events.forEach(e => {
-      const time = e.end_date && e.end_date > e.date ? 'All day' : (e.start_time ? fmtBriefingTime(e.start_time) : 'All day');
-      lines.push(`  ${time} — ${e.title}`);
-    });
-  } else {
-    lines.push('  Nothing scheduled.');
-  }
-
-  lines.push('', content.taskScope === 'today' ? 'TASKS DUE TODAY:' : 'TASKS:');
-  if (content.tasks.length) {
-    content.tasks.forEach(t => {
-      let suffix = '';
-      if (t.due && t.due.date) {
-        if (t.due.date < content.today) suffix = ' (overdue)';
-        else if (t.due.date === content.today) suffix = ' (today)';
-        else {
-          const d = new Date(t.due.date + 'T00:00:00');
-          suffix = ' (due ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ')';
-        }
-      }
-      lines.push(`  • ${t.content}${suffix}`);
-    });
-  } else {
-    lines.push(content.taskScope === 'today' ? '  Nothing due today.' : '  No tasks.');
-  }
-
-  lines.push('', 'NEWS:');
-  if (content.newsSections && content.newsSections.length) {
-    content.newsSections.forEach(section => {
-      lines.push(`  ${section.label.toUpperCase()}:`);
-      section.items.forEach(n => {
-        lines.push(`    • ${n.title}${n.source ? ' (' + n.source + ')' : ''}`);
-        if (n.link) lines.push(`      ${n.link}`);
-      });
-    });
-  } else {
-    lines.push('  Unavailable.');
-  }
-
-  return lines.join('\n');
-}
-
-// Sends the briefing to all enabled recipients, each as a separate personalized
-// email (not one email with multiple To: addresses) — keeps the greeting genuinely
-// personal and means one bad address doesn't block delivery to everyone else.
-// Returns a per-recipient result list so the caller (scheduler or "Send Now") can
-// report partial failures instead of an all-or-nothing outcome.
-async function sendBriefing() {
-  const s = getEmailSettings();
-  const recipients = getBriefingRecipients(true);
-
-  if (!recipients.length) {
-    throw new Error('No recipients yet — add at least one name and email address in Settings.');
-  }
-  if (!s.briefing_email_user || !s.briefing_email_pass) {
-    throw new Error('Email sending isn\'t fully configured yet — fill in the sender account and app password in Settings.');
-  }
-
-  const content = await assembleBriefingContent(); // same content for everyone (for now)
-  const transporter = buildMailTransporter(s);
-  const dateLabel = new Date(content.today + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-
-  const results = [];
-  for (const r of recipients) {
-    try {
-      await transporter.sendMail({
-        from: `"${s.display_name || 'Daily Briefing'}" <${s.briefing_email_user}>`,
-        to: r.email,
-        subject: `Your Daily Briefing — ${dateLabel}`,
-        text: renderBriefingText(content, r.name),
-        html: renderBriefingHTML(content, s.display_name, r.name),
-      });
-      results.push({ email: r.email, ok: true });
-    } catch (e) {
-      results.push({ email: r.email, ok: false, error: friendlyMailError(e) });
-    }
-  }
-
-  db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('briefing_last_sent', ?)`).run(content.today);
-  return results;
-}
-
-// Checks once a minute whether it's time to send today's briefing. A minute-granularity
-// poll (rather than computing a precise setTimeout delay) keeps this simple and immune
-// to clock changes, DST, or the server being restarted mid-day.
-function checkBriefingSchedule() {
-  if (IS_DEMO) return;
-  // A slave must never send the daily email — the host already does. Otherwise the
-  // family gets duplicate briefings. The slave mirrors briefing SETTINGS via sync,
-  // but only the host actually sends.
-  if (isSlave()) return;
-  const s = getEmailSettings();
-  if (s.briefing_enabled !== '1') return;
-  // Only the host sends the briefing. Slaves must never run it, or they'd race the
-  // host and (via the shared last-sent flag) suppress the real send. This guard is
-  // what was missing — adding a second device silently stopped scheduled briefings.
-  if (isSlave()) return;
-
-  const nowHHMM = localHHMM();
-  const today = localDateStr();
-
-  if (nowHHMM === (s.briefing_time || '07:00') && s.briefing_last_sent !== today) {
-    sendBriefing()
-      .then(results => {
-        const okCount = results.filter(r => r.ok).length;
-        console.log(`Daily briefing sent to ${okCount}/${results.length} recipients`);
-      })
-      .catch(e => console.error('Daily briefing failed to send:', e.message));
-  }
-}
-setInterval(checkBriefingSchedule, 60 * 1000);
-setInterval(checkTvSchedules, 60 * 1000);
-
-// Sends a digest of unsent feedback to the product owner, then marks those rows
-// sent. Returns the count sent (0 if nothing to send). Reuses the briefing email
-// account for delivery.
-// The feedback digest always goes to the developer (you), regardless of who is
-// running the app — they're submitting bug reports/ideas that only you can act on.
-// Hardcoded on purpose so end users can't redirect feedback to themselves.
-const FEEDBACK_RECIPIENT = 'jlauty@gmail.com';
-
-async function sendFeedbackDigest() {
-  const keys = ['feedback_enabled','briefing_provider',
-                'briefing_email_user','briefing_email_pass'];
-  const rows = db.prepare(`SELECT key, value FROM settings WHERE key IN (${keys.map(()=>'?').join(',')})`).all(...keys);
-  const s = Object.fromEntries(rows.map(r => [r.key, r.value]));
-  if (s.feedback_enabled !== '1') return 0;
-
-  const pending = db.prepare(`SELECT * FROM feedback WHERE sent = 0 ORDER BY created_at ASC`).all();
-  if (!pending.length) return 0; // nothing to send → no email
-
-  const transporter = buildMailTransporter({
-    briefing_provider: s.briefing_provider,
-    briefing_email_user: s.briefing_email_user,
-    briefing_email_pass: s.briefing_email_pass,
-  });
-
-  const esc = (t) => String(t || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  const KIND_LABEL = { bug:'🐞 Bug', feature:'💡 Feature idea', feedback:'💬 Feedback' };
-  const attachments = [];
-  const items = pending.map(f => {
-    let imgHtml = '';
-    if (f.image) {
-      const imgPath = path.join(UPLOAD_DIR, f.image);
-      if (fs.existsSync(imgPath)) {
-        const cid = 'fbimg' + f.id;
-        attachments.push({ filename: f.image, path: imgPath, cid });
-        imgHtml = `<div style="margin-top:10px"><img src="cid:${cid}" alt="attachment" style="max-width:100%;border-radius:8px;border:1px solid #e3e3e3"></div>`;
-      }
-    }
-    return `
-    <div style="border:1px solid #e3e3e3;border-radius:10px;padding:12px 14px;margin-bottom:10px">
-      <div style="font-size:13px;color:#666;margin-bottom:6px">
-        ${KIND_LABEL[f.kind] || '💬 Feedback'} · ${esc(f.created_at)} UTC${f.device_name ? ' · ' + esc(f.device_name) : ''}${f.app_version ? ' · v' + esc(f.app_version) : ''}
-      </div>
-      <div style="font-size:15px;color:#111;white-space:pre-wrap">${esc(f.message)}</div>
-      ${imgHtml}
-    </div>`;
-  }).join('');
-  const counts = pending.reduce((a,f)=>{a[f.kind]=(a[f.kind]||0)+1;return a;},{});
-  const summary = Object.entries(counts).map(([k,n]) => `${n} ${k}${n>1?'s':''}`).join(' · ');
-
-  const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:640px;margin:0 auto">
-    <h2 style="font-size:19px;color:#111">Piazza HQ — feedback digest</h2>
-    <p style="color:#555;font-size:14px">${pending.length} new submission${pending.length>1?'s':''} · ${summary}</p>
-    ${items}
-  </div>`;
-
-  await transporter.sendMail({
-    from: s.briefing_email_user,
-    to: FEEDBACK_RECIPIENT,
-    subject: `Piazza HQ feedback — ${pending.length} new (${summary})`,
-    html,
-    attachments,
-  });
-
-  // Mark them sent so they aren't reported again.
-  const ids = pending.map(f => f.id);
-  db.prepare(`UPDATE feedback SET sent = 1 WHERE id IN (${ids.map(()=>'?').join(',')})`).run(...ids);
-  return pending.length;
-}
-
-// Once-a-minute check, mirroring the briefing scheduler. Sends at feedback_time,
-// at most once per day, and only when there's something to report.
-function checkFeedbackSchedule() {
-  const rows = db.prepare(`SELECT key, value FROM settings WHERE key IN ('feedback_enabled','feedback_time','feedback_last_sent')`).all();
-  const s = Object.fromEntries(rows.map(r => [r.key, r.value]));
-  if (s.feedback_enabled !== '1') return;
-  const nowHHMM = localHHMM();
-  const today = localDateStr();
-  if (nowHHMM === (s.feedback_time || '08:00') && s.feedback_last_sent !== today) {
-    // Record the attempt date regardless, so we don't retry every minute for an hour.
-    db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('feedback_last_sent', ?)`).run(today);
-    sendFeedbackDigest()
-      .then(n => { if (n) console.log(`Feedback digest sent (${n} item(s))`); })
-      .catch(e => console.error('Feedback digest failed:', e.message));
-  }
-}
-// The feedback-digest email was replaced by one-at-a-time feedback (forwarded to the
-// central server in real time) and its settings UI was hidden. This scheduler is now
-// dormant on purpose: it also lacked a host-only guard and used a SHARED last-sent
-// flag, the same bug that broke the daily briefing on a multi-device setup — so rather
-// than patch code slated for removal, it's disabled outright. See "strip dead code"
-// in project notes for cleanup once everything's proven.
-// setInterval(checkFeedbackSchedule, 60 * 1000);
-
-// PUT /api/briefing-settings — separate from /api/settings so the email password
-// field doesn't get echoed back in every generic settings GET response.
-app.put('/api/briefing-settings', (req, res) => {
-  const allowed = ['briefing_enabled', 'briefing_time', 'briefing_provider',
-                    'briefing_email_user', 'briefing_email_pass', 'briefing_todoist_project_ids',
-                    'briefing_task_scope', 'briefing_weather_format', 'briefing_include_news',
-                    'briefing_news_per_section', 'briefing_include_stocks', 'briefing_include_reminders'];
-  const upsert = db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`);
-  const tx = db.transaction(() => {
-    for (const key of allowed) {
-      if (req.body[key] !== undefined) upsert.run(key, String(req.body[key]));
-    }
-  });
-  tx();
-  res.json({ ok: true });
-});
-
-// GET /api/briefing-settings — password is masked, never sent back in full
-app.get('/api/briefing-settings', (req, res) => {
-  const s = getEmailSettings();
-  res.json({
-    briefing_enabled: s.briefing_enabled || '0',
-    briefing_time: s.briefing_time || '07:00',
-    briefing_provider: s.briefing_provider || 'gmail',
-    briefing_email_user: s.briefing_email_user || '',
-    briefing_email_pass_set: !!s.briefing_email_pass, // tells the UI a password exists, without exposing it
-    briefing_last_sent: s.briefing_last_sent || '',
-    briefing_todoist_project_ids: s.briefing_todoist_project_ids || '',
-    briefing_task_scope: s.briefing_task_scope || 'all',
-    briefing_weather_format: s.briefing_weather_format || 'summary',
-    briefing_include_news: s.briefing_include_news || '1',
-    briefing_news_per_section: s.briefing_news_per_section || '3',
-    briefing_include_stocks: s.briefing_include_stocks || '0',
-    briefing_include_reminders: s.briefing_include_reminders || '1',
-  });
-});
+// This code lives in src/briefing.js. It runs here, at the same place in the file as before.
+const { getEmailSettings, getBriefingRecipients, buildMailTransporter, friendlyMailError, assembleBriefingContent, renderBriefingHTML, renderBriefingText, sendBriefing, checkBriefingSchedule, checkFeedbackSchedule } = require('./src/briefing.js')({ path, fs, crypto, nodemailer, PORT, getReachableAddresses, app, IS_DEMO, db, UPLOAD_DIR, localDateStr, localHHMM, isSlave, checkTvSchedules, WMO_DESC, emailFormatTemp, emailTempUnitLabel, getWeatherResolved, fetchUrl, todoistGet, getNews, parseNewsRSS, getStocks, getAllStockTickersFromLayouts, reminderOccursOnDateServer });
 
 // ── iCloud CalDAV push settings ─────────────────────────────────────────────
-// Same split as briefing-settings above (separate from /api/settings so the
-// app-specific password never rides along in a generic settings GET).
-
-// Tests UNSAVED credentials and returns the account's calendars for the
-// picker. POST, not GET-with-query, specifically so a real Apple ID password
-// doesn't end up in an access log or proxy the way a query string would.
-app.post('/api/caldav/discover', async (req, res) => {
-  const username = (req.body && req.body.username || '').trim();
-  let password = (req.body && req.body.app_password || '').trim();
-  // Blank password + already-saved one => test the saved credential (lets the
-  // user re-run discovery to change calendars without re-typing the password).
-  if (!password) password = getSetting('icloud_app_password') || '';
-  if (!username || !password) return res.status(400).json({ ok: false, error: 'Apple ID and app-specific password are both required.' });
-  try {
-    const calendars = await discoverCalDAVCalendars(username, password);
-    res.json({ ok: true, calendars });
-  } catch (e) {
-    res.json({ ok: false, error: e.message });
-  }
-});
-
-app.put('/api/caldav-settings', (req, res) => {
-  const allowed = ['icloud_push_enabled', 'icloud_username', 'icloud_calendar_url', 'icloud_calendar_name'];
-  const upsert = db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`);
-  const tx = db.transaction(() => {
-    for (const key of allowed) {
-      if (req.body[key] !== undefined) upsert.run(key, String(req.body[key]));
-    }
-    // Password only overwrites when the user actually typed a new one — blank means "keep existing".
-    const newPass = (req.body.icloud_app_password || '').trim();
-    if (newPass) upsert.run('icloud_app_password', newPass);
-    // Full discovered calendar list, for the per-event picker on the widget.
-    if (Array.isArray(req.body.icloud_calendars)) {
-      const clean = req.body.icloud_calendars
-        .filter(c => c && c.url && c.name)
-        .map(c => ({ url: String(c.url), name: String(c.name) }));
-      upsert.run('icloud_calendars_json', JSON.stringify(clean));
-    }
-  });
-  tx();
-  res.json({ ok: true });
-});
-
-function getIcloudCalendars() {
-  try { const a = JSON.parse(getSetting('icloud_calendars_json') || '[]'); return Array.isArray(a) ? a : []; }
-  catch { return []; }
-}
-
-app.get('/api/caldav-settings', (req, res) => {
-  res.json({
-    icloud_push_enabled: getSetting('icloud_push_enabled') || '0',
-    icloud_username: getSetting('icloud_username') || '',
-    icloud_app_password_set: !!getSetting('icloud_app_password'),
-    icloud_calendar_url: getSetting('icloud_calendar_url') || '',
-    icloud_calendar_name: getSetting('icloud_calendar_name') || '',
-    icloud_calendars: getIcloudCalendars(),
-  });
-});
-
-// The list of places a new event can be sent, for the calendar widget's
-// "Add to" picker. Only includes a target if it's actually usable right now.
-// `id` is what gets stored on the event as `target_calendar`.
-app.get('/api/event-targets', (req, res) => {
-  const targets = [{ id: 'local', label: 'This device only' }];
-  let dflt = 'local';
-  const cd = getCaldavConfig();
-  if (cd.enabled && cd.username && cd.password) {
-    const list = getIcloudCalendars();
-    const entries = list.length ? list : (cd.calendarUrl ? [{ url: cd.calendarUrl, name: getSetting('icloud_calendar_name') || 'iCloud' }] : []);
-    for (const c of entries) targets.push({ id: `caldav:${c.url}`, label: `${c.name} (iCloud)` });
-    if (cd.calendarUrl) dflt = `caldav:${cd.calendarUrl}`;
-    else if (entries.length) dflt = `caldav:${entries[0].url}`;
-  }
-  const g = getGoogleConfig();
-  if (g.enabled && g.refreshToken && g.calendarId && googleClientConfigured()) {
-    const gname = getSetting('google_calendar_name') || getSetting('google_account_email') || 'Google';
-    targets.push({ id: 'google', label: `${gname} (Google)` });
-    if (dflt === 'local') dflt = 'google';
-  }
-  res.json({ targets, default: dflt });
-});
+// This code lives in src/caldav-settings.js. It runs here, at the same place in the file as before.
+require('./src/caldav-settings.js')({ app, db, getSetting, discoverCalDAVCalendars, getCaldavConfig, getGoogleConfig, googleClientConfigured });
 
 // ── Handwriting-to-text (optional, for the display's add-event sheet) ───────
-// MyScript keys are UUIDs. Pull the UUID out of whatever was pasted rather
-// than storing it verbatim — a stray "* " bullet or quotes from a copy/paste
-// otherwise sails through and MyScript just 401s with no hint why (seen live).
-function cleanMyScriptKey(v) {
-  const s = String(v == null ? '' : v);
-  const m = s.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
-  return m ? m[0] : s.trim();
-}
-app.put('/api/handwriting-settings', (req, res) => {
-  const upsert = db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`);
-  const tx = db.transaction(() => {
-    if (req.body.handwriting_enabled !== undefined) upsert.run('handwriting_enabled', String(req.body.handwriting_enabled));
-    if (req.body.myscript_app_key !== undefined) upsert.run('myscript_app_key', cleanMyScriptKey(req.body.myscript_app_key));
-    // HMAC key only overwrites when a new one is actually typed — blank = keep.
-    const newHmac = cleanMyScriptKey(req.body.myscript_hmac_key);
-    if (newHmac) upsert.run('myscript_hmac_key', newHmac);
-  });
-  tx();
-  res.json({ ok: true });
-});
+// This code lives in src/handwriting.js. It runs here, at the same place in the file as before.
+require('./src/handwriting.js')({ crypto, app, db, getSetting: (k) => getSetting(k), httpsRequest });
 
-app.get('/api/handwriting-settings', (req, res) => {
-  res.json({
-    handwriting_enabled: getSetting('handwriting_enabled') || '0',
-    myscript_app_key: getSetting('myscript_app_key') || '',
-    myscript_hmac_key_set: !!getSetting('myscript_hmac_key'),
-    // What the display actually needs to decide whether to show the ✍️ button.
-    handwriting_ready: (getSetting('handwriting_enabled') === '1') && !!getSetting('myscript_app_key'),
-  });
-});
+// ── Google settings (calendar push switches and client details) ───────────────────────
+// This code lives in src/google-settings.js. It runs here, at the same place in the file as before.
+require('./src/google-settings.js')({ app, db, getSetting, googleClientConfigured, setGoogleDisconnected, setSetting });
 
-// Recognize a set of pen strokes. The browser sends raw strokes; the HMAC
-// signing (a shared secret) happens here so that secret never ships to a
-// display. Best-effort: any failure returns a clean error and the sheet just
-// keeps the typed field.
-app.post('/api/handwriting/recognize', async (req, res) => {
-  try {
-    if (getSetting('handwriting_enabled') !== '1') return res.status(400).json({ error: 'Handwriting input is turned off.' });
-    const appKey = getSetting('myscript_app_key');
-    const hmacKey = getSetting('myscript_hmac_key');
-    if (!appKey || !hmacKey) return res.status(400).json({ error: 'MyScript keys are not configured.' });
-    const strokes = Array.isArray(req.body && req.body.strokes) ? req.body.strokes : null;
-    if (!strokes || !strokes.length) return res.status(400).json({ error: 'No strokes provided.' });
-    // strokes: [ [ {x,y,t}, ... ], ... ]  ->  MyScript v4 batch shape
-    const payload = {
-      configuration: { lang: (req.body && req.body.lang) || 'en_US' },
-      contentType: 'Text',
-      strokeGroups: [{
-        strokes: strokes.map(s => ({
-          x: s.map(p => p.x), y: s.map(p => p.y), t: s.map(p => p.t),
-          pointerType: 'PEN',
-        })),
-      }],
-    };
-    const body = JSON.stringify(payload);
-    const hmac = crypto.createHmac('sha512', appKey + hmacKey).update(body).digest('hex');
-    // Accept MUST be a format MyScript actually produces — JIIX is its
-    // structured JSON result (has `label` + `words[]`). Asking for plain
-    // application/json gets a 406 "no suitable mime type".
-    const r = await httpsRequest('https://cloud.myscript.com/api/v4.0/iink/batch', 'POST', {
-      body,
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/vnd.myscript.jiix', 'applicationKey': appKey, 'hmac': hmac },
-    });
-    if (r.statusCode !== 200) {
-      console.error('MyScript recognize failed', r.statusCode, String(r.body).slice(0, 300));
-      let detail = '';
-      try { const e = JSON.parse(r.body || '{}'); detail = e.code || e.message || ''; } catch {}
-      return res.status(502).json({ error: detail ? `MyScript: ${detail}` : 'Recognition service error.' });
-    }
-    let text = '';
-    try { const j = JSON.parse(r.body || '{}'); text = j.label || (j.words || []).map(w => w.label).join(' '); } catch {}
-    res.json({ text: (text || '').trim() });
-  } catch (e) {
-    console.error('handwriting recognize error', e && e.message);
-    res.status(500).json({ error: 'Could not recognize handwriting.' });
-  }
-});
-
-// ── Google Calendar push settings + OAuth device flow ───────────────────────
-app.get('/api/google-settings', (req, res) => {
-  res.json({
-    google_push_enabled: getSetting('google_push_enabled') || '0',
-    google_connected: !!getSetting('google_refresh_token'),
-    google_client_configured: googleClientConfigured(),
-    google_account_email: getSetting('google_account_email') || '',
-    google_calendar_id: getSetting('google_calendar_id') || '',
-    google_calendar_name: getSetting('google_calendar_name') || '',
-  });
-});
-
-// Non-secret fields + optional client id/secret entry (for when they're not
-// coming from env). Tokens are NEVER set through here — only the device flow
-// writes them. push_enabled:'0' with disconnect:true fully unlinks the account.
-app.put('/api/google-settings', (req, res) => {
-  if (req.body.disconnect === true) { setGoogleDisconnected(); return res.json({ ok: true }); }
-  const plain = ['google_push_enabled', 'google_calendar_id', 'google_calendar_name',
-                 'google_oauth_client_id', 'google_oauth_client_secret'];
-  const tx = db.transaction(() => {
-    for (const key of plain) {
-      if (req.body[key] !== undefined) setSetting(key, String(req.body[key]));
-    }
-  });
-  tx();
-  res.json({ ok: true });
-});
+// ── Google Photos (Photos Picker) as a photo source ──
+// This code lives in src/google-photos.js. It runs here, before the Google connect routes (it only adds /api/google-photos/* routes).
+require('./src/google-photos.js')({ crypto, path, fs, app, db, UPLOAD_DIR, broadcastUpdate, fetchWithTimeout, resolveUpdateServerUrl, getSetting: (k) => getSetting(k), setSetting, httpsRequest, GOOGLE_TOKEN_URL, getGoogleConfig, formEncode, googleGetAccountEmail, isSlave: () => isSlave() });
 
 // ── Google connect: authorization-code flow relayed through the mothership ──
-// Google's device flow doesn't allow Calendar scopes, and this device has no
-// stable public URL to be a redirect target. So: the consent redirect goes to
-// https://piazzahq.com/oauth/google/callback, which just stashes the auth
-// `code` keyed by an opaque `state`; this device polls for it and then
-// exchanges the code for tokens DIRECTLY with Google, here, using the client
-// secret + a PKCE verifier that never leave this box. The mothership only
-// ever holds a short-lived single-use code, useless without those.
-const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
-const googleConnectPending = new Map(); // state -> { verifier, ts }
-function googleRedirectUri() { return resolveUpdateServerUrl() + '/oauth/google/callback'; }
-
-// Step 1: hand the UI a Google consent URL to open on a phone.
-app.post('/api/google/connect-start', (req, res) => {
-  const cfg = getGoogleConfig();
-  if (!cfg.clientId) return res.status(400).json({ error: 'Google OAuth client ID is not configured.' });
-  const state = crypto.randomBytes(32).toString('base64url');
-  const verifier = crypto.randomBytes(64).toString('base64url'); // 86 chars, within the 43-128 PKCE range
-  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
-  // Prune anything stale, then remember this attempt's verifier.
-  const cutoff = Date.now() - 15 * 60 * 1000;
-  for (const [k, v] of googleConnectPending) if (v.ts < cutoff) googleConnectPending.delete(k);
-  googleConnectPending.set(state, { verifier, ts: Date.now() });
-  const authUrl = GOOGLE_AUTH_URL + '?' + formEncode({
-    client_id: cfg.clientId,
-    redirect_uri: googleRedirectUri(),
-    response_type: 'code',
-    scope: GOOGLE_SCOPE,
-    access_type: 'offline',
-    prompt: 'consent',
-    include_granted_scopes: 'true',
-    code_challenge: challenge,
-    code_challenge_method: 'S256',
-    state,
-  });
-  res.json({ auth_url: authUrl, state });
-});
-
-// Step 2: the UI polls this. It asks the mothership relay whether the callback
-// has landed for this `state`; once it has, exchanges the code for tokens and
-// returns the account's calendars for the picker.
-app.post('/api/google/connect-poll', async (req, res) => {
-  const cfg = getGoogleConfig();
-  const state = (req.body && req.body.state || '').trim();
-  if (!cfg.clientId || !cfg.clientSecret) return res.status(400).json({ status: 'error', error: 'Google OAuth client is not configured.' });
-  const pending = googleConnectPending.get(state);
-  if (!pending) return res.json({ status: 'error', error: 'This connection attempt expired — start again.' });
-  try {
-    const relayUrl = resolveUpdateServerUrl() + '/api/oauth/google/relay/' + encodeURIComponent(state);
-    const rr = await httpsRequest(relayUrl, 'GET', {});
-    const relay = JSON.parse(rr.body || '{}');
-    if (relay.status === 'pending') return res.json({ status: 'pending' });
-    if (relay.status === 'denied') { googleConnectPending.delete(state); return res.json({ status: 'denied' }); }
-    if (relay.status !== 'ready' || !relay.code) { googleConnectPending.delete(state); return res.json({ status: 'error', error: relay.error || 'No authorization code came back.' }); }
-    googleConnectPending.delete(state);
-    // Exchange the code with Google directly.
-    const tr = await httpsRequest(GOOGLE_TOKEN_URL, 'POST', {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: formEncode({
-        client_id: cfg.clientId,
-        client_secret: cfg.clientSecret,
-        code: relay.code,
-        code_verifier: pending.verifier,
-        grant_type: 'authorization_code',
-        redirect_uri: googleRedirectUri(),
-      }),
-    });
-    const data = JSON.parse(tr.body || '{}');
-    if (tr.statusCode !== 200 || !data.refresh_token) {
-      return res.json({ status: 'error', error: data.error_description || data.error || `token exchange HTTP ${tr.statusCode}` });
-    }
-    setSetting('google_refresh_token', data.refresh_token);
-    setSetting('google_access_token', data.access_token || '');
-    setSetting('google_access_token_expiry', String(Date.now() + (data.expires_in || 3600) * 1000));
-    const email = await googleGetAccountEmail(data.access_token);
-    if (email) setSetting('google_account_email', email);
-    // Default the target to the primary calendar unless one was already set.
-    if (!getSetting('google_calendar_id')) {
-      setSetting('google_calendar_id', 'primary');
-      setSetting('google_calendar_name', email ? `${email} (primary)` : 'Primary calendar');
-    }
-    res.json({ status: 'connected', email });
-  } catch (e) {
-    res.status(502).json({ status: 'error', error: e.message });
-  }
-});
+// This code lives in src/google-connect.js. It runs here, at the same place in the file as before.
+require('./src/google-connect.js')({ crypto, app, resolveUpdateServerUrl, getSetting, httpsRequest, GOOGLE_TOKEN_URL, GOOGLE_SCOPE, getGoogleConfig, formEncode, googleGetAccountEmail, setSetting });
 
 // ── Briefing recipients (name + email, one row per person) ───────────────────
-app.get('/api/briefing-recipients', (req, res) => {
-  res.json(getBriefingRecipients(false));
-});
-
-app.post('/api/briefing-recipients', (req, res) => {
-  const { name, email } = req.body;
-  if (!email || !email.includes('@')) return res.status(400).json({ error: 'A valid email address is required' });
-  const maxOrder = db.prepare(`SELECT MAX(sort_order) as m FROM briefing_recipients`).get().m || 0;
-  const result = db.prepare(
-    `INSERT INTO briefing_recipients (name, email, enabled, sort_order) VALUES (?, ?, 1, ?)`
-  ).run((name || '').trim(), email.trim(), maxOrder + 1);
-  res.status(201).json(db.prepare(`SELECT * FROM briefing_recipients WHERE id = ?`).get(result.lastInsertRowid));
-});
-
-app.put('/api/briefing-recipients/:id', (req, res) => {
-  const existing = db.prepare(`SELECT * FROM briefing_recipients WHERE id = ?`).get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Recipient not found' });
-  const { name, email, enabled } = req.body;
-  db.prepare(`UPDATE briefing_recipients SET name=?, email=?, enabled=? WHERE id=?`).run(
-    name !== undefined ? name.trim() : existing.name,
-    email !== undefined ? email.trim() : existing.email,
-    enabled !== undefined ? (enabled ? 1 : 0) : existing.enabled,
-    req.params.id
-  );
-  res.json(db.prepare(`SELECT * FROM briefing_recipients WHERE id = ?`).get(req.params.id));
-});
-
-app.delete('/api/briefing-recipients/:id', (req, res) => {
-  const result = db.prepare(`DELETE FROM briefing_recipients WHERE id = ?`).run(req.params.id);
-  if (result.changes === 0) return res.status(404).json({ error: 'Recipient not found' });
-  res.json({ ok: true });
-});
-
-// GET /api/briefing-settings/preview — renders the HTML without sending, for in-app preview.
-// Uses the first enabled recipient's name if available, otherwise a placeholder, so the
-// preview reflects real personalization without requiring a recipient to already exist.
-app.get('/api/briefing-settings/preview', async (req, res) => {
-  try {
-    const content = await assembleBriefingContent();
-    const s = getEmailSettings();
-    const recipients = getBriefingRecipients(true);
-    const previewName = req.query.name || (recipients[0] && recipients[0].name) || 'there';
-    const html = renderBriefingHTML(content, s.display_name, previewName);
-    res.send(html);
-  } catch (e) {
-    res.status(500).send(`<p style="font-family:sans-serif;color:#c00;padding:20px">Preview failed: ${e.message}</p>`);
-  }
-});
-
-// POST /api/briefing-settings/test — sends a real email to ONE address for setup verification,
-// without affecting briefing_last_sent or touching the full recipient list.
-app.post('/api/briefing-settings/test', async (req, res) => {
-  const testEmail = req.body.email;
-  if (!testEmail || !testEmail.includes('@')) return res.status(400).json({ error: 'Enter a valid email to send the test to' });
-  try {
-    const s = getEmailSettings();
-    if (!s.briefing_email_user || !s.briefing_email_pass) {
-      throw new Error('Fill in the sender account and app password first.');
-    }
-    const content = await assembleBriefingContent();
-    const transporter = buildMailTransporter(s);
-    const dateLabel = new Date(content.today + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-    await transporter.sendMail({
-      from: `"${s.display_name || 'Daily Briefing'}" <${s.briefing_email_user}>`,
-      to: testEmail,
-      subject: `[Test] Your Daily Briefing — ${dateLabel}`,
-      text: renderBriefingText(content, req.body.name || 'there'),
-      html: renderBriefingHTML(content, s.display_name, req.body.name || 'there'),
-    });
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: friendlyMailError(e) });
-  }
-});
-
-// POST /api/briefing-settings/send-now — sends the real briefing to every enabled
-// recipient immediately, outside the schedule. Returns per-recipient results.
-app.post('/api/briefing-settings/send-now', async (req, res) => {
-  try {
-    const results = await sendBriefing();
-    res.json({ ok: true, results });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+// This code lives in src/briefing-recipients.js. It runs here, at the same place in the file as before.
+require('./src/briefing-recipients.js')({ app, db, getEmailSettings, getBriefingRecipients, buildMailTransporter, friendlyMailError, assembleBriefingContent, renderBriefingHTML, renderBriefingText, sendBriefing });
 
 // ── Page routes ───────────────────────────────────────────────────────────────
+
 // ── Self-update API ───────────────────────────────────────────────────────────
 
 // Current running version (shown in the app's Update section).
@@ -14039,6 +5885,7 @@ function supervisedWindowsRestart(rollbackDir, targetVersion) {
   try { if (httpServer) httpServer.close(); } catch {}
   // Stop our go2rtc child so the replacement process can re-bind its port.
   try { stopCameraService('server restart'); } catch {}
+  try { raStop('server restart'); } catch {}
 
   setTimeout(() => {
     let child = null;
@@ -14127,6 +5974,7 @@ function restartToApply(logLabel, targetVersion, rollbackDir) {
 function restartPlain(logLabel) {
   console.log(`${logLabel}; restarting.`);
   try { stopCameraService('server restart'); } catch {}
+  try { raStop('server restart'); } catch {}
   if (!IS_WIN) { process.exit(0); return; }
   try { if (httpServer) httpServer.close(); } catch {}
   setTimeout(() => {
@@ -14589,7 +6437,7 @@ function fetchUpdateInfo() {
     // "update-check" — a future faster health-ping sends the same set.
     u.searchParams.set('deployment', DEPLOYMENT);            // pi | windows | container
     u.searchParams.set('uptime', String(Math.round(process.uptime()))); // seconds; resets each check-in => crash-looping
-    if (_haHealth) u.searchParams.set('ha', _haHealth.ok ? '1' : '0');   // omitted = never talked to HA
+    if (getHaHealth()) u.searchParams.set('ha', getHaHealth().ok ? '1' : '0');   // omitted = never talked to HA
     try {
       const st = fs.statfsSync(DATA_DIR || __dirname);
       u.searchParams.set('disk', String(Math.round(st.bfree * st.bsize / 1048576))); // free MB on the data volume
@@ -14645,7 +6493,8 @@ function registerTrialLicense(email) {
     const u = new URL(serverUrl + '/api/trial/signup');
     const mod = u.protocol === 'https:' ? https : http;
     const deviceId = updateSetting('screen_device_id_cache', '') || '';
-    const body = JSON.stringify({ email, deviceId });
+    // The household language, so the welcome email with the key is written in it (the central server falls back to English for anything it doesn't know).
+    const body = JSON.stringify({ email, deviceId, lang: updateSetting('ui_language', 'en') });
     const reqOpts = {
       method: 'POST',
       timeout: 10000,
@@ -15245,9 +7094,9 @@ startServer();
 // Linux/systemd the service cgroup already sweeps it up; this covers a plain
 // `node server.js`, Windows, and Ctrl-C.
 for (const sig of ['SIGTERM', 'SIGINT']) {
-  process.on(sig, () => { try { stopCameraService('shutdown'); } catch {} process.exit(0); });
+  process.on(sig, () => { try { stopCameraService('shutdown'); } catch {} try { raStop('shutdown'); } catch {} process.exit(0); });
 }
-process.on('exit', () => { if (_go2rtc) { try { _go2rtc.kill(); } catch {} } });
+process.on('exit', () => { if (getGo2rtcProc()) { try { getGo2rtcProc().kill(); } catch {} } if (RA.child) { try { RA.child.kill(); } catch {} } });
 
 // Builds a fresh update zip from the code CURRENTLY RUNNING on this device — used
 // both for the automatic "push to slaves right after a healthy host update" flow
@@ -15647,6 +7496,7 @@ function postZip(url, buf) {
     };
     const hostPin = getSetting('app_pin');
     headers['x-host-pin'] = hostPin || ''; // always sent, even empty — see requireAuth()'s grace-period comment for why an omitted header can't safely mean the same thing as a deliberately empty one
+    headers['x-mirror-license'] = getSetting('update_license_key') || '';   // lets the host recognise this mirror without a browser login
     const req = lib.request({
       hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST',
       headers,

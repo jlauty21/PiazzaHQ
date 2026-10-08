@@ -15,6 +15,11 @@
 
 set -uo pipefail
 
+# Wi-Fi power saving off (best effort, in the background; see that script for why it runs from here, the desktop session).
+if [[ -f "$(dirname "$0")/wifi-powersave-off.sh" ]]; then
+  bash "$(dirname "$0")/wifi-powersave-off.sh" >>/tmp/piazzahq-wifi-powersave.log 2>&1 &
+fi
+
 URL="${PI_CALENDAR_URL:-http://localhost:3000}"
 MAX_WAIT_SECS="${PI_CALENDAR_KIOSK_MAX_WAIT:-90}"
 

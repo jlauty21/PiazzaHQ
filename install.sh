@@ -723,6 +723,26 @@ else
 fi
 echo
 
+# ── 8a. Wi-Fi power saving off ───────────────────────────────────────────────────
+# A display is on around the clock. With Wi-Fi power saving on, a Pi's radio can doze: it still looks connected and works outward (the screen keeps
+# updating) but nothing from other devices gets through - no control app, no ping, no SSH - until a reboot. NetworkManager's setting below covers
+# every Wi-Fi network this Pi ever joins; the running server (src/wifi-power.js) also switches it off on every start and hourly, which covers the
+# current connection and Pis without NetworkManager. Only on a Pi that has Wi-Fi and NetworkManager; skipped otherwise. To keep power saving on instead,
+# delete /etc/NetworkManager/conf.d/wifi-powersave-off.conf and set the setting wifi_powersave_off to 0.
+if command -v nmcli >/dev/null 2>&1 && command -v iw >/dev/null 2>&1 && iw dev 2>/dev/null | grep -q Interface; then
+  say "Turning Wi-Fi power saving off"
+  if [[ -d /etc/NetworkManager/conf.d ]] && [[ ! -f /etc/NetworkManager/conf.d/wifi-powersave-off.conf ]]; then
+    if printf '%s\n' '[connection]' 'wifi.powersave = 2' | sudo tee /etc/NetworkManager/conf.d/wifi-powersave-off.conf >/dev/null 2>&1; then
+      ok "Wi-Fi power saving is off (takes effect for connections made from now on; the running app handles the current one)"
+    else
+      warn "Couldn't write /etc/NetworkManager/conf.d/wifi-powersave-off.conf; the app still switches power saving off each time it starts."
+    fi
+  else
+    ok "Already set"
+  fi
+  echo
+fi
+
 # ── 8b. Keyboard shortcut for kiosk toggle (Ctrl+Alt+K) ────────────────────────
 # Binds Ctrl+Alt+K to `kiosk toggle` in whichever window manager's config so
 # there's a single keypress instead of needing SSH. Written for BOTH labwc and

@@ -1,0 +1,457 @@
+    /* ── Camera widget ──
+       A live camera via the vendored go2rtc <video-stream>. The frame is a
+       black box the video fills; --cam-fit switches contain/cover. */
+    .w-camera { display:flex; flex-direction:column; width:100%; height:100%; }
+    .cam-title {
+      flex-shrink:0; font-size:12px; font-weight:700; color:var(--text2);
+      text-transform:uppercase; letter-spacing:0.6px; margin-bottom:6px;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    .cam-frame {
+      flex:1; min-height:0; position:relative; background:#000;
+      border-radius:8px; overflow:hidden;
+    }
+    .cam-frame video-stream { display:block; width:100%; height:100%; }
+    .cam-frame video-stream video {
+      width:100% !important; height:100% !important;
+      object-fit:var(--cam-fit, contain); background:#000; pointer-events:none;
+    }
+    .cam-frame video-stream .info { font-size:11px; opacity:0.6; }
+    /* .mode is the vendored component's own demo scaffolding — it labels
+       whichever protocol the stream negotiated (MSE/HLS/MP4/MJPEG) across the
+       top of the video the moment it connects. Useful for the upstream
+       project's own example page, not for a household's wall display — a
+       real user filed this as a bug (2026-09-17), not a feature, seeing
+       literally "MJPEG" stamped on their camera's image. .status stays
+       visible: unlike .mode, it only fills in on a real connection error, so
+       hiding it would hide genuinely useful troubleshooting info instead of
+       just a protocol-name label nobody asked to see. */
+    .cam-frame video-stream .mode { display:none; }
+    .cam-frame video::-webkit-media-controls { display:none !important; }
+    .cam-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:14px; text-align:center; }
+    .cam-emoji { font-size:2.4em; opacity:0.4; }
+    .cam-hint { font-size:13px; color:var(--text2); opacity:0.8; max-width:34ch; line-height:1.4; }
+
+    #camera-overlay {
+      position:fixed; inset:0; z-index:95; display:none;
+      align-items:center; justify-content:center; padding:3vmin;
+      background:rgba(2,4,10,0.92); backdrop-filter:blur(3px);
+    }
+    #camera-overlay-frame {
+      width:100%; height:100%; max-width:96vw; max-height:92vh;
+      background:#000; border-radius:12px; overflow:hidden;
+      display:flex; align-items:center; justify-content:center;
+    }
+    #camera-overlay-frame video-stream { display:block; width:100%; height:100%; }
+    #camera-overlay-frame video-stream video { width:100% !important; height:100% !important; object-fit:contain; background:#000; }
+    #camera-overlay-frame video-stream .mode { display:none; } /* same reasoning as .cam-frame's .mode above */
+    #camera-overlay-title {
+      position:absolute; top:3vmin; left:3vmin; color:#e8edf5;
+      font-size:16px; font-weight:700; text-shadow:0 1px 4px rgba(0,0,0,0.8);
+      pointer-events:none;
+    }
+    #camera-overlay-close {
+      position:absolute; top:3vmin; right:3vmin; z-index:1;
+      width:40px; height:40px; border-radius:50%; border:none;
+      background:rgba(255,255,255,0.14); color:#e8edf5; font-size:17px; cursor:pointer;
+    }
+
+    /* ── Flight Map widget ──
+       Self-drawn world map (canvas) with live ADS-B aircraft. Two stacked
+       canvases: fm-base (land/borders, redrawn only on view change) and
+       fm-air (aircraft/trails, redrawn each frame for smooth motion).
+       Every colour resolves off theme vars so it conforms to custom
+       templates like every other widget. */
+    .w-flightmap { position:relative; width:100%; height:100%; border-radius:8px; overflow:hidden;
+      background:color-mix(in srgb, var(--text) 4%, transparent); }
+    .w-flightmap canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+    .w-flightmap .fm-base { z-index:0; }
+    .w-flightmap .fm-air  { z-index:1; }
+    .fm-badge {
+      position:absolute; top:6px; right:8px; z-index:2; font-size:10px; line-height:1.3;
+      color:color-mix(in srgb, var(--text) 60%, transparent); text-align:right;
+      text-transform:uppercase; letter-spacing:0.4px; pointer-events:none;
+      text-shadow:0 1px 3px rgba(0,0,0,0.55);
+    }
+    .fm-badge .fm-delayed { color:var(--accent2, var(--accent)); }
+    .fm-data {
+      position:absolute; left:8px; bottom:8px; z-index:2; max-width:70%;
+      background:color-mix(in srgb, var(--text) 10%, transparent);
+      border:1px solid color-mix(in srgb, var(--text) 18%, transparent);
+      border-radius:8px; padding:6px 9px; color:var(--text); line-height:1.35;
+      backdrop-filter:blur(2px);
+    }
+    .fm-data .fm-cs { font-weight:700; letter-spacing:0.5px; }
+    .fm-data .fm-sub { color:color-mix(in srgb, var(--text) 62%, transparent); }
+    .fm-data .fm-route { color:var(--accent); font-weight:600; }
+    .fm-empty { position:absolute; inset:0; z-index:2; display:flex; flex-direction:column;
+      align-items:center; justify-content:center; gap:8px; text-align:center; padding:14px;
+      color:color-mix(in srgb, var(--text) 65%, transparent); }
+    .fm-empty .fm-emoji { font-size:2.2em; opacity:0.45; }
+    .fm-expand {
+      position:absolute; right:6px; bottom:6px; z-index:3; width:26px; height:26px;
+      border:none; border-radius:6px; cursor:pointer;
+      background:color-mix(in srgb, var(--text) 14%, transparent);
+      color:var(--text); font-size:13px; line-height:1;
+    }
+    #flightmap-overlay {
+      position:fixed; inset:0; z-index:95; display:none; padding:2vmin;
+      background:rgba(2,4,10,0.94); backdrop-filter:blur(3px);
+    }
+    #flightmap-overlay.on { display:flex; gap:2vmin; }
+    #flightmap-overlay .fmo-map { position:relative; flex:1; min-width:0;
+      border-radius:12px; overflow:hidden; background:color-mix(in srgb, var(--text) 5%, transparent); }
+    #flightmap-overlay .fmo-list {
+      width:min(320px, 32vw); overflow-y:auto; color:#e8edf5; font-size:13px;
+      display:flex; flex-direction:column; gap:4px;
+    }
+    #flightmap-overlay .fmo-list .fmo-row {
+      display:flex; justify-content:space-between; gap:8px; padding:6px 8px; border-radius:6px;
+      background:rgba(255,255,255,0.06); cursor:pointer;
+    }
+    #flightmap-overlay .fmo-list .fmo-row.sel { background:rgba(255,255,255,0.16); }
+    #flightmap-overlay-close {
+      position:absolute; top:2vmin; right:2vmin; z-index:2; width:40px; height:40px;
+      border-radius:50%; border:none; background:rgba(255,255,255,0.14); color:#e8edf5;
+      font-size:17px; cursor:pointer;
+    }
+    /* Single-aircraft detail card (tap a plane). Deliberately theme-neutral —
+       a plain light card with dark text so the data is always readable, no
+       matter what the wall theme is. */
+    #fm-detail-overlay { position:fixed; inset:0; z-index:97; display:none;
+      align-items:center; justify-content:center; padding:4vmin;
+      background:rgba(6,10,18,0.55); }
+    #fm-detail-overlay.on { display:flex; }
+    #fm-detail-overlay .fmd-card {
+      width:min(420px, 94vw); max-height:88vh; overflow-y:auto;
+      background:#ffffff; color:#16202b;
+      border:1px solid rgba(0,0,0,0.12);
+      border-radius:14px; padding:18px 20px 16px;
+      box-shadow:0 12px 40px rgba(0,0,0,0.4);
+      position:relative;
+    }
+    #fm-detail-overlay .fmd-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+      padding-right:34px; }
+    #fm-detail-overlay .fmd-cs { font-size:22px; font-weight:700; letter-spacing:0.5px; color:#0d1520; }
+    #fm-detail-overlay .fmd-type { color:#5b6673; font-size:14px; }
+    #fm-detail-overlay .fmd-mil { font-size:11px; font-weight:700; text-transform:uppercase;
+      letter-spacing:0.5px; color:#8a5a00; background:#ffe7b3; border-radius:4px; padding:1px 6px; }
+    #fm-detail-overlay .fmd-route { margin:12px 0 4px; font-size:15px; color:#16202b; }
+    #fm-detail-overlay .fmd-route b { color:#1364c4; }
+    #fm-detail-overlay .fmd-route .fmd-type { color:#5b6673; }
+    #fm-detail-overlay .fmd-grid { display:grid; grid-template-columns:auto 1fr; gap:6px 14px;
+      font-size:13.5px; margin-top:12px; }
+    #fm-detail-overlay .fmd-grid .k { color:#71808f; white-space:nowrap; }
+    #fm-detail-overlay .fmd-grid > div:not(.k) { color:#16202b; }
+    #fm-detail-overlay .fmd-foot { margin-top:14px; font-size:11px; color:#8a97a4; }
+    #fm-detail-overlay .fmd-close { position:absolute; top:10px; right:10px; width:32px; height:32px;
+      border:none; border-radius:50%; background:rgba(0,0,0,0.07); color:#3a4652; font-size:15px; cursor:pointer; }
+    #fm-detail-overlay .fmd-close:hover { background:rgba(0,0,0,0.13); }
+
+    /* ── Weather widget ──
+       All inner sizes scale off --wx-scale (default 1) so a single "Content Size"
+       control in the widget settings grows/shrinks the icon, temperature,
+       description and forecast tiles together, independent of the box size. */
+    .w-weather { align-items:flex-start; gap:8px; --wx-scale:1; width:100%; }
+    .w-weather .cur { display:flex; align-items:center; gap:calc(12px * var(--wx-scale)); }
+    .w-weather .icon { width:calc(56px * var(--wx-scale)); height:calc(56px * var(--wx-scale)); flex-shrink:0; }
+    .w-weather .icon svg { width:100%; height:100%; display:block; }
+    .w-weather .temp { font-size:calc(48px * var(--wx-scale)); font-weight:300; letter-spacing:-2px; line-height:1; }
+    /* Location spans the full widget width and aligns its text left/center/right
+       within that whole space (not just within the weather content block). */
+    .w-weather .wx-location { font-size:var(--wx-location-font, 14px); font-weight:400; letter-spacing:0;
+      color:var(--text2); width:100%; text-align:var(--wx-location-text-align, left); }
+    .w-weather .desc { font-size:calc(14px * var(--wx-scale)); color:var(--text2); }
+    .w-weather .wx-hilo { font-size:calc(13px * var(--wx-scale)); color:var(--text2); margin-top:2px; }
+    /* Optional feels-like/humidity/gust/UV row and sunrise-sunset row, shared
+       by weatherCurrent and weatherComboForecast's current block. Off by
+       default per-field; both rows collapse to nothing when empty. */
+    .wx-stat-row { display:flex; width:100%; margin-top:calc(10px * var(--wx-scale)); padding-top:calc(10px * var(--wx-scale));
+      border-top:1px solid var(--border); }
+    .wx-stat { flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; position:relative; min-width:0; }
+    .wx-stat + .wx-stat::before { content:''; position:absolute; left:0; top:2px; bottom:2px; width:1px; background:var(--border); }
+    .wx-stat-label { font-size:calc(10px * var(--wx-scale)); letter-spacing:0.06em; text-transform:uppercase; color:var(--text2); }
+    .wx-stat-value { font-size:calc(15px * var(--wx-scale)); font-weight:500; }
+    .wx-stat-unit { font-size:calc(11px * var(--wx-scale)); font-weight:400; color:var(--text2); margin-left:1px; }
+    .wx-sun-row { display:flex; width:100%; align-items:center; justify-content:center; gap:calc(18px * var(--wx-scale));
+      margin-top:calc(8px * var(--wx-scale)); padding-top:calc(8px * var(--wx-scale)); border-top:1px solid var(--border);
+      font-size:calc(12px * var(--wx-scale)); color:var(--text2); }
+    .wx-sun-pt { display:flex; align-items:center; gap:calc(5px * var(--wx-scale)); }
+    .wx-sun-pt svg { flex-shrink:0; width:calc(13px * var(--wx-scale)); height:calc(13px * var(--wx-scale)); }
+    .wx-sun-pt b { color:var(--text); font-weight:500; }
+    .w-weather-forecast { justify-content:center; }
+    .w-weather .forecast-only { margin-top:0; }
+    .w-weather .forecast { display:flex; gap:calc(6px * var(--wx-scale)); margin-top:calc(8px * var(--wx-scale)); flex-wrap:wrap; }
+    .w-weather .fd {
+      background:rgba(255,255,255,0.06); border:1px solid var(--border);
+      border-radius:calc(10px * var(--wx-scale)); padding:calc(10px * var(--wx-scale)) calc(6px * var(--wx-scale));
+      text-align:center; flex:1; min-width:calc(40px * var(--wx-scale));
+    }
+    .w-weather .fd-name { font-size:calc(11px * var(--wx-scale)); color:var(--text2); text-transform:uppercase; letter-spacing:1px; }
+    .w-weather .fd-icon { width:calc(26px * var(--wx-scale)); height:calc(26px * var(--wx-scale)); margin:4px auto; }
+    .w-weather .fd-icon svg { width:100%; height:100%; display:block; }
+    .w-weather .fd-hi { font-size:calc(14px * var(--wx-scale)); font-weight:500; }
+    .w-weather .fd-lo { font-size:calc(12px * var(--wx-scale)); color:var(--text2); }
+    /* Compact sunrise/sunset pair on today's tile only (renderWeatherForecast, wxShowSunrise). */
+    .w-weather .fd-sun { display:flex; flex-direction:column; align-items:center; gap:2px; margin-top:calc(6px * var(--wx-scale));
+      padding-top:calc(6px * var(--wx-scale)); border-top:1px solid var(--border); }
+    .w-weather .fd-sun-pt { display:flex; align-items:center; gap:3px; font-size:calc(10px * var(--wx-scale)); color:var(--text2); }
+    .w-weather .fd-sun-pt svg { width:calc(11px * var(--wx-scale)); height:calc(11px * var(--wx-scale)); flex-shrink:0; }
+
+    /* ── Full calendar widget ── */
+    .widget-minical { justify-content:stretch !important; }
+    .widget-tasks   { justify-content:stretch !important; }
+    .w-minical { justify-content:flex-start; padding-top:2px; flex:1; min-height:0; display:flex; flex-direction:column;
+      --cal-font: 11px; /* base font size — event text. other elements scale relative to this */ }
+    .mc-header { display:flex; gap:10px; align-items:baseline; margin-bottom:6px; flex-shrink:0; }
+    .mc-nav-btn {
+      background:none; border:none; color:var(--text); opacity:0.55; font-size:1.3em;
+      line-height:1; padding:0 4px; cursor:pointer; -webkit-tap-highlight-color:transparent;
+    }
+    .mc-nav-btn:active { opacity:1; }
+    .mc-nav-today {
+      background:none; border:1px solid var(--muted); color:var(--text); opacity:0.75;
+      border-radius:6px; font-size:0.5em; padding:2px 8px; margin-left:auto; cursor:pointer;
+      -webkit-tap-highlight-color:transparent;
+    }
+    .mc-month { font-size:calc(var(--cal-font) * 1.9); font-weight:500; }
+    .mc-year  { font-size:calc(var(--cal-font) * 1.4); color:var(--text2); }
+    .mc-names { display:grid; grid-template-columns:repeat(7,1fr); text-align:center;
+      font-size:calc(var(--cal-font) * 0.95); font-weight:600; letter-spacing:1px; color:var(--text2);
+      margin-bottom:4px; flex-shrink:0; }
+    /* Grid items get an implicit min-width:auto — meaning text refuses to
+       shrink below its own natural content width, regardless of the 1fr
+       column track technically having less room. Without this, narrowing
+       the widget (font size stays whatever it was set to — no widget in
+       this app auto-scales font from its own box size) didn't shrink the
+       day letters together; the excess just overflowed past the last
+       column and got clipped by the outer widget's overflow:hidden. */
+    .mc-names > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .mc-body-wrap { position:relative; }
+    .mc-body { display:grid; grid-template-columns:repeat(7,1fr); gap:2px; height:100%; }
+    .mc-cell {
+      border:1px solid var(--border); border-radius:6px;
+      padding:3px 4px; display:flex; flex-direction:column;
+      overflow:hidden; min-height:0; min-width:0; background:color-mix(in srgb, var(--text) 3%, transparent);
+      position:relative; /* anchors .mc-multi-line/.mc-multi-line-label for the 'line' multi-day style */
+    }
+    /* Cells from the previous/next month used to dim to 0.35 opacity here via
+       a ".other" class — removed because it made every multi-week/month view
+       look unevenly bright (today's month vivid, the trailing/leading days from
+       neighboring months washed out) for no reason a person actually wants.
+       Replaced with an explicit, opt-in "Dim Past Days" toggle (.mc-cell.past)
+       that dims by date relative to today instead of by calendar month. */
+    .mc-cell.past { opacity:0.45; }
+    .mc-sticker-badges { position:absolute; display:flex; flex-wrap:wrap; gap:2px; z-index:2; pointer-events:none; max-width:calc(100% - 4px); justify-content:flex-end; }
+    .mc-sticker-badges.pos-top-right { top:2px; right:2px; }
+    .mc-sticker-badges.pos-top-left { top:2px; left:calc(var(--cal-font) * 2 + 4px); }
+    .mc-sticker-badges.pos-bottom-right { bottom:2px; right:2px; }
+    .mc-sticker-badges.pos-bottom-left { bottom:2px; left:2px; }
+    .mc-reminder-badges { position:absolute; display:flex; flex-wrap:wrap; gap:2px; z-index:2; pointer-events:none; max-width:calc(100% - 4px); line-height:1; }
+    .mc-reminder-badges.pos-top-right { top:2px; right:2px; justify-content:flex-end; }
+    .mc-reminder-badges.pos-top-left { top:2px; left:calc(var(--cal-font) * 2 + 4px); }
+    .mc-reminder-badges.pos-bottom-right { bottom:2px; right:2px; justify-content:flex-end; }
+    .mc-reminder-badges.pos-bottom-left { bottom:2px; left:2px; }
+    .mc-reminder-badge { filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4)); }
+    .mc-cell-postit .mc-sticker-badges { z-index:3; } /* sit above the sticky-note layer, not behind it */
+    /* Weather-on-calendar — three content styles (Corner Badge / Forecast
+       Row / Icon Only) sharing ONE position model: top-left/top-right sit
+       INLINE on the same row as the day number itself (not a separate line
+       above/below it), bottom-left/bottom-right form their own row at the
+       foot of the cell. A fourth "tint the whole cell" concept was mocked
+       up but deliberately not built (too imprecise for anyone who actually
+       needs the temperature, and inconsistent with how every other weather
+       surface in this app already renders via weatherSVG()). .mc-daynum is
+       always the row's first item (it's first in the DOM) so "top-right"
+       naturally lands opposite it; "top-left" reorders weather first. */
+    .mc-day-toprow { display:flex; align-items:center; justify-content:space-between; gap:4px; }
+    .mc-weather-bottom-row { display:flex; align-items:center; gap:4px; margin-top:1px; }
+    .mc-wx-chip { display:flex; align-items:center; gap:2px; flex-shrink:0;
+      font-size:calc(var(--cal-font) * 0.9); font-weight:600; color:var(--text2);
+      background:color-mix(in srgb, var(--text) 8%, transparent); border-radius:5px; padding:1px 4px 1px 2px; line-height:1; }
+    .mc-wx-row { display:flex; align-items:center; gap:4px; flex-shrink:0; }
+    .mc-wx-temps { font-size:calc(var(--cal-font) * 0.95); color:var(--text2); font-weight:600; }
+    .mc-wx-temps b { color:var(--text); font-weight:700; }
+    .mc-wx-icon, .mc-wx-icon-solo { flex-shrink:0; display:inline-block; }
+    .mc-wx-icon svg, .mc-wx-icon-solo svg { width:100%; height:100%; display:block; }
+    .mc-daynum {
+      font-size:calc(var(--cal-font) * 1.25); font-weight:500; line-height:1.3;
+      flex-shrink:0; width:calc(var(--cal-font) * 2); height:calc(var(--cal-font) * 2);
+      display:flex; align-items:center; justify-content:center;
+      border-radius:50%;
+    }
+    .mc-cell.today .mc-daynum { background:var(--today-color, #d23a3a); color:#fff; font-weight:700; }
+    /* Today Indicator Style (widget setting, default 'circle') — the shape/
+       treatment is a user choice layered on top of whatever color is active
+       (the generic default above, or a theme's own --today-color, or an
+       explicit per-widget calTodayColor) rather than baked into one fixed
+       look. .mc-daynum's own base border-radius:50% already makes every day
+       number circular, so 'circle' needs nothing beyond the base rule above
+       — these four only apply for the OTHER choices. */
+    .w-minical[data-today-style="outline"] .mc-cell.today .mc-daynum {
+      background:none; border:2px solid var(--today-color, #d23a3a); color:var(--today-color, #d23a3a);
+    }
+    .w-minical[data-today-style="fill"] .mc-cell.today {
+      background:color-mix(in srgb, var(--today-color, #d23a3a) 18%, transparent); border-radius:6px;
+    }
+    .w-minical[data-today-style="fill"] .mc-cell.today .mc-daynum { background:none; color:var(--text); }
+    .w-minical[data-today-style="underline"] .mc-cell.today .mc-daynum {
+      background:none; border-radius:0; border-bottom:3px solid var(--today-color, #d23a3a); color:var(--text);
+    }
+    .w-minical[data-today-style="text"] .mc-cell.today .mc-daynum { background:none; color:var(--today-color, #d23a3a); }
+    .w-minical[data-today-style="none"] .mc-cell.today .mc-daynum { background:none; color:inherit; font-weight:500; }
+    .mc-span-spacer { flex-shrink:0; width:1px; }
+    .mc-events { flex:1; overflow:hidden; display:flex; flex-direction:column; gap:1px; margin-top:1px; }
+    .mc-ev-pill {
+      font-size:var(--cal-font); line-height:1.35; padding:1px 4px; border-radius:3px;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      color:var(--pill-text, #fff); font-weight:500;
+    }
+    .mc-ev-text { font-size:var(--cal-font); line-height:1.3; color:color-mix(in srgb, var(--text) 75%, transparent);
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .mc-ev-dot { display:inline-block; width:calc(var(--cal-font) * 0.55); height:calc(var(--cal-font) * 0.55);
+      border-radius:50%; margin-right:3px; vertical-align:baseline; flex-shrink:0; }
+    .mc-ev-loc { opacity:0.7; font-weight:400; }
+    .w-minical.cal-wrap .mc-ev-loc, .w-minical.cal-wrap2 .mc-ev-loc { display:block; }
+    .mc-ev-more { font-size:var(--cal-font); color:var(--text2); padding:0 4px; }
+
+    /* Multi-day event spanning bars — absolutely positioned overlay matching the day grid */
+    .mc-span-overlay {
+      position:absolute; inset:0;
+      display:grid; grid-template-columns:repeat(7,1fr); gap:2px;
+      pointer-events:none; padding:0;
+    }
+    .mc-span-bar {
+      height:calc(var(--cal-font) * 1.5);
+      font-size:calc(var(--cal-font) * 0.92);
+      line-height:calc(var(--cal-font) * 1.5);
+      padding:0 5px;
+      border-radius:4px;
+      color:var(--pill-text, #fff); font-weight:500;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      box-shadow:0 1px 2px rgba(0,0,0,0.3);
+    }
+
+    /* 'line' multi-day style — a thin underline anchored to the cell's own
+       position:relative (set on .mc-cell above), with an optional label sitting
+       just above it on the event's actual start day only. Positioned from the
+       BOTTOM of the cell (not the top) so it never collides with the day
+       number or that day's own single-day events sitting above it. */
+    .mc-multi-line { position:absolute; left:2px; right:2px; height:3px; }
+    .mc-multi-line-label {
+      position:absolute; left:4px; right:4px;
+      font-size:calc(var(--cal-font) * 0.82); color:var(--text);
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+
+    /* 'stripe' multi-day style — same "print the title once, on the event's
+       actual start day only" idea the 'line' style above already uses, so a
+       stripe isn't just an unlabeled colored border with no way to tell what
+       event it even is. Sits just under the day number rather than
+       bottom-anchored like the line label, since the stripe itself runs the
+       cell's full height rather than tracking along the bottom edge. */
+    .mc-stripe-label {
+      font-size:calc(var(--cal-font) * 0.78); font-weight:600;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      margin-bottom:2px;
+    }
+
+    /* Text wrap mode — when enabled, event text wraps onto multiple lines instead of truncating */
+    .w-minical.cal-wrap .mc-ev-pill,
+    .w-minical.cal-wrap .mc-ev-text {
+      white-space:normal; word-break:break-word; overflow:visible; text-overflow:clip;
+    }
+    .w-minical.cal-wrap .mc-cell { overflow:visible; }
+    .w-minical.cal-wrap .mc-events { overflow:visible; }
+
+    /* Wrap but clamp to a max of 2 lines (keeps long titles from clogging a day). */
+    .w-minical.cal-wrap2 .mc-ev-pill,
+    .w-minical.cal-wrap2 .mc-ev-text {
+      white-space:normal; word-break:break-word; overflow:hidden; text-overflow:ellipsis;
+      display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; line-clamp:2;
+    }
+
+    /* ── Calendar decoration: themed icon leading each event line (replaces the
+       usual colored dot) ── */
+    .mc-ev-decor-icon { display:inline-block; font-size:calc(var(--cal-font) * 0.95);
+      margin-right:3px; vertical-align:baseline; line-height:1; }
+
+    /* ── Calendar decoration: post-it notes ── */
+    /* The grid normally fills its container edge-to-edge with zero slack —
+       fine for the normal calendar, but a rotated note's overhang needs
+       real room against the outer .widget's own overflow:hidden boundary,
+       not just against its neighboring cells (which .mc-note's own margin
+       below already handles). Without this, the rightmost column's note
+       had nowhere left to give and got clipped — the margin fix alone
+       wasn't enough, since it only ever created room WITHIN the grid, not
+       between the grid and the widget's own edge. Padding both .mc-names
+       (the day-of-week header row) and .mc-body together, scoped from
+       their shared parent .w-minical: they're sibling 7-column grids, so
+       padding only the body would misalign the header above it. */
+    .w-minical:has(.mc-cell-postit) .mc-names,
+    .w-minical:has(.mc-cell-postit) .mc-body { padding:0 calc(8px * var(--ui-scale,1)); }
+    .mc-cell-postit { overflow:visible; display:flex; flex-direction:column;
+      /* The note is the visual element here, so the cell itself needs no border/box
+         and must not clip the rotated note. */
+      border:none !important; background:transparent !important; padding:calc(2px * var(--ui-scale,1)); }
+    .mc-note {
+      background:var(--note-bg, #fff7a8);
+      color:#2b2b2b;
+      /* Extra horizontal margin gives rotated notes room so their corners don't get
+         clipped at the calendar's left/right edges (the edge-column cut-off bug).
+         Scaled with --ui-scale, like every other spacing value here — a fixed
+         pixel margin stays full-size even when content shrinks on a narrower-
+         than-reference viewport (a phone/tablet accessing the display directly,
+         not through Live Edit's own letterboxed preview scaling), eating a
+         disproportionate, unscaled chunk out of the grid's available width and
+         squeezing the last column out entirely — the actual "whole column
+         missing, no scrolling" bug this was chasing. */
+      margin:calc(4px * var(--ui-scale,1)) calc(7px * var(--ui-scale,1));
+      padding:calc(7px * var(--ui-scale,1)) calc(8px * var(--ui-scale,1)) calc(9px * var(--ui-scale,1));
+      border-radius:2px;
+      box-shadow:1px 2px 5px rgba(0,0,0,0.30);
+      /* Gentler tilt — less corner overhang, still hand-stuck looking. */
+      transform:rotate(-1deg);
+      transform-origin:center center;
+      font-size:calc(var(--cal-font) * 0.94);
+      line-height:1.3;
+      overflow:hidden;
+      /* Fill the whole day cell so notes are a consistent size rather than sized to
+         their text. flex:1 + a min-height floor keeps full and near-empty days close
+         in size (some natural variation remains from differing cell heights). */
+      flex:1;
+      min-height:calc(var(--cal-font) * 4.2);
+      display:flex;
+      flex-direction:column;
+      gap:1px;
+    }
+    /* Small, varied tilts for a natural board look — kept shallow to avoid clipping. */
+    .mc-cell-postit:nth-child(even) .mc-note { transform:rotate(1.1deg); }
+    .mc-cell-postit:nth-child(3n) .mc-note { transform:rotate(-0.6deg); }
+    .mc-cell-postit:nth-child(5n) .mc-note { transform:rotate(0.7deg); }
+    .mc-note-line { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .mc-note-more { font-style:italic; opacity:0.7; }
+    .mc-note-empty { opacity:0.32; }
+    /* On a post-it calendar the day number reads better as a small dark tab */
+    .mc-cell-postit .mc-daynum { color:var(--text); font-weight:600; }
+
+    /* ── Calendar: Agenda layout ── */
+    .w-minical-agenda { overflow:hidden; height:100%; display:flex; flex-direction:column; }
+    .w-minical-agenda .mc-header { margin-bottom:6px; }
+    .ag-scroll { display:flex; flex-direction:column; gap:2px; overflow:hidden; flex:1; min-height:0; }
+    .ag-group { flex-shrink:0; }
+    .ag-group.past-dimmed { opacity:0.4; }  /* past events shown but greyed when pastEvents='dim' */
+    .ag-day-label { font-size:calc(var(--cal-font) * 0.95); font-weight:600; letter-spacing:1px;
+      text-transform:uppercase; color:var(--text2); margin:8px 0 4px; }
+    .ag-day-label:first-child { margin-top:0; }
+    .ag-day-label.today { color:var(--text); }
+    .ag-ev { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:4px 0;
+      border-bottom:1px solid var(--border); }
+    .ag-dot { width:calc(var(--cal-font) * 0.55); height:calc(var(--cal-font) * 0.55); border-radius:50%; flex-shrink:0; }
+    .ag-time { font-size:calc(var(--cal-font) * 0.85); color:var(--text2); min-width:calc(var(--cal-font) * 4); flex-shrink:0; }
+    .ag-title { font-size:var(--cal-font); color:var(--text);
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .ag-loc { flex-basis:100%; margin-left:calc(var(--cal-font) * 4 + 16px);
+      font-size:calc(var(--cal-font) * 0.8); color:var(--text2);
+      white-space:normal; overflow-wrap:anywhere; line-height:1.3; }
+

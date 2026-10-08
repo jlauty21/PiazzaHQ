@@ -1,0 +1,504 @@
+    /* ── Widget canvas ── */
+    #canvas { position:fixed; inset:0; z-index:2; }
+
+    /* ── Blank mode (Tab key) ──
+       Hides all widgets and the dark tint overlay, leaving just the photo
+       background (or, if no photo is set, the page's solid dark background).
+       Toggled by the Tab key; the state persists per-display in localStorage. */
+    body.blanked #canvas { display:none; }
+    body.blanked #photo-overlay { display:none; }
+    body.blanked #photo-fade-overlays { display:none; }
+    body.blanked #info-overlay { display:none !important; }
+    body.blanked #floating-switcher { display:none !important; }
+    /* The Live Preview iframe in the app's Layout editor loads this exact
+       page with ?preview=1 (already parsed above into the "preview" body
+       class) to show the real display at true proportions — but the overlay
+       was built assuming a full-size TV, so its fixed padding/font-size read
+       as huge relative to a small preview frame. It also has no reason to
+       exist there at all: nobody looking at the Layout editor's own preview
+       needs to be told the address to reach the app they're already using. */
+    body.preview #info-overlay { display:none !important; }
+    /* Only the small, non-interactive embedded thumbnail preview (Layout
+       tab's own live preview panel) — NOT the "Open to Edit in New Tab"
+       link, which is full-size and fully interactive (allowEdit=1, see
+       ALLOW_EDIT_IN_PREVIEW/the 'preview-editable' body class it sets) and
+       meant to behave just like the real display in every way, including
+       this. Blanket-hiding it for BOTH preview contexts — the mistake this
+       replaced — made the floating switcher completely untestable through
+       the one workflow (edit in a new tab) most likely to actually be used
+       for testing it. */
+    body.preview:not(.preview-editable) #floating-switcher { display:none !important; }
+    /* Never compete with active dragging/resizing — a tap meant for a widget
+       underneath it, or a drag that happens to start on top of it, shouldn't
+       accidentally trigger a full layout switch mid-edit. */
+    body.edit-mode-active #floating-switcher { display:none !important; }
+    body.edit-mode-active #back-to-app-link { display:none !important; }
+
+    /* ── Widget base ── */
+    .widget {
+      position:absolute;
+      overflow:hidden;
+      display:flex;
+      flex-direction:column;
+      justify-content:center;
+      /* This is the same element the per-widget text-color override sets --text
+         on (see renderLayout()) — declaring color here, not just relying on the
+         page body's color rule, means any descendant text with no color rule of
+         its own correctly inherits THIS widget's resolved color (global default
+         or per-widget override) instead of silently inheriting from all the way
+         up at <body>, unaffected by anything set on this specific widget. This
+         was the root cause behind several widgets only partially responding to
+         their own text-color setting. */
+      color:var(--text);
+      --text2:var(--muted); /* secondary text default — overridden per-widget via w.textColor2 */
+    }
+    /* Optional translucent tile behind a widget (per-widget tileOpacity). Sits
+       behind the widget content; --tile-alpha controls how opaque it is.
+       Padding bumped from 14 to 16px and — like the homehub chorechart panel
+       above — now scales alongside border-radius via --ui-scale rather than
+       staying a fixed pixel value while everything else (including the
+       widget's own text) scales around it. Fixed padding at a small UI scale
+       meant text could end up proportionally larger relative to the padding
+       than intended, risking exactly the corner-clipping this exists to
+       prevent — the whole point of --tile getting a rounded box is defeated
+       if content can still reach into the curved corner. */
+    .widget.has-tile { border-radius:calc(14px * var(--ui-scale,1)); padding:calc(16px * var(--ui-scale,1)); }
+    .widget.has-tile::before {
+      content:''; position:absolute; inset:0; z-index:-1; border-radius:calc(14px * var(--ui-scale,1));
+      background:rgba(20,26,40,var(--tile-alpha, 0.5));
+      backdrop-filter:blur(2px);
+    }
+
+    /* ── Clock widget ── */
+    .w-clock { align-items:flex-start; --clock-font: 90px; /* overridden inline per-widget via w.clockFontPx */ }
+    /* Optional text shadow (Settings → Display → Text shadow): set on <html> by applyTextShadow(); inherited by the text inside every widget. */
+    html[data-text-shadow="soft"] #canvas .widget { text-shadow: 0 1px 3px rgba(var(--text-shadow-rgb,0,0,0), 0.6); }
+    html[data-text-shadow="strong"] #canvas .widget { text-shadow: 0 2px 5px rgba(var(--text-shadow-rgb,0,0,0), 0.9), 0 0 2px rgba(var(--text-shadow-rgb,0,0,0), 0.8); }
+    .w-clock .time {
+      font-family:var(--per-widget-font, var(--global-font-family, var(--theme-font-family, 'Inter', sans-serif)));
+      font-size:var(--clock-font);
+      font-weight:300; letter-spacing:-3px; line-height:1;
+      color:var(--text);
+    }
+    /* Analog clock face — --clock-size doubles as the diameter, reusing the
+       same "Font Size (px)" slider/stored field the digital style already
+       has (labeled "Size (px)" in Settings when this style is active), so
+       switching styles keeps whatever size was already dialed in rather than
+       needing an entirely separate setting. All dimensions below are
+       percentages of the face's own box, so the whole thing scales cleanly
+       off that one variable. */
+    .w-clock-analog { width:var(--clock-size); height:var(--clock-size); }
+    .analog-face {
+      position:relative; width:100%; height:100%; border-radius:50%;
+      border:calc(var(--clock-size) * 0.02) solid var(--text); box-sizing:border-box;
+    }
+    .analog-marker {
+      position:absolute; left:50%; top:0; width:2px; height:8%;
+      background:var(--text); opacity:0.55;
+      transform-origin:50% calc(var(--clock-size) * 0.5);
+      transform:translateX(-50%) rotate(calc(var(--i) * 30deg));
+    }
+    .analog-marker.major { width:3px; height:12%; opacity:0.9; }
+    .analog-hand {
+      position:absolute; left:50%; bottom:50%; transform-origin:50% 100%;
+      transform:translateX(-50%) rotate(var(--deg, 0deg));
+      background:var(--text); border-radius:4px;
+    }
+    .hand-hour   { width:3.2%; height:26%; }
+    .hand-minute { width:2.2%; height:37%; }
+    .hand-second { width:1%;   height:42%; background:var(--accent, #e0555a); }
+    .analog-center {
+      position:absolute; left:50%; top:50%; width:6%; height:6%;
+      background:var(--text); border-radius:50%; transform:translate(-50%, -50%);
+    }
+
+    /* ── Aviation Chronograph face ── instrument-panel styling: dark radial
+       gradient, 60-tick minute track (every 5th thicker/amber), inner sub-dial
+       ring, monospace cardinal numerals. Deliberately fixed dark/amber palette
+       rather than following --text/--accent — meant to read as a specific
+       physical object (an instrument), not a themed UI element. */
+    .analog-face.style-aviation {
+      border-color:#cbd3e0;
+      background:radial-gradient(circle at 35% 30%, #1c2333, #0a0d14 75%);
+    }
+    .analog-tick {
+      position:absolute; left:50%; top:3%; width:1.2%; height:6%;
+      background:#cbd3e0;
+      transform-origin:50% calc(var(--clock-size) * 0.47);
+      transform:translateX(-50%) rotate(calc(var(--i) * 6deg));
+    }
+    .analog-tick.major { width:1.8%; height:10%; background:#f2a541; }
+    .analog-ring {
+      position:absolute; left:50%; top:50%; width:64%; height:64%;
+      border:1px solid rgba(203,211,224,0.3); border-radius:50%; transform:translate(-50%,-50%);
+    }
+    .analog-num {
+      position:absolute; transform:translate(-50%,-50%);
+      font-family:'Courier New', monospace; font-weight:700; font-size:calc(var(--clock-size) * 0.07);
+      color:#cbd3e0;
+    }
+    .style-aviation .hand-hour, .style-aviation .hand-minute { background:#e8edf5; }
+    .style-aviation .hand-second { background:#f2a541; }
+    .style-aviation .analog-center { background:#f2a541; }
+
+    /* ── Warm Brass face ── cream/gold mantel-clock look, spade-shaped hands
+       via clip-path, Roman numerals at the cardinal points. Also a fixed
+       palette rather than following the widget's text color, for the same
+       reason as Aviation above — this is meant to look like an object. */
+    .analog-face.style-brass {
+      border:none;
+      background:radial-gradient(circle at 40% 35%, #fff8ec 0%, #f2e2bc 60%, #e0c88f 100%);
+      box-shadow:0 4px 24px rgba(0,0,0,0.35), inset 0 0 0 calc(var(--clock-size) * 0.017) #c9a55c;
+    }
+    .analog-roman {
+      position:absolute; transform:translate(-50%,-50%);
+      font-family:Georgia, serif; font-weight:600; font-size:calc(var(--clock-size) * 0.083);
+      color:#6b4f28;
+    }
+    .style-brass .hand-hour {
+      width:2.2%; height:25.6%; background:#3a2a12;
+      clip-path:polygon(50% 0%, 100% 30%, 70% 100%, 30% 100%, 0% 30%);
+    }
+    .style-brass .hand-minute {
+      width:1.7%; height:37.8%; background:#3a2a12;
+      clip-path:polygon(50% 0%, 100% 25%, 65% 100%, 35% 100%, 0% 25%);
+    }
+    .style-brass .hand-second { width:0.6%; height:40%; background:#8b1e1e; }
+    .style-brass .analog-center {
+      width:4.4%; height:4.4%; background:#c9a55c; border:1px solid #6b4f28;
+    }
+
+    /* ── Bold Modern face ── thick rounded hands, dot markers, oversized
+       accent second hand. Unlike Aviation/Brass, this ONE follows --text/
+       --accent, since "bold and confident" is a treatment of the widget's
+       own theme colors rather than a specific physical object like the
+       other two — it should still feel like part of this display's palette. */
+    .analog-face.style-bold {
+      border-width:calc(var(--clock-size) * 0.017);
+    }
+    .analog-dot {
+      position:absolute; left:50%; top:6%; width:5%; height:5%; margin-left:-2.5%;
+      background:var(--text); border-radius:50%;
+      transform-origin:50% calc(var(--clock-size) * 0.44);
+      transform:translateX(-50%) rotate(calc(var(--i) * 30deg));
+    }
+    .analog-dot.major { width:6.7%; height:6.7%; margin-left:-3.35%; background:var(--accent, #e0555a); }
+    .style-bold .hand-hour   { width:5%;   height:24.4%; border-radius:8px; }
+    .style-bold .hand-minute { width:3.3%; height:36.7%; border-radius:8px; }
+    .style-bold .hand-second { width:1.7%; height:40%; }
+    .style-bold .analog-center {
+      width:7.8%; height:7.8%; background:var(--accent, #e0555a);
+      border:calc(var(--clock-size) * 0.017) solid var(--bg, #0f1420);
+    }
+    /* Was hardcoded to var(--muted) — meant this never followed the widget's own
+       text-color setting (only the global default), which is why changing a
+       widget's color only ever seemed to affect part of it. Same fix applied to
+       .day-name/.date-str below. Opacity keeps it visually secondary without
+       tying it to a color the user never actually chose. */
+    .w-clock .ampm { font-size:0.28em; color:var(--text2); letter-spacing:2px; margin-left:8px; vertical-align:super; }
+
+    /* ── Date widget ── */
+    .w-date { align-items:flex-start; --date-font: 24px; /* overridden inline per-widget via w.dateFontPx */ }
+    .w-date .day-name { font-size:var(--date-font); font-weight:500; color:var(--text); }
+    .w-date .date-str { font-size:calc(var(--date-font) * 0.64); color:var(--text2); margin-top:4px; }
+
+    /* ── DateTime widget (combined clock + date + optional temp) ──
+       --dt-font is the ONE size control (w.dtFontPx, same "one slider" idea
+       as Clock/Date's own font sliders); every other size below is a ratio
+       off it so the three style presets stay proportionally consistent with
+       each other as that slider moves, rather than needing separate sizing
+       per preset. */
+    .w-datetime { --dt-font: 70px; }
+    .w-datetime .dt-time { font-family:var(--per-widget-font, var(--global-font-family, var(--theme-font-family, 'Inter', sans-serif)));
+      font-weight:300; letter-spacing:-2px; line-height:1; color:var(--text); display:flex; align-items:baseline; }
+    .w-datetime .dt-hm { font-size:var(--dt-font); }
+    .w-datetime .dt-seconds { font-size:calc(var(--dt-font) * 0.32); color:var(--text2); margin-left:4px; align-self:flex-start; }
+    .w-datetime .dt-ampm { font-size:calc(var(--dt-font) * 0.28); color:var(--text2); letter-spacing:2px; margin-left:8px; align-self:flex-start; }
+    /* Seconds stacked above am/pm (both to the right of h:mm) — the
+       DakBoard-style reference layout, used whenever both are shown
+       together (renderDateTime only wraps them in .dt-suffix in that
+       case; seconds-alone or am/pm-alone stay the plain inline suffix
+       above, unaffected by this block). Resets the standalone spans'
+       own left-margins to 0 since .dt-suffix's own margin-left already
+       provides the gap from h:mm — without this they'd double up.
+       align-self:STRETCH on .dt-suffix (not flex-start) makes it take on
+       the full height of the time row (the tallest thing in it — dt-hm's
+       big digits), rather than just its own natural content height, so
+       justify-content:space-between actually has real vertical room to
+       distribute seconds and am/pm INTO — one at the top, one at the
+       bottom of the time digits' own height, evenly spaced apart, per
+       request. (Before this, .dt-suffix was flex-start with no stretch,
+       so both children just sat stacked together near the top with a
+       small fixed gap between them — nowhere near the height of "11:24"
+       next to them — which is what the earlier top-aligned-superspript
+       fix, still true in spirit, actually looked like in practice.) */
+    .w-datetime .dt-suffix { display:flex; flex-direction:column; align-items:flex-start; justify-content:space-between; align-self:stretch; margin-left:8px; line-height:1; }
+    .w-datetime .dt-suffix .dt-seconds, .w-datetime .dt-suffix .dt-ampm { margin-left:0; }
+    /* Bigger than the base .dt-seconds/.dt-ampm sizes above — those are
+       shared with the seconds-alone/am/pm-alone INLINE suffix modes (a
+       single small item next to h:mm, not this stacked pair), so bumping
+       the base size would have oversized that unrelated case too. Scoped
+       here instead: now that .dt-suffix stretches to the full height of
+       the time digits (see its own comment above) with space-between,
+       each of these can actually fill close to half that height rather
+       than floating small within it — 0.46 + 0.42 leaves a little real
+       breathing room between them without the base rule's old 0.32/0.28
+       leaving most of the available height empty. */
+    .w-datetime .dt-suffix .dt-seconds { font-size:calc(var(--dt-font) * 0.46); }
+    .w-datetime .dt-suffix .dt-ampm { font-size:calc(var(--dt-font) * 0.42); }
+    .w-datetime .dt-sub { display:flex; align-items:baseline; gap:calc(var(--dt-font) * 0.12); margin-top:calc(var(--dt-font) * 0.01); }
+    .w-datetime .dt-date { display:flex; flex-direction:column; }
+    .w-datetime .dt-day-name { font-size:calc(var(--dt-font) * 0.24); font-weight:500; color:var(--text); }
+    .w-datetime .dt-date-str { font-size:calc(var(--dt-font) * 0.19); color:var(--text2); margin-top:2px; }
+    .w-datetime .dt-temp { font-size:calc(var(--dt-font) * 0.38); font-weight:300; color:var(--text); }
+    .w-datetime .dt-temp-loading { color:var(--text2); font-weight:400; }
+    /* Split: time and date/temp side by side rather than stacked — for a
+       wide, short widget box where "everything below the time" would run
+       out of vertical room. Unlike Classic/Compact, this style genuinely
+       needs its OWN flex container (display:flex here, not inherited from
+       the base .w-datetime rule above, which is deliberately plain block —
+       see the NOTE further down) so dt-time and dt-sub actually sit side by
+       side instead of stacking. */
+    .w-datetime-split { display:flex; flex-direction:row; align-items:center; gap:calc(var(--dt-font) * 0.35); }
+    .w-datetime-split .dt-sub { flex-direction:column; align-items:flex-start; margin-top:0; gap:calc(var(--dt-font) * 0.06); }
+    /* Compact style removed (v1.81.2-beta.6) — the one-line layout wasn't
+       pulling its weight visually at the font sizes people actually use;
+       Classic and Split cover the useful cases. Left the "single style"
+       CSS below untouched rather than renumbering anything. */
+    /* Right alignment.
+       NOTE: .w-datetime itself is deliberately NOT display:flex. An earlier
+       version of this fix made it flex-column so a single align-items rule
+       on the outer element could right-align everything at once — that
+       broke Classic's layout (a beta.4 regression): once .dt-time became a
+       flex ITEM instead of an ordinary full-width block, browsers size a
+       non-stretched flex item to its own preferred content width rather
+       than the block-fill-available-width behavior it had before, and at
+       large font sizes that preferred-width calculation for a NESTED flex
+       row doesn't reliably keep dt-hm/dt-seconds/dt-ampm on one line the
+       same way a plain block box does — it visibly split mid-time ("05" /
+       "29 am" on their own separate chunks instead of "5:29 am" together).
+       Classic and Compact's dt-sub deliberately stay ordinary block-level
+       flex containers (display:flex declared on THEM, not inherited from a
+       flex ancestor) — full block width, content packed left inside via
+       default justify-content, right via the override below — which is
+       exactly the layout Classic already had before alignment existed at
+       all, just now with a justify-content flip instead of a rewrite.
+       Split's dt-sub is the one exception: it's flex-direction:COLUMN (see
+       above — date stacks over temp instead of beside it, to save
+       horizontal room), so its cross axis is horizontal and needs
+       align-items, not justify-content, to move right — justify-content
+       there would push it up/down instead, since that's a vertical axis in
+       a column container. */
+    .w-datetime-align-right .dt-time { justify-content:flex-end; }
+    .w-datetime-align-right .dt-sub { justify-content:flex-end; }
+    /* dt-sub's DOM order is [dt-date, dt-temp] (date markup comes first —
+       see renderDateTime()), so in a plain right-justified row the LAST
+       item (temp) ends up at the true right edge and date sits short of
+       it, offset left by temp's own width — which is the "date isn't
+       fully right-aligned" bug: date's right edge doesn't match dt-time's
+       right edge above it, even though dt-sub as a whole is correctly
+       flush right. Swapping visual order (not DOM order, so nothing else
+       that reads this markup needs to change) puts date last/rightmost
+       instead, so its edge lines up with the time above it, with temp
+       sitting to its left. Split's dt-sub is a COLUMN (date over temp, not
+       beside it — see the Split rule above), so this row-only reasoning
+       doesn't apply there; the override below resets order back to
+       default for Split so it keeps its normal date-above-temp stacking. */
+    .w-datetime-align-right .dt-date { align-items:flex-end; text-align:right; order:2; }
+    .w-datetime-align-right .dt-temp { order:1; }
+    .w-datetime-split.w-datetime-align-right .dt-date { order:initial; }
+    .w-datetime-split.w-datetime-align-right .dt-temp { order:initial; }
+    .w-datetime-split.w-datetime-align-right .dt-sub { justify-content:flex-start; align-items:flex-end; }
+    .w-datetime-split.w-datetime-align-right { justify-content:flex-end; }
+
+    /* ── Reminders widget (generic rotation reminders — trash/recycling
+       day and anything else that recurs on a schedule) — four styles, see
+       renderReminders() for what drives each one. Same theming convention
+       as every other widget: colors off var(--text)/var(--text2), one
+       font-size control (--rem-font, from w.remFontPx) that everything
+       else is a ratio of, so the styles stay proportionally consistent as
+       that one slider moves. */
+    .w-reminders { --rem-font: 22px; font-family:var(--per-widget-font, var(--global-font-family, var(--theme-font-family, 'Inter', sans-serif))); }
+    .w-reminders-empty { display:flex; align-items:center; justify-content:center; height:100%; }
+    .rem-empty-text { color:var(--text2); font-size:calc(var(--rem-font) * 0.6); text-align:center; }
+    .rem-icon { font-size:calc(var(--rem-font) * 0.9); line-height:1; flex-shrink:0; }
+    /* Image/text icon-type variants (see reminderIconHtml()) — deliberately
+       sized in em, not px, so an uploaded image or a text label scales
+       consistently with whichever context-specific font-size the
+       surrounding wrapper (.rem-icon, .rem-chip-icon, .mc-reminder-badge,
+       etc.) already computes, the same way the emoji default already does,
+       rather than needing a separate size rule per call site. */
+    .rem-icon-img { width:1em; height:1em; object-fit:contain; vertical-align:middle; border-radius:0.15em; }
+    .rem-icon-text { font-weight:800; letter-spacing:0.02em; }
+
+    /* Banner — one line, whichever reminder is soonest. */
+    .w-reminders-banner { display:flex; align-items:center; gap:calc(var(--rem-font) * 0.5); }
+    .rem-banner-text { flex:1; min-width:0; }
+    .rem-banner-title { font-size:calc(var(--rem-font) * 0.68); font-weight:600; color:var(--text); }
+    .rem-banner-when { font-size:calc(var(--rem-font) * 0.5); color:var(--accent, var(--text2)); font-weight:600; margin-top:2px; }
+    .rem-banner-badge {
+      font-size:calc(var(--rem-font) * 0.42); font-weight:700; padding:4px 10px; border-radius:20px;
+      background:rgba(62,201,122,0.15); color:#3ec97a; white-space:nowrap;
+    }
+
+    /* List — every active reminder, always visible, each with its own next-due. */
+    .w-reminders-list { display:flex; flex-direction:column; }
+    .rem-row { display:flex; align-items:center; gap:calc(var(--rem-font) * 0.45); padding:calc(var(--rem-font) * 0.35) 2px; border-bottom:1px solid var(--border, rgba(255,255,255,0.08)); }
+    .rem-row:last-child { border-bottom:none; }
+    .rem-row .rem-icon { font-size:calc(var(--rem-font) * 0.65); }
+    .rem-name { flex:1; font-size:calc(var(--rem-font) * 0.55); font-weight:500; color:var(--text); }
+    .rem-when { font-size:calc(var(--rem-font) * 0.48); font-weight:600; color:var(--text2); }
+    .rem-when-today { color:#3ec97a; }
+    .rem-when-tomorrow { color:#e8b84a; }
+    .rem-dot { width:calc(var(--rem-font) * 0.16); height:calc(var(--rem-font) * 0.16); border-radius:50%; background:var(--text2); flex-shrink:0; }
+    .rem-dot-today { background:#3ec97a; box-shadow:0 0 8px rgba(62,201,122,0.6); }
+    .rem-dot-tomorrow { background:#e8b84a; }
+
+    /* Hero — soonest reminder big, the rest as small reference chips. */
+    .w-reminders-hero { display:flex; flex-direction:column; }
+    .rem-hero-main {
+      display:flex; align-items:center; gap:calc(var(--rem-font) * 0.5);
+      background:linear-gradient(135deg, color-mix(in srgb, var(--accent) 20%, transparent), color-mix(in srgb, var(--accent2, var(--accent)) 7%, transparent));
+      border:1px solid color-mix(in srgb, var(--accent) 35%, transparent); border-radius:12px;
+      padding:calc(var(--rem-font) * 0.5) calc(var(--rem-font) * 0.6); margin-bottom:calc(var(--rem-font) * 0.35);
+    }
+    .rem-hero-icon { font-size:calc(var(--rem-font) * 1.3); line-height:1; }
+    .rem-hero-title { font-size:calc(var(--rem-font) * 0.7); font-weight:700; color:var(--text); }
+    .rem-hero-when { font-size:calc(var(--rem-font) * 0.5); color:var(--accent, #7ec8e3); font-weight:600; margin-top:2px; }
+    .rem-hero-rest { display:flex; gap:calc(var(--rem-font) * 0.3); }
+    .rem-chip { flex:1; text-align:center; padding:calc(var(--rem-font) * 0.3) calc(var(--rem-font) * 0.2); border-radius:9px; background:color-mix(in srgb, var(--text) 5%, transparent); border:1px solid var(--border, rgba(255,255,255,0.08)); }
+    .rem-chip-icon { font-size:calc(var(--rem-font) * 0.55); margin-bottom:3px; }
+    .rem-chip-name { font-size:calc(var(--rem-font) * 0.36); color:var(--text2); font-weight:600; }
+    .rem-chip-when { font-size:calc(var(--rem-font) * 0.32); color:var(--text2); opacity:0.8; margin-top:1px; }
+
+    /* Week — a 7-day strip, today outlined, icons on days a reminder falls. */
+    .w-reminders-week { display:flex; flex-direction:column; }
+    .rem-week-title { display:flex; align-items:center; gap:calc(var(--rem-font) * 0.3); margin-bottom:calc(var(--rem-font) * 0.4); }
+    .rem-week-title-icon { font-size:calc(var(--rem-font) * 0.55); }
+    .rem-week-title-text { font-size:calc(var(--rem-font) * 0.48); font-weight:600; color:var(--text); }
+    .rem-week-strip { display:flex; gap:calc(var(--rem-font) * 0.18); }
+    .rem-week-day { flex:1; text-align:center; padding:calc(var(--rem-font) * 0.28) 2px calc(var(--rem-font) * 0.24); border-radius:8px; background:color-mix(in srgb, var(--text) 5%, transparent); border:1px solid transparent; }
+    .rem-week-day-active { background:color-mix(in srgb, var(--accent) 18%, transparent); border-color:color-mix(in srgb, var(--accent) 40%, transparent); }
+    .rem-week-day-today { border-color:var(--accent, #4A90D9); }
+    .rem-week-dow { font-size:calc(var(--rem-font) * 0.32); color:var(--text2); font-weight:700; text-transform:uppercase; letter-spacing:0.4px; }
+    .rem-week-icon { font-size:calc(var(--rem-font) * 0.52); margin-top:4px; min-height:1em; }
+
+    /* ── Family Message Board widget ──
+       A scrollable column of short note cards. Sizes scale off --mb-font
+       (default 14) so one "Font Size" control grows the whole thing, same
+       pattern as .w-reminders / .w-agenda. Each card's left rail + dot take
+       the author's colour (profile colour when linked, else the stored
+       msg.color). */
+    .w-messageboard {
+      --mb-font: 14px; width:100%; height:100%;
+      display:flex; flex-direction:column; overflow:hidden;
+      font-family:var(--per-widget-font, var(--global-font-family, var(--theme-font-family, 'Inter', sans-serif)));
+    }
+    .mb-head {
+      display:flex; align-items:center; justify-content:space-between;
+      gap:8px; margin-bottom:calc(var(--mb-font) * 0.5); flex-shrink:0;
+    }
+    .mb-head-title {
+      font-size:calc(var(--mb-font) * 0.85); font-weight:700; color:var(--text2);
+      text-transform:uppercase; letter-spacing:0.6px;
+    }
+    .mb-add-btn {
+      flex-shrink:0; width:calc(var(--mb-font) * 1.7); height:calc(var(--mb-font) * 1.7);
+      border-radius:50%; border:1px solid var(--border, rgba(255,255,255,0.18));
+      /* surfaces derive from --text so they flip on light themes (postit,
+         corkboard) instead of staying an invisible white tint */
+      background:color-mix(in srgb, var(--text) 8%, transparent); color:var(--text);
+      font-size:calc(var(--mb-font) * 1.05); line-height:1; cursor:pointer;
+      display:flex; align-items:center; justify-content:center;
+    }
+    .mb-list { flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:calc(var(--mb-font) * 0.4); }
+    .mb-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--text2); opacity:0.5; font-size:calc(var(--mb-font) * 0.85); }
+    .mb-card {
+      position:relative; border-radius:10px; padding:calc(var(--mb-font) * 0.55) calc(var(--mb-font) * 0.7);
+      padding-left:calc(var(--mb-font) * 0.9);
+      background:color-mix(in srgb, var(--text) 5%, transparent); border:1px solid var(--border, rgba(255,255,255,0.08));
+    }
+    .mb-card::before {
+      content:''; position:absolute; left:0; top:0; bottom:0; width:calc(var(--mb-font) * 0.28);
+      border-radius:10px 0 0 10px; background:var(--mb-color, var(--accent));
+    }
+    .mb-card-pinned { background:color-mix(in srgb, #e8b84a 14%, transparent); border-color:color-mix(in srgb, #e8b84a 34%, transparent); }
+    .mb-card-head { display:flex; align-items:center; gap:calc(var(--mb-font) * 0.4); margin-bottom:calc(var(--mb-font) * 0.3); }
+    .mb-dot { width:calc(var(--mb-font) * 0.5); height:calc(var(--mb-font) * 0.5); border-radius:50%; background:var(--mb-color, var(--accent)); flex-shrink:0; }
+    .mb-author { font-size:calc(var(--mb-font) * 0.72); font-weight:700; color:var(--text); }
+    .profile-avatar-d { border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-weight:700; color:#fff; flex:0 0 auto; line-height:1; }
+    .mb-time { font-size:calc(var(--mb-font) * 0.62); color:var(--text2); opacity:0.85; }
+    .mb-card-head-spacer { flex:1; }
+    .mb-x, .mb-pin {
+      flex-shrink:0; background:none; border:none; cursor:pointer; padding:2px;
+      font-size:calc(var(--mb-font) * 0.8); line-height:1; color:var(--text2); opacity:0.7;
+    }
+    .mb-pin-on { opacity:1; }
+    .mb-text { font-size:calc(var(--mb-font) * 0.9); color:var(--text); line-height:1.35; white-space:pre-wrap; word-break:break-word; }
+
+    /* ── Meal Plan widget ──
+       The week's dinners, one row per upcoming day. Sizes scale off --mp-font
+       (default 15), same pattern as .w-reminders. */
+    .w-mealplan {
+      --mp-font: 15px; width:100%; height:100%;
+      display:flex; flex-direction:column; overflow:hidden;
+      font-family:var(--per-widget-font, var(--global-font-family, var(--theme-font-family, 'Inter', sans-serif)));
+    }
+    .mp-head {
+      font-size:calc(var(--mp-font) * 0.8); font-weight:700; color:var(--text2);
+      text-transform:uppercase; letter-spacing:0.6px; margin-bottom:calc(var(--mp-font) * 0.5); flex-shrink:0;
+    }
+    .mp-list { flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; }
+    .mp-row {
+      display:flex; align-items:baseline; gap:calc(var(--mp-font) * 0.5);
+      padding:calc(var(--mp-font) * 0.42) 2px;
+      border-bottom:1px solid var(--border, rgba(255,255,255,0.08));
+    }
+    .mp-row:last-child { border-bottom:none; }
+    /* today tint + slot chips derive from the theme's accent / text so they
+       track a custom theme instead of a hardcoded blue */
+    .mp-today { background:color-mix(in srgb, var(--accent) 14%, transparent); border-radius:6px; padding-left:calc(var(--mp-font) * 0.35); padding-right:calc(var(--mp-font) * 0.35); }
+    .mp-day { font-size:calc(var(--mp-font) * 0.66); font-weight:700; color:var(--text2); min-width:calc(var(--mp-font) * 3); flex-shrink:0; }
+    .mp-today .mp-day { color:var(--accent); }
+    .mp-dom { font-size:calc(var(--mp-font) * 0.55); color:var(--text2); opacity:0.6; min-width:calc(var(--mp-font) * 1.1); flex-shrink:0; }
+    .mp-title { flex:1; font-size:calc(var(--mp-font) * 0.82); color:var(--text); font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .mp-empty { flex:1; font-size:calc(var(--mp-font) * 0.82); color:var(--text2); opacity:0.35; }
+    .mp-hint { text-align:center; color:var(--text2); opacity:0.5; font-size:calc(var(--mp-font) * 0.75); margin-top:calc(var(--mp-font) * 0.6); }
+    /* multi-slot layout: a day header then a line per slot */
+    .mp-list.mp-multi { gap:calc(var(--mp-font) * 0.5); }
+    .mp-daygroup { padding:calc(var(--mp-font) * 0.3) 2px; border-bottom:1px solid var(--border, rgba(255,255,255,0.08)); }
+    .mp-daygroup:last-child { border-bottom:none; }
+    .mp-daygroup.mp-today { background:color-mix(in srgb, var(--accent) 14%, transparent); border-radius:6px; padding-left:calc(var(--mp-font) * 0.35); padding-right:calc(var(--mp-font) * 0.35); }
+    .mp-dayhdr { display:flex; align-items:baseline; gap:calc(var(--mp-font) * 0.4); margin-bottom:calc(var(--mp-font) * 0.2); }
+    .mp-daygroup.mp-today .mp-day { color:var(--accent); }
+    .mp-slotline { display:flex; align-items:baseline; gap:calc(var(--mp-font) * 0.45); padding:calc(var(--mp-font) * 0.18) 0 calc(var(--mp-font) * 0.18) calc(var(--mp-font) * 0.4); }
+    .mp-slot {
+      font-size:calc(var(--mp-font) * 0.5); font-weight:800; color:var(--text2);
+      background:color-mix(in srgb, var(--text) 9%, transparent); border-radius:4px; padding:1px calc(var(--mp-font) * 0.28);
+      flex-shrink:0; letter-spacing:0.5px;
+    }
+
+    #mp-edit-overlay {
+      position:fixed; inset:0; z-index:91; display:none;
+      align-items:center; justify-content:center; padding:24px;
+      background:rgba(4,6,12,0.75); backdrop-filter:blur(2px);
+    }
+    #mp-edit-card {
+      background:#12172a; color:#e8edf5; border-radius:16px; padding:24px;
+      max-width:440px; width:100%; position:relative; box-shadow:0 20px 60px -12px rgba(0,0,0,0.7);
+    }
+    #mp-edit-close {
+      position:absolute; top:14px; right:14px; background:rgba(255,255,255,0.1);
+      color:#e8edf5; border:none; width:32px; height:32px; border-radius:50%; font-size:15px;
+    }
+    #mp-edit-heading { font-size:20px; font-weight:700; margin-bottom:16px; padding-right:36px; }
+    #mp-edit-title, #mp-edit-notes {
+      width:100%; box-sizing:border-box; padding:11px 12px; font-size:16px;
+      border-radius:10px; border:1px solid rgba(255,255,255,0.15);
+      background:rgba(255,255,255,0.05); color:#e8edf5; font-family:inherit;
+    }
+    #mp-edit-notes { margin-top:10px; resize:none; line-height:1.4; }
+    #mp-edit-clear { background:rgba(255,255,255,0.1); color:#e8edf5; }
+    #mp-edit-save { background:#4A90D9; color:#fff; }
+    #mp-edit-save:disabled, #mp-edit-clear:disabled { opacity:0.5; }
+

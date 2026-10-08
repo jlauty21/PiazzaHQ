@@ -2,13 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="google" content="notranslate"><!-- the app translates itself (see js/shared/i18n.js); Chrome must not offer to translate it as well -->
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Family Hub</title>
+<script src="/js/shared/i18n.js"></script>
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icons/hub-apple-touch.png">
 <meta name="theme-color" content="#1b2340">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="apple-mobile-web-app-title" content="Family Hub">
 <meta name="mobile-web-app-capable" content="yes">
 <style>
@@ -380,11 +382,11 @@
           </select>
         </div>
         <div class="editor-field" id="kid-f-weekly-rate-field">
-          <label>Weekly amount ($)</label>
+          <label id="kid-f-weekly-label">Weekly amount ($)</label>
           <input type="number" id="kid-f-weekly-rate" min="0" step="0.01" placeholder="0.00">
         </div>
         <div class="editor-field"><label>Savings goal name (optional)</label><input type="text" id="kid-f-goal-name" placeholder="e.g. New bike"></div>
-        <div class="editor-field"><label>Savings goal amount ($)</label><input type="number" id="kid-f-goal-amount" min="0" step="0.01" placeholder="0.00"></div>
+        <div class="editor-field"><label id="kid-f-goal-label">Savings goal amount ($)</label><input type="number" id="kid-f-goal-amount" min="0" step="0.01" placeholder="0.00"></div>
       </div>
     </div>
     <div class="editor-save-row">
@@ -1442,6 +1444,8 @@ function openKidEditor(kid) {
   $('kid-f-display-mode').value = kid ? (kid.display_mode || 'both') : 'both';
   $('kid-f-allowance-enabled').checked = !!(kid && kid.allowance_enabled);
   $('kid-f-allowance-mode').value = kid ? (kid.allowance_mode || 'per_chore') : 'per_chore';
+  $('kid-f-weekly-label').textContent = 'Weekly amount (' + i18n.currencySymbol() + ')';
+  $('kid-f-goal-label').textContent = 'Savings goal amount (' + i18n.currencySymbol() + ')';
   $('kid-f-weekly-rate').value = kid && kid.weekly_rate ? kid.weekly_rate : '';
   $('kid-f-goal-name').value = kid ? (kid.savings_goal_name || '') : '';
   $('kid-f-goal-amount').value = kid && kid.savings_goal_amount ? kid.savings_goal_amount : '';
@@ -1549,7 +1553,7 @@ function renderChoresListUI() {
       <span class="ic">${c.icon || '✅'}</span>
       <div class="info">
         <div class="title">${escapeHtml(c.title)}${c.bonus ? ' 🎁' : ''}</div>
-        <div class="meta">${c.bonus ? 'Bonus — shared pool' : `${assigneeLabel(c.assignee)} · ${freqLabel(c)}`}${c.pay_amount ? ` · 💰$${Number(c.pay_amount).toFixed(2)}` : ''}${c.photo_required ? ' · 📷' : ''}</div>
+        <div class="meta">${c.bonus ? 'Bonus — shared pool' : `${assigneeLabel(c.assignee)} · ${freqLabel(c)}`}${c.pay_amount ? ` · 💰${i18n.money(Number(c.pay_amount))}` : ''}${c.photo_required ? ' · 📷' : ''}</div>
       </div>
       <button class="chore-edit-btn" data-id="${c.id}" title="Edit">✏️</button>
       <button class="chore-del-btn" data-id="${c.id}" title="Delete">🗑️</button>

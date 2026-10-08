@@ -1,0 +1,473 @@
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0a0e1a;
+      --surface: #111827;
+      --card:    #1a2235;
+      --border:  #1e2d45;
+      --text:    #e8edf5;
+      --muted:   #6b7fa3;
+      --accent:  #4A90D9;
+      --danger:  #f87171;
+      --success: #34d399;
+      --radius:  14px;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', -apple-system, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      /* Backstop for the same fix on .content below: this is a kiosk-style
+         control app, not a page anyone actually wants "pull down at the top
+         to refresh" on — an accidental refresh mid-edit is only ever a
+         nuisance here, never something intentional. overscroll-behavior
+         stops scroll CHAINING at a boundary — different from touch-action
+         (which governs how a gesture gets classified at the START of a
+         touch, fixed separately on a couple of specific scrollable menus
+         elsewhere in this file). Reaching the top/bottom of an inner
+         scrollable and continuing to drag normally "chains" the overscroll
+         up through parent scrollables to the document itself, which is
+         what the browser's native pull-to-refresh actually responds to.
+         Set here on html/body as a global backstop in case anything ever
+         scrolls the page directly; the actual primary scroll container
+         (.content, below) gets the same property as the real fix, since
+         that's what nearly everything in this app actually scrolls. */
+      overscroll-behavior-y: contain;
+    }
+
+    /* ── App shell ── */
+    .app { display: flex; flex-direction: column; height: 100%; max-width: 500px; margin: 0 auto; }
+
+    /* ── App header (nav + tabs together) ──
+       Wrapped as one collapsible unit so hiding it on scroll-down (see the
+       scroll listener near the tab-switching JS) reflows #content upward
+       cleanly. max-height (not transform) is deliberate — transform hides
+       visually but leaves the flex space behind, so content wouldn't
+       actually move up to reclaim it; a max-height collapse does. 200px is
+       just a safe upper bound for the real height, not a hardcoded exact
+       value — no need to keep it in sync with the actual banner/tab
+       content, which varies (feature-flag banners, tab count). */
+    /* Grid-row collapse instead of max-height: animating max-height to an
+       arbitrary ceiling (the header's real height varies — feature-flag
+       banners, tab count) means most of the transition is wasted animating
+       through empty space once real content is shorter than that ceiling,
+       so the reveal visually "pops" in almost immediately rather than
+       animating smoothly. A single-row grid transitioning 1fr <-> 0fr
+       instead animates to the content's actual intrinsic height, whatever
+       that happens to be — no ceiling to guess, no wasted transition time.
+       Requires the header's content wrapped in ONE child (#app-header-inner)
+       with min-height:0, since a grid item's default min-height:auto would
+       otherwise refuse to shrink below its content size and defeat the
+       whole technique. */
+    #app-header { flex-shrink: 0; overflow: hidden; display: grid; grid-template-rows: 1fr;
+      transition: grid-template-rows .3s ease, opacity .25s ease; }
+    #app-header.header-hidden { grid-template-rows: 0fr; opacity: 0; }
+    #app-header-inner { overflow: hidden; min-height: 0; }
+
+    /* ── Top nav ── */
+    .nav {
+      padding: 10px 20px 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .nav-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 18px;
+      font-weight: 600;
+    }
+    /* Pulled directly from the marketing site's own header (.brand/.brand-mark)
+       — same gradient, same SVG, same sizing. Only the wordmark's color is
+       different from the site: the site's is dark ink on a light/cream nav
+       bar, this app's header is dark, so brand-text just inherits the
+       app's own --text color instead of being hardcoded to the site's ink
+       color, which would be unreadable here. */
+    .brand-mark {
+      width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+      background: linear-gradient(155deg, #D4A25E, #B8823D);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 2px 6px rgba(184,130,61,0.35);
+    }
+    .brand-mark svg { width: 16px; height: 16px; }
+    .brand-text {
+      font-family: 'Space Grotesk', 'Inter', sans-serif;
+      letter-spacing: -0.01em;
+    }
+    .nav-btn {
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      font-size: 19px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: opacity .15s;
+    }
+    .nav-btn:active { opacity: .7; }
+
+    /* ── Tab bar ── */
+    .tabs {
+      display: flex;
+      padding: 6px 14px 0;
+      gap: 4px;
+      flex-shrink: 0;
+      border-bottom: 1px solid var(--border);
+      /* Scroll horizontally when there are more tabs than fit, instead of squishing
+         them. The content below is unaffected. */
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;          /* Firefox: hide the scrollbar */
+      scroll-snap-type: x proximity;
+    }
+    .tabs::-webkit-scrollbar { display: none; } /* WebKit: hide the scrollbar */
+    .tab {
+      flex: 0 0 auto;                 /* size to content; don't stretch or shrink */
+      white-space: nowrap;
+      padding: 6px 10px;
+      border: none;
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background .15s, color .15s;
+      scroll-snap-align: start;
+    }
+    .tab.active { background: var(--accent); color: #fff; }
+    .tab { position: relative; }
+    .tab-dot { display:none; position:absolute; top:4px; right:6px; width:8px; height:8px;
+      border-radius:50%; background:#ffb020; border:1.5px solid var(--surface); }
+    .tab.active .tab-dot { border-color: var(--accent); }
+
+    /* ── Family Hub sub-tabs (Chores/To-Do/Shopping) ──
+       Deliberately smaller/lighter-weight than the main .tabs bar above —
+       reads as "nested inside Family Hub," not a second full-weight tab row
+       competing with the real one. Same visual relationship as the Family
+       Hub app's own Home/sub-tab pairing. */
+    .family-subtabbar { display: flex; gap: 6px; padding: 0 0 14px; margin: -4px 0 0; }
+    .family-subtab { flex: 1; background: var(--surface); border: none; border-radius: 8px;
+      color: var(--muted); font-size: 12px; font-weight: 600; padding: 8px 6px; cursor: pointer;
+      transition: background .15s, color .15s; }
+    .family-subtab.active { background: var(--accent); color: #fff; }
+
+    /* Spotlight tour: a "cutout" highlight via the box-shadow trick (a
+       transparent box whose huge shadow darkens everything else), positioned
+       over whatever the current step's real target element is. A separate
+       full-screen click-blocker sits behind it so the tour can't be
+       accidentally dismissed by tapping the underlying app mid-tour — only
+       the tour's own Next/Skip controls are interactive. */
+    #tour-blocker { position: fixed; inset: 0; z-index: 997; background: transparent; display: none; }
+    #tour-spotlight {
+      position: fixed; border-radius: 12px; box-shadow: 0 0 0 9999px rgba(10,12,16,0.72);
+      transition: top .3s ease, left .3s ease, width .3s ease, height .3s ease;
+      pointer-events: none; z-index: 998; display: none;
+    }
+    #tour-callout {
+      position: fixed; z-index: 999; max-width: 300px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 14px; padding: 16px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4); display: none;
+      transition: top .3s ease, left .3s ease;
+    }
+    #tour-callout .tour-step-count { font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 6px; }
+    #tour-callout h3 { font-size: 15px; margin: 0 0 6px; }
+    #tour-callout p { font-size: 13px; color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
+    #tour-callout .tour-actions { display: flex; justify-content: space-between; align-items: center; }
+    #tour-callout .tour-skip { font-size: 12.5px; color: var(--muted); background: none; border: none; cursor: pointer; padding: 6px 4px; }
+    #tour-callout .tour-next { font-size: 13px; font-weight: 600; background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 8px 16px; cursor: pointer; }
+
+    /* Sub-tab bar (within a single top-level tab, e.g. Calendar's Events/Feeds) —
+       deliberately a different, lighter style (underline vs. pill) so the
+       hierarchy under the main tabs is visually clear. */
+    .subtab-bar {
+      display: flex; flex-wrap: wrap; column-gap: 14px; row-gap: 6px; padding: 12px 16px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .subtab-btn {
+      flex: 0 0 auto; background: none; border: none; cursor: pointer;
+      padding: 8px 2px 10px;
+      font-size: 14px; font-weight: 600; color: var(--muted);
+      border-bottom: 2px solid transparent;
+    }
+    .subtab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+
+    /* Getting-started checklist: a self-paced companion to the spotlight tour
+       above — deeper, optional actions someone can tackle whenever, rather
+       than everything crammed into a tour they'd click through unread. */
+    .getting-started-card { margin: 14px 16px 4px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+    .gs-header { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+    .gs-dismiss { background: none; border: none; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 6px; }
+    .gs-item { display: flex; align-items: center; gap: 10px; padding: 7px 0; }
+    .gs-check { flex: 0 0 auto; width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 12px; cursor: pointer; color: transparent; }
+    .gs-item.done .gs-check { background: var(--good, #2f9e5e); border-color: var(--good, #2f9e5e); color: #fff; }
+    .gs-label { flex: 1; font-size: 13.5px; }
+    .gs-item.done .gs-label { color: var(--muted); text-decoration: line-through; }
+    .gs-go { flex: 0 0 auto; font-size: 12px; font-weight: 600; background: none; border: 1px solid var(--border); border-radius: 7px; padding: 5px 12px; cursor: pointer; color: var(--text); }
+
+    /* Mini-section label — sub-groups a long accordion body into labeled
+       clusters (e.g. Screen Settings' Display / Ambient Mode / TV Control)
+       without another full accordion level. */
+    .mini-section-label {
+      font-size: 12px; font-weight: 600; color: var(--muted);
+      display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
+    }
+    .mini-section-label.with-divider {
+      margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);
+    }
+    .tab-dot.show { display:block; }
+
+    /* ── Content area ── */
+    .content { flex: 1; overflow-y: auto; overscroll-behavior-y: contain; padding: 16px 20px 100px; }
+
+    /* ── Event cards ── */
+    .section-header {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 20px 0 8px;
+    }
+    .section-header:first-child { margin-top: 4px; }
+
+    /* Collapsible accordion (Displays, Settings) */
+    .accordion { display: flex; flex-direction: column; gap: 10px; }
+    .acc-section { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: var(--card); }
+    .acc-section.open { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+    .acc-head {
+      width: 100%; display: flex; align-items: center; gap: 13px; cursor: pointer;
+      background: none; border: none; color: var(--text); padding: 16px 16px;
+      font-family: inherit; text-align: left;
+    }
+    .acc-head .acc-ic { font-size: 21px; flex: none; }
+    .acc-head .acc-text { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+    .acc-head .acc-label { font-size: 16px; font-weight: 600; }
+    .acc-head .acc-sub { font-size: 12px; color: var(--muted); }
+    .acc-head .acc-caret { color: var(--accent); font-size: 14px; flex: none; }
+    .acc-body { padding: 0 16px 16px; }
+
+    .adv-toggle {
+      width: 100%; display: flex; align-items: center; justify-content: space-between;
+      background: none; border: 1px dashed var(--border); border-radius: 12px;
+      color: var(--muted); padding: 13px 16px; margin-top: 12px; cursor: pointer;
+      font-family: inherit; font-size: 14px; font-weight: 600;
+    }
+    .adv-toggle.open { color: var(--text); border-style: solid; }
+    .adv-toggle .adv-caret { color: var(--accent); }
+
+    /* Photo picker grid (per-display photo subset in the photo widget) */
+    .photo-pick { position: relative; padding: 0; border: 2px solid var(--border); border-radius: 9px;
+      overflow: hidden; cursor: pointer; aspect-ratio: 1; background: var(--card); }
+    .photo-pick img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: .55; transition: opacity .15s; }
+    .photo-pick.sel { border-color: var(--accent); }
+    .photo-pick.sel img { opacity: 1; }
+    .photo-pick .photo-check { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px;
+      border-radius: 50%; background: var(--accent); color: #fff; font-size: 11px; display: none;
+      align-items: center; justify-content: center; line-height: 1; }
+    .photo-pick.sel .photo-check { display: flex; }
+
+    /* Swipe-to-act on profile cards */
+    .swipe-wrap { position: relative; border-radius: 14px; overflow: hidden; margin-bottom: 10px; }
+    .swipe-bg {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: space-between;
+      padding: 0 20px; font-size: 14px; font-weight: 600; border-radius: 14px;
+      background: linear-gradient(90deg, #2c7a4b 0%, #2c7a4b 50%, #7a2c2c 50%, #7a2c2c 100%);
+      color: #fff; opacity: 0; transition: opacity .15s;
+    }
+    .swipe-wrap.swipe-left .swipe-bg, .swipe-wrap.swipe-right .swipe-bg { opacity: 1; }
+    .swipe-bg-dup { color: #d8ffe8; }
+    .swipe-bg-del { color: #ffd8d8; }
+    .swipe-bg-delonly { background: #7a2c2c !important; justify-content: flex-end !important; }
+
+    /* Events management tab */
+    .ev-date-group { margin-bottom: 16px; }
+    .events-sticky-header { position: sticky; top: 0; z-index: 20; background: var(--bg);
+      padding: 4px 0 12px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
+    .ev-date-label { font-size: 11px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
+      color: var(--accent2); margin: 0 2px 8px; }
+    .ev-manage-row { display: flex; align-items: center; gap: 10px; padding: 11px 13px; background: var(--card);
+      border: 1px solid var(--border); border-radius: 11px; margin-bottom: 7px; }
+    .ev-manage-row.dimmed { opacity: 0.5; }
+    .ev-manage-title { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ev-manage-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .ev-manage-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .ev-action { background: var(--bg); border: 1px solid var(--border); color: var(--text);
+      border-radius: 8px; padding: 6px 11px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    .ev-action:active { border-color: var(--accent); }
+    .ev-action.danger { color: var(--danger, #ff5d5d); border-color: color-mix(in srgb, var(--danger, #ff5d5d) 40%, var(--border)); }
+
+    /* Template gallery grouped by category */
+    .tmpl-cat-label { font-size: 11px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
+      color: var(--accent2); margin: 14px 2px 9px; }
+    .tmpl-cat-label:first-child { margin-top: 0; }
+    .tmpl-cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+    .tmpl-cat { border: 1px solid var(--border); border-radius: 12px; margin-bottom: 10px; overflow: hidden; background: var(--card); }
+    .tmpl-cat-head { width: 100%; display: flex; align-items: center; gap: 10px; padding: 14px 16px;
+      background: none; border: none; cursor: pointer; color: var(--text); font-size: 15px; font-weight: 600; text-align: left; }
+    .tmpl-cat-name { flex: 1; }
+    .tmpl-cat-count { font-size: 12px; color: var(--muted); background: var(--bg); border-radius: 10px; padding: 2px 9px; }
+    .tmpl-cat-caret { color: var(--accent); font-size: 13px; }
+    .tmpl-cat-body { padding: 0 16px 16px; }
+
+    /* News sources — consolidated rows with a star priority toggle */
+    .news-src { padding: 12px 0; border-bottom: 1px solid var(--border); }
+    .news-src:last-child { border-bottom: none; }
+    .news-src-head { display: flex; align-items: center; gap: 12px; }
+    .news-src-name { flex: 1; margin-bottom: 0; font-weight: 600; }
+    .news-star { background: none; border: none; font-size: 22px; line-height: 1; cursor: pointer;
+      color: var(--border); padding: 0 2px; transition: color .15s, transform .1s; }
+    .news-star.on { color: #fbbf24; }
+    .news-star:active { transform: scale(1.2); }
+    .news-toggle { width: 22px; height: 22px; accent-color: var(--accent); flex-shrink: 0; }
+    /* When a source is off, dim its star + extra field */
+    .news-src.disabled .news-star,
+    .news-src.disabled .news-src-extra { opacity: .35; pointer-events: none; }
+    .swipe-card { position: relative; touch-action: pan-y; margin-bottom: 0 !important; }
+
+    .event-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .event-color-bar { width: 4px; height: 42px; border-radius: 2px; flex-shrink: 0; }
+    /* The calendar color bar is interactive (tap to change color) and needs a much
+       bigger touch target than its 4px visual width — padding extends the actual
+       hit area without changing how wide the colored strip looks. Visible width
+       roughly doubled (4px -> 8px) for better visibility too. */
+    .feed-color-bar {
+      width: 8px; margin: -8px -6px -8px -2px; padding: 8px 6px 8px 2px;
+      background-clip: content-box; box-sizing: content-box;
+    }
+    .feed-color-bar:active { opacity: 0.7; }
+    .event-card-body { flex: 1; min-width: 0; }
+    .event-card-title { font-size: 16px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .event-card-sub   { font-size: 13px; color: var(--muted); margin-top: 3px; }
+    .event-card-actions { display: flex; gap: 8px; }
+    .icon-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      width: 34px; height: 34px;
+      color: var(--muted);
+      font-size: 16px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .icon-btn:active { background: var(--border); }
+    .icon-btn.del { color: var(--danger); }
+    .icon-btn.small { width: 26px; height: 26px; border: none; font-size: 14px; }
+
+    .empty-state {
+      text-align: center;
+      padding: 48px 20px;
+      color: var(--muted);
+    }
+    .empty-state .emoji { font-size: 40px; margin-bottom: 12px; }
+    .empty-state p { font-size: 15px; }
+
+    /* ── Modal ── */
+    .overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.7);
+      z-index: 100;
+      align-items: flex-end;
+      justify-content: center;
+    }
+    .overlay.open { display: flex; }
+
+    .modal {
+      background: var(--surface);
+      border-radius: 24px 24px 0 0;
+      width: 100%; max-width: 500px;
+      padding: 24px 24px 40px;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+    }
+    .modal-title { font-size: 20px; font-weight: 600; }
+    .modal-close {
+      background: var(--card);
+      border: none;
+      color: var(--muted);
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      font-size: 18px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+
+    /* ── Form ── */
+    .form-group { margin-bottom: 16px; }
+    .form-label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .lbl { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; font-weight:600; }
+    .form-input {
+      width: 100%;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      color: var(--text);
+      font-size: 16px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color .15s;
+      -webkit-appearance: none;
+    }
+    .form-input:focus { border-color: var(--accent); }
+    .form-input::placeholder { color: var(--muted); }
+
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+    .color-picker { display: flex; gap: 10px; flex-wrap: wrap; }
+    .color-swatch {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      border: 3px solid transparent;
+      cursor: pointer;
+      transition: transform .15s, border-color .15s;
+    }
+    .color-swatch.selected { border-color: var(--text); transform: scale(1.15); }
+
+    .btn {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity .15s;
+      margin-top: 8px;
+    }
+    .btn:active { opacity: .8; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-danger  { background: var(--danger);  color: #fff; }
+
