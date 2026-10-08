@@ -7,6 +7,13 @@ const zlib = require('zlib');
 const { Readable } = require('stream');
 const { URL } = require('url');
 const fs = require('fs');
+// Updates from before 1.88 copy a FIXED list of files that does not include src/ (the folder most of this server now lives in), so a release built on it
+// could not start on them ("Cannot find module './src/i18n-server.js'"; seen on seven customer Pis after 1.92.0). Releases therefore also carry a copy at
+// scripts/_src - scripts/ IS on that old list - and when src/ is missing it is put in place here, before anything needs it. Harmless once src/ exists.
+try {
+  const _srcDir = path.join(__dirname, 'src'), _srcCopy = path.join(__dirname, 'scripts', '_src');
+  if (!fs.existsSync(_srcDir) && fs.existsSync(_srcCopy)) { fs.cpSync(_srcCopy, _srcDir, { recursive: true }); console.log('Restored src/ from scripts/_src (update from an older version).'); }
+} catch (e) { console.error('Could not restore src/ from scripts/_src: ' + e.message); }
 const multer = require('multer');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
