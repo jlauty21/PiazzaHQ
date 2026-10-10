@@ -294,7 +294,7 @@ function renderEventsList() {
 
   box.innerHTML = sortedDates.map(date => {
     const d = new Date(date + 'T00:00:00');
-    const dateLabel = d.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
+    const dateLabel = d.toLocaleDateString((window.i18n && i18n.lang) || undefined, { weekday:'short', month:'short', day:'numeric' });
     const isAnchor = date === anchorDate;
     const rows = byDate[date].map(e => {
       const isHidden = e.hidden_series || e.hidden_occurrence;
@@ -394,7 +394,7 @@ async function renderCalendarsSubTab() {
   } else {
     feeds.forEach(f => {
       const synced = f.last_synced
-        ? 'Synced ' + new Date(f.last_synced + 'Z').toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
+        ? 'Synced ' + new Date(f.last_synced + 'Z').toLocaleTimeString((window.i18n && i18n.lang) || undefined, {hour:'2-digit',minute:'2-digit'})
         : 'Never synced';
       const timedOn = f.color_timed === undefined ? true : f.color_timed !== 0;
       const showLocOn = f.show_location ? true : false;
@@ -846,7 +846,7 @@ async function renderPhotos() {
   if (album) {
     const connected = !!album.connected;
     const last = album.last_sync ? new Date(album.last_sync) : null;
-    const lastTxt = last && !isNaN(last) ? last.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never';
+    const lastTxt = last && !isNaN(last) ? last.toLocaleString((window.i18n && i18n.lang) || undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never';
     let status = '';
     if (connected) {
       status = `<div style="font-size:12px;color:var(--muted);margin-top:8px">`
@@ -884,7 +884,7 @@ async function renderPhotos() {
       body = '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn-mini" id="gp-connect-btn" style="' + btnAcc + '">Connect Google Photos</button></div><div id="gp-status" style="font-size:12px;color:var(--muted);margin-top:8px"></div>';
     } else {
       const last = gp.last_import ? new Date(gp.last_import) : null;
-      const lastTxt = last && !isNaN(last) ? last.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never';
+      const lastTxt = last && !isNaN(last) ? last.toLocaleString((window.i18n && i18n.lang) || undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never';
       body = `<div style="font-size:12px;color:var(--muted);margin-bottom:8px"><span>Connected as</span> ${esc(gp.email || 'your Google account')} · <span>${gp.count} photo${gp.count === 1 ? '' : 's'} imported</span> · <span>last picked</span> ${lastTxt}</div>`
         + '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn-mini" id="gp-pick-btn" style="' + btnAcc + '">' + (gp.session ? 'Open the picker again' : 'Pick photos') + '</button>'
         + '<button class="btn-mini" id="gp-disconnect-btn">Disconnect</button>'

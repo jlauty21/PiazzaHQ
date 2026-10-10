@@ -17,8 +17,17 @@ function renderEntityStatusAdvancedSettings(w) {
     ${areaOpts ? `<div class="was-row"><label>Area</label><select id="was-ha-area">${areaOpts}</select></div>` : ''}
     <div class="was-box" id="was-ha-list" style="max-height:280px;overflow-y:auto;padding:4px"></div>
     <div class="was-row">
-      <label>Template (optional) ${infoBtn("Write a Home Assistant template and the widget shows what Home Assistant makes of it, for example: {{ states('sensor.washer') | title }} · {{ time_since(states.sensor.washer.last_changed, 2) }}. When this is filled in it replaces the entity control above.")}</label>
-      <textarea id="was-ha-template" rows="3" spellcheck="false" autocapitalize="none" placeholder="{{ states('sensor.washer') | title }}" style="width:100%;font-family:monospace;font-size:13px">${escapeHtmlD(w.haTemplate || '')}</textarea>
+      <label>Template wizard (optional) ${infoBtn("Write a Home Assistant template and the widget shows what Home Assistant makes of it. Not sure where to start? Tap Step by step, or Recipes for ready-made ones, and the Insert buttons add the right code for you. Put **double asterisks** around words to make them bold. The display asks Home Assistant again every few seconds. More examples: piazzahq.com/template-cookbook. When this is filled in it replaces the entity control above.")}</label>
+      <textarea id="was-ha-template" rows="5" spellcheck="false" autocapitalize="none" placeholder="{{ states('sensor.washer') | title }}" style="width:100%;font-family:monospace;font-size:13px">${escapeHtmlD(w.haTemplate || '')}</textarea>
+      <div id="was-ha-template-tools"></div>
+    </div>
+    <div class="was-row">
+      <label>Template Alignment ${infoBtn("Which side of the widget the Template text lines up to. Left or Right keeps it snug against one edge, handy in a narrow column or a tight layout.")}</label>
+      <select id="was-ha-align">
+          <option value="center" ${(w.haAlign||'center')==='center'?'selected':''}>Center</option>
+          <option value="left" ${w.haAlign==='left'?'selected':''}>Left</option>
+          <option value="right" ${w.haAlign==='right'?'selected':''}>Right</option>
+        </select>
     </div>
     <div class="was-toggle-row">
       <label>Show Unit ${infoBtn("Title and font size are set in the basic settings panel.")}</label>
@@ -69,6 +78,18 @@ function wireEntityStatusAdvancedSettings(w) {
   if (tplBox) tplBox.addEventListener('change', async (e) => {
     w.haTemplate = e.target.value.trim();
     try { await fetchHaEntities(); } catch {}
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  });
+  const tplTools = document.getElementById('was-ha-template-tools');
+  if (tplTools && tplBox && window.HaTemplateBuilder) HaTemplateBuilder.mount({
+    box: tplBox, host: tplTools,
+    getEntities: () => fetch('/api/ha/entities').then((r) => r.json()),
+    preview: (template) => fetch('/api/ha/template', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ template }) }).then((r) => r.json()),
+  });
+  const alignSel = document.getElementById('was-ha-align');
+  if (alignSel) alignSel.addEventListener('change', (e) => {
+    w.haAlign = e.target.value;
     rerenderSingleWidget(w.id);
     scheduleLayoutSave();
   });

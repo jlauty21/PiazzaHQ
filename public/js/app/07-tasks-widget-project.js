@@ -645,6 +645,8 @@ async function renderTodoTab() {
   await Promise.all((todoLists || []).map(async (l) => {
     l.items = await apiFetch(`/api/todo-lists/${l.id}/items`).catch(() => []);
   }));
+  window._linkedTodoKeys = new Set((todoLists || []).filter((l) => l.source).map((l) => l.source + '|' + l.remote_id));
+  const svcName = (src) => (src === 'google' ? 'Google Tasks' : 'Todoist');
   const hubLink = `${window.location.origin}/hub`;
   content.innerHTML = `
     <div style="padding:14px">
@@ -655,8 +657,8 @@ async function renderTodoTab() {
         ${(todoLists && todoLists.length) ? todoLists.map(l => `
           <div class="acc-section" data-acc="todolist-${l.id}" style="margin-bottom:8px">
             <button class="acc-head" data-acc-toggle="todolist-${l.id}">
-              <span class="acc-ic">📝</span>
-              <span class="acc-text"><span class="acc-label">${escapeHtml(l.name)}</span><span class="acc-sub">${l.items.length} item${l.items.length===1?'':'s'}</span></span>
+              <span class="acc-ic">${l.source ? '🔗' : '📝'}</span>
+              <span class="acc-text"><span class="acc-label">${escapeHtml(l.name)}</span><span class="acc-sub">${l.items.length} item${l.items.length===1?'':'s'}${l.source ? ' · ' + svcName(l.source) : ''}</span></span>
               <span class="acc-caret">▸</span>
             </button>
             <div class="acc-body" data-acc-body="todolist-${l.id}" style="display:none;padding:10px">
@@ -672,7 +674,7 @@ async function renderTodoTab() {
                 <input class="form-input todo-item-input" data-list-id="${l.id}" placeholder="Add an item…" style="flex:1">
                 <button type="button" class="todo-item-add-btn" data-list-id="${l.id}" style="background:var(--accent);border:none;border-radius:10px;padding:0 16px;color:#fff;font-size:14px;font-weight:600;cursor:pointer">Add</button>
               </div>
-              <button type="button" class="todo-list-del-btn" data-list-id="${l.id}" data-list-name="${escapeHtml(l.name)}" style="background:none;border:none;color:var(--danger,#ff5d5d);font-size:12px;cursor:pointer;margin-top:10px;padding:0">Delete this list</button>
+              <button type="button" class="todo-list-del-btn" data-list-id="${l.id}" data-list-name="${escapeHtml(l.name)}" data-list-source="${l.source || ''}" style="background:none;border:none;color:var(--danger,#ff5d5d);font-size:12px;cursor:pointer;margin-top:10px;padding:0">${l.source ? 'Remove this link' : 'Delete this list'}</button>${l.source && l.problem ? `<div style="font-size:12px;color:#e5484d;margin-top:8px">${escapeHtml(l.problem)}</div>` : ''}
             </div>
           </div>
         `).join('') : '<div class="empty-state"><div class="emoji">📝</div><p>No lists yet. Add one below, then place a To-Do List widget from the Layout tab.</p></div>'}
@@ -680,6 +682,8 @@ async function renderTodoTab() {
           <input class="form-input" id="todo-newlist-input" placeholder="New list name, e.g. Groceries" style="flex:1">
           <button type="button" id="todo-newlist-btn" style="background:var(--accent);border:none;border-radius:10px;padding:0 16px;color:#fff;font-size:14px;font-weight:600;cursor:pointer">Add List</button>
         </div>
+        <div style="margin-top:12px"><button type="button" id="todo-link-btn" style="background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer">🔗 Link a Todoist or Google Tasks list</button></div>
+        <div id="todo-link-panel" style="display:none;margin-top:8px"></div>
       </div>
     </div>
   `;
@@ -1200,7 +1204,7 @@ async function openStatsSheet(kid) {
     const pct = d.total ? Math.round((d.done / d.total) * 100) : null;
     const color = pct === null ? 'var(--border)' : pct === 100 ? '#3ec97a' : pct > 0 ? '#ffb454' : '#fb7185';
     const h = pct === null ? 6 : Math.max(6, Math.round(pct * 0.01 * 46));
-    const dow = new Date(d.date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'narrow' });
+    const dow = new Date(d.date + 'T00:00:00').toLocaleDateString((window.i18n && i18n.lang) || undefined, { weekday: 'narrow' });
     return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:0">
       <div title="${d.date}: ${d.total ? `${d.done}/${d.total} done` : 'nothing due'}" style="width:100%;max-width:14px;height:46px;display:flex;align-items:flex-end">
         <div style="width:100%;height:${h}px;background:${color};border-radius:3px 3px 0 0"></div>

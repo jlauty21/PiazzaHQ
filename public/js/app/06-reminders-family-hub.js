@@ -1501,17 +1501,19 @@ async function drawWidgetSettingsPanel() {
       // never silently overwrites what was just typed.
       $('ha-label-input').addEventListener('input', (e) => { w.haLabel = e.target.value; w.haLabelAutoFor = ''; });
     }
+    if ($('ha-align-select')) {
+      $('ha-align-select').addEventListener('change', (e) => { w.haAlign = e.target.value; });
+    }
     if ($('ha-show-unit')) {
       $('ha-show-unit').addEventListener('change', (e) => { w.haShowUnit = e.target.checked; });
     }
     if ($('ha-template-input')) $('ha-template-input').addEventListener('input', (e) => { w.haTemplate = e.target.value; });
-    if ($('ha-template-preview')) $('ha-template-preview').addEventListener('click', async () => {
-      const out = $('ha-template-result'), tpl = ($('ha-template-input').value || '').trim();
-      if (!tpl) { out.textContent = 'Write a template first.'; return; }
-      out.textContent = 'Asking Home Assistant…';
-      let r; try { r = await apiFetch('/api/ha/template', { method: 'POST', body: JSON.stringify({ template: tpl }) }); } catch (e) { r = { error: 'Could not reach the server.' }; }
-      out.style.color = (r && r.error) ? '#c0392b' : 'var(--text)';
-      out.textContent = (r && r.error) ? r.error : (r && r.text) || '(nothing — the template came out empty)';
+    // the helper under the box: insert buttons, recipes, live preview and plain-English errors (public/js/shared/ha-template-builder.js)
+    if ($('ha-template-tools') && window.HaTemplateBuilder) HaTemplateBuilder.mount({
+      box: $('ha-template-input'), host: $('ha-template-tools'),
+      getEntities: () => apiFetch('/api/ha/entities'),
+      getAttributes: (id) => apiFetch('/api/ha/entity-details/' + encodeURIComponent(id)),     // the Inspect button (needs the app login, so not offered on the display)
+      preview: (template) => apiFetch('/api/ha/template', { method: 'POST', body: JSON.stringify({ template }) }),
     });
     if ($('ha-show-since')) {
       $('ha-show-since').addEventListener('change', (e) => { w.haShowSince = e.target.checked; });

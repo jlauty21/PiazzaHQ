@@ -75,6 +75,7 @@ module.exports = function registerWeatherAlerts({ app, IS_DEMO, fetchJSON, getSe
     const snoozed = wxSnoozedEvents();
     const seen = wxLoad('severe_weather_seen', {});
     const history = wxLoad('severe_weather_event_history', {});
+    const sevByEvent = wxLoad('severe_weather_event_severity', {});
     const liveKeys = new Set();
     let seenChanged = false, historyChanged = false;
 
@@ -82,6 +83,7 @@ module.exports = function registerWeatherAlerts({ app, IS_DEMO, fetchJSON, getSe
       const p = f.properties || {};
       const event = wxCleanEvent(p.event) || 'Weather Alert';
       if (history[event] !== now) { history[event] = now; historyChanged = true; }
+      if (SEVERITY_RANK[p.severity] !== undefined && sevByEvent[event] !== p.severity) { sevByEvent[event] = p.severity; historyChanged = true; }   // what Settings shows next to each type
       if ((SEVERITY_RANK[p.severity] ?? 0) < minSeverity) continue;
       if (muted.has(event) || snoozed[event]) continue;        // not wanted: never raised (a banner already up is cleared below)
 
@@ -115,9 +117,9 @@ module.exports = function registerWeatherAlerts({ app, IS_DEMO, fetchJSON, getSe
     for (const [id, r] of Object.entries(seen)) if (!r || (Number(r.until) || 0) + WX_SEEN_GRACE_MS < now) { delete seen[id]; seenChanged = true; }
     const ids = Object.keys(seen);
     if (ids.length > WX_MAX_SEEN) { ids.sort((x, y) => (seen[x].until || 0) - (seen[y].until || 0)).slice(0, ids.length - WX_MAX_SEEN).forEach((id) => delete seen[id]); seenChanged = true; }
-    for (const [ev, t] of Object.entries(history)) if (now - Number(t) > 14 * 86400000) { delete history[ev]; historyChanged = true; }
+    for (const [ev, t] of Object.entries(history)) if (now - Number(t) > 14 * 86400000) { delete history[ev]; delete sevByEvent[ev]; historyChanged = true; }
     if (seenChanged) setSetting('severe_weather_seen', JSON.stringify(seen));
-    if (historyChanged) setSetting('severe_weather_event_history', JSON.stringify(history));
+    if (historyChanged) { setSetting('severe_weather_event_history', JSON.stringify(history)); setSetting('severe_weather_event_severity', JSON.stringify(sevByEvent)); }
   }
   setInterval(checkWeatherAlerts, 10 * 60 * 1000);
   setTimeout(checkWeatherAlerts, 25 * 1000); // stagger from checkHaAlerts' own 20s boot kick
@@ -138,13 +140,14 @@ module.exports = function registerWeatherAlerts({ app, IS_DEMO, fetchJSON, getSe
   function wxState() {
     const snoozed = wxSnoozedEvents();
     const history = wxLoad('severe_weather_event_history', {});
+    const sevByEvent = wxLoad('severe_weather_event_severity', {});
     return {
       enabled: getSetting('severe_weather_alerts_enabled') === '1',
       min_severity: getSetting('severe_weather_min_severity') || 'Moderate',
       muted: wxMutedEvents(),
       snoozed,
       active: [..._activeNotifications.values()].filter((n) => n.kind === WX_KIND).map((n) => ({ key: n.key, event: n.title, since: n.firedAt })),
-      recent_events: Object.entries(history).sort((a, b) => b[1] - a[1]).slice(0, 30).map(([event, last_seen]) => ({ event, last_seen })),
+      recent_events: Object.entries(history).sort((a, b) => b[1] - a[1]).slice(0, 30).map(([event, last_seen]) => ({ event, last_seen, severity: sevByEvent[event] || '' })),
       known_events: WX_KNOWN_EVENTS,
     };
   }

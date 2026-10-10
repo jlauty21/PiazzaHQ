@@ -263,7 +263,7 @@ async function loadChores() {
   } catch { return; }
   const d = new Date(currentData.date + 'T00:00:00');
   document.getElementById('h-date').textContent =
-    d.toLocaleDateString(undefined, { weekday:'long', month:'long', day:'numeric' });
+    d.toLocaleDateString((window.i18n && i18n.lang) || undefined, { weekday:'long', month:'long', day:'numeric' });
   const streakEl = document.getElementById('h-streak');
   const streak = currentData.streak || 0;
   if (streak > 0) {
@@ -461,7 +461,7 @@ async function openHistory() {
     const pct = d.total ? Math.round((d.done / d.total) * 100) : null;
     const color = pct === null ? '#333a52' : pct === 100 ? '#3ec97a' : pct > 0 ? '#ffb454' : '#fb7185';
     const h = pct === null ? 6 : Math.max(6, Math.round(pct * 0.01 * 46));
-    const dow = new Date(d.date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'narrow' });
+    const dow = new Date(d.date + 'T00:00:00').toLocaleDateString((window.i18n && i18n.lang) || undefined, { weekday: 'narrow' });
     return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:0">
       <div style="width:100%;max-width:14px;height:46px;display:flex;align-items:flex-end">
         <div style="width:100%;height:${h}px;background:${color};border-radius:3px 3px 0 0"></div>

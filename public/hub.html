@@ -79,6 +79,11 @@
     font-size:14px; font-weight:600; white-space:nowrap; cursor:pointer; color:var(--text); flex-shrink:0; }
   .todo-list-chip.active { border-color:var(--accent); background:rgba(74,144,217,0.15); }
   .todo-list-chip .count { color:var(--muted); font-weight:400; margin-left:5px; }
+  #todo-link-btn { background:transparent; border:2px dashed var(--muted); color:var(--muted); border-radius:14px; padding:10px 16px; font-size:14px; cursor:pointer; white-space:nowrap; flex-shrink:0; }
+  #todo-link-panel { padding:0 16px 10px; }
+  #todo-link-panel .hint { color:var(--muted); font-size:13px; margin-bottom:6px; }
+  .todo-link-opt { display:flex; justify-content:space-between; gap:10px; width:100%; text-align:left; background:var(--card); border:1px solid var(--muted); color:var(--text); border-radius:12px; padding:10px 14px; font-size:15px; cursor:pointer; margin-bottom:6px; }
+  .todo-link-opt .svc { color:var(--muted); }
   #todo-add-list-btn { background:transparent; border:2px dashed var(--muted); color:var(--muted); border-radius:14px;
     padding:10px 16px; font-size:14px; cursor:pointer; flex-shrink:0; }
 
@@ -301,6 +306,7 @@
 
         <div id="view-todos" class="subview">
           <div id="todo-lists-row"></div>
+          <div id="todo-link-panel" style="display:none"></div>
           <div id="todo-list-header" style="display:none">
             <h2 id="todo-list-title"></h2>
             <button id="todo-rename-btn" title="Rename">✏️</button>
@@ -612,19 +618,48 @@ function renderTodoListsRow() {
   const row = $('todo-lists-row');
   row.innerHTML = todoLists.map(l => `
     <button class="todo-list-chip ${l.id === activeListId ? 'active' : ''}" data-id="${l.id}">
-      ${escapeHtml(l.name)}${l.itemCount != null ? `<span class="count">${l.itemCount}</span>` : ''}
-    </button>`).join('') + `<button id="todo-add-list-btn">+ New List</button>`;
+      ${l.source ? '🔗 ' : ''}${escapeHtml(l.name)}${l.itemCount != null ? `<span class="count">${l.itemCount}</span>` : ''}
+    </button>`).join('') + `<button id="todo-add-list-btn">+ New List</button><button id="todo-link-btn">🔗 Link a list</button>`;
   row.querySelectorAll('.todo-list-chip').forEach(b => b.addEventListener('click', () => {
     activeListId = parseInt(b.dataset.id);
     renderTodoListsRow();
     loadActiveListItems();
   }));
+  $('todo-link-btn').addEventListener('click', openLinkPanel);
   $('todo-add-list-btn').addEventListener('click', async () => {
     const name = prompt('New list name:');
     if (!name || !name.trim()) return;
     const r = await api('/api/todo-lists', { method: 'POST', body: JSON.stringify({ name: name.trim() }) });
     if (r && r.id) { activeListId = r.id; loadTodoLists(); }
   });
+}
+
+// Link a list that already lives in Todoist or Google Tasks: it then works like any other list here, and what is done goes to that service.
+async function openLinkPanel() {
+  const panel = $('todo-link-panel');
+  if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  panel.innerHTML = '<div class="hint">Loading your lists…</div>';
+  const r = await api('/api/todoist/projects').catch(() => ({ error: 'Could not load your lists.' }));
+  const already = new Set(todoLists.filter(l => l.source).map(l => l.source + '|' + l.remote_id));
+  const opts = (Array.isArray(r) ? r : []).map(p => {
+    const google = !!p.google || String(p.id).indexOf('g:') === 0;
+    return { source: google ? 'google' : 'todoist', id: String(p.id), name: google ? String(p.name).replace(/^Google Tasks:\s*/, '') : String(p.name) };
+  }).filter(o => !already.has(o.source + '|' + o.id));
+  if (!opts.length) {
+    panel.innerHTML = '<div class="hint">' + (Array.isArray(r) ? 'Every list you have is already linked.' : 'Nothing to link yet. Connect Todoist or Google Tasks first, in the app under Settings &gt; Data Sources.') + '</div>';
+    return;
+  }
+  panel.innerHTML = '<div class="hint">Choose a list to link</div>' + opts.map((o, i) =>
+    '<button class="todo-link-opt" data-i="' + i + '"><span>' + escapeHtml(o.name) + '</span><span class="svc">' + (o.source === 'google' ? 'Google Tasks' : 'Todoist') + '</span></button>').join('');
+  panel.querySelectorAll('.todo-link-opt').forEach(b => b.addEventListener('click', async () => {
+    const o = opts[Number(b.dataset.i)];
+    b.disabled = true;
+    const res = await api('/api/todo-lists', { method: 'POST', body: JSON.stringify({ name: o.name, source: o.source, remote_id: o.id }) });
+    if (res && res.error) { b.disabled = false; alert(res.error); return; }
+    panel.style.display = 'none';
+    if (res && res.id) { activeListId = res.id; loadTodoLists(); }
+  }));
 }
 
 async function loadActiveListItems() {
@@ -666,8 +701,10 @@ async function toggleTodoItem(id) {
   item.done = wasDone ? 0 : 1; // optimistic
   renderTodoItems();
   try {
-    await api(`/api/todo-items/${id}`, { method: 'PUT', body: JSON.stringify({ done: !wasDone }) });
-  } catch {
+    const res = await api(`/api/todo-items/${id}`, { method: 'PUT', body: JSON.stringify({ done: !wasDone }) });
+    if (res && res.error) throw new Error(res.error);
+  } catch (e) {
+    if (e && e.message) alert(e.message);
     item.done = wasDone ? 1 : 0; // revert
     renderTodoItems();
   }
@@ -675,7 +712,7 @@ async function toggleTodoItem(id) {
 async function deleteTodoItem(id) {
   activeListItems = activeListItems.filter(i => i.id !== id); // optimistic
   renderTodoItems();
-  try { await api(`/api/todo-items/${id}`, { method: 'DELETE' }); } catch { loadActiveListItems(); }
+  try { const res = await api(`/api/todo-items/${id}`, { method: 'DELETE' }); if (res && res.error) { alert(res.error); loadActiveListItems(); } } catch { loadActiveListItems(); }
 }
 
 $('todo-new-item-btn').addEventListener('click', addTodoItem);
@@ -688,6 +725,7 @@ async function addTodoItem() {
   try {
     const r = await api(`/api/todo-lists/${activeListId}/items`, { method: 'POST', body: JSON.stringify({ text }) });
     if (r && r.id) { activeListItems.push(r); renderTodoItems(); }
+    else if (r && r.error) { alert(r.error); input.value = text; }
   } catch {}
 }
 
@@ -702,7 +740,7 @@ $('todo-rename-btn').addEventListener('click', async () => {
 $('todo-delete-list-btn').addEventListener('click', async () => {
   const list = todoLists.find(l => l.id === activeListId);
   if (!list) return;
-  if (!confirm(`Delete "${list.name}" and everything in it?`)) return;
+  if (list.source ? !confirm(`Remove the link to "${list.name}"? The list in ${list.source === 'google' ? 'Google Tasks' : 'Todoist'} stays exactly as it is.`) : !confirm(`Delete "${list.name}" and everything in it?`)) return;
   await api(`/api/todo-lists/${activeListId}`, { method: 'DELETE' });
   activeListId = null;
   loadTodoLists();
@@ -1487,7 +1525,7 @@ async function openKidStats(kid) {
     const pct = d.total ? Math.round((d.done / d.total) * 100) : null;
     const color = pct === null ? 'var(--border)' : pct === 100 ? '#3ec97a' : pct > 0 ? '#ffb454' : '#fb7185';
     const h = pct === null ? 6 : Math.max(6, Math.round(pct * 0.01 * 46));
-    const dow = new Date(d.date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'narrow' });
+    const dow = new Date(d.date + 'T00:00:00').toLocaleDateString((window.i18n && i18n.lang) || undefined, { weekday: 'narrow' });
     return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:0">
       <div title="${d.date}: ${d.total ? `${d.done}/${d.total} done` : 'nothing due'}" style="width:100%;max-width:14px;height:46px;display:flex;align-items:flex-end">
         <div style="width:100%;height:${h}px;background:${color};border-radius:3px 3px 0 0"></div>

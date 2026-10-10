@@ -1095,6 +1095,10 @@ db.prepare(`UPDATE shopping_items SET list_id = 1 WHERE list_id IS NULL`).run();
 // section. caldav_url is the deterministic remote object URL an edit re-PUTs to
 // and a delete DELETEs; caldav_push_error being non-null flags a row for the
 // retry sweep.
+// To-Do lists can be linked to a Todoist project or a Google Tasks list (src/todo-lists.js keeps a local mirror, items remember their remote id).
+if (!columnExists('todo_lists', 'source'))     { db.exec(`ALTER TABLE todo_lists ADD COLUMN source TEXT DEFAULT ''`);     console.log('Migrated: added source column to todo_lists'); }
+if (!columnExists('todo_lists', 'remote_id'))  { db.exec(`ALTER TABLE todo_lists ADD COLUMN remote_id TEXT DEFAULT ''`);  console.log('Migrated: added remote_id column to todo_lists'); }
+if (!columnExists('todo_items', 'remote_id'))  { db.exec(`ALTER TABLE todo_items ADD COLUMN remote_id TEXT DEFAULT ''`);  console.log('Migrated: added remote_id column to todo_items'); }
 if (!columnExists('events', 'caldav_uid'))       { db.exec(`ALTER TABLE events ADD COLUMN caldav_uid TEXT`);       console.log('Migrated: added caldav_uid column to events'); }
 if (!columnExists('events', 'caldav_url'))       { db.exec(`ALTER TABLE events ADD COLUMN caldav_url TEXT`);       console.log('Migrated: added caldav_url column to events'); }
 if (!columnExists('events', 'caldav_pushed_at')) { db.exec(`ALTER TABLE events ADD COLUMN caldav_pushed_at TEXT`); console.log('Migrated: added caldav_pushed_at column to events'); }
@@ -1704,6 +1708,7 @@ const defaultSettings = {
   severe_weather_snoozed_events: '{}', // JSON { eventType: untilMs } — quiet until then
   severe_weather_seen: '{}',           // internal: warnings already notified, so an update isn't treated as new
   severe_weather_event_history: '{}',  // internal: event types seen near here lately, for the Settings list
+  severe_weather_event_severity: '{}', // internal: the severity NWS last gave each of those types, so Settings can show which fall below the minimum
   handwriting_enabled: '0',       // 0/1 — show the ✍️ button on the add-event sheet
   myscript_app_key: '',           // MyScript application key
   myscript_hmac_key: '',          // MyScript HMAC key (server-side only, never echoed)
@@ -2700,6 +2705,9 @@ app.use(remoteGate);
 // (harmless overlap); when it's set, this is the only thing serving
 // "/uploads/...", since those files no longer live under public/.
 app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '7d' }));
+// Text files under public/ go out compressed for visitors that accept it (src/static-compress.js); everything else, and anything it declines, is served below as before.
+const staticCompress = require('./src/static-compress.js')({ fs, path, zlib, root: path.join(__dirname, 'public') });
+app.use(staticCompress.middleware);
 app.use(express.static(path.join(__dirname, 'public')));
 // Slave read-only guard — must run before any shared-content route (defined below).
 // Defined in the multi-device section further down; referenced here by hoisted name.
@@ -4049,7 +4057,9 @@ require('./src/kids.js')({ app, db, broadcastUpdate });
 
 // ── Built-in To-Do Lists (fully local, no external account needed) ───────────
 // This code lives in src/todo-lists.js. It runs here, at the same place in the file as before.
-require('./src/todo-lists.js')({ app, db, demoCleanText, broadcastUpdate });
+// The Todoist / Google Tasks modules are created further down, so the to-do lists read them through this holder (filled in right after they exist).
+const linkedProviders = { todoist: null, gtasks: null };
+require('./src/todo-lists.js')({ app, db, demoCleanText, broadcastUpdate, linkedProviders });
 
 // ── Shopping list ────────────────────────────────────────────────────────────
 // This code lives in src/shopping.js. It runs here, at the same place in the file as before.
@@ -4160,6 +4170,14 @@ const { startFlightPolling, ensureStatesBasemap, flightmapWanted, ensureBasemap 
 // Setting keys that hold a credential, a PIN, a private URL or personal
 // contact info. Matched on the key name; see GET /api/settings below.
 const SENSITIVE_SETTING_RE = /(^app_pin|_pin$|_pin_previous$|token|password|_pass$|secret|hmac|_key$|^license_key$|_url$|email|username|_user$)/i;
+
+// What a settings WRITE answers with: the saved settings minus anything secret-shaped. Callers only ever look at a few plain keys (setup_complete, an error), and
+// echoing the whole table back put every stored credential into logs, terminals and proxies on each save (printed in clear in a terminal on 2026-10-08).
+function settingsWriteReply(rows) {
+  const out = {};
+  for (const r of rows) if (!SENSITIVE_SETTING_RE.test(r.key)) out[r.key] = r.value;
+  return out;
+}
 
 // True when this request would have passed requireAuth() on its own merits
 // (no PIN configured, a mirror presenting the host PIN, or a live session) —
@@ -4353,7 +4371,7 @@ app.put('/api/settings', (req, res) => {
     // PUT /api/feeds/:id below, for tier 2.
     markHostEditing();
   }
-  res.json(Object.fromEntries(rows.map(r => [r.key, r.value])));
+  res.json(settingsWriteReply(rows));
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -4455,6 +4473,7 @@ function fetchJSONPost(url, timeoutMs) {
 // and flows host → slave. The role/host-address/identity/update keys stay per-device.
 const LOCAL_ONLY_SETTINGS = new Set([
   'device_role', 'host_lan_address', 'host_ts_address', 'host_port', 'setup_complete',
+  'wifi_powersave_status', 'wifi_powersave_off', 'kiosk_link_status', 'kiosk_link_fix', // what THIS box's Wi-Fi / `kiosk` command housekeeping did (and its opt-outs) - a mirror must not show or inherit the host's
   'remote_access_require_auth', // per-device: whether THIS box demands the remote login from LAN devices
   'remote_alert_mode', 'remote_alert_email', 'remote_known_devices', 'remote_alert_last_sent', 'remote_alert_last_error',   // this box's own alert choices - never synced
   'remote_access_allow_control', 'remote_access_notice', // this box's own remote-access choices - never synced
@@ -4466,7 +4485,7 @@ const LOCAL_ONLY_SETTINGS = new Set([
   'briefing_last_sent',  // per-device: the host tracks its own send; never sync this
                          // or a slave's value could suppress the host's daily send
   'display_res_w', 'display_res_h', 'display_refresh_min',
-  'severe_weather_seen', 'severe_weather_event_history',   // this box's own alert bookkeeping - meaningless on a mirror
+  'severe_weather_seen', 'severe_weather_event_history', 'severe_weather_event_severity',   // this box's own alert bookkeeping - meaningless on a mirror
   'force_real_display', // per-device: one screen's scaling quirk shouldn't force another's preview detection
   'update_server_url', 'auto_push_updates',
   'app_pin_previous',    // this host's own recent PIN history — meaningless on a
@@ -5173,7 +5192,7 @@ async function proxySettingsWrite(req, res, next) {
     }
   }
   const rows = db.prepare(`SELECT key, value FROM settings`).all();
-  res.json(Object.fromEntries(rows.map(r => [r.key, r.value])));
+  res.json(settingsWriteReply(rows));
 }
 
 // Generic proxy of a write request to the host. Handles JSON bodies and multipart
@@ -5646,6 +5665,10 @@ function setSetting(key, value) {
 // This code lives in src/wifi-power.js. It runs here, after setSetting(); it only starts a timer and adds no routes.
 require('./src/wifi-power.js')({ fs, path, os, execFile, DEPLOYMENT, IS_DEMO, getSetting: (k) => getSetting(k), setSetting });
 
+// ── The `kiosk` command: repair a stale root-owned copy (Pi only) ──
+// This code lives in src/kiosk-link.js. It runs here, after setSetting(); it only starts a timer and adds no routes.
+require('./src/kiosk-link.js')({ fs, path, os, execFile, projectDir: __dirname, DEPLOYMENT, IS_DEMO, getSetting: (k) => getSetting(k), setSetting });
+
 // ── Custom theme: background + up to 3 decorations ────────────────────────────
 // This code lives in src/custom-theme-slots.js. It runs here, at the same place in the file as before.
 const { removeCustomThemeFile, copyCustomThemeFile } = require('./src/custom-theme-slots.js')({ path, fs, app, CUSTOM_THEME_DIR, uploadFilePath, uploadCustomBg, uploadCustomDeco, broadcastUpdate, setSetting, updateSetting });
@@ -5680,7 +5703,11 @@ require('./src/layout-api.js')({ app, db, markHostEditing, broadcastUpdate, relo
 
 // ── Todoist proxy — uses personal API token ───────────────────────────────────
 // This code lives in src/todoist.js. It runs here, at the same place in the file as before.
-const { todoistGet } = require('./src/todoist.js')({ path, fetchWithTimeout, app, db });
+// Google Tasks plugs into the Todoist routes below, so it is registered first (src/google-tasks.js).
+const gtasks = require('./src/google-tasks.js')({ crypto, app, broadcastUpdate, resolveUpdateServerUrl, getSetting: (k) => getSetting(k), setSetting, httpsRequest, GOOGLE_TOKEN_URL, getGoogleConfig, formEncode, googleGetAccountEmail });
+const todoistApi = require('./src/todoist.js')({ path, fetchWithTimeout, app, db, gtasks });
+const { todoistGet } = todoistApi;
+linkedProviders.todoist = todoistApi; linkedProviders.gtasks = gtasks;
 
 // ── Home Assistant (Tier 1: read-only Entity Status widget) ──────────────────
 // This code lives in src/ha-core.js. It runs here, at the same place in the file as before.
@@ -6493,7 +6520,7 @@ function fetchUpdateInfo() {
 // different device already claims this email's host slot" apart from "this is
 // the same device re-running setup" — without it, every duplicate-email
 // registration would look identical from the server's side.
-function registerTrialLicense(email) {
+function registerTrialLicense(email, extra = {}) {
   return new Promise((resolve, reject) => {
     const serverUrl = resolveUpdateServerUrl();
     if (!serverUrl) return reject(new Error('No update server configured.'));
@@ -6501,7 +6528,9 @@ function registerTrialLicense(email) {
     const mod = u.protocol === 'https:' ? https : http;
     const deviceId = updateSetting('screen_device_id_cache', '') || '';
     // The household language, so the welcome email with the key is written in it (the central server falls back to English for anything it doesn't know).
-    const body = JSON.stringify({ email, deviceId, lang: updateSetting('ui_language', 'en') });
+    // The optional "how did you hear about us" answer rides along (a short code, plus a few words for "somewhere else"); the central server validates it.
+    const heard = (extra && typeof extra.heardFrom === 'string' && extra.heardFrom) ? { heardFrom: extra.heardFrom.slice(0, 20), heardFromOther: String(extra.heardFromOther || '').slice(0, 100) } : {};
+    const body = JSON.stringify({ email, deviceId, lang: updateSetting('ui_language', 'en'), ...heard });
     const reqOpts = {
       method: 'POST',
       timeout: 10000,
@@ -6636,7 +6665,7 @@ app.post('/api/register-trial', async (req, res) => {
     return res.status(400).json({ error: 'Enter a valid email address.' });
   }
   try {
-    const result = await registerTrialLicense(email);
+    const result = await registerTrialLicense(email, { heardFrom: req.body && req.body.heardFrom, heardFromOther: req.body && req.body.heardFromOther });
     if (result.licenseKey) {
       // Brand-new signup — key comes back directly, same as always. No
       // prior owner to protect for a fresh trial.
@@ -6948,9 +6977,9 @@ sudo tailscale funnel status`,
 // exactly the kind of thing that looks identical to a real bug from the
 // outside, while being invisible to any diagnostic logging added to the
 // app itself, since that logging is inside the very file that's stale.
-function sendCorePage(res, filePath) {
+function sendCorePage(req, res, filePath) {
   res.set('Cache-Control', 'no-store');
-  res.sendFile(filePath);
+  staticCompress.trySend(req, res, filePath, { 'Cache-Control': 'no-store' }).then((done) => { if (!done && !res.headersSent) res.sendFile(filePath); }, () => { if (!res.headersSent) res.sendFile(filePath); });
 }
 
 // Demo lease gate — only active when the pool broker wired this instance up
@@ -7005,10 +7034,10 @@ async function demoLeaseGate(req, res, next) {
     return grant();
   }
 }
-app.get('/', demoLeaseGate, (req, res) => sendCorePage(res, path.join(__dirname, 'public', 'display.html')));
-app.get('/app', demoLeaseGate, (req, res) => sendCorePage(res, path.join(__dirname, 'public', 'app.html')));
-app.get(['/kids', '/chores'], demoLeaseGate, (req, res) => sendCorePage(res, path.join(__dirname, 'public', 'kids.html')));
-app.get('/hub', demoLeaseGate, (req, res) => sendCorePage(res, path.join(__dirname, 'public', 'hub.html')));
+app.get('/', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'display.html')));
+app.get('/app', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'app.html')));
+app.get(['/kids', '/chores'], demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'kids.html')));
+app.get('/hub', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'hub.html')));
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 // A thin wrapper around app.listen. `httpServer` is captured at module scope

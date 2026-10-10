@@ -22,6 +22,7 @@
   <link rel="manifest" href="/app-manifest.json">
   <title>Piazza HQ</title>
 <script src="/js/shared/i18n.js"></script>
+<script src="/js/shared/ha-template-builder.js"></script>
   <!-- Async font loading — see the same fix (and full explanation) in display.html. -->
   <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" onload="this.onload=null;this.rel='stylesheet'">
   <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"></noscript>
@@ -144,6 +145,19 @@
         <label style="color:#cfd6e6;font-size:12px">Email address</label>
         <input id="wiz-email" type="email" placeholder="you@example.com" autocomplete="email" spellcheck="false"
                style="width:100%;box-sizing:border-box;background:#171c2c;border:1px solid #283149;border-radius:10px;padding:13px;color:#fff;font-size:15px;margin:6px 0 4px">
+        <label for="wiz-heard" style="color:#cfd6e6;font-size:12px;display:block;margin-top:12px">How did you hear about Piazza HQ? (optional)</label>
+        <select id="wiz-heard" style="width:100%;box-sizing:border-box;background:#171c2c;border:1px solid #283149;border-radius:10px;padding:13px;color:#fff;font-size:15px;margin:6px 0 4px">
+          <option value="">Choose one…</option>
+          <option value="search">A search engine (Google, Bing…)</option>
+          <option value="reddit">Reddit</option>
+          <option value="youtube">YouTube</option>
+          <option value="social">Facebook, Instagram or another social site</option>
+          <option value="friend">A friend or family member</option>
+          <option value="article">Another website or article</option>
+          <option value="other">Somewhere else</option>
+          <option value="skip">I'd rather not say</option>
+        </select>
+        <input id="wiz-heard-other" type="text" maxlength="100" placeholder="Where? (optional)" autocomplete="off" style="display:none;width:100%;box-sizing:border-box;background:#171c2c;border:1px solid #283149;border-radius:10px;padding:13px;color:#fff;font-size:15px;margin:6px 0 4px">
       </div>
       <div id="wiz-key-mode" style="display:none">
         <label style="color:#cfd6e6;font-size:12px">License key</label>

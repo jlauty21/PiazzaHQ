@@ -22,7 +22,14 @@ nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | while IFS= read -r 
   case "$cur" in 2*|disable*) continue ;; esac
   if nmcli connection modify "$name" 802-11-wireless.powersave 2 2>/dev/null \
      || sudo -n nmcli connection modify "$name" 802-11-wireless.powersave 2 2>/dev/null; then
-    echo "$(date '+%F %T') Wi-Fi power saving switched off for profile: $name (takes effect the next time it connects)"
+    # Also apply it to the connection that is up right now (no reconnect), so it holds from this boot on, not only after the next one. NetworkManager only
+    # allows this from the desktop session, which is where this runs; failure is fine - the profile is saved and takes effect on the next connect.
+    dev="$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | awk -F: -v n="$name" '$1==n {print $2; exit}')"
+    if [[ -n "$dev" ]] && nmcli device reapply "$dev" >/dev/null 2>&1; then
+      echo "$(date '+%F %T') Wi-Fi power saving switched off for profile: $name (applied to the running connection on $dev)"
+    else
+      echo "$(date '+%F %T') Wi-Fi power saving switched off for profile: $name (takes effect the next time it connects)"
+    fi
   else
     echo "$(date '+%F %T') could not switch Wi-Fi power saving off for profile: $name"
   fi

@@ -1,5 +1,5 @@
 function renderSettings_Build_contentMarkup(_c) {
-  const { s, bs, ps, cs, gs, hs, phoneAlerts, haAlerts, notifKinds, notifPrefs, isBeta, hasSupportLinks, supportButtonsHtml, tzOptions } = _c;
+  const { s, bs, ps, cs, gs, gtk, hs, phoneAlerts, haAlerts, notifKinds, notifPrefs, isBeta, hasSupportLinks, supportButtonsHtml, tzOptions } = _c;
   $('content').innerHTML = `
     <div class="settings-search-wrap">
       <input type="text" id="settings-search-input" class="form-input" placeholder="🔍 Search settings — try “time”, “pin”, “weather”…" autocomplete="off">
@@ -435,6 +435,26 @@ function renderSettings_Build_contentMarkup(_c) {
       </div>
     </div>
 
+    <div class="section-header">Google Tasks</div>
+    <div class="settings-card">
+      ${!gtk || gtk.error ? '' : !gtk.configured ? `
+      <div class="settings-row"><div style="font-size:12px;color:var(--muted)">Add your Google client details first (under Calendars, "Google account"), then come back here to connect your tasks.</div></div>
+      ` : gtk.connected ? `
+      <div class="settings-row">
+        <div style="font-size:13px;color:var(--text)">Connected as <strong>${(gtk.email||'').replace(/</g,'&lt;')}</strong>
+          <button id="s-gtasks-disconnect-btn" type="button" style="margin-left:8px;background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;text-decoration:underline">Disconnect</button>
+        </div>
+        <div id="s-gtasks-health" style="font-size:12px;margin-top:6px;min-height:16px;color:var(--muted)"></div>
+        <div style="font-size:12px;color:var(--muted);margin-top:6px">Your Google task lists now appear in the Tasks widget's list picker (Layout &rarr; add or edit a Tasks widget). Tap a task on the display to complete it on Google.</div>
+      </div>
+      ` : `
+      <div class="settings-row">
+        <button id="s-gtasks-connect-btn" type="button" style="background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:9px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer">Connect Google Tasks</button> ${infoBtn("Shows the to-do lists from the Google Tasks app (the checklist in Google Calendar and Gmail) in the display's Tasks widget. Tapping a task there marks it done on Google. Connecting asks only for your tasks, not your calendar.")}
+        <div id="s-gtasks-connect-status" style="font-size:12px;color:var(--muted);margin-top:8px;min-height:16px"></div>
+      </div>
+      `}
+    </div>
+
     <div class="section-header">Home Assistant</div>
     <div class="settings-card">
       <div class="settings-row" style="display:flex;align-items:center;gap:10px">
@@ -639,9 +659,11 @@ function renderSettings_Build_contentMarkup(_c) {
           <option value="Moderate" ${(!s.severe_weather_min_severity||s.severe_weather_min_severity==='Moderate')?'selected':''}>Moderate and up</option>
           <option value="Minor"    ${s.severe_weather_min_severity==='Minor'?'selected':''}>Minor and up (everything)</option>
         </select>
+        <div style="font-size:12px;color:var(--muted);margin-top:6px;line-height:1.4">You are alerted only when <b>both</b> are true: the alert's type is ticked under Alert types below, <b>and</b> the Weather Service rates it at least this severe.</div>
       </div>
       <div class="settings-row" id="s-wxalert-types-row" style="${s.severe_weather_alerts_enabled==='1'?'':'display:none'}">
         <label>Alert types ${infoBtn("Turn off the kinds of alert you don't want. A type that is off never alerts you, whatever its severity - useful for things like Flood Warnings, which the Weather Service rates Severe and re-issues all day. Snooze quiets one type for a while instead. Both apply right away; you don't need to press Save.")}</label>
+        <div style="font-size:12px;color:var(--muted);margin:0 0 6px;line-height:1.4">Each type shows how severe the Weather Service last rated it. Types below your minimum severity are dimmed: they won't alert even while ticked. A type that is unticked never alerts, whatever its severity.</div>
         <div id="wx-types-box" style="font-size:13px;color:var(--muted)">Loading…</div>
       </div>
     </div>

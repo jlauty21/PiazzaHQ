@@ -656,3 +656,52 @@ function renderSettings_Wire_block4388Etc(_c) {
     else showToast('Nothing to sign out of — no PIN or remote password is protecting this device.');
   });
 }
+
+// Google Tasks: its own sign-in (only the tasks permission), same relayed flow as the Calendar one above.
+function renderSettings_Wire_sGoogleTasks() {
+  const btn = $('s-gtasks-connect-btn');
+  if (btn) {
+    btn.addEventListener('click', async () => {
+      const statusEl = $('s-gtasks-connect-status');
+      btn.disabled = true; statusEl.textContent = 'Preparing…';
+      let start;
+      try { start = await apiFetch('/api/google-tasks/connect-start', { method: 'POST', body: '{}' }); }
+      catch { statusEl.textContent = 'Request failed — check your connection.'; btn.disabled = false; return; }
+      if (!start || !start.auth_url) { statusEl.textContent = (start && start.error) || 'Could not start the connection.'; btn.disabled = false; return; }
+      try { window.open(start.auth_url, '_blank', 'noopener'); } catch {}
+      statusEl.innerHTML = `<a href="${start.auth_url}" target="_blank" rel="noopener" style="color:var(--accent)">Open the Google sign-in page</a>, pick the account that has your tasks, and approve.`
+        + `<div style="color:var(--muted);margin-top:6px">Waiting for you to approve…</div>`;
+      const deadline = Date.now() + 15 * 60 * 1000;
+      const poll = async () => {
+        if (!$('s-gtasks-connect-status')) return;
+        if (Date.now() > deadline) { statusEl.textContent = 'Timed out — tap Connect to try again.'; btn.disabled = false; return; }
+        let r;
+        try { r = await apiFetch('/api/google-tasks/connect-poll', { method: 'POST', body: JSON.stringify({ state: start.state }) }); }
+        catch { setTimeout(poll, 3000); return; }
+        if (r.status === 'pending') { setTimeout(poll, 3000); return; }
+        if (r.status === 'connected') { showToast('✓ Google Tasks connected'); await renderSettingsKeepPlace(); return; }
+        statusEl.textContent = r.status === 'denied' ? 'Access was not granted in the Google prompt.' : ('Something went wrong: ' + (r.error || r.status));
+        btn.disabled = false;
+      };
+      setTimeout(poll, 3000);
+    });
+  }
+  // Connected: ask Google for the lists once and say what happened, so a switched-off API is spelled out here instead of the lists just not showing up.
+  if ($('s-gtasks-health')) {
+    $('s-gtasks-health').textContent = 'Checking your Google task lists…';
+    apiFetch('/api/google-tasks?check=1').then((r) => {
+      const el = $('s-gtasks-health'); if (!el) return;
+      if (r && r.problem) { el.style.color = '#e5484d'; el.textContent = r.problem; }
+      else if (r && typeof r.lists === 'number') { el.style.color = 'var(--muted)'; el.textContent = r.lists === 1 ? '1 Google task list found.' : r.lists + ' Google task lists found.'; }
+      else el.textContent = '';
+    }).catch(() => { const el = $('s-gtasks-health'); if (el) el.textContent = ''; });
+  }
+  if ($('s-gtasks-disconnect-btn')) {
+    $('s-gtasks-disconnect-btn').addEventListener('click', async () => {
+      if (!confirm('Disconnect Google Tasks? Tasks widgets that show a Google list will stop updating.')) return;
+      await apiFetch('/api/google-tasks/disconnect', { method: 'POST', body: '{}' });
+      showToast('Google Tasks disconnected');
+      await renderSettingsKeepPlace();
+    });
+  }
+}

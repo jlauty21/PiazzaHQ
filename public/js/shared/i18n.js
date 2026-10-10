@@ -61,7 +61,19 @@
   }
 
   // Translate one piece of text; returns the translation, or null when there is none (so the caller leaves the text alone).
+  // A text made of several UI texts joined by " · " ("Everyone · Every day", "Pictures + words · ⭐ 0"): when the whole is unknown, each piece that IS a known
+  // UI text is translated and the others are kept as they are (names, numbers). A piece must match a catalog entry in full, as with whole texts.
   function translate(cat, raw) {
+    var whole = translateWhole(cat, raw);
+    if (whole != null || !cat || raw == null) return whole;
+    var core = norm(raw);
+    if (!core || core.length > 400 || core.indexOf(' \u00b7 ') < 0) return null;
+    var any = false;
+    var parts = core.split(' \u00b7 ').map(function (p) { var t = translateWhole(cat, p); if (t != null) { any = true; return t.trim(); } return p; });
+    if (!any) return null;
+    return String(raw).match(/^\s*/)[0] + parts.join(' \u00b7 ') + String(raw).match(/\s*$/)[0];
+  }
+  function translateWhole(cat, raw) {
     if (!cat || raw == null) return null;
     var core = norm(raw);
     if (!core || core.length > 1500) return null;

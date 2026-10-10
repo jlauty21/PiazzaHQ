@@ -728,7 +728,7 @@ function renderSettings_wireUpdate() {
       let expiryHtml = '';
       if (accessThrough) {
         const d = new Date(accessThrough);
-        const dateStr = isNaN(d) ? accessThrough : d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+        const dateStr = isNaN(d) ? accessThrough : d.toLocaleDateString((window.i18n && i18n.lang) || undefined, { year: 'numeric', month: 'long', day: 'numeric' });
         const verb = statusRaw === 'active' ? 'Access continues through' : (statusRaw === 'none' ? 'Free access through' : 'Access ends');
         expiryHtml = `<br><span style="color:var(--muted);font-size:12px">${verb} ${dateStr}.</span>`;
       }
@@ -972,7 +972,7 @@ function renderSettings_Wire_loadUpdateBackupsList() {
     }
     const fmtDate = (iso) => {
       if (!iso) return '';
-      try { return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }); }
+      try { return new Date(iso).toLocaleString((window.i18n && i18n.lang) || undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }); }
       catch { return iso; }
     };
     const renderGroup = (title, items) => {

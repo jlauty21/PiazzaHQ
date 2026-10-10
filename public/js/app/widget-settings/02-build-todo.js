@@ -624,9 +624,17 @@ function drawWidgetSettingsPanel_Build_entitystatus(_c) {
         ${w.haEntityId ? `<p style="font-size:11px;color:var(--muted);margin-top:6px">${escapeHtml(w.haEntityId)}</p>` : ''}
       </div>
       <div class="settings-row">
-        <label>Template (optional) ${infoBtn("Write a Home Assistant template and the widget shows what Home Assistant makes of it, for example: {{ states('sensor.washer') | title }} · {{ time_since(states.sensor.washer.last_changed, 2) }}. When this is filled in it replaces the entity control, and you do not need to choose an entity.")}</label>
-        <textarea class="form-input" id="ha-template-input" rows="3" spellcheck="false" autocapitalize="none" placeholder="{{ states('sensor.washer') | title }}" style="font-family:monospace;font-size:13px">${escapeHtml(w.haTemplate || '')}</textarea>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:6px"><button type="button" class="btn-mini" id="ha-template-preview">Preview</button><span id="ha-template-result" style="font-size:12px;color:var(--muted);white-space:pre-line"></span></div>
+        <label>Template wizard (optional) ${infoBtn("Write a Home Assistant template and the widget shows what Home Assistant makes of it. Not sure where to start? Tap Step by step, or Recipes for ready-made ones, and the Insert buttons add the right code for you. Put **double asterisks** around words to make them bold. The display asks Home Assistant again every few seconds. More examples: piazzahq.com/template-cookbook. When this is filled in it replaces the entity control, and you do not need to choose an entity.")}</label>
+        <textarea class="form-input" id="ha-template-input" rows="5" spellcheck="false" autocapitalize="none" placeholder="{{ states('sensor.washer') | title }}" style="font-family:monospace;font-size:13px">${escapeHtml(w.haTemplate || '')}</textarea>
+        <div id="ha-template-tools"></div>
+      </div>
+      <div class="settings-row">
+        <label>Template Alignment ${infoBtn("Which side of the widget the Template text lines up to. Left or Right keeps it snug against one edge, handy in a narrow column or a tight layout.")}</label>
+        <select class="form-input" id="ha-align-select">
+          <option value="center" ${(w.haAlign||'center')==='center'?'selected':''}>Center</option>
+          <option value="left" ${w.haAlign==='left'?'selected':''}>Left</option>
+          <option value="right" ${w.haAlign==='right'?'selected':''}>Right</option>
+        </select>
       </div>
       <div class="settings-row">
         <label>Display Label</label>

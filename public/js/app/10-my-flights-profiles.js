@@ -270,17 +270,20 @@ async function renderWxAlertTypes() {
 
   const muted = new Set(st.muted || []);
   const snoozed = st.snoozed || {};
+  const sevOf = {};
+  (st.recent_events || []).forEach((e) => { if (e.severity) sevOf[e.event] = e.severity; });
+  const SEV_RANK = { Extreme: 4, Severe: 3, Moderate: 2, Minor: 1, Unknown: 0 };
   const recent = (st.recent_events || []).map((e) => e.event);
   const known = (st.known_events || []).filter((e) => recent.indexOf(e) < 0);
   const listed = recent.concat(known);
   // A muted type that is in neither list (e.g. one NWS stopped sending) must survive a save, so keep it in the list too.
   for (const m of muted) if (listed.indexOf(m) < 0) listed.push(m);
   const when = (ms) => {
-    const d = new Date(ms), t = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    return d.toDateString() === new Date().toDateString() ? t : d.toLocaleDateString([], { weekday: "short" }) + " " + t;
+    const d = new Date(ms), t = d.toLocaleTimeString((window.i18n && i18n.lang) || undefined, { hour: "numeric", minute: "2-digit" });
+    return d.toDateString() === new Date().toDateString() ? t : d.toLocaleDateString((window.i18n && i18n.lang) || undefined, { weekday: "short" }) + " " + t;
   };
-  const box1 = (ev) => `<label style="display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer;text-transform:none;letter-spacing:0;font-weight:400;color:var(--text);font-size:13px">
-      <input type="checkbox" class="wx-type-cb" data-event="${escapeHtml(ev)}" ${muted.has(ev) ? "" : "checked"}> <span>${escapeHtml(ev)}</span></label>`;
+  const box1 = (ev) => `<label class="wx-type-row" data-rank="${sevOf[ev] ? SEV_RANK[sevOf[ev]] : ''}" style="display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer;text-transform:none;letter-spacing:0;font-weight:400;color:var(--text);font-size:13px">
+      <input type="checkbox" class="wx-type-cb" data-event="${escapeHtml(ev)}" ${muted.has(ev) ? "" : "checked"}> <span>${escapeHtml(ev)}</span>${sevOf[ev] ? `<span style="margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap">last rated ${escapeHtml(sevOf[ev])}</span>` : ''}<span class="wx-below" style="display:none;font-size:11px;color:#e0a339;white-space:nowrap">below your minimum</span></label>`;
 
   const snoozeLines = Object.keys(snoozed).map((ev) => `<div style="display:flex;gap:10px;align-items:center;font-size:13px;color:var(--text);margin-bottom:4px">
       <span>${escapeHtml(ev)} — quiet until ${escapeHtml(when(snoozed[ev]))}</span>
@@ -288,6 +291,7 @@ async function renderWxAlertTypes() {
   const snoozable = listed.filter((e) => !snoozed[e]);
   const btn = "background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer";
 
+  const wasOpen = Array.from(box.querySelectorAll("details")).map((d) => d.open);   // a redraw must not fold the sections the person is using
   box.innerHTML = `${snoozeLines}
     <details style="margin-top:6px"><summary style="cursor:pointer;font-size:13px;color:var(--text)">Snooze a type for a while</summary>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
@@ -299,6 +303,7 @@ async function renderWxAlertTypes() {
       <div style="font-size:11px;color:var(--muted);margin-top:4px">Quiets every alert of that type, including updates to a warning that is already out.</div>
     </details>
     <details style="margin-top:8px"><summary style="cursor:pointer;font-size:13px;color:var(--text)">Choose which types you get${muted.size ? ` <span style="color:var(--muted)">(${muted.size} turned off)</span>` : ""}</summary>
+      <div style="display:flex;gap:8px;margin-top:8px"><button type="button" class="wx-type-all" data-on="1" style="${btn}">Select all</button><button type="button" class="wx-type-all" data-on="0" style="${btn}">Deselect all</button></div>
       <div style="margin-top:8px">
         ${recent.length ? `<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Seen near you lately</div>${recent.map(box1).join("")}<div style="height:8px"></div>` : ""}
         <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">${recent.length ? "Other types" : "All types"}</div>
@@ -307,14 +312,41 @@ async function renderWxAlertTypes() {
     </details>
     <div id="wx-types-msg" style="font-size:12px;margin-top:6px"></div>`;
 
+  box.querySelectorAll("details").forEach((d, i) => { if (wasOpen[i]) d.open = true; });
   const msg = (t, bad) => { const m = document.getElementById("wx-types-msg"); if (m) { m.textContent = t || ""; m.style.color = bad ? "#ff8585" : "var(--muted)"; } };
   box.querySelectorAll(".wx-type-cb").forEach((cb) => cb.addEventListener("change", async () => {
     const off = Array.from(box.querySelectorAll(".wx-type-cb")).filter((x) => !x.checked).map((x) => x.dataset.event);
     const r = await apiFetch("/api/weather-alerts/muted", { method: "PUT", body: JSON.stringify({ events: off }) });
     if (r && r.error) { cb.checked = !cb.checked; msg(r.error, true); return; }
     showToast(cb.checked ? cb.dataset.event + " alerts on" : cb.dataset.event + " alerts turned off");
-    renderWxAlertTypes();
+    const sum = box.querySelector("details:nth-of-type(2) > summary");
+    if (sum) sum.innerHTML = "Choose which types you get" + (off.length ? ' <span style="color:var(--muted)">(' + off.length + " turned off)</span>" : "");
   }));
+  // Select all / Deselect all: one save for the whole list (the same muted list the single boxes write), put back if it fails.
+  box.querySelectorAll(".wx-type-all").forEach((b) => b.addEventListener("click", async () => {
+    const on = b.dataset.on === "1";
+    const cbs = Array.from(box.querySelectorAll(".wx-type-cb")), was = cbs.map((x) => x.checked);
+    cbs.forEach((x) => { x.checked = on; });
+    const off = on ? [] : cbs.map((x) => x.dataset.event);
+    const r = await apiFetch("/api/weather-alerts/muted", { method: "PUT", body: JSON.stringify({ events: off }) });
+    if (r && r.error) { cbs.forEach((x, i) => { x.checked = was[i]; }); msg(r.error, true); return; }
+    showToast(on ? "All alert types on" : "All alert types turned off");
+    const sum = box.querySelector("details:nth-of-type(2) > summary");
+    if (sum) sum.innerHTML = "Choose which types you get" + (off.length ? ' <span style="color:var(--muted)">(' + off.length + " turned off)</span>" : "");
+  }));
+  const applyMin = () => {
+    const sel = document.getElementById("s-wxalert-severity");
+    const min = SEV_RANK[(sel && sel.value) || st.min_severity || "Moderate"] ?? 2;
+    box.querySelectorAll(".wx-type-row").forEach((row) => {
+      const r = row.dataset.rank === "" ? null : Number(row.dataset.rank);
+      const below = r !== null && r < min;
+      row.style.opacity = below ? "0.55" : "";
+      const tag = row.querySelector(".wx-below");
+      if (tag) tag.style.display = below ? "" : "none";
+    });
+  };
+  applyMin();
+  { const sel = document.getElementById("s-wxalert-severity"); if (sel) sel.onchange = applyMin; }
   box.querySelectorAll(".wx-snooze-go").forEach((b) => b.addEventListener("click", async () => {
     const sel = document.getElementById("wx-snooze-type");
     if (!sel || !sel.value) { msg("Pick a type to snooze.", true); return; }

@@ -199,6 +199,13 @@ function runSetupWizard(s0) {
     });
   }
 
+  // "How did you hear about Piazza HQ?" - optional, sent with the signup. "Somewhere else" opens a small box for a few words.
+  document.getElementById('wiz-heard').addEventListener('change', (e) => {
+    const box = document.getElementById('wiz-heard-other');
+    box.style.display = e.target.value === 'other' ? '' : 'none';
+    if (e.target.value !== 'other') box.value = '';
+  });
+
   async function registerAndFinish() {
     if (keyModeActive) return finishWithDirectKey();
     const emailInput = document.getElementById('wiz-email');
@@ -217,13 +224,13 @@ function runSetupWizard(s0) {
     status.textContent = '';
     conflictCard.style.display = 'none';
     try {
-      const r = await apiFetch('/api/register-trial', { method: 'POST', body: JSON.stringify({ email }) });
+      const r = await apiFetch('/api/register-trial', { method: 'POST', body: JSON.stringify({ email, heardFrom: document.getElementById('wiz-heard').value, heardFromOther: (document.getElementById('wiz-heard-other').value || '').trim() }) });
       if (r && r.error === 'host_conflict') {
         // A real, common setup situation — not a generic failure — gets a
         // real choice UI instead of just an error string. See the card's
         // own HTML comment for why.
         status.textContent = '';
-        const lastSeenTxt = r.otherHostLastSeen ? `, last seen ${new Date(r.otherHostLastSeen).toLocaleDateString()}` : '';
+        const lastSeenTxt = r.otherHostLastSeen ? `, last seen ${new Date(r.otherHostLastSeen).toLocaleDateString((window.i18n && i18n.lang) || undefined)}` : '';
         document.getElementById('wiz-host-conflict-text').textContent =
           `${email} is already registered to another device${lastSeenTxt}. If you're setting up a second real screen for the same household, it should be a Mirror, not a second host.`;
         conflictCard.style.display = 'block';

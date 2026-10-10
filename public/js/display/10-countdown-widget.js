@@ -565,6 +565,11 @@ function haSinceText(iso) {
   try { return new Intl.RelativeTimeFormat((window.i18n && i18n.lang) || undefined, { numeric: 'always', style: 'short' }).format(-n, unit); }
   catch (e) { return n + ' ' + unit + (n === 1 ? '' : 's') + ' ago'; }
 }
+// Template output is plain text, except that **words between double asterisks** are bold. The text is escaped first and only then are the pairs turned into <strong>,
+// so a template can never inject markup. A lone ** stays as typed; a pair never spans a line break.
+function haTemplateHtml(text) {
+  return escapeHtmlD(text).replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
+}
 function haSinceHtml(iso) {
   const txt = haSinceText(iso);
   return txt ? `<div class="ha-since">${escapeHtmlD(txt)}</div>` : '';
@@ -578,8 +583,9 @@ function renderEntityStatus(widget) {
   const tpl = String(w.haTemplate || '').trim();
   if (tpl) {
     const t = (state.haTemplates || {})[tpl];
-    const body = !t ? 'Loading…' : (t.error ? `<span class="no-data">${escapeHtmlD(t.error)}</span>` : escapeHtmlD(t.text));
-    return `<div class="w-entitystatus ha-template-layout" style="${style}">${w.haLabel ? `<div class="ha-label">${escapeHtmlD(w.haLabel)}</div>` : ''}<div class="ha-template">${body}</div></div>`;
+    const body = !t ? 'Loading…' : (t.error ? `<span class="no-data">${escapeHtmlD(t.error)}</span>` : haTemplateHtml(t.text));
+    const alignClass = w.haAlign === 'left' || w.haAlign === 'right' ? ' ha-align-' + w.haAlign : '';
+    return `<div class="w-entitystatus ha-template-layout${alignClass}" style="${style}">${w.haLabel ? `<div class="ha-label">${escapeHtmlD(w.haLabel)}</div>` : ''}<div class="ha-template">${body}</div></div>`;
   }
   if (!w.haEntityId) {
     return `<div class="w-entitystatus" style="${style}"><div class="no-data">Choose an entity in this widget's settings</div></div>`;
@@ -1364,7 +1370,7 @@ function buildSparklineSVG(points, opts) {
   const tickHours = pickSparkTickHours(pxWidth, t0, t1);
   const tickY = padTop + plotH + 3;
   const labelY = tickY + 6;
-  const fmtHour = t => new Date(t).toLocaleTimeString([], { hour: 'numeric' }).replace(' ', '');
+  const fmtHour = t => new Date(t).toLocaleTimeString((window.i18n && i18n.lang) || undefined, { hour: 'numeric' }).replace(' ', '');
   let ticksSvg;
   if (tickHours) {
     const stepMs = tickHours * 3600 * 1000;

@@ -117,6 +117,36 @@ module.exports = function registerHaAreas({ URL, WebSocketClient, app, getSettin
     }
   });
 
+  // GET /api/ha/entity-details/:entityId — one entity with its attributes, for the Template helper's "Inspect" (what can I show from this device?). Unlike the
+  // state route below this is NOT on the public list: it needs the app's own login when a PIN is set. Attributes that could carry a secret or a location are
+  // left out (tokens, passwords, picture/stream addresses, coordinates, network addresses), only plain values are kept (a short list is joined with commas),
+  // and there is a cap on how many and how long.
+  const ATTR_SKIP = /token|password|passwd|secret|credential|entity_picture|stream|url$|ip_address|mac_address|latitude|longitude|gps|ssid|serial/i;
+  app.get('/api/ha/entity-details/:entityId', async (req, res) => {
+    const id = String(req.params.entityId || '');
+    if (!/^[a-z_]+\.[a-z0-9_]+$/.test(id)) return res.status(400).json({ error: 'That is not a device id.' });
+    try {
+      const e = await haRequest('/api/states/' + encodeURIComponent(id));
+      const plain = (v) => v === null || ['string', 'number', 'boolean'].includes(typeof v);
+      const attributes = {};
+      let n = 0;
+      for (const [k, v] of Object.entries(e.attributes || {})) {
+        if (n >= 60) break;
+        if (ATTR_SKIP.test(k)) continue;
+        let val = v;
+        if (!plain(val)) {
+          if (Array.isArray(val) && val.length <= 8 && val.every(plain)) val = val.join(', ');
+          else continue;
+        }
+        attributes[k] = typeof val === 'string' ? val.slice(0, 200) : val;
+        n++;
+      }
+      res.json({ entity_id: e.entity_id, state: e.state, last_changed: e.last_changed || '', attributes });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
   // GET /api/ha/state/:entityId — one entity's current value, for the widget
   // itself. Cached briefly (10s) since multiple displays (or multiple widgets
   // showing the same entity) polling independently could otherwise add up to a

@@ -843,7 +843,7 @@ function buildTimezoneOptions(currentValue) {
 }
 async function renderSettings() {
   const _st = {};
-  const [s, bs, ps, verInfo, supportLinks, cs, gs, hs, haAlertsResp, phoneAlerts, notifPrefsResp] = await Promise.all([
+  const [s, bs, ps, verInfo, supportLinks, cs, gs, hs, haAlertsResp, phoneAlerts, notifPrefsResp, gtk] = await Promise.all([
     apiFetch('/api/settings'),
     apiFetch('/api/briefing-settings'),
     apiFetch('/api/photo-settings'),
@@ -855,6 +855,7 @@ async function renderSettings() {
     apiFetch('/api/ha-alerts').catch(() => ({ alerts: [] })),
     apiFetch('/api/phone-alerts').catch(() => ({ enabled: '0', setup_url: '' })),
     apiFetch('/api/notif-prefs').catch(() => ({ kinds: [], prefs: {} })),
+    apiFetch('/api/google-tasks').catch(() => null),
   ]);
 
   const haAlerts = (haAlertsResp && Array.isArray(haAlertsResp.alerts)) ? haAlertsResp.alerts : [];
@@ -884,7 +885,7 @@ async function renderSettings() {
     supportLinks && supportLinks.paypalUrl ? `<a href="${supportLinks.paypalUrl.replace(/"/g,'&quot;')}" target="_blank" rel="noopener" class="settings-save" style="text-decoration:none;text-align:center;flex:1;min-width:140px;background:var(--card);border:1px solid var(--border);color:var(--text)">PayPal</a>` : '',
   ].filter(Boolean).join('');
   const tzOptions = buildTimezoneOptions(s.timezone_override || '');
-  renderSettings_Build_contentMarkup({ s, bs, ps, cs, gs, hs, phoneAlerts, haAlerts, notifKinds, notifPrefs, isBeta, hasSupportLinks, supportButtonsHtml, tzOptions });
+  renderSettings_Build_contentMarkup({ s, bs, ps, cs, gs, gtk, hs, phoneAlerts, haAlerts, notifKinds, notifPrefs, isBeta, hasSupportLinks, supportButtonsHtml, tzOptions });
   renderSettings_Wire_block1982Etc();
 
   // ── Custom theme: background + up to 3 decorations ───────────────────────────
@@ -1265,6 +1266,7 @@ async function renderSettings() {
     renderSettings_Wire_sGoogleConnectBtn();
   }
   renderSettings_Wire_sGoogleDisconnectBtnEtc();
+  renderSettings_Wire_sGoogleTasks();
 
   // Best-effort local-network scan (see /api/ha/discover's own comments for
   // what it actually tries) — a convenience for the common case, not a

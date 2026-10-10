@@ -30,6 +30,16 @@ let currentTab = getDefaultTab();
 // version bump with no entry here just won't trigger a popup for it,
 // silently (not an error), so it's fine to skip purely-internal versions.
 const RELEASE_NOTES = {
+  '1.92.2': [
+    'New: Home Assistant templates are now easy to write. Under the Template box on an Entity Status widget there is a Template wizard with Step by step, Recipes and Insert buttons, a live preview, plain-English error hints, a device search and an Inspect button that shows a device’s details. Put two asterisks around words to make them bold, and pick Left, Center or Right alignment (Template Alignment). Ready-made recipes include washer and dryer, “Laundry swapped?” (using the washer door), doors open, lights on, who is home, and temperature and humidity. More examples are on piazzahq.com/template-cookbook.',
+    'New: link a Todoist project or a Google Tasks list to the Family Hub To-Do (Family Hub → To-Do → “Link a list”). It works like any other list, including on the wall display. Adding, ticking and deleting items go straight to Todoist or Google, and removing the link never deletes your list there.',
+    'New: Google Tasks in the Tasks widget. Connect it in Settings → Data Sources → Google Tasks, then pick a Google list next to your Todoist projects.',
+    'New: Settings are tidier. Google Tasks and Voice Control (Siri Shortcuts) now sit under Data Sources, and Update Backups under Advanced.',
+    'Severe weather alerts: ticking an alert type no longer folds the section. It is clearer how the alert types and the minimum severity fit together, and there are “Select all” and “Deselect all” buttons.',
+    'Translations: leftover English in German, French and Spanish is now translated, including many error messages.',
+    'Raspberry Pi: the kiosk command always uses the current copy, and Wi-Fi power saving turns off at boot.',
+    'Other minor security and bug improvements.',
+  ],
   '1.92.0': [
     'New: Deutsch, Français and Español. Pick your language on the first setup screen or in Settings → Display. The whole app, the wall display, the kids page and your emails follow it, with local dates, 24-hour time, Monday weeks and your currency. These are first versions, so tell us about any wording that looks off.',
     'New: add a calendar by signing in. In Calendars, choose “Add from your Google account” or “Add from your iCloud account” instead of pasting a link.',
@@ -481,15 +491,46 @@ function wireTodoListsManager() {
     const r = await apiFetch('/api/todo-lists', { method: 'POST', body: JSON.stringify({ name }) });
     if (r && r.error) { showToast('❌ ' + r.error); return; }
     showToast(`List "${name}" added ✓`);
-    renderSettings();
+    renderTodoTab();   // this manager lives on the Family Hub To-Do tab: redraw that tab, not Settings
+  });
+
+  // Link a list that already lives in Todoist or Google Tasks: it then works here like any other list (and on the display), and what you do goes to that service.
+  const linkBtn = document.getElementById('todo-link-btn');
+  if (linkBtn) linkBtn.addEventListener('click', async () => {
+    const panel = document.getElementById('todo-link-panel');
+    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    panel.innerHTML = '<div style="font-size:12px;color:var(--muted)">Loading your lists…</div>';
+    const r = await apiFetch('/api/todoist/projects').catch((e) => ({ error: (e && e.message) || 'Could not load your lists.' }));
+    const already = window._linkedTodoKeys || new Set();
+    const opts = (Array.isArray(r) ? r : []).map((p) => {
+      const google = !!p.google || String(p.id).indexOf('g:') === 0;
+      return { source: google ? 'google' : 'todoist', id: String(p.id), name: google ? String(p.name).replace(/^Google Tasks:\s*/, '') : String(p.name) };
+    }).filter((o) => !already.has(o.source + '|' + o.id));
+    if (!opts.length) {
+      panel.innerHTML = '<div style="font-size:12px;color:var(--muted)">' + (Array.isArray(r) ? 'Every list you have is already linked.' : 'Nothing to link yet. Connect Todoist or Google Tasks first (Settings > Data Sources).' + (r && r.error ? ' (' + escapeHtml(r.error) + ')' : '')) + '</div>';
+      return;
+    }
+    panel.innerHTML = '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Choose a list to link</div>' + opts.map((o, i) =>
+      '<button type="button" class="todo-link-opt" data-i="' + i + '" style="display:flex;justify-content:space-between;gap:10px;width:100%;text-align:left;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:9px 12px;font-size:13px;cursor:pointer;margin-bottom:6px"><span>' + escapeHtml(o.name) + '</span><span style="color:var(--muted)">' + (o.source === 'google' ? 'Google Tasks' : 'Todoist') + '</span></button>').join('');
+    panel.querySelectorAll('.todo-link-opt').forEach((b) => b.addEventListener('click', async () => {
+      const o = opts[Number(b.dataset.i)];
+      b.disabled = true;
+      const res = await apiFetch('/api/todo-lists', { method: 'POST', body: JSON.stringify({ name: o.name, source: o.source, remote_id: o.id }) });
+      if (res && res.error) { b.disabled = false; showToast('❌ ' + res.error); return; }
+      showToast(`Linked "${o.name}" ✓`);
+      renderTodoTab();   // this manager lives on the Family Hub To-Do tab: redraw that tab, not Settings
+    }));
   });
 
   manager.querySelectorAll('.todo-list-del-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
-      if (!confirm(`Delete "${btn.dataset.listName}" and all its items? This can't be undone.`)) return;
+      const linked = btn.dataset.listSource;
+      const svc = linked === 'google' ? 'Google Tasks' : 'Todoist';
+      if (linked ? !confirm(`Remove the link to "${btn.dataset.listName}"? The list in ${svc} stays exactly as it is.`) : !confirm(`Delete "${btn.dataset.listName}" and all its items? This can't be undone.`)) return;
       await apiFetch(`/api/todo-lists/${btn.dataset.listId}`, { method: 'DELETE' });
-      showToast('List deleted ✓');
-      renderSettings();
+      showToast(linked ? 'Link removed ✓' : 'List deleted ✓');
+      renderTodoTab();   // this manager lives on the Family Hub To-Do tab: redraw that tab, not Settings
     });
   });
 
@@ -529,8 +570,9 @@ function wireTodoListsManager() {
   }
 
   async function toggleTodoItemDone(itemId, done) {
-    await apiFetch(`/api/todo-items/${itemId}`, { method: 'PUT', body: JSON.stringify({ done }) });
+    const res = await apiFetch(`/api/todo-items/${itemId}`, { method: 'PUT', body: JSON.stringify({ done }) });
     const row = manager.querySelector(`[data-item-id="${itemId}"]`);
+    if (res && res.error) { showToast('❌ ' + res.error); const cb = row && row.querySelector('.todo-item-done'); if (cb) cb.checked = !done; return; }
     const span = row ? row.querySelector('span') : null;
     if (span) {
       span.style.textDecoration = done ? 'line-through' : '';
@@ -542,7 +584,8 @@ function wireTodoListsManager() {
     const row = manager.querySelector(`[data-item-id="${itemId}"]`);
     const listSection = row ? row.closest('.acc-section') : null;
     const listId = listSection ? listSection.dataset.acc.replace(/^todolist-/, '') : null;
-    await apiFetch(`/api/todo-items/${itemId}`, { method: 'DELETE' });
+    const res = await apiFetch(`/api/todo-items/${itemId}`, { method: 'DELETE' });
+    if (res && res.error) { showToast('❌ ' + res.error); return; }
     if (row) row.remove();
     if (listId) updateTodoListCount(listId);
   }
@@ -720,7 +763,7 @@ async function duplicateDisplayById(id, name) {
 // blocks) into a collapsible accordion. Each header becomes a tappable section;
 // opening one closes the others. "Advanced" sections are tucked behind a toggle.
 const SETTINGS_ICONS = {
-  'General':'🏠', 'Display':'🖥️', 'Photo Widget Defaults':'🖼️', 'Features & Family Hub':'✨', 'Weather':'☀️', 'Calendar Sync':'🔄', 'Todoist':'✅', 'To-Do Lists':'📝',
+  'General':'🏠', 'Display':'🖥️', 'Photo Widget Defaults':'🖼️', 'Features & Family Hub':'✨', 'Weather':'☀️', 'Calendar Sync':'🔄', 'Todoist':'✅', 'Google Tasks':'☑️', 'To-Do Lists':'📝',
   'Stocks':'📈', 'News':'📰', 'Daily Briefing':'✉️', 'Feedback & Ideas':'💬', 'Version & License':'⬆️', 'Security':'🔒', 'Multi-Device':'🖥️', 'Home Assistant':'🏠', 'Home Assistant Control':'🏠', 'Severe Weather Alerts':'⚠️', 'App Preferences':'📱', 'Beta Checklist':'✅',
   'Support the Project':'☕',
   'Push to iCloud Calendar':'📅', 'Push to Google Calendar':'📅', 'Handwriting input':'✍️',
@@ -745,16 +788,19 @@ const SETTINGS_GROUPS = {
   'News':                    'Data Sources',
   'Stocks':                  'Data Sources',
   'Todoist':                 'Data Sources',
+  'Google Tasks':            'Data Sources',
   'Home Assistant':          'Data Sources',
   'Severe Weather Alerts':   'Data Sources',
   'Calendar Sync':           'Data Sources',
   'Push to iCloud Calendar': 'Data Sources',
   'Push to Google Calendar': 'Data Sources',
   'Handwriting input':       'Data Sources',
+  'Voice Control (Siri Shortcuts)': 'Data Sources',
   'Version & License':  'Advanced', // was 'Software Update' — stale after that section got renamed; fixed here too
   'Multi-Device':       'Advanced',
   'Daily Briefing':     'Advanced',
   'Backup':             'Advanced',
+  'Update Backups':     'Advanced',
   'Beta Checklist':     'Advanced',
 };
 // Standalone top-level sections (not part of any named group) that should
@@ -772,7 +818,7 @@ const BOTTOM_ANCHORED_SECTIONS = ['Feedback & Ideas', 'Support the Project'];
 // transformSettingsToAccordion) whenever /api/version reports demo mode.
 const DEMO_HIDDEN_SETTINGS_SECTIONS = new Set([
   'Custom Theme', 'Calendar Sync', 'Push to iCloud Calendar', 'Push to Google Calendar',
-  'Handwriting input', 'Todoist', 'Home Assistant', 'Home Assistant Control', 'Voice Control (Siri Shortcuts)',
+  'Handwriting input', 'Todoist', 'Google Tasks', 'Home Assistant', 'Home Assistant Control', 'Voice Control (Siri Shortcuts)',
   'Daily Briefing', 'Security', 'Feedback & Ideas', 'Multi-Device', 'Version & License',
   'Update Backups', 'Beta Checklist', 'Backup',
 ]);
