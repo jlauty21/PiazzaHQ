@@ -204,8 +204,21 @@ try {
 // Returns the Pi's reachable addresses for the control app: its LAN IP and, if
 // present, its Tailscale IP (100.x). Used by the on-screen control-URL badge so it
 // shows an address other devices can actually use (not "localhost").
+// An address someone typed to say how people reach this server ("host", "host:port", "https://host"): needed when the server cannot see it itself
+// (a container only sees its own private address; a reverse proxy or hostname is invisible to it). Returns { host, port, base } or null.
+function parseReachableOverride(raw) {
+  const s = String(raw || '').trim();
+  const m = s.match(/^(?:(https?):\/\/)?([A-Za-z0-9][A-Za-z0-9._-]*|\[[0-9a-fA-F:]+\])(?::(\d{1,5}))?\/*$/i);
+  if (!m) return null;
+  const scheme = (m[1] || 'http').toLowerCase(), host = m[2], port = m[3] ? Number(m[3]) : null;
+  if (port !== null && (port < 1 || port > 65535)) return null;
+  const shownPort = port !== null ? port : (scheme === 'https' ? null : PORT);
+  return { host, port: shownPort, base: `${scheme}://${host}${shownPort !== null ? ':' + shownPort : ''}` };
+}
 function getReachableAddresses() {
   const result = { lan: null, tailscale: null };
+  let override = null;
+  try { override = parseReachableOverride(getSetting('reachable_address')); } catch { /* settings not ready: detect as usual */ }
   const ifaces = os.networkInterfaces();
   for (const [name, addrs] of Object.entries(ifaces)) {
     for (const a of addrs || []) {
@@ -218,6 +231,12 @@ function getReachableAddresses() {
       }
     }
   }
+  // `preferred` / `port` / `base` are what to hand out in links (the typed address wins over anything detected); `lan` and `tailscale` stay as detected,
+  // except that a typed address is shown as the LAN line so every screen that lists "the address" shows it.
+  if (override) { result.lan = override.host; result.override = true; }
+  result.preferred = override ? override.host : (result.tailscale || result.lan);
+  result.port = override && override.port !== null ? override.port : (override ? null : PORT);
+  result.base = override ? override.base : (result.preferred ? `http://${result.preferred}:${PORT}` : null);
   return result;
 }
 
@@ -471,6 +490,49 @@ db.exec(`
     active     INTEGER DEFAULT 1,   -- 1 = included in the slideshow/background cycle, 0 = uploaded but skipped
     created_at TEXT    DEFAULT (datetime('now'))
   );
+
+  -- Presentations: a deck is an ordered set of page pictures (made in the control app from a PDF or from pictures) shown full screen on a screen.
+  CREATE TABLE IF NOT EXISTS decks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT    NOT NULL,
+    interval_sec INTEGER DEFAULT 10,       -- seconds per page when timed; 0 = by hand only
+    looping      INTEGER DEFAULT 1,        -- 1 = start again after the last page
+    transition   TEXT    DEFAULT 'fade',   -- fade | slide | none
+    fit          TEXT    DEFAULT 'contain',-- contain (whole page shown) | cover (fill the screen)
+    background   TEXT    DEFAULT 'black',  -- black | white | blur (behind a page that does not fill the screen)
+    touch        INTEGER DEFAULT 1,        -- 1 = a tap on the screen steps through it
+    rotation     INTEGER DEFAULT 0,        -- 0 | 90 | 180 | 270 degrees clockwise, for every page that has no turn of its own
+    sort_order   INTEGER DEFAULT 0,
+    created_at   TEXT    DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS deck_pages (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    deck_id      INTEGER NOT NULL,
+    position     INTEGER NOT NULL,
+    filename     TEXT    NOT NULL,         -- uploads/decks/<deck>/p<id>.<ext>
+    thumb        TEXT    DEFAULT '',       -- a small preview of the page
+    duration_sec INTEGER DEFAULT 0,        -- 0 = the deck's own seconds per page
+    rotation     INTEGER DEFAULT -1        -- -1 = turn like the deck; 0 | 90 | 180 | 270 = this page's own turn (clockwise)
+  );
+  CREATE INDEX IF NOT EXISTS idx_deck_pages_deck ON deck_pages (deck_id, position);
+  -- Playlists: presentations and photos one after the other, shown on a screen as one list of pages.
+  CREATE TABLE IF NOT EXISTS playlists (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL,
+    looping    INTEGER DEFAULT 1,
+    touch      INTEGER DEFAULT 1,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT    DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS playlist_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    playlist_id INTEGER NOT NULL,
+    position    INTEGER NOT NULL,
+    kind        TEXT    NOT NULL,        -- deck | photos
+    ref         TEXT    DEFAULT '',      -- a deck id, or a photo tag ('' = all photos in the slideshow)
+    seconds     INTEGER DEFAULT 10       -- seconds per photo (decks use their own timing)
+  );
+  CREATE INDEX IF NOT EXISTS idx_playlist_items ON playlist_items (playlist_id, position);
 
   CREATE TABLE IF NOT EXISTS photo_settings (
     key   TEXT PRIMARY KEY,
@@ -1220,6 +1282,18 @@ if (!columnExists('screens', 'ambient_blur_bg')) {
   db.exec(`ALTER TABLE screens ADD COLUMN ambient_blur_bg TEXT DEFAULT '1'`);
   console.log('Migrated: added ambient_blur_bg column to screens');
 }
+// Automatic photo screensaver (per screen): start after N seconds without a touch, and/or during scheduled hours. The photos come from the screen's own screensaver source.
+if (!columnExists('screens', 'screensaver_idle_sec'))  { db.exec(`ALTER TABLE screens ADD COLUMN screensaver_idle_sec INTEGER DEFAULT 0`);            console.log('Migrated: added screensaver_idle_sec column to screens'); }
+if (!columnExists('screens', 'screensaver_mode'))      { db.exec(`ALTER TABLE screens ADD COLUMN screensaver_mode TEXT DEFAULT 'photo_datetime'`);  console.log('Migrated: added screensaver_mode column to screens'); }
+if (!columnExists('screens', 'screensaver_schedule'))  { db.exec(`ALTER TABLE screens ADD COLUMN screensaver_schedule TEXT DEFAULT '[]'`);            console.log('Migrated: added screensaver_schedule column to screens'); }
+// Presentations: which deck this screen is showing (NULL = none) and how: 'auto' (timed) or 'manual' (stepped by hand).
+if (!columnExists('screens', 'presentation_deck_id')) { db.exec(`ALTER TABLE screens ADD COLUMN presentation_deck_id INTEGER`); console.log('Migrated: added presentation_deck_id column to screens'); }
+// Presentations: turning pages (a PDF page can be on its side). The deck's turn, and a turn of a page's own.
+if (!columnExists('decks', 'rotation'))      { db.exec(`ALTER TABLE decks ADD COLUMN rotation INTEGER DEFAULT 0`);       console.log('Migrated: added rotation column to decks'); }
+if (!columnExists('deck_pages', 'rotation')) { db.exec(`ALTER TABLE deck_pages ADD COLUMN rotation INTEGER DEFAULT -1`); console.log('Migrated: added rotation column to deck_pages'); }
+if (!columnExists('screens', 'presentation_playlist_id')) { db.exec(`ALTER TABLE screens ADD COLUMN presentation_playlist_id INTEGER`); console.log('Migrated: added presentation_playlist_id column to screens'); }
+if (!columnExists('screens', 'presentation_schedule')) { db.exec(`ALTER TABLE screens ADD COLUMN presentation_schedule TEXT DEFAULT '[]'`); console.log('Migrated: added presentation_schedule column to screens'); }
+if (!columnExists('screens', 'presentation_mode'))    { db.exec(`ALTER TABLE screens ADD COLUMN presentation_mode TEXT DEFAULT ''`);   console.log('Migrated: added presentation_mode column to screens'); }
 if (!columnExists('screens', 'ambient_fade_duration')) {
   db.exec(`ALTER TABLE screens ADD COLUMN ambient_fade_duration TEXT DEFAULT '2'`);
   console.log('Migrated: added ambient_fade_duration column to screens');
@@ -2853,7 +2927,7 @@ function markHostEditing(ms = 8000) { HOST_EDITING_UNTIL = Date.now() + ms; }
 // 'screens' is included so that assigning a profile to a remote slave bumps the
 // version — the slave's watcher then re-syncs (and re-registers, learning its new
 // assigned profile) within seconds instead of waiting for the slow timer.
-const SHARED_TOPICS = new Set(['events', 'photos', 'settings', 'photo-settings', 'feeds', 'displays', 'layout', 'screens', 'chores', 'todos', 'shopping', 'favorites', 'reminders', 'profiles', 'messages', 'cameras', 'meals', 'flight_watch']);
+const SHARED_TOPICS = new Set(['events', 'photos', 'settings', 'photo-settings', 'feeds', 'displays', 'layout', 'screens', 'chores', 'todos', 'shopping', 'favorites', 'reminders', 'profiles', 'messages', 'cameras', 'meals', 'flight_watch', 'decks', 'playlists']);
 
 function broadcastUpdate(topic, displayId) {
   if (SHARED_TOPICS.has(topic)) HOST_DATA_VERSION = Date.now();
@@ -4248,6 +4322,11 @@ app.put('/api/settings', (req, res) => {
   for (const k of Object.keys(req.body)) {
     if ((/^remote_access_/.test(k) && k !== 'remote_access_require_auth') || /^remote_(alert_|known_devices)/.test(k)) delete req.body[k];
   }
+  if ('reachable_address' in req.body) {
+    const v = String(req.body.reachable_address || '').trim();
+    if (v && !parseReachableOverride(v)) return res.status(400).json({ error: 'That address does not look right. Use something like 192.168.1.20:3000, piazza.home or https://piazza.example.com.' });
+    req.body.reachable_address = v;
+  }
   // Removing an existing PIN requires re-confirming the CURRENT one first —
   // an active session alone isn't enough for this specific, high-consequence
   // action. A stale or hijacked session could otherwise silently disable PIN
@@ -4495,6 +4574,7 @@ const LOCAL_ONLY_SETTINGS = new Set([
   'theme',              // visual theme can differ per screen
   'assigned_display_slug_remote', // profile the host assigned to this slave
   'display_name',       // each device keeps its own name
+  'reachable_address',  // how people reach THIS box; a mirror at another address must not inherit the host's
   'license_status_cache', 'trial_until_cache', 'limits_cache', 'host_conflict_cache', // each screen
                          // refreshes its own copy on the same schedule
   'no_license_since',    // genuinely per-device — each screen (host or mirror)
@@ -4605,6 +4685,12 @@ function buildSyncSnapshot() {
       // is deliberately NOT synced — each device polls the ADS-B API itself and
       // builds its own trail, same as each device running its own go2rtc.
       flight_watch: tableRows('flight_watch'),
+      // Presentations (decks of page pictures). The picture files travel with the photos (see /api/sync/photos). Guarded with `if (T.x)` on the receiving
+      // side, so a mirror on an older version simply ignores these.
+      decks: tableRows('decks'),
+      deck_pages: tableRows('deck_pages'),
+      playlists: tableRows('playlists'),
+      playlist_items: tableRows('playlist_items'),
     },
   };
 }
@@ -4678,6 +4764,11 @@ app.get('/api/sync/photos', (req, res) => {
   const reminderIcons = db.prepare(`SELECT icon_image FROM reminders WHERE icon_type = 'image' AND icon_image IS NOT NULL`).all();
   for (const r of reminderIcons) {
     if (r.icon_image) files.push(r.icon_image);
+  }
+  // Presentation page pictures and previews (uploads/decks/<id>/<file>).
+  for (const p of db.prepare(`SELECT filename, thumb FROM deck_pages`).all()) {
+    if (p.filename) files.push(p.filename);
+    if (p.thumb) files.push(p.thumb);
   }
   res.json({ files });
 });
@@ -4753,6 +4844,10 @@ const applySyncSnapshot = db.transaction((snap) => {
   if (T.cameras) replaceTable('cameras', T.cameras);
   if (T.meals) replaceTable('meals', T.meals);
   if (T.flight_watch) replaceTable('flight_watch', T.flight_watch);
+  if (T.decks) replaceTable('decks', T.decks);
+  if (T.deck_pages) replaceTable('deck_pages', T.deck_pages);
+  if (T.playlists) replaceTable('playlists', T.playlists);
+  if (T.playlist_items) replaceTable('playlist_items', T.playlist_items);
 });
 
 // Pull any photo image files this slave is missing, so cached photos actually
@@ -4766,15 +4861,29 @@ async function syncPhotoFiles(base) {
     const want = new Set(list.files || []);
     const uploadsDir = UPLOAD_DIR;
     fs.mkdirSync(uploadsDir, { recursive: true });
+    const DECK_FILE = /^decks\/\d+\/[A-Za-z0-9._-]+$/;   // the only sub-folder files that are allowed: presentation pages
     for (const fn of want) {
+      const isDeck = DECK_FILE.test(fn);
       const dest = path.join(uploadsDir, fn);
       if (fs.existsSync(dest)) continue;            // already have it
-      if (fn.includes('/') || fn.includes('..')) continue; // safety
+      if (!isDeck && (fn.includes('/') || fn.includes('..'))) continue; // safety
       try {
-        const buf = await fetchBuffer(`${base}/uploads/${encodeURIComponent(fn)}`, 8000);
-        if (buf && buf.length) fs.writeFileSync(dest, buf);
+        const buf = await fetchBuffer(`${base}/uploads/${isDeck ? fn.split('/').map(encodeURIComponent).join('/') : encodeURIComponent(fn)}`, 15000);
+        if (buf && buf.length) { if (isDeck) fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, buf); }
       } catch { /* skip this file, try others */ }
     }
+    // Remove presentation files the host no longer lists (a deleted deck or page), and folders left empty.
+    try {
+      const decksDir = path.join(uploadsDir, 'decks');
+      if (fs.existsSync(decksDir)) {
+        for (const d of fs.readdirSync(decksDir)) {
+          const dir = path.join(decksDir, d);
+          if (!fs.statSync(dir).isDirectory()) continue;
+          for (const fn of fs.readdirSync(dir)) { if (!want.has(`decks/${d}/${fn}`)) { try { fs.unlinkSync(path.join(dir, fn)); } catch { /* skip */ } } }
+          try { if (!fs.readdirSync(dir).length) fs.rmdirSync(dir); } catch { /* skip */ }
+        }
+      }
+    } catch { /* leave them */ }
     // Remove local files the host no longer references at all.
     try {
       const existing = fs.readdirSync(uploadsDir);
@@ -4907,7 +5016,7 @@ async function registerWithHost(base) {
     } catch {}
     const myName = encodeURIComponent(localName || getSetting('display_name') || 'Screen');
     const addrs = getReachableAddresses();
-    const myAddr = encodeURIComponent((addrs.tailscale || addrs.lan || '') + ':' + PORT);
+    const myAddr = encodeURIComponent((addrs.preferred || '') + ':' + (addrs.port || PORT));
     const reg = await fetchJSONPost(
       `${base}/api/screen-checkin?screen=${myId}&remote=1&name=${myName}&addr=${myAddr}&version=${encodeURIComponent(APP_VERSION)}`, 5000
     );
@@ -4949,11 +5058,13 @@ async function registerWithHost(base) {
       const ambientChanged = changed('ambient_mode');
       const cornerChanged = changed('ambient_clock_corner');
       const fitChanged = changed('ambient_photo_fit');
+      const lookChanged = changed('ambient_fade_transition') || changed('ambient_fade_duration') || changed('ambient_photo_interval') || changed('ambient_blur_bg');
       const tagChanged = changed('screensaver_tag');
       const photoIdChanged = changed('screensaver_photo_id');
+      const saverChanged = changed('screensaver_idle_sec') || changed('screensaver_mode') || changed('screensaver_schedule');
       const orientationChanged = changed('screen_orientation') || changed('screen_rotation');
       const infoCornerChanged = changed('info_corner');
-      const anyChanged = ambientChanged || cornerChanged || fitChanged || tagChanged || photoIdChanged
+      const anyChanged = ambientChanged || cornerChanged || fitChanged || tagChanged || photoIdChanged || saverChanged || lookChanged
         || orientationChanged || infoCornerChanged || changed('tv_control_type') || changed('tv_ip')
         || changed('tv_schedule_on') || changed('tv_schedule_off');
       if (anyChanged) {
@@ -4961,17 +5072,21 @@ async function registerWithHost(base) {
             info_corner = ?, screen_orientation = ?, screen_rotation = ?,
             screensaver_tag = ?, screensaver_photo_id = ?, ambient_mode = ?,
             ambient_clock_corner = ?, ambient_photo_fit = ?,
+            ambient_fade_transition = ?, ambient_fade_duration = ?, ambient_photo_interval = ?, ambient_blur_bg = ?,
+            screensaver_idle_sec = ?, screensaver_mode = ?, screensaver_schedule = ?,
             tv_control_type = ?, tv_ip = ?, tv_schedule_on = ?, tv_schedule_off = ?
           WHERE device_id = ?`)
           .run(c.info_corner, c.screen_orientation, c.screen_rotation, c.screensaver_tag,
                c.screensaver_photo_id, c.ambient_mode, c.ambient_clock_corner, c.ambient_photo_fit,
+               c.ambient_fade_transition === '0' ? '0' : '1', c.ambient_fade_duration || '2', c.ambient_photo_interval || '', c.ambient_blur_bg === '0' ? '0' : '1',
+               Number(c.screensaver_idle_sec) || 0, c.screensaver_mode || 'photo_datetime', c.screensaver_schedule || '[]',
                c.tv_control_type, c.tv_ip, c.tv_schedule_on, c.tv_schedule_off, DEVICE_ID);
         broadcastUpdate('screens');
         // Fire the same LIVE commands the host's own PUT handler already issues for
         // these exact fields — reused here rather than duplicated, so a remote
         // slave's display updates instantly instead of waiting for its next reload.
         if (orientationChanged) sendScreenCommand(DEVICE_ID, 'reload', {});
-        if (tagChanged || photoIdChanged || cornerChanged || fitChanged) {
+        if (tagChanged || photoIdChanged || cornerChanged || fitChanged || saverChanged || lookChanged) {
           sendScreenCommand(DEVICE_ID, 'refresh-photos', {});
         }
         if (ambientChanged) sendScreenCommand(DEVICE_ID, 'set-ambient-mode', { mode: c.ambient_mode || '' });
@@ -5695,6 +5810,7 @@ const { applySavedLayoutToDisplay } = require('./src/layout-library.js')({ app, 
 
 // ── Screens manager ───────────────────────────────────────────────────────────
 // This code lives in src/screens.js. It runs here, at the same place in the file as before.
+require('./src/presentations.js')({ path, fs, app, db, UPLOAD_DIR, multer, broadcastUpdate, sendScreenCommand, DEVICE_ID, PORT, http, URL });
 require('./src/screens.js')({ getReachableAddresses, app, PORT, IS_DEMO, db, broadcastUpdate, sendScreenCommand, SCREEN_ONLINE_MS, DEVICE_ID, getSetting, isSlave, resolveDisplay, previewScreenName, updateSetting });
 
 // ── Layout API ────────────────────────────────────────────────────────────────
@@ -7038,6 +7154,7 @@ app.get('/', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dir
 app.get('/app', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'app.html')));
 app.get(['/kids', '/chores'], demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'kids.html')));
 app.get('/hub', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'hub.html')));
+app.get('/remote', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'remote.html')));   // the presentation remote for phones
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 // A thin wrapper around app.listen. `httpServer` is captured at module scope
@@ -7108,7 +7225,7 @@ function startServer(attempt = 0) {
         // push the same code to each online slave so the whole fleet ends up matching.
         // (If a slave happens to be offline right now, the Displays tab's manual
         // "Push Update" button covers catching it up later.)
-        pushUpdateToSlaves().catch(e => console.error('Auto-push error:', e.message));
+        pushUpdateToSlaves(null, { onlyIfBehind: true }).catch(e => console.error('Auto-push error:', e.message));
       }, 8000);
     }
   });
@@ -7331,7 +7448,10 @@ function buildSelfUpdateZip() {
 // online remote slave. Each slave runs its OWN validate→backup→swap→restart with
 // auto-rollback, so a bad push can't brick a slave. Best-effort and sequential to
 // avoid a thundering herd.
-async function pushUpdateToSlaves(targetDeviceIds = null) {
+// onlyIfBehind (the automatic push after an update): a mirror that has already updated itself from the update server is on this very version, and sending it the
+// same code again only restarts it a second time (seen 2026-10-10: every update restarted a mirror twice about a minute apart, which the fleet list reported as a
+// crash loop). Ask it first and skip it when the versions match. If it cannot be asked it gets the push, as before. The manual "Push Update" button never skips.
+async function pushUpdateToSlaves(targetDeviceIds = null, { onlyIfBehind = false } = {}) {
   if (isSlave()) return { ok: false, error: 'This device is a slave, not a host.' };
   const now = Date.now();
   let slaves = db.prepare(`SELECT * FROM screens WHERE is_remote = 1`).all()
@@ -7339,14 +7459,29 @@ async function pushUpdateToSlaves(targetDeviceIds = null) {
   if (targetDeviceIds) slaves = slaves.filter(s => targetDeviceIds.includes(s.device_id));
   if (!slaves.length) return { ok: true, results: [], note: 'No online slave screens to push to.' };
 
-  let zipPath;
-  try { zipPath = buildSelfUpdateZip(); }
-  catch (e) { return { ok: false, error: 'Could not package the update: ' + e.message }; }
-  const zipBuf = fs.readFileSync(zipPath);
+  // Packaged once, and only when somebody actually needs it (the automatic push often finds every mirror already up to date).
+  let zipPath = null, zipBuf = null;
+  const ensureZip = () => {
+    if (zipBuf) return null;
+    try { zipPath = buildSelfUpdateZip(); zipBuf = fs.readFileSync(zipPath); return null; }
+    catch (e) { return 'Could not package the update: ' + e.message; }
+  };
+  if (!onlyIfBehind) { const why = ensureZip(); if (why) return { ok: false, error: why }; }
 
   const results = [];
   for (const s of slaves) {
     const addr = s.remote_addr.includes(':') ? s.remote_addr : `${s.remote_addr}:${PORT}`;
+    if (onlyIfBehind) {
+      let theirs = null;
+      try { const r = await fetchWithTimeout(`http://${addr}/api/version`, { timeoutMs: 4000 }); theirs = r.ok ? (await r.json()).version : null; } catch { theirs = null; }
+      if (theirs && theirs === APP_VERSION) {
+        console.log(`Push: ${s.name || s.device_id} (${addr}) is already on ${APP_VERSION} - not sending it again.`);
+        results.push({ deviceId: s.device_id, name: s.name || s.device_id, ok: true, skipped: 'already on this version' });
+        continue;
+      }
+    }
+    const packErr = ensureZip();
+    if (packErr) { console.error(`Push: ${packErr}`); results.push({ deviceId: s.device_id, name: s.name || s.device_id, ok: false, error: packErr }); continue; }
     try {
       await postZip(`http://${addr}/api/update`, zipBuf);
       console.log(`Push: sent update to ${s.name || s.device_id} (${addr}).`);
@@ -7356,7 +7491,7 @@ async function pushUpdateToSlaves(targetDeviceIds = null) {
       results.push({ deviceId: s.device_id, name: s.name || s.device_id, ok: false, error: e.message });
     }
   }
-  try { fs.unlinkSync(zipPath); } catch {}
+  if (zipPath) { try { fs.unlinkSync(zipPath); } catch {} }
   return { ok: true, version: APP_VERSION, results };
 }
 
@@ -7367,7 +7502,7 @@ async function pushUpdateToSlaves(targetDeviceIds = null) {
 app.post('/api/push-to-slaves', async (req, res) => {
   if (isSlave()) return res.status(409).json({ error: 'This device is a slave, not a host — only a host can push updates.' });
   const targetIds = Array.isArray(req.body && req.body.deviceIds) && req.body.deviceIds.length ? req.body.deviceIds : null;
-  const result = await pushUpdateToSlaves(targetIds);
+  const result = await pushUpdateToSlaves(targetIds, { onlyIfBehind: !!(req.body && req.body.onlyIfBehind) });
   if (!result.ok) return res.status(500).json(result);
   res.json(result);
 });

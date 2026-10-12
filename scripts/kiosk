@@ -214,7 +214,15 @@ kiosk_on() {
   # Wayland desktop with Xwayland too (labwc): run through Xwayland so the pointer hider, fullscreen guard and F5 reload
   # can reach the browser (see wait-for-server-and-launch-kiosk.sh). PI_CALENDAR_NATIVE_WAYLAND=1 opts out.
   if [[ -n "${WAYLAND_DISPLAY:-}" && -n "${DISPLAY:-}" && "${PI_CALENDAR_NATIVE_WAYLAND:-0}" != "1" ]]; then extra_flags="--ozone-platform=x11"; fi
-  nohup "$bin" $KIOSK_FLAGS $extra_flags "$URL" >/dev/null 2>&1 &
+  # Through the same launcher the boot autostart uses, so a restart (by hand, or the display repair's last resort) comes back with the paint check, the
+  # browser's debug port and the live "is the page still drawing" watch. Started directly, none of those would be running until the next reboot.
+  # PI_CALENDAR_KIOSK_DIRECT=1 starts the browser by itself, as before. Run with bash so it works even where the file's executable bit is missing.
+  local launcher; launcher="$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "$0")")/wait-for-server-and-launch-kiosk.sh"
+  if [[ -f "$launcher" && "${PI_CALENDAR_KIOSK_DIRECT:-0}" != "1" ]]; then
+    nohup bash "$launcher" "$bin" $KIOSK_FLAGS $extra_flags "$URL" >/dev/null 2>&1 &
+  else
+    nohup "$bin" $KIOSK_FLAGS $extra_flags "$URL" >/dev/null 2>&1 &
+  fi
   disown 2>/dev/null || true
   # Restart the cursor-hider too (ignore if not installed). Prefer the Wayland-
   # capable xfixes build if present; fall back to classic unclutter on X11.

@@ -1,0 +1,32 @@
+/* Presentation mode: a full-screen layer over the layout that shows a deck's pages (see public/js/display/13a-presentation.js).
+   z-index 58: above the layout (2) and the photo background, below alert banners (60+) and the settings overlays. */
+#presentation { position:fixed; inset:0; z-index:58; background:#000; overflow:hidden; touch-action:none; user-select:none; -webkit-user-select:none; }
+#presentation[hidden] { display:none; }
+#presentation .pres-stage { position:absolute; inset:0; overflow:hidden; }
+#presentation .pres-slide { position:absolute; inset:0; will-change:opacity, transform; pointer-events:none; }
+#presentation .pres-slide img { position:absolute; inset:0; width:100%; height:100%; display:block; -webkit-user-drag:none; user-select:none; pointer-events:none; }
+#presentation .pres-slide img.pres-main { object-fit:contain; }
+#presentation .pres-slide[data-fit="cover"] img.pres-main { object-fit:cover; }
+#presentation .pres-slide img.pres-blur { object-fit:cover; filter:blur(28px) brightness(0.5); transform:scale(1.15); }
+#presentation[data-bg="white"] { background:#fff; }
+#presentation[data-bg="black"] { background:#000; }
+
+#presentation .pres-controls {
+  position:absolute; left:50%; bottom:3.5vmin; transform:translateX(-50%); display:flex; align-items:center; gap:1.4vmin;
+  padding:1.2vmin 2vmin; border-radius:999px; background:rgba(10,14,26,0.82); color:#e8edf5; backdrop-filter:blur(4px);
+  border:1px solid rgba(255,255,255,0.22); font:600 max(15px,2.4vmin)/1 system-ui,-apple-system,Segoe UI,sans-serif;
+  opacity:0; pointer-events:none; transition:opacity .25s;
+}
+#presentation .pres-controls.shown { opacity:1; pointer-events:auto; }
+#presentation .pres-controls button {
+  background:rgba(255,255,255,0.12); color:inherit; border:none; border-radius:999px; min-width:max(44px,6vmin); height:max(44px,6vmin);
+  font:inherit; cursor:pointer; padding:0 1.6vmin;
+}
+#presentation .pres-controls button:active { background:rgba(255,255,255,0.28); }
+#presentation .pres-controls .pres-count { min-width:6ch; text-align:center; font-variant-numeric:tabular-nums; opacity:.9; }
+#presentation .pres-controls .pres-stop { background:rgba(220,70,70,0.75); }
+#presentation .pres-note { position:absolute; left:50%; top:3vmin; transform:translateX(-50%); padding:1vmin 2vmin; border-radius:999px; background:rgba(10,14,26,0.8); color:#e8edf5;
+  font:600 max(14px,2.2vmin)/1 system-ui,-apple-system,Segoe UI,sans-serif; opacity:0; transition:opacity .3s; pointer-events:none; }
+#presentation .pres-note.shown { opacity:1; }
+body.presenting #floating-switcher { display:none !important; }
+@media (prefers-reduced-motion: reduce) { #presentation .pres-slide { transition:none !important; } }

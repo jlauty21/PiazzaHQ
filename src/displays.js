@@ -99,10 +99,13 @@ module.exports = function registerDisplays({ app, db, seedDefaultLayoutsForDispl
     let ambientFadeDuration = '2';
     let fxScale = '1';
     let fxDensity = '1';
+    let screensaverIdleSec = 0;
+    let screensaverMode = 'photo_datetime';
+    let screensaverSchedule = [];
 
     const deviceId = (req.query.device || req.query.screen || '').toString();
     if (deviceId) {
-      const scr = db.prepare(`SELECT screen_orientation, screen_rotation, screensaver_tag, screensaver_photo_id, ambient_mode, ambient_clock_corner, ambient_photo_fit, ambient_fade_transition, ambient_photo_interval, ambient_blur_bg, ambient_fade_duration, fx_scale, fx_density FROM screens WHERE device_id = ?`).get(deviceId);
+      const scr = db.prepare(`SELECT screen_orientation, screen_rotation, screensaver_tag, screensaver_photo_id, ambient_mode, ambient_clock_corner, ambient_photo_fit, ambient_fade_transition, ambient_photo_interval, ambient_blur_bg, ambient_fade_duration, fx_scale, fx_density, screensaver_idle_sec, screensaver_mode, screensaver_schedule FROM screens WHERE device_id = ?`).get(deviceId);
       if (scr) {
         if (scr.screen_orientation && scr.screen_orientation !== '') force_orientation = scr.screen_orientation;
         if (typeof scr.screen_rotation === 'number' && scr.screen_rotation >= 0) rotation = scr.screen_rotation;
@@ -117,6 +120,9 @@ module.exports = function registerDisplays({ app, db, seedDefaultLayoutsForDispl
         ambientFadeDuration = scr.ambient_fade_duration || '2';
         fxScale = scr.fx_scale || '1';
         fxDensity = scr.fx_density || '1';
+        screensaverIdleSec = Number(scr.screensaver_idle_sec) || 0;
+        screensaverMode = scr.screensaver_mode === 'photo' ? 'photo' : 'photo_datetime';
+        try { const p = JSON.parse(scr.screensaver_schedule || '[]'); if (Array.isArray(p)) screensaverSchedule = p; } catch { /* bad text: no schedule */ }
       }
     }
 
@@ -139,6 +145,9 @@ module.exports = function registerDisplays({ app, db, seedDefaultLayoutsForDispl
       ambientFadeDuration,
       fxScale,
       fxDensity,
+      screensaverIdleSec,
+      screensaverMode,
+      screensaverSchedule,
       customBg: updateSetting('custom_theme_bg', ''),
       customDeco1: updateSetting('custom_theme_deco1', ''),
       customDeco2: updateSetting('custom_theme_deco2', ''),

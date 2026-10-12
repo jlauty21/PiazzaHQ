@@ -127,6 +127,7 @@ function connectLiveUpdates() {
         // it was built with, ignoring a change made while it's actively displayed.
         fetchDisplayConfig().then(() => {
           if (typeof window.setAmbientMode === 'function') window.setAmbientMode(displayConfig.ambientMode || '');
+          if (window.autoScreensaverTick) window.autoScreensaverTick();
         }).then(fetchPhotos).catch(() => {});
       } else if (data.command === 'refresh-floating-switcher') {
         // Floating switcher settings live in /api/screen-config, which
@@ -141,6 +142,10 @@ function connectLiveUpdates() {
         // refresh-floating-switcher. Re-fetch, then re-render the banner so a
         // style/size/position change shows immediately even while one is up.
         resolveAssignedProfile().then(() => { applyAlertBannerConfig(); pollHaAlerts(); }).catch(() => {});
+      } else if (data.command === 'presentation') {
+        if (window.presentationCommand) window.presentationCommand(data);
+      } else if (data.command === 'screensaver-preview') {
+        if (window.autoScreensaverPreview) window.autoScreensaverPreview(Number(data.seconds) || 30);
       } else if (data.command === 'set-ambient-mode') {
         // Instant — no reload, mirrors set-info-corner above. window.setAmbientMode
         // is defined during init(); guard in case this somehow arrives first.
@@ -218,7 +223,10 @@ function connectLiveUpdates() {
         renderLayout();
         applyBackground();
       }
+    } else if (topic === 'decks' || topic === 'playlists') {
+      if (window.presentationDecksChanged) window.presentationDecksChanged();
     } else if (topic === 'photos') {
+      if (window.presentationDecksChanged) window.presentationDecksChanged();
       await fetchPhotos();
       applyBackground();
       renderLayout();
@@ -227,7 +235,8 @@ function connectLiveUpdates() {
       state.photoSettings = await psRes.json();
       startSlideshowTimer();
       applyBackground();
-      renderLayout();
+      if (displayConfig.ambientMode && typeof window.setAmbientMode === 'function') window.setAmbientMode(displayConfig.ambientMode);
+      else renderLayout();
     } else if (topic === 'layout') {
       // Only widget TYPES matter for deciding whether a full data refetch is
       // needed below — position/size changes (the vast majority of Live
@@ -653,7 +662,10 @@ async function init() {
       id: '__ambient_photo', type: 'photo', x: 0, y: 0, w: 100, h: 100, z: 0,
       photoFit: displayConfig.ambientPhotoFit || 'cover',
       photoFadeTransition: displayConfig.ambientFadeTransition !== false,
-      photoInterval: displayConfig.ambientPhotoInterval ? parseInt(displayConfig.ambientPhotoInterval) : null,
+      // Always cycles. The screen's own interval wins; otherwise the global slideshow interval (default 30 s) - whether or not the global slideshow
+      // switch is on, because a screensaver that never changes its photo is not what anyone means by "use global setting".
+      photoInterval: Math.max(5, parseInt(displayConfig.ambientPhotoInterval) || parseInt((state.photoSettings || {}).slideshow_interval) || 30),
+      photoRandomStart: true,   // every time the screensaver comes up it starts on a different photo, not always the first one
       photoAutoBlurBg: displayConfig.ambientBlurBg !== false,
       photoFadeDuration: parseFloat(displayConfig.ambientFadeDuration) || 2,
     };
@@ -670,21 +682,10 @@ async function init() {
     }
     if (mode === 'photo') return [photoWidget];
 
-    // If the real (non-ambient) layout already has a Clock/Date widget, match
-    // its exact position/size/font/color — ambient mode should look like an
-    // extension of what's already there, not something different bolted on. If
-    // one or both are missing, fall back to the chosen corner (Devices tab)
-    // instead, using the same tileOpacity-for-legibility approach either way.
-    const existingClock = (realLayout || []).find(w => w.type === 'clock');
-    const existingDate  = (realLayout || []).find(w => w.type === 'date');
+    // The clock and date sit in the corner chosen for this screen, white on a dimmed tile so they read on any photo.
     const corner = AMBIENT_CORNER_POS[displayConfig.ambientClockCorner] || AMBIENT_CORNER_POS.bl;
-
-    const clockWidget = existingClock
-      ? { ...existingClock, id: '__ambient_clock' }
-      : { id: '__ambient_clock', type: 'clock', x: corner.x, y: corner.y, w: 46, h: 16, z: 1, clockFontPx: 90, textColor: '#ffffff', tileOpacity: 35 };
-    const dateWidget = existingDate
-      ? { ...existingDate, id: '__ambient_date' }
-      : { id: '__ambient_date', type: 'date', x: corner.x, y: corner.y + 16, w: 46, h: 10, z: 1, dateFontPx: 26, textColor: '#ffffff', tileOpacity: 35 };
+    const clockWidget = { id: '__ambient_clock', type: 'clock', x: corner.x, y: corner.y, w: 46, h: 16, z: 1, clockFontPx: 90, textColor: '#ffffff', tileOpacity: 35 };
+    const dateWidget  = { id: '__ambient_date', type: 'date', x: corner.x, y: corner.y + 16, w: 46, h: 10, z: 1, dateFontPx: 26, textColor: '#ffffff', tileOpacity: 35 };
     return [photoWidget, clockWidget, dateWidget];
   }
   let _layoutBeforeAmbient = null;
@@ -717,6 +718,56 @@ async function init() {
     // cleans up anything left over from before switching modes.
     applyBackground();
   };
+  // ── Automatic screensaver (per screen, set in the app: Devices > the screen > Ambient Mode) ──
+  // Uses the ambient photo mode above: after N seconds with no touch or key press, and/or during scheduled hours, the layout is swapped for the
+  // full-screen photo slideshow (this screen's own screensaver source, fit, interval and fade), and any touch or key press brings the layout
+  // back. That first touch only wakes the screen: it is not passed on to whatever is under it. If the app has put the screen in an ambient mode
+  // by hand, that wins and the screensaver stays out of the way; Live Edit and the app's previews are never interrupted.
+  (function initAutoScreensaver() {
+    if (IS_PREVIEW) return;
+    const SCHEDULE_GRACE_MS = 60000;   // inside a scheduled window the photos come back after this long without a touch
+    let lastInput = performance.now(), active = false, ourMode = '', swallowUntil = 0, previewUntil = 0;
+    const hm = (t) => { const m = /^(\d\d):(\d\d)$/.exec(String(t)); return m ? (+m[1]) * 60 + (+m[2]) : null; };
+    function inScheduledWindow(d) {
+      const rules = Array.isArray(displayConfig.screensaverSchedule) ? displayConfig.screensaverSchedule : [];
+      const day = d.getDay(), mins = d.getHours() * 60 + d.getMinutes();
+      for (const r of rules) {
+        const a = hm(r.start), b = hm(r.end);
+        if (a === null || b === null || a === b) continue;
+        const days = Array.isArray(r.days) && r.days.length ? r.days : [0, 1, 2, 3, 4, 5, 6];
+        if (a < b) { if (days.includes(day) && mins >= a && mins < b) return true; }
+        else if ((days.includes(day) && mins >= a) || (days.includes((day + 6) % 7) && mins < b)) return true;   // past midnight: the morning part belongs to the day before
+      }
+      return false;
+    }
+    function wanted() {
+      if (typeof editModeActive !== 'undefined' && editModeActive) return false;
+      if (window.presentationActive && window.presentationActive()) return false;                  // a presentation is up
+      if (displayConfig.ambientMode && !active) return false;                     // chosen by hand in the app: not ours to override
+      if (performance.now() < previewUntil) return true;                          // "Preview now" in the app: shown until touched or the time is up
+      const idleMs = performance.now() - lastInput;
+      if (inScheduledWindow(new Date()) && idleMs >= SCHEDULE_GRACE_MS) return true;
+      const idleSec = Number(displayConfig.screensaverIdleSec) || 0;
+      return idleSec > 0 && idleMs >= idleSec * 1000;
+    }
+    function enter() { ourMode = displayConfig.screensaverMode === 'photo' ? 'photo' : 'photo_datetime'; active = true; window.setAmbientMode(ourMode); }
+    function leave() { const m = ourMode; active = false; ourMode = ''; if (displayConfig.ambientMode === m) window.setAmbientMode(''); }
+    function tick() {
+      if (active && displayConfig.ambientMode !== ourMode) { active = false; ourMode = ''; }   // the app changed the ambient mode while ours was up: stand down
+      const w = wanted();
+      if (w && !active) enter(); else if (!w && active) leave();
+    }
+    ['pointerdown', 'pointerup', 'touchstart', 'touchend', 'mousedown', 'mouseup', 'click', 'keydown'].forEach((type) => window.addEventListener(type, (e) => {
+      const now = performance.now();
+      if (active) { lastInput = now; previewUntil = 0; swallowUntil = now + 700; e.stopPropagation(); if (e.cancelable) e.preventDefault(); leave(); return; }
+      if (now < swallowUntil) { e.stopPropagation(); if (e.cancelable) e.preventDefault(); return; }   // the rest of the wake-up touch
+      lastInput = now;
+    }, { capture: true, passive: false }));
+    window.autoScreensaverMode = () => (active ? ourMode : '');
+    window.autoScreensaverTick = tick;
+    window.autoScreensaverPreview = (sec) => { previewUntil = performance.now() + Math.max(5, sec) * 1000; tick(); };
+    setInterval(tick, 5000);
+  })();
   if (displayConfig.ambientMode) setAmbientMode(displayConfig.ambientMode);
 
   // The other two here (a persistent 30s check-in loop that registers a
@@ -733,6 +784,7 @@ async function init() {
   // the editor show up in Live Preview immediately, instead of needing a
   // manual reload to see it.
   connectLiveUpdates();
+  if (window.presentationBoot) window.presentationBoot();   // go back to the presentation this screen was showing
   if (!IS_PREVIEW) {
     // Backstop online-presence pings (independent of SSE).
     startScreenCheckin();

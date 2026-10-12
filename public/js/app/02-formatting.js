@@ -835,6 +835,193 @@ const FAVORITE_CARD_DEFS = {
       return `<div class="fav-card-link" data-target-tab="displays" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between"><span style="font-weight:600;font-size:12.5px">🖥️ Screens</span><span style="font-size:16px;font-weight:800">${online}/${screens.length} <span style="font-size:11px;font-weight:400;color:var(--muted)">online</span></span></div>`;
     },
   },
+  // One card per screen: a one-tap switch between that screen's normal layout and a full-screen photo frame (the screen's own "Always" photo mode, set in
+  // Devices > the screen > Photo Screensaver). It shows whatever that screen is set to show (photos only, or with the clock) and the photos it is set to use.
+  photo_frame: {
+    label: 'Photo Frame', icon: '🖼️', category: 'Quick actions', needs: ['screens'], configField: 'screen',
+    render(card, data) {
+      const scr = (data.screens || []).find(x => x.device_id === card.config.device_id);
+      if (!scr) return `<p style="font-size:12px;color:var(--muted);margin:0">That screen no longer exists. Remove this card.</p>`;
+      const on = !!scr.ambient_mode;
+      const name = escapeHtml(scr.name || 'Unnamed screen');
+      const note = on ? (scr.online ? 'Showing photos' : 'Offline · Showing photos') : (scr.online ? 'Normal layout' : 'Offline · Normal layout');
+      return `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <div style="min-width:0">
+            <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🖼️ ${name}</div>
+            <div style="font-size:11px;color:var(--muted)">${note}</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            ${on ? '' : `<button class="btn fav-pf-preview" data-id="${scr.device_id}" style="width:auto;margin-top:0;padding:8px 10px;background:var(--card);border:1px solid var(--border)">Preview</button>`}
+            <button class="btn btn-primary fav-pf-toggle" data-id="${scr.device_id}" data-on="${on ? '1' : ''}" style="width:auto;margin-top:0;padding:8px 14px">${on ? 'Back to normal' : 'Show photos'}</button>
+          </div>
+        </div>`;
+    },
+    wire(card, data) {
+      const root = document.querySelector(`.fav-card[data-id="${card.id}"]`);
+      const scr = (data.screens || []).find(x => x.device_id === card.config.device_id);
+      if (!root || !scr) return;
+      const toggle = root.querySelector('.fav-pf-toggle'), preview = root.querySelector('.fav-pf-preview');
+      if (toggle) toggle.addEventListener('click', async () => {
+        toggle.disabled = true;
+        const turnOn = !toggle.dataset.on;
+        const mode = turnOn ? (scr.screensaver_mode === 'photo' ? 'photo' : 'photo_datetime') : '';
+        const r = await apiFetch(`/api/screens/${scr.device_id}`, { method: 'PUT', body: JSON.stringify({ ambient_mode: mode }) });
+        if (r && r.error) { toggle.disabled = false; showToast('❌ ' + r.error); return; }
+        showToast(scr.is_remote ? 'Saved. This screen picks it up within about 30 seconds.' : (turnOn ? 'Showing photos on the screen.' : 'Back to the normal layout.'));
+        renderFavoritesTab();
+      });
+      if (preview) preview.addEventListener('click', async () => {
+        const r = await apiFetch(`/api/screens/${scr.device_id}/screensaver-preview`, { method: 'POST', body: '{}' });
+        if (r && r.error) { showToast('❌ ' + r.error); return; }
+        showToast(r && r.delivered ? 'Showing the photos for a moment. Touch the screen to go back.' : "Couldn't reach this screen from here. A remote screen can't be previewed.");
+      });
+    },
+  },
+  // One card per screen: turn that screen's TV on or off (the TV control set up for it in Devices; the app cannot read the TV's state, so both buttons are always there).
+  tv_power: {
+    label: 'TV Power', icon: '📺', category: 'Quick actions', needs: ['screens'], configField: 'screen', screenFilter: 'tv',
+    render(card, data) {
+      const scr = (data.screens || []).find(x => x.device_id === card.config.device_id);
+      if (!scr) return `<p style="font-size:12px;color:var(--muted);margin:0">That screen no longer exists. Remove this card.</p>`;
+      if (!scr.tv_control_type) return `<div style="font-size:12.5px;font-weight:600">📺 ${escapeHtml(scr.name || 'Unnamed screen')}</div><p style="font-size:12px;color:var(--muted);margin:2px 0 0">TV control isn't set up for this screen. Set it up in Devices, under TV Control.</p>`;
+      return `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <div style="min-width:0">
+            <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📺 ${escapeHtml(scr.name || 'Unnamed screen')}</div>
+            <div style="font-size:11px;color:var(--muted)">${scr.online ? 'TV power' : 'Offline · TV power'}</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <button class="btn btn-primary fav-tv-btn" data-id="${scr.device_id}" data-action="power-on" style="width:auto;margin-top:0;padding:8px 14px">On</button>
+            <button class="btn fav-tv-btn" data-id="${scr.device_id}" data-action="power-off" style="width:auto;margin-top:0;padding:8px 14px;background:var(--card);border:1px solid var(--border)">Off</button>
+          </div>
+        </div>`;
+    },
+    wire(card) {
+      const root = document.querySelector(`.fav-card[data-id="${card.id}"]`);
+      if (!root) return;
+      root.querySelectorAll('.fav-tv-btn').forEach(btn => btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+          const r = await apiFetch(`/api/screens/${btn.dataset.id}/tv/${btn.dataset.action}`, { method: 'POST', body: '{}' });
+          if (r && r.error) showToast('❌ ' + r.error);
+          else showToast(btn.dataset.action === 'power-on' ? 'Power on sent ✓' : 'Power off sent ✓');
+        } catch { showToast('❌ Command failed'); }
+        finally { btn.disabled = false; }
+      }));
+    },
+  },
+  // One card per screen: pick which display profile (layout) that screen shows, from your phone. This only changes which profile the screen is showing;
+  // it never edits the profile or its layout.
+  switch_layout: {
+    label: 'Switch Layout', icon: '🔀', category: 'Quick actions', needs: ['screens', 'displays'], configField: 'screen',
+    render(card, data) {
+      const scr = (data.screens || []).find(x => x.device_id === card.config.device_id);
+      if (!scr) return `<p style="font-size:12px;color:var(--muted);margin:0">That screen no longer exists. Remove this card.</p>`;
+      const displays = data.displays || [];
+      const cur = scr.assigned_display_slug || '';
+      return `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <div style="min-width:0;flex:1">
+            <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🔀 ${escapeHtml(scr.name || 'Unnamed screen')}</div>
+            <div style="font-size:11px;color:var(--muted)">${scr.online ? 'Layout shown' : 'Offline · layout shown'}</div>
+          </div>
+          <select class="form-input fav-layout-select" data-id="${scr.device_id}" style="width:auto;max-width:55%;padding:8px;font-size:13px">
+            <option value="" ${cur === '' ? 'selected' : ''}>Default</option>
+            ${displays.map(d => `<option value="${escapeHtml(d.slug)}" ${cur === d.slug ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}
+          </select>
+        </div>`;
+    },
+    wire(card) {
+      const root = document.querySelector(`.fav-card[data-id="${card.id}"]`);
+      const sel = root && root.querySelector('.fav-layout-select');
+      if (!sel) return;
+      sel.addEventListener('change', async () => {
+        sel.disabled = true;
+        const r = await apiFetch(`/api/screens/${sel.dataset.id}/assign`, { method: 'POST', body: JSON.stringify({ display: sel.value }) });
+        sel.disabled = false;
+        if (r && r.error) { showToast('❌ ' + r.error); return; }
+        showToast(r && r.delivered ? 'Layout switched ✓' : 'Saved. The screen switches when it next connects.');
+      });
+    },
+  },
+  // Types a short note onto the Message Board widget on the displays.
+  send_message: {
+    label: 'Send a Message', icon: '💬', category: 'Quick actions', needs: [],
+    render() {
+      return `
+        <div style="font-weight:600;font-size:12.5px;margin-bottom:6px">💬 Send a Message</div>
+        <div style="display:flex;gap:6px">
+          <input class="form-input fav-msg-input" maxlength="280" placeholder="e.g. Dinner is ready" style="flex:1;padding:8px 10px;font-size:13px">
+          <button class="btn btn-primary fav-msg-btn" style="width:auto;margin-top:0;padding:8px 14px">Send</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Shows on the Message Board widget on your displays.</div>`;
+    },
+    wire(card) {
+      const root = document.querySelector(`.fav-card[data-id="${card.id}"]`);
+      const input = root && root.querySelector('.fav-msg-input'), btn = root && root.querySelector('.fav-msg-btn');
+      if (!input || !btn) return;
+      const send = async () => {
+        const text = input.value.trim();
+        if (!text) return;
+        btn.disabled = true;
+        const r = await apiFetch('/api/messages', { method: 'POST', body: JSON.stringify({ text }) });
+        btn.disabled = false;
+        if (r && r.id) { showToast('💬 Sent'); input.value = ''; }
+        else showToast('❌ ' + ((r && r.error) || 'Could not send'));
+      };
+      btn.addEventListener('click', send);
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+    },
+  },
+  // One card per screen: start a presentation on that screen and step through it (next, previous, play, pause, stop). The decks are made in Photos > Presentations.
+  presentation: {
+    label: 'Presentation', icon: '📽️', category: 'Quick actions', needs: ['screens', 'decks', 'playlists'], configField: 'screen',
+    render(card, data) {
+      const scr = (data.screens || []).find(x => x.device_id === card.config.device_id);
+      if (!scr) return `<p style="font-size:12px;color:var(--muted);margin:0">That screen no longer exists. Remove this card.</p>`;
+      const st = (data.presStates || {})[scr.device_id] || {};
+      const name = escapeHtml(scr.name || 'Unnamed screen');
+      if (st.error) return `<div style="font-size:12.5px;font-weight:600">📽️ ${name}</div><p style="font-size:12px;color:var(--muted);margin:2px 0 0">Can't reach this screen right now.</p>`;
+      if (st.active) {
+        const auto = st.mode === 'auto';
+        return `
+          <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📽️ ${name}</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px"><span class="notranslate">${escapeHtml(st.name || '')}</span> · <span>page ${st.index + 1} of ${st.page_count}</span>${auto ? ' · <span>running by itself</span>' : ''}${st.source === 'schedule' ? ' · <span>scheduled</span>' : ''}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn fav-pr-btn" data-id="${scr.device_id}" data-a="prev" style="width:auto;margin-top:0;padding:8px 14px;background:var(--card);border:1px solid var(--border)">◀</button>
+            <button class="btn fav-pr-btn" data-id="${scr.device_id}" data-a="${auto ? 'pause' : 'play'}" style="width:auto;margin-top:0;padding:8px 14px;background:var(--card);border:1px solid var(--border)">${auto ? '❚❚' : '▶▶'}</button>
+            <button class="btn btn-primary fav-pr-btn" data-id="${scr.device_id}" data-a="next" style="width:auto;margin-top:0;padding:8px 18px">▶</button>
+            <button class="btn fav-pr-btn" data-id="${scr.device_id}" data-a="rotate_left" title="Turn this page a quarter turn to the left" style="width:auto;margin-top:0;padding:8px 14px;background:var(--card);border:1px solid var(--border)">⟲</button>
+            <button class="btn fav-pr-btn" data-id="${scr.device_id}" data-a="rotate" title="Turn this page a quarter turn" style="width:auto;margin-top:0;padding:8px 14px;background:var(--card);border:1px solid var(--border)">⟳</button>
+            <button class="btn fav-pr-btn" data-id="${scr.device_id}" data-a="stop" style="width:auto;margin-top:0;padding:8px 14px;background:var(--card);border:1px solid var(--border);color:#c0392b">■</button>
+          </div>`;
+      }
+      const decks = (data.decks || []).filter(d => d.page_count), lists = (data.playlists || []).filter(p => p.page_count);
+      if (!decks.length && !lists.length) return `<div style="font-size:12.5px;font-weight:600">📽️ ${name}</div><p style="font-size:12px;color:var(--muted);margin:2px 0 0">No presentations yet. Add one in Photos, under Presentations.</p>`;
+      return `
+        <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📽️ ${name}</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${scr.online ? 'Not presenting' : 'Offline · not presenting'}</div>
+        <select class="form-input fav-pr-deck" data-id="${scr.device_id}" style="width:100%;padding:10px;font-size:14px;margin-bottom:8px">${decks.length ? `<optgroup label="Presentations">${decks.map(d => `<option value="deck:${d.id}">${escapeHtml(d.name)}</option>`).join('')}</optgroup>` : ''}${lists.length ? `<optgroup label="Playlists">${lists.map(p => `<option value="playlist:${p.id}">${escapeHtml(p.name)}</option>`).join('')}</optgroup>` : ''}</select>
+        <button class="btn btn-primary fav-pr-btn" data-id="${scr.device_id}" data-a="start" style="margin-top:0;padding:10px">Start</button>`;
+    },
+    wire(card) {
+      const root = document.querySelector(`.fav-card[data-id="${card.id}"]`);
+      if (!root) return;
+      root.querySelectorAll('.fav-pr-btn').forEach(btn => btn.addEventListener('click', async () => {
+        root.querySelectorAll('.fav-pr-btn, .fav-pr-deck').forEach(x => { x.disabled = true; });
+        const was = btn.textContent; if (btn.dataset.a === 'start' || btn.dataset.a === 'stop') btn.textContent = btn.dataset.a === 'start' ? 'Starting…' : 'Stopping…';
+        const body = btn.dataset.a === 'rotate_left' ? { action: 'rotate', by: -90 } : { action: btn.dataset.a };
+        if (body.action === 'start') { const sel = root.querySelector('.fav-pr-deck'); const [k, i] = String(sel ? sel.value : '').split(':'); body.kind = k; body.id = Number(i); }
+        const r = await apiFetch(`/api/screens/${btn.dataset.id}/presentation`, { method: 'POST', body: JSON.stringify(body) });
+        if (!r || r.error || r.__networkError || r.__authFailed || r.__parseError) { root.querySelectorAll('.fav-pr-btn, .fav-pr-deck').forEach(x => { x.disabled = false; }); btn.textContent = was; showToast('❌ ' + ((r && r.error) || 'The command could not be sent.')); return; }
+        if (body.action === 'start') showToast(r && r.delivered ? 'Presenting ✓' : 'Saved. The screen starts when it next connects.');
+        else if (body.action === 'stop') showToast(r && r.delivered ? 'Stopped ✓' : 'Stopped. The screen follows within a few seconds.');
+        setTimeout(renderFavoritesTab, 300);
+        setTimeout(renderFavoritesTab, 1800);
+      }));
+    },
+  },
   kid_shortcut: {
     label: "Kid's Stickers", icon: '🧒', category: 'Shortcuts', needs: ['kids'], configField: 'kid',
     render(card, data) {
@@ -1006,7 +1193,7 @@ const FAVORITE_CARD_DEFS = {
       return `
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
           <span style="font-size:12.5px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${locked?'🔒':'🔓'} ${escapeHtml(ent.friendly_name)} <span style="color:var(--muted);font-weight:400">· ${stText}</span></span>
-          <button class="btn btn-primary fav-lock-btn" data-entity-id="${ent.entity_id}" data-act="${locked?'unlock':'lock'}" style="margin-top:0;padding:8px 14px;flex-shrink:0">${locked?'Unlock':'Lock'}</button>
+          <button class="btn btn-primary fav-lock-btn" data-entity-id="${ent.entity_id}" data-act="${locked?'unlock':'lock'}" style="width:auto;margin-top:0;padding:8px 14px;flex-shrink:0">${locked?'Unlock':'Lock'}</button>
         </div>`;
     },
     wire(card) {
@@ -1166,6 +1353,9 @@ async function renderFavoritesTab() {
   const fetches = [];
   if (needs.has('kids')) fetches.push(apiFetch('/api/chore-chart').then(r => data.chart = r).catch(() => { data.chart = null; }));
   if (needs.has('rewards')) fetches.push(apiFetch('/api/rewards').then(r => data.rewards = r).catch(() => { data.rewards = []; }));
+  if (needs.has('playlists')) fetches.push(apiFetch('/api/playlists').then(r => data.playlists = Array.isArray(r) ? r : []).catch(() => { data.playlists = []; }));
+  if (needs.has('decks')) fetches.push(apiFetch('/api/decks').then(r => data.decks = Array.isArray(r) ? r : []).catch(() => { data.decks = []; }));
+  if (needs.has('displays')) fetches.push(apiFetch('/api/displays').then(r => data.displays = Array.isArray(r) ? r : []).catch(() => { data.displays = []; }));
   if (needs.has('screens')) fetches.push(apiFetch('/api/screens').then(r => data.screens = r).catch(() => { data.screens = []; }));
   if (needs.has('shopping')) fetches.push(apiFetch('/api/shopping-list?list=all').then(r => data.shopping = r).catch(() => { data.shopping = []; }));
   if (needs.has('weather')) fetches.push(apiFetch('/api/weather').then(r => data.weather = r).catch(() => { data.weather = null; }));
@@ -1190,6 +1380,15 @@ async function renderFavoritesTab() {
     data.haThermostats = {};
     await Promise.all(thermoIds.map(id =>
       apiFetch(`/api/ha/state/${encodeURIComponent(id)}`).then(r => { if (r && !r.error) data.haThermostats[id] = r; }).catch(() => {})
+    ));
+  }
+
+  // Presentation cards also need what each of their screens is showing right now.
+  const presIds = [...new Set(favoriteCards.filter(c => c.type === 'presentation' && c.config.device_id).map(c => c.config.device_id))];
+  if (presIds.length) {
+    data.presStates = {};
+    await Promise.all(presIds.map(id =>
+      (() => { const ctl = (typeof AbortController === 'function') ? new AbortController() : null; const timer = ctl ? setTimeout(() => ctl.abort(), 4000) : null; return apiFetch(`/api/screens/${encodeURIComponent(id)}/presentation`, ctl ? { signal: ctl.signal } : {}).then(r => { data.presStates[id] = (r && !r.error && !r.__networkError && !r.__authFailed && !r.__parseError) ? r : { error: 'unreachable' }; }).catch(() => { data.presStates[id] = { error: 'unreachable' }; }).finally(() => { if (timer) clearTimeout(timer); }); })()
     ));
   }
 
@@ -1334,6 +1533,11 @@ function openAddFavoriteCardPicker() {
         openPickKidForFavoriteCard(type);
         return;
       }
+      if (def.configField === 'screen') {
+        closeSheet();
+        openPickScreenForFavoriteCard(type);
+        return;
+      }
       if (def.configField === 'ha_entity' || def.configField === 'ha_scene' || def.configField === 'ha_thermostat'
           || def.configField === 'ha_cover' || def.configField === 'ha_lock' || def.configField === 'ha_media') {
         closeSheet();
@@ -1456,6 +1660,34 @@ async function openPickHaGroupForFavoriteCard(type) {
     closeSheet();
     if (r && r.id) { showToast('Added ✓'); renderFavoritesTab(); }
     else showToast('❌ ' + ((r && r.error) || 'Could not add'));
+  });
+}
+
+// Which screen is this card for? One card per screen, so add the card again for each one you want a switch for.
+async function openPickScreenForFavoriteCard(type) {
+  let screens = [];
+  try { screens = await apiFetch('/api/screens'); } catch {}
+  screens = (Array.isArray(screens) ? screens : []).filter(x => x.name && !String(x.device_id).startsWith('preview_'));
+  if (FAVORITE_CARD_DEFS[type].screenFilter === 'tv') {
+    screens = screens.filter(x => x.tv_control_type);
+    if (!screens.length) { showToast('No screen has TV control yet. Set it up in Devices, under TV Control, first.'); return; }
+  }
+  if (!screens.length) { showToast('No screens yet. Connect a display and give it a name in Devices first.'); return; }
+  showSheet(`
+    <h3 style="margin:0 0 10px">Which screen?</h3>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${screens.map(x => `<button class="fav-screen-pick-btn" data-device-id="${escapeHtml(x.device_id)}" style="display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;cursor:pointer;color:var(--text);font-size:14px;text-align:left"><span style="font-size:20px">🖥️</span><span style="min-width:0"><span style="display:block">${escapeHtml(x.name)}</span><span style="font-size:11px;color:var(--muted)">${x.online ? 'Online' : 'Offline'}${x.is_remote ? ' · mirror' : ''}</span></span></button>`).join('')}
+    </div>
+    <button class="btn" id="fav-screen-pick-cancel" style="width:100%;margin-top:14px;background:var(--card);border:1px solid var(--border)">Cancel</button>
+  `);
+  $('fav-screen-pick-cancel').addEventListener('click', closeSheet);
+  document.querySelectorAll('.fav-screen-pick-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const r = await apiFetch('/api/favorite-cards', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ type, config:{ device_id: btn.dataset.deviceId } }) });
+      closeSheet();
+      if (r && r.id) { showToast('Added ✓'); renderFavoritesTab(); }
+      else showToast('❌ ' + ((r && r.error) || 'Could not add'));
+    });
   });
 }
 

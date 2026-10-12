@@ -30,6 +30,16 @@ let currentTab = getDefaultTab();
 // version bump with no entry here just won't trigger a popup for it,
 // silently (not an error), so it's fine to skip purely-internal versions.
 const RELEASE_NOTES = {
+  '1.92.3': [
+    'New: Presentations. Show a PDF, a slide deck, a menu or a set of pictures full screen on any display. In the app, go to Photos → Presentations and upload a PDF or pictures (from PowerPoint, Keynote or Google Slides, use File → Export → PDF first). Step through by hand, by tapping or swiping the screen, or let it run on its own.',
+    'New: control a presentation from anywhere. Start, step, pause and stop it from the app, from a full-screen controller that turns your phone or tablet into a clicker (with Now and Next previews, big buttons, and an option to open it as soon as you start), or from a simple page at /remote. Add schedules (for example a menu from 11:00 to 14:00 on weekdays) and playlists that chain presentations and photos together.',
+    'New: turn pages. A PDF that comes out sideways can be turned for the whole presentation or one page at a time, and live from the remote, in either direction. Presentations also follow a rotated screen.',
+    'New: an automatic photo screensaver for each screen. In Devices, open a screen, then Photo Screensaver. Show photos when nobody has touched the screen for a while, during scheduled hours, or always (a photo frame), with or without the clock and date. Photos now change on their own, and the clock goes in the corner you pick.',
+    'New Favorites cards: Photo Frame, TV Power, Switch Layout, Send a Message and Presentation (Favorites → + Add a Card → Quick actions).',
+    'Raspberry Pi: a display that stops redrawing now repairs itself, and a mirror no longer restarts twice after an update.',
+    'New setting: Address people use to reach this (Settings, under Timezone), for Docker, Home Assistant add-on or reverse-proxy installs. The setup screen and its QR code now also show an address that phones can reach.',
+    'Other minor security and bug improvements.',
+  ],
   '1.92.2': [
     'New: Home Assistant templates are now easy to write. Under the Template box on an Entity Status widget there is a Template wizard with Step by step, Recipes and Insert buttons, a live preview, plain-English error hints, a device search and an Inspect button that shows a device’s details. Put two asterisks around words to make them bold, and pick Left, Center or Right alignment (Template Alignment). Ready-made recipes include washer and dryer, “Laundry swapped?” (using the washer door), doors open, lights on, who is home, and temperature and humidity. More examples are on piazzahq.com/template-cookbook.',
     'New: link a Todoist project or a Google Tasks list to the Family Hub To-Do (Family Hub → To-Do → “Link a list”). It works like any other list, including on the wall display. Adding, ticking and deleting items go straight to Todoist or Google, and removing the link never deletes your list there.',
@@ -293,9 +303,10 @@ window._infoTexts = {
     Changes apply live — if a banner is currently showing it updates immediately.`,
   'screen-settings-help':
     `Orientation and rotation here follow this physical screen — handy for a TV mounted sideways.<br><br>
-    <b>Screensaver Source</b> picks what this screen's screensaver/photo mode draws from — a tag (cycles through every photo with that tag) or one specific photo (no cycling); tag photos in the Photos tab.<br><br>
-    <b>Display Mode</b> swaps this screen to just its photo (with or without a clock) instead of the usual widgets — takes effect immediately, no reboot.<br><br>
-    If this display's own layout already has a Clock/Date widget, "Photo + time" matches its exact position automatically and the corner picker is just a fallback for when it doesn't. Leave on defaults to inherit/share.`,
+    <b>Photo Screensaver</b> turns this screen into a full-screen photo slideshow.<br><br>
+    <b>When to show photos</b>: <b>Not automatic</b> leaves it off (or only on the scheduled hours below). <b>When nobody touches the screen</b> starts the photos after the time you pick, and any touch brings your calendar back. <b>Always</b> makes this screen a photo frame all the time. <b>Scheduled hours</b> add time ranges (they can run past midnight, and can be limited to weekdays or weekends) when the photos also start, after a minute without a touch.<br><br>
+    <b>What it shows</b>: photos only, or photos with a clock and date in the corner you choose. <b>Photos from</b> picks a tag (every photo with that tag, or all photos) or one specific photo; tag photos in the Photos tab.<br><br>
+    <b>Preview now</b> shows it on the screen straight away so you can check the settings. Changes apply on the screen within seconds, no reboot.`,
   'tv-control-help':
     `<b>CEC</b> needs no setup — it goes out over the same HDMI cable already in use, though input-switching support varies by TV, and many computer monitors don't support CEC at all.<br><br>
     <b>Cut HDMI Signal</b> is for exactly that case: it doesn't ask the display to power off, it just stops sending it a signal and relies on the display's own built-in sleep-on-no-signal behavior — no CEC or network smarts needed, but no input switching either.<br><br>
@@ -327,6 +338,8 @@ window._infoTexts = {
     `Sets how dates read across the whole display — Agenda, Mini Calendar, Tasks due dates, the standalone Date widget, and anywhere else a date shows up. The Date widget also has its own per-widget override in Layout if you want just that one widget to differ from everything else.`,
   'force-real-display-help':
     `Live Editing (tap the screen, then the ✏️ icon, to select/move/resize/delete/edit widgets right on the wall display) only turns off when a URL explicitly includes <code>?preview=1</code> without also including <code>?allowEdit=1</code>. The Layout tab's own Live Edit panel uses this on purpose: its small embedded thumbnail stays glance-only (so it can't accidentally overwrite the real layout), while its "Open to Edit in New Tab" link deliberately allows real editing there. Earlier versions also guessed based on the browser's screen size, which could misfire on a screen with unusual OS-level display scaling; that guessing was removed, so this toggle generally shouldn't be needed anymore. Left here as a per-device safety net in case Live Editing is ever unexpectedly unavailable on a real screen — turning it on here doesn't affect any other screen.`,
+  'reachable-address-help':
+    `Piazza HQ works out its own address to put in the setup screen, its QR code, and links in the daily briefing email. Leave this empty unless that address is wrong: for example when Piazza HQ runs in Docker or as a Home Assistant add-on (it can only see its own private address), or when you reach it through a name like <code>piazza.home</code> or <code>https://piazza.example.com</code>. Type the address the way a phone would, such as <code>192.168.1.20:3000</code>.`,
   'timezone-help':
     `Piazza HQ normally uses the Pi's own system clock for "what day is it" — chore resets, the daily briefing time, and so on — and also uses this zone to convert synced calendar (Google Calendar / ICS) events that arrive in UTC, so their times land correctly. Set this if the Pi's system timezone is ever wrong (e.g. a fresh SD card defaulting to UTC), or if imported calendar events are showing at the wrong time. Leave on <b>Use Pi's system clock</b> otherwise. Every zone is listed with its current UTC offset (and abbreviation like CDT/PST when available) — this updates automatically across Daylight Saving changes, so you don't need to switch zones twice a year.`,
   'custom-theme-help':

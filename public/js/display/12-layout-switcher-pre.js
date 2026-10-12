@@ -695,16 +695,29 @@ async function resolveAssignedProfile() {
 // address other devices can actually use to reach THIS Pi — the LAN IP, plus the
 // Tailscale address if the Pi is on a tailnet — rather than "localhost" (which the
 // kiosk browser loads from and which would be useless to a phone).
+// The address and port to show people for this server's control app. Normally the LAN address the server detected; but inside a container (Docker, the
+// Home Assistant add-on) the server only sees the container's own private address (172.16-31.x.x), which nothing else on the network can reach. When the
+// server's address looks like that and this page was opened by a real address (not localhost), the address the browser actually used is the right one.
+function reachableHostPort(st, loc = window.location) {
+  const r = (st && st.reachable) || {};
+  const loaded = loc.hostname;
+  const loadedReal = loaded && loaded !== 'localhost' && loaded !== '127.0.0.1' && loaded !== '[::1]';
+  const containerOnly = /^172\.(1[6-9]|2\d|3[01])\./.test(r.lan || '');
+  if (r.override && r.base) return { host: r.lan, port: (st && st.reachablePort) || loc.port || '3000', base: r.base };      // someone typed the address in Settings: it wins
+  if (loadedReal && (!r.lan || containerOnly)) return { host: loaded, port: loc.port || '80', base: `http://${loaded}:${loc.port || '80'}` };
+  const host = r.lan || (loadedReal ? loaded : null), port = (st && st.reachablePort) || loc.port || '3000';
+  return { host, port, base: host ? `http://${host}:${port}` : null };
+}
 function applyInfoOverlay(corner) {
   const el = document.getElementById('info-overlay');
   if (!el) return;
   el.classList.remove('corner-tl','corner-tr','corner-bl','corner-br');
   if (!corner) { el.style.display = 'none'; return; }
-  const port = state.reachablePort || window.location.port || '3000';
+  const { host: shownHost, port, base: shownBase } = reachableHostPort(state);
   const r = state.reachable || {};
   // Prefer the LAN IP as the primary line; fall back to the loaded host only if we
   // somehow have no detected address.
-  const primary = r.lan || (window.location.hostname && window.location.hostname !== 'localhost' ? window.location.hostname : null);
+  const primary = shownHost;
   // Small QR code next to each URL — same qrcodejs library and .qr-container
   // convention the QR widget itself uses, so renderQRCodes() (already called
   // after every layout render) picks these up automatically without needing
@@ -718,7 +731,7 @@ function applyInfoOverlay(corner) {
   };
   const lines = [];
   if (primary) {
-    const url = `http://${primary}:${port}/app`;
+    const url = `${shownBase}/app`;
     lines.push(`<div class="io-url-row"><div class="io-url">${url}</div>${qrTag(url)}</div>`);
   }
   if (r.tailscale) {
@@ -987,11 +1000,11 @@ function checkSetupOverlay() {
   const setupDone = !!(state.settings && state.settings.setup_complete === '1');
   if (setupDone) { el.style.display = 'none'; return; }
 
-  const port = state.reachablePort || window.location.port || '3000';
+  const { host: shownHost, port, base: shownBase } = reachableHostPort(state);
   const r = state.reachable || {};
-  const primary = r.lan || (window.location.hostname && window.location.hostname !== 'localhost' ? window.location.hostname : null);
+  const primary = shownHost;
   const urlEl = document.getElementById('setup-needed-url');
-  const primaryUrl = primary ? `http://${primary}:${port}/app` : null;
+  const primaryUrl = primary ? `${shownBase}/app` : null;
   if (urlEl) urlEl.textContent = primaryUrl || 'Address not detected yet — check back in a moment';
   // QR code for the primary URL — same qrcodejs library and .qr-container
   // convention as the corner info-overlay's own QR codes (applyInfoOverlay()
@@ -1050,11 +1063,11 @@ function checkLicenseBlock() {
   const daysSince = Math.floor((Date.now() - noLicenseSince) / 86_400_000);
   if (daysSince < 7) { el.style.display = 'none'; return; }
 
-  const port = state.reachablePort || window.location.port || '3000';
+  const { host: shownHost, port, base: shownBase } = reachableHostPort(state);
   const r = state.reachable || {};
-  const primary = r.lan || (window.location.hostname && window.location.hostname !== 'localhost' ? window.location.hostname : null);
+  const primary = shownHost;
   const urlEl = document.getElementById('license-required-url');
-  const primaryUrl = primary ? `http://${primary}:${port}/app` : null;
+  const primaryUrl = primary ? `${shownBase}/app` : null;
   if (urlEl) urlEl.textContent = primaryUrl || 'Address not detected yet — check back in a moment';
   const qrWrap = document.getElementById('license-required-qr-wrap');
   const qrEl = document.getElementById('license-required-qr');
@@ -1187,6 +1200,9 @@ async function fetchDisplayConfig() {
         ambientFadeDuration: cfg.ambientFadeDuration || '2',
         fxScale: cfg.fxScale || '1',
         fxDensity: cfg.fxDensity || '1',
+        screensaverIdleSec: Number(cfg.screensaverIdleSec) || 0,
+        screensaverMode: cfg.screensaverMode === 'photo' ? 'photo' : 'photo_datetime',
+        screensaverSchedule: Array.isArray(cfg.screensaverSchedule) ? cfg.screensaverSchedule : [],
         ambientMode: cfg.ambientMode || '',
         customBg: cfg.customBg || '',
         customDeco1: cfg.customDeco1 || '',
@@ -1196,6 +1212,8 @@ async function fetchDisplayConfig() {
         customDeco2Behavior: cfg.customDeco2Behavior || 'random',
         customDeco3Behavior: cfg.customDeco3Behavior || 'random',
       };
+      // an automatic screensaver that is showing right now stays showing across a config refresh (its mode is not the app's ambient setting)
+      try { const m = window.autoScreensaverMode && window.autoScreensaverMode(); if (m) displayConfig.ambientMode = m; } catch {}
     });
   } catch (e) {
     console.error('fetchDisplayConfig failed after retries — keeping current/default config:', e);

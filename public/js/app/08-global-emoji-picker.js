@@ -1489,6 +1489,7 @@ async function renderSettings() {
       date_format: $('s-date-format') ? $('s-date-format').value : 'us_long',
       ...($('s-currency') ? { currency: $('s-currency').value } : {}),
       timezone_override: $('s-timezone') ? $('s-timezone').value : '',
+      ...($('s-reachable-address') ? { reachable_address: $('s-reachable-address').value.trim() } : {}),
       chores_enabled: ($('s-chores-enabled') && $('s-chores-enabled').checked) ? '1' : '0',
       todo_enabled: ($('s-todo-enabled') && $('s-todo-enabled').checked) ? '1' : '0',
       shopping_enabled: ($('s-shopping-enabled') && $('s-shopping-enabled').checked) ? '1' : '0',

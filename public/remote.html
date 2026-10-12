@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="google" content="notranslate"><!-- the app translates itself (see js/shared/i18n.js); Chrome must not offer to translate it as well -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Presentation Remote</title>
+<script src="/js/shared/i18n.js"></script>
+<meta name="theme-color" content="#1b2340">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<style>
+  :root { --bg:#0f1320; --card:#1b2133; --text:#eef2fb; --muted:#9aa6c0; --accent:#4A90D9; --line:rgba(255,255,255,0.1); --danger:#e0584c; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; min-height:100%; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+  body { padding:env(safe-area-inset-top) 14px 28px; max-width:560px; margin:0 auto; }
+  .back { display:inline-block; margin-top:14px; padding:10px 14px 10px 0; color:var(--accent); font-weight:600; font-size:16px; text-decoration:none; }
+  h1 { font-size:20px; margin:4px 0 4px; }
+  .sub { font-size:13px; color:var(--muted); margin:0 0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px 16px; margin-bottom:14px; }
+  .name { font-weight:700; font-size:16px; margin-bottom:2px; }
+  .state { font-size:13px; color:var(--muted); margin-bottom:12px; }
+  .row { display:flex; gap:8px; }
+  button, select { font:inherit; color:var(--text); border:1px solid var(--line); background:#262d44; border-radius:12px; min-height:52px; padding:0 14px; }
+  button { cursor:pointer; flex:1; font-size:20px; font-weight:700; }
+  button:active { background:#323b5a; }
+  button.big { min-height:76px; font-size:30px; }
+  button.go { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.stop { color:var(--danger); }
+  button[disabled] { opacity:.45; }
+  select { width:100%; font-size:16px; margin-bottom:10px; }
+  .pill { display:inline-block; font-size:11px; font-weight:700; background:rgba(255,255,255,0.12); border-radius:999px; padding:2px 8px; margin-left:6px; vertical-align:middle; }
+  #msg { text-align:center; color:var(--muted); padding:26px 8px; font-size:14px; }
+  input[type=password], input[type=tel] { width:100%; font-size:22px; letter-spacing:6px; text-align:center; min-height:56px; border-radius:12px; border:1px solid var(--line); background:#262d44; color:var(--text); margin:10px 0; }
+  .err { color:var(--danger); font-size:13px; min-height:18px; text-align:center; }
+</style>
+</head>
+<body>
+<a class="back" href="/app">‹ Piazza HQ</a>
+<h1>Presentation Remote</h1>
+<p class="sub">Start a presentation on a screen and step through it from your phone.</p>
+<div id="pin" class="card" style="display:none">
+  <div class="name">Enter the PIN</div>
+  <div class="state">This is the same PIN as the Piazza HQ app.</div>
+  <input id="pin-input" type="password" inputmode="numeric" autocomplete="off" maxlength="12">
+  <button id="pin-go" class="go" style="width:100%">Unlock</button>
+  <div id="pin-err" class="err"></div>
+</div>
+<div id="msg">Loading…</div>
+<div id="screens"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+let token = ''; try { token = localStorage.getItem('pi_cal_token') || ''; } catch { /* no storage */ }
+let screens = [], decks = [], lists = [], states = {}, timer = null, pending = {}, lastAct = {}, polling = false;
+const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const api = async (path, opts = {}) => {
+  const { timeout, ...rest } = opts;
+  const ctl = timeout && typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), timeout) : null;
+  try {
+    const res = await fetch(path, { cache: 'no-store', ...rest, ...(ctl ? { signal: ctl.signal } : {}), headers: { 'Content-Type': 'application/json', ...(token ? { 'x-session-token': token } : {}), ...(rest.headers || {}) } });
+    if (res.status === 401) { const e = new Error('locked'); e.locked = true; throw e; }
+    return await res.json();
+  } finally { if (timer) clearTimeout(timer); }
+};
+
+async function start() {
+  try {
+    const st = await (await fetch('/api/auth/status', { headers: token ? { 'x-session-token': token } : {} })).json();
+    if (st.pin_set && !st.authenticated) { $('msg').style.display = 'none'; $('pin').style.display = 'block'; return; }
+  } catch { /* try anyway */ }
+  $('pin').style.display = 'none';
+  await load();
+  timer = setInterval(() => { if (document.hidden || polling) return; polling = true; poll().finally(() => { polling = false; }); }, 2500);   // one round at a time, none in the background
+}
+$('pin-go').addEventListener('click', async () => {
+  $('pin-err').textContent = '';
+  const r = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: $('pin-input').value }) });
+  const d = await r.json();
+  if (d.ok) { token = d.token || ''; try { if (token) localStorage.setItem('pi_cal_token', token); } catch { /* not kept */ } $('msg').style.display = ''; $('msg').textContent = 'Loading…'; start(); }
+  else $('pin-err').textContent = d.error || 'Incorrect PIN';
+});
+$('pin-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('pin-go').click(); });
+
+async function load() {
+  try {
+    [screens, decks, lists] = await Promise.all([api('/api/screens'), api('/api/decks'), api('/api/playlists')]);
+  } catch (e) { if (e.locked) { start(); return; } $('msg').textContent = 'Could not reach the server.'; return; }
+  screens = (Array.isArray(screens) ? screens : []).filter((s) => s.name && s.online && !String(s.device_id).startsWith('preview_'));   // a screen that is off is not worth listing
+  decks = (Array.isArray(decks) ? decks : []).filter((d) => d.page_count); lists = (Array.isArray(lists) ? lists : []).filter((p) => p.page_count);
+  if (!screens.length) { $('msg').textContent = 'No screens are on right now. Connect a display and give it a name in the Piazza HQ app first.'; return; }
+  if (!decks.length && !lists.length) { $('msg').textContent = 'No presentations yet. Add one in the Piazza HQ app, under Photos, then Presentations.'; return; }
+  $('msg').style.display = 'none';
+  render(true);
+  poll();                                                                                       // not awaited: each screen fills in as its answer arrives
+}
+async function poll() {
+  await Promise.all(screens.map((s) => { const t0 = Date.now(); return api(`/api/screens/${encodeURIComponent(s.device_id)}/presentation`, { timeout: 4000 }).then((r) => ({ r })).catch(() => ({ r: null })).then((x) => { if ((lastAct[s.device_id] || 0) > t0) return; states[s.device_id] = x.r && !x.r.error ? x.r : { error: true }; render(); }); }));   // a read that began before a command is out of date; each screen is drawn as soon as it answers
+}
+const options = () => (decks.length ? `<optgroup label="Presentations">${decks.map((d) => `<option value="deck:${d.id}">${esc(d.name)}</option>`).join('')}</optgroup>` : '') + (lists.length ? `<optgroup label="Playlists">${lists.map((p) => `<option value="playlist:${p.id}">${esc(p.name)}</option>`).join('')}</optgroup>` : '');
+let lastSig = '', pressAt = 0;
+document.addEventListener('pointerdown', () => { pressAt = Date.now(); }, true);
+function render(force) {
+  const el = $('screens');
+  const sig = JSON.stringify([screens.map((s) => [s.device_id, s.name]), states, pending, decks.map((d) => d.id), lists.map((p) => p.id)]);
+  if (!force) {
+    if (sig === lastSig) return;                                                                      // nothing changed: leave the buttons alone
+    if (Date.now() - pressAt < 1500) return;                                                          // a finger is on or just left a button
+    if (el.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') return;   // do not pull a menu from under a finger
+  }
+  lastSig = sig;
+  el.innerHTML = screens.map((s) => {
+    const st = states[s.device_id] || {}, id = esc(s.device_id), pend = pending[s.device_id], dis = pend ? ' disabled' : '';
+    let body;
+    if (!states[s.device_id]) body = `<div class="state">Checking…</div>`;
+    else if (st.error) body = `<div class="state">Can't reach this screen right now.</div>`;
+    else if (st.active) {
+      const auto = st.mode === 'auto';
+      body = `<div class="state"><span class="notranslate">${esc(st.name)}</span> · <span>page ${st.index + 1} of ${st.page_count}</span> · <span>${auto ? 'running by itself' : 'stepping by hand'}</span>${st.source === 'schedule' ? '<span class="pill">scheduled</span>' : ''}</div>
+        <div class="row" style="margin-bottom:8px"><button class="big" data-a="prev" data-id="${id}"${dis} aria-label="Previous page">◀</button><button class="big go" data-a="next" data-id="${id}"${dis} aria-label="Next page">▶</button></div>
+        <div class="row"><button data-a="${auto ? 'pause' : 'play'}" data-id="${id}"${dis}>${auto ? '❚❚ Pause' : '▶ Play'}</button><button data-a="rotate_left" data-id="${id}"${dis} aria-label="Turn left">⟲</button><button data-a="rotate" data-id="${id}"${dis} aria-label="Turn right">⟳</button><button class="stop" data-a="stop" data-id="${id}"${dis}>■ Stop</button></div>`;
+    } else {
+      body = `<div class="state">Not presenting</div><select data-id="${id}"${dis} class="target">${options()}</select><button class="go" data-a="start" data-id="${id}"${dis} style="width:100%">▶ Start</button>`;
+    }
+    return `<div class="card"><div class="name">🖥️ ${esc(s.name)}</div>${pend ? `<div class="state" style="color:var(--accent)">${pend}</div>` : ''}${body}</div>`;
+  }).join('');
+  el.querySelectorAll('button[data-a]').forEach((b) => b.addEventListener('click', () => act(b.dataset.id, b.dataset.a, el)));
+}
+async function act(id, a, el) {
+  if (pending[id]) return;
+  const body = a === 'rotate_left' ? { action: 'rotate', by: -90 } : { action: a };
+  if (a === 'start') { const sel = el.querySelector(`select[data-id="${CSS.escape(id)}"]`); const [kind, i] = String(sel ? sel.value : '').split(':'); if (!kind) return; body.kind = kind; body.id = Number(i); }
+  if (a === 'start' || a === 'stop') { pending[id] = a === 'start' ? 'Starting…' : 'Stopping…'; render(true); }
+  lastAct[id] = Date.now();
+  try {
+    const r = await api(`/api/screens/${encodeURIComponent(id)}/presentation`, { method: 'POST', body: JSON.stringify(body), timeout: 12000 });
+    if (r && r.state) states[id] = r.state;
+    if (r && r.error) flash('❌ ' + r.error);
+    else if (a === 'start') flash(r && r.delivered ? 'Presenting ✓' : 'Saved. The screen starts when it next connects.');
+    else if (a === 'stop') flash(r && r.delivered ? 'Stopped ✓' : 'Stopped. The screen follows within a few seconds.');
+  } catch { flash('❌ The command could not be sent.'); }
+  delete pending[id]; lastAct[id] = Date.now(); render(true);
+  setTimeout(poll, 1500);                                                                        // confirm with a fresh read
+}
+let flashTimer = null;
+function flash(text) { const m = $('msg'); m.style.display = ''; m.textContent = text; clearTimeout(flashTimer); flashTimer = setTimeout(() => { m.style.display = 'none'; }, 3000); }
+start();
+</script>
+</body>
+</html>

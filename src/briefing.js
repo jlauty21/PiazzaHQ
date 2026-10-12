@@ -272,7 +272,7 @@ module.exports = function registerBriefing({ path, fs, crypto, nodemailer, PORT,
     // it for both rather than special-casing email vs. preview.
     const briefingBaseUrl = (() => {
       const addrs = getReachableAddresses();
-      return `http://${addrs.tailscale || addrs.lan || 'localhost'}:${PORT}`;
+      return addrs.base || `http://localhost:${PORT}`;
     })();
     const remindersHtml = content.dueReminders.map(r => {
       const iconHtml = r.icon_type === 'image' && r.icon_image

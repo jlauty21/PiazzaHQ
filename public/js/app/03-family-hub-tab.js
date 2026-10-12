@@ -833,6 +833,7 @@ async function renderIcloudAddCard(getColor, feeds) {
 
 // ── Photos ────────────────────────────────────────────────────────────────────
 async function renderPhotos() {
+  if (typeof photosSubtab === 'function' && photosSubtab() === 'presentations') return renderPresentations();   // the Photos / Presentations switch
   const photos = await apiFetch('/api/photos');
   let album = null;
   try { album = await apiFetch('/api/photo-album'); } catch (e) { album = null; }
@@ -933,6 +934,7 @@ async function renderPhotos() {
   }
 
   $('content').innerHTML = `
+    ${typeof photosSubtabBar === 'function' ? photosSubtabBar('photos') : ''}
     <div class="section-header" style="margin-top:4px">Your Photos (${photos.length})</div>
     <p style="font-size:12px;color:var(--muted);margin:-4px 0 12px;padding:0 2px">Upload your photos here. Tap the 🏷️ on a photo to tag it (e.g. "kids", "vacation") — then in the <b>Devices</b> tab, point any screen's screensaver at a tag so it shows just that subset. To choose <b>which</b> photos show in a placed widget, add a Photo widget in the <b>Layout</b> tab instead.</p>
     ${albumCard}
@@ -948,6 +950,7 @@ async function renderPhotos() {
     <button class="btn btn-primary" id="ps-save-btn">Save Photo Settings</button>
   `;
 
+  if (typeof wirePhotosSubtabBar === 'function') wirePhotosSubtabBar();
   // Upload
   $('upload-zone').addEventListener('click', () => $('photo-file-input').click());
   $('photo-file-input').addEventListener('change', async (e) => {

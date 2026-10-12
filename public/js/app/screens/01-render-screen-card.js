@@ -1,3 +1,70 @@
+// ── Photo screensaver (Devices > a screen > Screensaver): when it shows, what it shows, and how the photos look ──
+// "When": not automatic / after no touch for N / always (the screen is a photo frame). "Always" is the screen's ambient_mode; the other two leave
+// ambient_mode empty and use screensaver_idle_sec and/or the scheduled hours.
+const SAVER_IDLE_OPTIONS = [[60, '1 minute'], [120, '2 minutes'], [300, '5 minutes'], [600, '10 minutes'], [900, '15 minutes'], [1800, '30 minutes'], [3600, '1 hour']];
+const saverWhen = (s) => (s.ambient_mode ? 'always' : (Number(s.screensaver_idle_sec) || 0) > 0 ? 'idle' : 'off');
+const saverShows = (s) => ((s.ambient_mode || s.screensaver_mode) === 'photo' ? 'photo' : 'photo_datetime');
+const saverOn = (s) => saverWhen(s) !== 'off' || (Array.isArray(s.screensaver_schedule) && s.screensaver_schedule.length > 0);
+function saverDaysValue(days) { const d = (days || []).slice().sort().join(','); return d === '1,2,3,4,5' ? 'weekdays' : d === '0,6' ? 'weekends' : 'all'; }
+function saverScheduleRowHtml(id, r) {
+  const dv = saverDaysValue(r.days);
+  return `<div class="saver-sched-row" data-id="${id}" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+    <input type="time" class="form-input saver-sched-start" data-id="${id}" value="${r.start || '22:00'}" style="width:132px">
+    <span style="font-size:12px;color:var(--muted)">to</span>
+    <input type="time" class="form-input saver-sched-end" data-id="${id}" value="${r.end || '06:00'}" style="width:132px">
+    <select class="form-input saver-sched-days" data-id="${id}" style="width:auto">
+      <option value="all" ${dv === 'all' ? 'selected' : ''}>Every day</option>
+      <option value="weekdays" ${dv === 'weekdays' ? 'selected' : ''}>Weekdays</option>
+      <option value="weekends" ${dv === 'weekends' ? 'selected' : ''}>Weekends</option>
+    </select>
+    <button type="button" class="icon-btn del small saver-sched-del" data-id="${id}" title="Remove">✕</button>
+  </div>`;
+}
+// The "When" part: the choice, the idle time, and the scheduled hours.
+function screenSaverWhenHtml(s) {
+  const id = s.device_id, when = saverWhen(s), idle = Number(s.screensaver_idle_sec) || 0;
+  const idleOpts = SAVER_IDLE_OPTIONS.some(([v]) => v === idle) || !idle ? SAVER_IDLE_OPTIONS : [[idle, `${idle} seconds`]].concat(SAVER_IDLE_OPTIONS);
+  const idleVal = idle || 300;
+  const hasSched = Array.isArray(s.screensaver_schedule) && s.screensaver_schedule.length > 0;
+  return `
+          <div style="flex:1 1 100%;font-size:12px;font-weight:600;margin-top:2px">When to show photos</div>
+          <div style="flex:1;min-width:190px">
+            <select class="form-input saver-when" data-id="${id}">
+              <option value="off" ${when === 'off' ? 'selected' : ''}>Not automatic</option>
+              <option value="idle" ${when === 'idle' ? 'selected' : ''}>When nobody touches the screen</option>
+              <option value="always" ${when === 'always' ? 'selected' : ''}>Always (this screen is a photo frame)</option>
+            </select>
+          </div>
+          <div class="saver-idle-row" data-id="${id}" style="flex:1;min-width:150px;${when === 'idle' ? '' : 'display:none'}">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Start after no touch for</label>
+            <select class="form-input screen-saver-idle" data-id="${id}">
+              ${idleOpts.map(([v, t]) => `<option value="${v}" ${idleVal === v ? 'selected' : ''}>${t}</option>`).join('')}
+            </select>
+          </div>
+          <div class="saver-sched-block" data-id="${id}" style="flex:1 1 100%;${when === 'always' ? 'display:none' : ''}">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Scheduled hours (photos also start during these hours)</label>
+            <div class="saver-sched-list" data-id="${id}">${(hasSched ? s.screensaver_schedule : []).map((r) => saverScheduleRowHtml(id, r)).join('')}</div>
+            <button type="button" class="saver-sched-add" data-id="${id}" style="background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer">+ Add hours</button>
+            <p style="font-size:11px;color:var(--muted);margin:6px 0 0">Any touch brings the screen back. During scheduled hours the photos return after a minute without a touch.</p>
+          </div>`;
+}
+// Show or hide the parts that do not apply to what is chosen: nothing below "When" while it is off, the idle time only for "when nobody touches",
+// the schedule not while "always", the corner only with a clock, the fade length only with a fade, the blur only for Auto fit.
+function syncAmbientRows(list, id) {
+  const q = (c) => list.querySelector(`.${c}[data-id="${id}"]`);
+  const when = (q('saver-when') || {}).value || 'off';
+  const sched = list.querySelectorAll(`.saver-sched-row[data-id="${id}"]`).length > 0;
+  const on = when !== 'off' || sched;
+  const shows = (q('screen-saver-mode') || {}).value || 'photo_datetime';
+  const set = (el, v) => { if (el) el.style.display = v; };
+  set(q('saver-idle-row'), when === 'idle' ? '' : 'none');
+  set(q('saver-sched-block'), when === 'always' ? 'none' : '');
+  set(q('saver-details'), on ? 'flex' : 'none');
+  set(q('ambient-corner-row'), shows === 'photo_datetime' ? '' : 'none');
+  const fadeCb = q('screen-ambient-fade'), fitSel = q('screen-ambient-fit');
+  set(q('ambient-fadeduration-row'), !fadeCb || fadeCb.checked ? '' : 'none');
+  set(q('ambient-blurbg-row'), fitSel && fitSel.value === 'auto' ? 'flex' : 'none');
+}
 function loadScreens_renderScreenCard(_c, s) {
   const { displayOptions } = _c;
     const dot = s.online
@@ -44,7 +111,7 @@ function loadScreens_renderScreenCard(_c, s) {
             <span class="acc-ic">⚙️</span>
             <span class="acc-text"><span class="acc-label">Screen Settings</span><span class="acc-sub">${[
               s.screen_orientation ? 'custom orientation' : '',
-              s.ambient_mode === 'photo' ? 'Photo mode' : s.ambient_mode === 'photo_datetime' ? 'Photo + time mode' : '',
+              s.ambient_mode ? 'Photo frame' : saverOn(s) ? 'Photo screensaver' : '',
               s.tv_control_type ? `TV: ${s.tv_control_type}` : '',
             ].filter(Boolean).join(' · ') || 'Orientation, screensaver, TV control…'}</span></span>
             <span class="acc-caret">${openScreenAccordions.has(s.device_id) ? '▾' : '▸'}</span>
@@ -151,18 +218,37 @@ function loadScreens_renderScreenCard(_c, s) {
         <div class="acc-section${openScreenSubAccordions.has(s.device_id+':ambient')?' open':''}" data-acc="screensub-${s.device_id}-ambient">
           <button class="acc-head" data-acc-toggle="screensub-${s.device_id}-ambient">
             <span class="acc-ic">🖼️</span>
-            <span class="acc-text"><span class="acc-label">Ambient Mode</span></span>
+            <span class="acc-text"><span class="acc-label">Photo Screensaver</span></span>
             <span class="acc-caret">${openScreenSubAccordions.has(s.device_id+':ambient')?'▾':'▸'}</span>
           </button>
           <div class="acc-body" data-acc-body="screensub-${s.device_id}-ambient" style="${openScreenSubAccordions.has(s.device_id+':ambient')?'':'display:none'}">
           <p style="font-size:11px;color:var(--muted);margin:0 0 8px">
-            Ambient Mode <span class="info-btn" onclick="showInfoPopup('screen-settings-help')">ⓘ</span>
+            Show a full-screen photo slideshow on this screen <span class="info-btn" onclick="showInfoPopup('screen-settings-help')">ⓘ</span>
           </p>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
+          ${screenSaverWhenHtml(s)}
+          <div class="saver-details" data-id="${s.device_id}" style="flex:1 1 100%;display:${saverOn(s)?'flex':'none'};gap:10px;flex-wrap:wrap">
+          <div style="flex:1 1 100%;font-size:12px;font-weight:600;margin-top:6px">What it shows</div>
+          <div style="flex:1;min-width:150px">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Shows</label>
+            <select class="form-input screen-saver-mode" data-id="${s.device_id}">
+              <option value="photo" ${saverShows(s)==='photo'?'selected':''}>Photos only</option>
+              <option value="photo_datetime" ${saverShows(s)==='photo_datetime'?'selected':''}>Photos with clock and date</option>
+            </select>
+          </div>
+          <div class="ambient-corner-row" data-id="${s.device_id}" style="flex:1;min-width:130px;${saverShows(s)==='photo_datetime'?'':'display:none'}">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Clock/Date Corner</label>
+            <select class="form-input screen-ambient-corner" data-id="${s.device_id}">
+              <option value="tl" ${(s.ambient_clock_corner||'bl')==='tl'?'selected':''}>Top-left</option>
+              <option value="tr" ${(s.ambient_clock_corner||'bl')==='tr'?'selected':''}>Top-right</option>
+              <option value="bl" ${(s.ambient_clock_corner||'bl')==='bl'?'selected':''}>Bottom-left</option>
+              <option value="br" ${(s.ambient_clock_corner||'bl')==='br'?'selected':''}>Bottom-right</option>
+            </select>
+          </div>
           <div style="flex:1;min-width:130px">
-            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Screensaver Source</label>
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Photos from</label>
             <select class="form-input screen-screensaver-mode" data-id="${s.device_id}">
-              <option value="tag"   ${!s.screensaver_photo_id?'selected':''}>Tag (slideshow)</option>
+              <option value="tag"   ${!s.screensaver_photo_id?'selected':''}>A tag (slideshow)</option>
               <option value="photo" ${s.screensaver_photo_id?'selected':''}>One specific photo</option>
             </select>
           </div>
@@ -179,15 +265,8 @@ function loadScreens_renderScreenCard(_c, s) {
               ${(window._photosList||[]).map(p=>`<option value="${p.id}" ${Number(s.screensaver_photo_id)===p.id?'selected':''}>${p.label||p.filename}</option>`).join('')}
             </select>
           </div>
-          <div style="flex:1;min-width:130px">
-            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Display Mode</label>
-            <select class="form-input screen-ambient-mode" data-id="${s.device_id}">
-              <option value=""               ${!s.ambient_mode?'selected':''}>Normal (full layout)</option>
-              <option value="photo"          ${s.ambient_mode==='photo'?'selected':''}>Photo only</option>
-              <option value="photo_datetime" ${s.ambient_mode==='photo_datetime'?'selected':''}>Photo + time</option>
-            </select>
-          </div>
-          <div class="ambient-fit-row" data-id="${s.device_id}" style="flex:1;min-width:130px;${s.ambient_mode?'':'display:none'}">
+          <div style="flex:1 1 100%;font-size:12px;font-weight:600;margin-top:6px">How the photos look</div>
+          <div class="ambient-fit-row" data-id="${s.device_id}" style="flex:1;min-width:130px">
             <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Photo Fit</label>
             <select class="form-input screen-ambient-fit" data-id="${s.device_id}">
               <option value="cover"  ${(s.ambient_photo_fit||'cover')==='cover'?'selected':''}>Fill (crop to fill, no gaps)</option>
@@ -196,10 +275,10 @@ function loadScreens_renderScreenCard(_c, s) {
               <option value="auto"   ${s.ambient_photo_fit==='auto'?'selected':''}>Auto (best fit per photo)</option>
             </select>
           </div>
-          <div class="ambient-interval-row" data-id="${s.device_id}" style="flex:1;min-width:130px;${s.ambient_mode?'':'display:none'}">
-            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Slide Interval</label>
+          <div class="ambient-interval-row" data-id="${s.device_id}" style="flex:1;min-width:130px">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Change photo every</label>
             <select class="form-input screen-ambient-interval" data-id="${s.device_id}">
-              <option value=""    ${!s.ambient_photo_interval?'selected':''}>Use global setting</option>
+              <option value=""    ${!s.ambient_photo_interval?'selected':''}>Default (30 seconds, or the Photos setting)</option>
               <option value="5"   ${s.ambient_photo_interval=='5'?'selected':''}>5 seconds</option>
               <option value="10"  ${s.ambient_photo_interval=='10'?'selected':''}>10 seconds</option>
               <option value="20"  ${s.ambient_photo_interval=='20'?'selected':''}>20 seconds</option>
@@ -208,20 +287,11 @@ function loadScreens_renderScreenCard(_c, s) {
               <option value="300" ${s.ambient_photo_interval=='300'?'selected':''}>5 minutes</option>
             </select>
           </div>
-          <div class="ambient-corner-row" data-id="${s.device_id}" style="flex:1;min-width:130px;${s.ambient_mode==='photo_datetime'?'':'display:none'}">
-            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Clock/Date Corner</label>
-            <select class="form-input screen-ambient-corner" data-id="${s.device_id}">
-              <option value="tl" ${(s.ambient_clock_corner||'bl')==='tl'?'selected':''}>Top-left</option>
-              <option value="tr" ${(s.ambient_clock_corner||'bl')==='tr'?'selected':''}>Top-right</option>
-              <option value="bl" ${(s.ambient_clock_corner||'bl')==='bl'?'selected':''}>Bottom-left</option>
-              <option value="br" ${(s.ambient_clock_corner||'bl')==='br'?'selected':''}>Bottom-right</option>
-            </select>
-          </div>
-          <div class="ambient-fade-row" data-id="${s.device_id}" style="flex:1;min-width:130px;display:${s.ambient_mode?'flex':'none'};justify-content:space-between;align-items:center;padding-top:4px">
+          <div class="ambient-fade-row" data-id="${s.device_id}" style="flex:1;min-width:130px;display:flex;justify-content:space-between;align-items:center;padding-top:4px">
             <label style="font-size:11px;color:var(--muted);margin-bottom:0">Fade between photos</label>
             <input type="checkbox" class="screen-ambient-fade" data-id="${s.device_id}" ${s.ambient_fade_transition!==false?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
           </div>
-          <div class="ambient-fadeduration-row" data-id="${s.device_id}" style="flex:1;min-width:130px;display:${s.ambient_mode&&s.ambient_fade_transition!==false?'':'none'}">
+          <div class="ambient-fadeduration-row" data-id="${s.device_id}" style="flex:1;min-width:130px;display:${s.ambient_fade_transition!==false?'':'none'}">
             <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Fade Duration</label>
             <select class="form-input screen-ambient-fadeduration" data-id="${s.device_id}">
               <option value="1" ${(s.ambient_fade_duration||'2')=='1'?'selected':''}>1 second (quick)</option>
@@ -232,9 +302,13 @@ function loadScreens_renderScreenCard(_c, s) {
               <option value="8" ${(s.ambient_fade_duration||'2')=='8'?'selected':''}>8 seconds (very slow)</option>
             </select>
           </div>
-          <div class="ambient-blurbg-row" data-id="${s.device_id}" style="flex:1;min-width:130px;display:${s.ambient_mode&&s.ambient_photo_fit==='auto'?'flex':'none'};justify-content:space-between;align-items:center;padding-top:4px">
+          <div class="ambient-blurbg-row" data-id="${s.device_id}" style="flex:1;min-width:130px;display:${s.ambient_photo_fit==='auto'?'flex':'none'};justify-content:space-between;align-items:center;padding-top:4px">
             <label style="font-size:11px;color:var(--muted);margin-bottom:0">Blurred background behind mismatched photos</label>
             <input type="checkbox" class="screen-ambient-blurbg" data-id="${s.device_id}" ${s.ambient_blur_bg!==false?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
+          </div>
+          <div style="flex:1 1 100%">
+            <button type="button" class="saver-preview" data-id="${s.device_id}" style="background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer">▶ Preview now</button>
+          </div>
           </div>
         </div>
 
@@ -548,23 +622,52 @@ function loadScreens_listQuerySelectorAllEtc(_c) {
     });
   });
 
-  list.querySelectorAll('.screen-ambient-mode').forEach(sel => {
-    sel.addEventListener('change', async () => {
-      const cornerRow = list.querySelector(`.ambient-corner-row[data-id="${sel.dataset.id}"]`);
-      const fitRow = list.querySelector(`.ambient-fit-row[data-id="${sel.dataset.id}"]`);
-      const intervalRow = list.querySelector(`.ambient-interval-row[data-id="${sel.dataset.id}"]`);
-      const fadeRow = list.querySelector(`.ambient-fade-row[data-id="${sel.dataset.id}"]`);
-      if (cornerRow) cornerRow.style.display = sel.value === 'photo_datetime' ? '' : 'none';
-      if (fitRow) fitRow.style.display = sel.value ? '' : 'none';
-      if (intervalRow) intervalRow.style.display = sel.value ? '' : 'none';
-      if (fadeRow) fadeRow.style.display = sel.value ? 'flex' : 'none';
-      const r = await apiFetch(`/api/screens/${sel.dataset.id}`, {
-        method:'PUT', body: JSON.stringify({ ambient_mode: sel.value }),
-      });
-      if (r && r.error) { showToast('❌ ' + r.error); return; }
-      const labels = { '': 'Normal layout', photo: 'Photo only', photo_datetime: 'Photo + time' };
-    });
+  // Photo screensaver controls: each change is saved at once and the display picks it up live.
+  const saverSave = async (id, body) => {
+    const r = await apiFetch(`/api/screens/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+    if (r && r.error) { showToast('❌ ' + r.error); return false; }
+    return true;
+  };
+  const saverVal = (id, cls) => { const el = list.querySelector(`.${cls}[data-id="${id}"]`); return el ? el.value : ''; };
+  const saverCollect = (id) => Array.from(list.querySelectorAll(`.saver-sched-row[data-id="${id}"]`)).map((row) => {
+    const dv = row.querySelector('.saver-sched-days').value;
+    return { start: row.querySelector('.saver-sched-start').value, end: row.querySelector('.saver-sched-end').value, days: dv === 'weekdays' ? [1, 2, 3, 4, 5] : dv === 'weekends' ? [0, 6] : [] };
   });
+  const saverWireRow = (row) => {
+    const id = row.dataset.id;
+    row.querySelectorAll('input,select').forEach((el) => el.addEventListener('change', () => saverSave(id, { screensaver_schedule: saverCollect(id) })));
+    row.querySelector('.saver-sched-del').addEventListener('click', async () => { row.remove(); syncAmbientRows(list, id); await saverSave(id, { screensaver_schedule: saverCollect(id) }); });
+  };
+  list.querySelectorAll('.saver-sched-row').forEach(saverWireRow);
+  list.querySelectorAll('.saver-when').forEach((sel) => sel.addEventListener('change', async () => {
+    const id = sel.dataset.id;
+    syncAmbientRows(list, id);
+    const shows = saverVal(id, 'screen-saver-mode') || 'photo_datetime';
+    await saverSave(id, sel.value === 'always' ? { ambient_mode: shows, screensaver_mode: shows }
+      : sel.value === 'idle' ? { ambient_mode: '', screensaver_idle_sec: Number(saverVal(id, 'screen-saver-idle')) || 300 }
+      : { ambient_mode: '', screensaver_idle_sec: 0 });
+  }));
+  list.querySelectorAll('.screen-saver-idle').forEach((sel) => sel.addEventListener('change', async () => {
+    await saverSave(sel.dataset.id, { screensaver_idle_sec: Number(sel.value) });
+  }));
+  list.querySelectorAll('.screen-saver-mode').forEach((sel) => sel.addEventListener('change', async () => {
+    const id = sel.dataset.id;
+    syncAmbientRows(list, id);
+    await saverSave(id, saverVal(id, 'saver-when') === 'always' ? { screensaver_mode: sel.value, ambient_mode: sel.value } : { screensaver_mode: sel.value });
+  }));
+  list.querySelectorAll('.saver-sched-add').forEach((btn) => btn.addEventListener('click', async () => {
+    const id = btn.dataset.id, box = list.querySelector(`.saver-sched-list[data-id="${id}"]`);
+    if (box.querySelectorAll('.saver-sched-row').length >= 6) { showToast('At most 6 scheduled times.'); return; }
+    box.insertAdjacentHTML('beforeend', saverScheduleRowHtml(id, { start: '22:00', end: '06:00', days: [] }));
+    saverWireRow(box.lastElementChild);
+    syncAmbientRows(list, id);
+    await saverSave(id, { screensaver_schedule: saverCollect(id) });
+  }));
+  list.querySelectorAll('.saver-preview').forEach((btn) => btn.addEventListener('click', async () => {
+    const r = await apiFetch(`/api/screens/${btn.dataset.id}/screensaver-preview`, { method: 'POST', body: '{}' });
+    if (r && r.error) { showToast('❌ ' + r.error); return; }
+    showToast(r && r.delivered ? 'Showing the photos on the screen now. Touch it to go back.' : "Couldn't reach this screen from here. A remote mirror can't be previewed from this device.");
+  }));
 
   list.querySelectorAll('.screen-ambient-interval').forEach(sel => {
     sel.addEventListener('change', async () => {

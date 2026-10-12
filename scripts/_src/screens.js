@@ -3,6 +3,21 @@
 // Moved out of server.js (part of the split, see TODO.md). Behavior is unchanged: the code runs at the same point in server.js as before (route
 // order matters in Express), and everything it uses comes in through the one object below. Covered by test/api/screens-displays.test.js.
 module.exports = function registerScreens({ getReachableAddresses, app, PORT, IS_DEMO, db, broadcastUpdate, sendScreenCommand, SCREEN_ONLINE_MS, DEVICE_ID, getSetting, isSlave, resolveDisplay, previewScreenName, updateSetting }) {
+  // The automatic screensaver's schedule: up to 6 rules of { start: 'HH:MM', end: 'HH:MM', days: [0-6] } (days empty = every day; an end earlier than the
+  // start means "into the next morning"). Stored as JSON text on the screen; always returned normalised.
+  const HM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+  function normaliseSaverSchedule(raw) {
+    let arr = raw;
+    if (typeof arr === 'string') { try { arr = JSON.parse(arr); } catch { arr = []; } }
+    if (!Array.isArray(arr)) return [];
+    const out = [];
+    for (const r of arr.slice(0, 6)) {
+      if (!r || !HM.test(String(r.start || '')) || !HM.test(String(r.end || '')) || r.start === r.end) continue;
+      const days = Array.isArray(r.days) ? [...new Set(r.days.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort() : [];
+      out.push({ start: r.start, end: r.end, days: days.length === 7 ? [] : days });
+    }
+    return out;
+  }
   // Physical Pi screens register themselves (see /api/live and /api/screen-config).
   // The app lists them, names them, and assigns each a display profile — switching
   // it live over SSE.
@@ -29,6 +44,12 @@ module.exports = function registerScreens({ getReachableAddresses, app, PORT, IS
         ambient_photo_fit: s.ambient_photo_fit || 'cover',
         ambient_fade_transition: s.ambient_fade_transition !== '0',
         ambient_photo_interval: s.ambient_photo_interval || '',
+        screensaver_idle_sec: Number(s.screensaver_idle_sec) || 0,
+        screensaver_mode: s.screensaver_mode === 'photo' ? 'photo' : 'photo_datetime',
+        screensaver_schedule: normaliseSaverSchedule(s.screensaver_schedule),
+        presentation_deck_id: s.presentation_deck_id || null,
+        presentation_playlist_id: s.presentation_playlist_id || null,
+        presentation_mode: s.presentation_mode || '',
         ambient_blur_bg: s.ambient_blur_bg !== '0',
         ambient_fade_duration: s.ambient_fade_duration || '2',
         fx_scale: s.fx_scale || '1',
@@ -66,9 +87,18 @@ module.exports = function registerScreens({ getReachableAddresses, app, PORT, IS
     res.json(screens);
   });
 
+  // "Preview now": makes the screen show its screensaver for a short while (until touched) so the settings can be checked without waiting.
+  // Only a screen connected to THIS device can be told; a remote mirror is not reachable from here.
+  app.post('/api/screens/:deviceId/screensaver-preview', (req, res) => {
+    const existing = db.prepare(`SELECT device_id FROM screens WHERE device_id = ?`).get(req.params.deviceId);
+    if (!existing) return res.status(404).json({ error: 'Screen not found' });
+    const delivered = sendScreenCommand(req.params.deviceId, 'screensaver-preview', { seconds: 30 });
+    res.json({ ok: true, delivered });
+  });
+
   // Rename a screen (also used to set its name the first time).
   app.put('/api/screens/:deviceId', (req, res) => {
-    const { name, info_corner, screen_orientation, screen_rotation, screensaver_tag, screensaver_photo_id, ambient_mode, ambient_clock_corner, ambient_photo_fit, ambient_fade_transition, ambient_fade_duration, ambient_photo_interval, ambient_blur_bg, fx_scale, fx_density, tv_control_type, tv_ip, floating_switcher_enabled, floating_switcher_presets, floating_switcher_schedule, floating_switcher_edge, floating_switcher_icon, floating_switcher_color, floating_switcher_style, floating_switcher_bar_mode, floating_switcher_reveal, alert_banner_position, alert_banner_size, alert_banner_style } = req.body;
+    const { name, info_corner, screen_orientation, screen_rotation, screensaver_tag, screensaver_photo_id, ambient_mode, ambient_clock_corner, ambient_photo_fit, ambient_fade_transition, ambient_fade_duration, ambient_photo_interval, ambient_blur_bg, screensaver_idle_sec, screensaver_mode, screensaver_schedule, fx_scale, fx_density, tv_control_type, tv_ip, floating_switcher_enabled, floating_switcher_presets, floating_switcher_schedule, floating_switcher_edge, floating_switcher_icon, floating_switcher_color, floating_switcher_style, floating_switcher_bar_mode, floating_switcher_reveal, alert_banner_position, alert_banner_size, alert_banner_style } = req.body;
     const existing = db.prepare(`SELECT device_id FROM screens WHERE device_id = ?`).get(req.params.deviceId);
     if (!existing) return res.status(404).json({ error: 'Screen not found' });
     if (name !== undefined) {
@@ -142,6 +172,26 @@ module.exports = function registerScreens({ getReachableAddresses, app, PORT, IS
         db.prepare(`UPDATE screens SET ambient_fade_duration = ? WHERE device_id = ?`).run(String(d), req.params.deviceId);
         sendScreenCommand(req.params.deviceId, 'refresh-photos', {});
       }
+    }
+    // Automatic screensaver: after N seconds without a touch (0 = off) and/or during scheduled hours. Changes reach the display live (the same refresh the photo settings use).
+    if (screensaver_idle_sec !== undefined) {
+      const n = Number(screensaver_idle_sec);
+      if (!(n === 0 || (Number.isInteger(n) && n >= 30 && n <= 86400))) return res.status(400).json({ error: 'Choose how long the screen must be left alone: Never, or from 30 seconds to 24 hours.' });
+      db.prepare(`UPDATE screens SET screensaver_idle_sec = ? WHERE device_id = ?`).run(n, req.params.deviceId);
+      sendScreenCommand(req.params.deviceId, 'refresh-photos', {});
+    }
+    if (screensaver_mode !== undefined) {
+      db.prepare(`UPDATE screens SET screensaver_mode = ? WHERE device_id = ?`).run(screensaver_mode === 'photo' ? 'photo' : 'photo_datetime', req.params.deviceId);
+      sendScreenCommand(req.params.deviceId, 'refresh-photos', {});
+    }
+    if (screensaver_schedule !== undefined) {
+      if (!Array.isArray(screensaver_schedule)) return res.status(400).json({ error: 'Each scheduled time needs a start and a different end time, like 22:00 and 06:00.' });
+      const given = screensaver_schedule;
+      const clean = normaliseSaverSchedule(given);
+      if (given.length > 6) return res.status(400).json({ error: 'At most 6 scheduled times.' });
+      if (clean.length !== given.length) return res.status(400).json({ error: 'Each scheduled time needs a start and a different end time, like 22:00 and 06:00.' });
+      db.prepare(`UPDATE screens SET screensaver_schedule = ? WHERE device_id = ?`).run(JSON.stringify(clean), req.params.deviceId);
+      sendScreenCommand(req.params.deviceId, 'refresh-photos', {});
     }
     if (ambient_photo_interval !== undefined) {
       const iv = String(ambient_photo_interval || '').trim();
@@ -462,6 +512,13 @@ module.exports = function registerScreens({ getReachableAddresses, app, PORT, IS
         ambient_mode: full.ambient_mode || '',
         ambient_clock_corner: full.ambient_clock_corner || 'bl',
         ambient_photo_fit: full.ambient_photo_fit || 'cover',
+        ambient_fade_transition: full.ambient_fade_transition === '0' ? '0' : '1',
+        ambient_fade_duration: full.ambient_fade_duration || '2',
+        ambient_photo_interval: full.ambient_photo_interval || '',
+        ambient_blur_bg: full.ambient_blur_bg === '0' ? '0' : '1',
+        screensaver_idle_sec: Number(full.screensaver_idle_sec) || 0,
+        screensaver_mode: full.screensaver_mode === 'photo' ? 'photo' : 'photo_datetime',
+        screensaver_schedule: JSON.stringify(normaliseSaverSchedule(full.screensaver_schedule)),
         tv_control_type: full.tv_control_type || '',
         tv_ip: full.tv_ip || '',
         tv_schedule_on: full.tv_schedule_on || '',
@@ -495,7 +552,7 @@ module.exports = function registerScreens({ getReachableAddresses, app, PORT, IS
   app.get('/api/screen-config', (req, res) => {
     const screenId = req.query.screen ? String(req.query.screen) : null;
     const addrs = getReachableAddresses();
-    const port = PORT;
+    const port = addrs.override && addrs.port ? addrs.port : PORT;
     // The canonical, server-persisted identity of THIS Pi. The display adopts this
     // so it stays the same screen across cache wipes, URL changes, and updates.
     const canonicalId = DEVICE_ID;

@@ -150,7 +150,7 @@ function syncPerWidgetPhotoTimers() {
     activeIds.add(id);
     const desiredMs = Math.max(3, parseInt(w.photoInterval) || 30) * 1000;
     let st = widgetSlideState[id];
-    if (!st) { st = widgetSlideState[id] = { index: 0, timer: null, currentMs: 0 }; }
+    if (!st) { st = widgetSlideState[id] = { index: w.photoRandomStart ? Math.floor(Math.random() * Math.max(1, photosForWidget(w).length)) : 0, timer: null, currentMs: 0 }; }
     if (st.currentMs === desiredMs) return; // already running at the right interval
     if (st.timer) clearInterval(st.timer);
     st.currentMs = desiredMs;
@@ -190,13 +190,30 @@ function reportPainted() {
   _paintedSent = true;
   requestAnimationFrame(() => requestAnimationFrame(() => {
     try { fetch('/api/display/painted', { method: 'POST', keepalive: true }).catch(() => {}); } catch {}
+    startPaintHeartbeat();
   }));
+}
+// Keeps saying "I am still drawing" every ~20 s, but only when the browser really gives this page a frame: the request is made inside
+// requestAnimationFrame, which does not run for a window that is frozen, hidden or not being composited, and while one request is
+// still waiting for its frame no new one is queued. So a page that has stopped redrawing (seen on a Raspberry Pi 3: stale picture until
+// someone pressed Alt+Tab, F5 did nothing) goes quiet, and the kiosk launcher reloads it (scripts/wait-for-server-and-launch-kiosk.sh).
+let _beatTimer = null, _beatWaiting = false;
+function startPaintHeartbeat() {
+  if (_beatTimer) return;
+  _beatTimer = setInterval(() => {
+    if (_beatWaiting) return;
+    _beatWaiting = true;
+    requestAnimationFrame(() => {
+      _beatWaiting = false;
+      try { fetch('/api/display/painted', { method: 'POST', keepalive: true }).catch(() => {}); } catch {}
+    });
+  }, 20000);
 }
 
 // ── Orientation ──────────────────────────────────────────────────────────────
 // The display's render config (orientation override + in-browser rotation),
 // loaded from /api/display-config at startup. Defaults keep the old auto behavior.
-let displayConfig = { force_orientation: 'auto', rotation: 0, theme: '', screensaverTag: '', screensaverPhotoId: null, ambientMode: '', ambientClockCorner: 'bl', ambientPhotoFit: 'cover', ambientFadeTransition: true, ambientPhotoInterval: '', ambientBlurBg: true, ambientFadeDuration: '2', fxScale: '1', fxDensity: '1', customBg: '', customDeco1: '', customDeco2: '', customDeco3: '', customDeco1Behavior: 'random', customDeco2Behavior: 'random', customDeco3Behavior: 'random' };
+let displayConfig = { force_orientation: 'auto', rotation: 0, theme: '', screensaverIdleSec: 0, screensaverMode: 'photo_datetime', screensaverSchedule: [], screensaverTag: '', screensaverPhotoId: null, ambientMode: '', ambientClockCorner: 'bl', ambientPhotoFit: 'cover', ambientFadeTransition: true, ambientPhotoInterval: '', ambientBlurBg: true, ambientFadeDuration: '2', fxScale: '1', fxDensity: '1', customBg: '', customDeco1: '', customDeco2: '', customDeco3: '', customDeco1Behavior: 'random', customDeco2Behavior: 'random', customDeco3Behavior: 'random' };
 
 // ── Theme (template) backgrounds & effects ───────────────────────────────────
 // Sets body[data-theme] (drives the CSS background scene) and spawns the matching

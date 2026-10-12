@@ -328,8 +328,72 @@ if [[ "${PI_CALENDAR_PAINT_WATCHDOG:-1}" != "0" ]] && command -v curl >/dev/null
         done
         painted_since_launch
       }
+      # Live watch, after the boot checks pass. The page sends a heartbeat while it is really drawing (see startPaintHeartbeat in the display
+      # page); if the server has not heard one for PI_CALENDAR_LIVE_STALE seconds (default 150), the page has stopped redrawing: a frozen or
+      # hidden browser window, which keyboard tools (F5) cannot always reach. Recovery goes through the browser's debug port, which needs no
+      # window: reload, then load the page from scratch, then (at most once per PI_CALENDAR_LIVE_RESTART_GAP seconds, default 6 hours) restart the
+      # browser. At most PI_CALENDAR_LIVE_MAX_PER_HOUR recoveries (default 4) per hour, so a screen that is switched off cannot make it loop.
+      # Time is measured by the SERVER on a clock that cannot jump (since_painted_ms). Off with PI_CALENDAR_LIVE_WATCHDOG=0.
+      live_recovered() {   # $1 = painted_count before, $2 = seconds to wait
+        local stop=$(( $(paint_elapsed) + $2 )) j id n s
+        while [[ $(paint_elapsed) -lt $stop ]]; do
+          j="$(state_json)" && {
+            id="$(field "$j" boot_id)"; n="$(field "$j" painted_count)"; s="$(field "$j" since_painted_ms)"
+            if [[ "$id" == "$LIVE_BOOT" ]]; then [[ "${n:-0}" -gt "$1" ]] && return 0
+            elif [[ "$s" =~ ^[0-9]+$ ]]; then return 0; fi
+          }
+          sleep "$PAINT_POLL"
+        done
+        return 1
+      }
+      live_restart_browser() {
+        log "display: the page will not draw again - restarting the browser"
+        if command -v setsid >/dev/null 2>&1; then
+          ( setsid "$SCRIPT_DIR/kiosk" restart >/dev/null 2>&1 </dev/null & )
+        else
+          ( nohup "$SCRIPT_DIR/kiosk" restart >/dev/null 2>&1 </dev/null & )
+        fi
+      }
+      live_phase() {
+        [[ "${PI_CALENDAR_LIVE_WATCHDOG:-1}" != "0" ]] || return 0
+        local STALE="${PI_CALENDAR_LIVE_STALE:-150}" LPOLL="${PI_CALENDAR_LIVE_POLL:-30}" LWAIT="${PI_CALENDAR_LIVE_WAIT:-60}"
+        local MAXH="${PI_CALENDAR_LIVE_MAX_PER_HOUR:-4}" RFLAG="${PI_CALENDAR_LIVE_RESTART_FLAG:-/tmp/piazzahq-live-restart}" RGAP="${PI_CALENDAR_LIVE_RESTART_GAP:-21600}"
+        local j since n0 now age null_t0="" recent ts last keep
+        local -a acts=()
+        log "display: watching that the page keeps drawing (reloading it if no frame for ${STALE}s)"
+        while true; do
+          sleep "$LPOLL"
+          kill -0 "$$" 2>/dev/null || return 0                  # the browser this watch belongs to has exited (restarted, stopped): end with it
+          j="$(state_json)" || continue                       # the server is restarting or busy: nothing to judge
+          since="$(field "$j" since_painted_ms)"
+          if [[ "$since" =~ ^[0-9]+$ ]]; then null_t0=""; age=$(( since / 1000 ))
+          else [[ -z "$null_t0" ]] && null_t0="$(now_secs)"; age=$(( $(now_secs) - null_t0 )); fi   # no frame since the server started: count from when we noticed
+          [[ $age -ge $STALE ]] || continue
+          now="$(now_secs)"; recent=0; keep=()
+          for ts in "${acts[@]}"; do if [[ $(( now - ts )) -lt 3600 ]]; then keep+=("$ts"); recent=$(( recent + 1 )); fi; done
+          acts=("${keep[@]}")
+          if [[ $recent -ge $MAXH ]]; then log "display: stalled again, but it was already recovered $recent times in the last hour - leaving it alone"; null_t0=""; sleep "$LPOLL"; continue; fi
+          acts+=("$now")
+          LIVE_BOOT="$(field "$j" boot_id)"; n0="$(field "$j" painted_count)"; n0="${n0:-0}"
+          log "display: the page has not drawn a frame for ${age}s - reloading it through the browser's debug port"
+          devtools reload >/dev/null || true
+          if live_recovered "$n0" "$LWAIT"; then log "display: the page is drawing again after the reload"; null_t0=""; continue; fi
+          log "display: still not drawing after the reload - loading the page from scratch"
+          devtools navigate "$DISPLAY_URL" >/dev/null || true
+          if live_recovered "$n0" "$LWAIT"; then log "display: the page is drawing again after loading it from scratch"; null_t0=""; continue; fi
+          last=0; [[ -r "$RFLAG" ]] && last="$(cat "$RFLAG" 2>/dev/null)"; last="${last:-0}"
+          if [[ ! -e "$RFLAG" || $(( $(now_secs) - last )) -ge $RGAP ]]; then
+            now_secs >"$RFLAG" 2>/dev/null
+            live_restart_browser
+            return 0
+          fi
+          log "display: still not drawing, and the browser was already restarted recently - leaving it alone"
+          null_t0=""
+        done
+      }
       if first_phase; then
         log "display: page drew $(paint_elapsed)s after launch"
+        live_phase
         exit 0
       fi
       for attempt in $(seq 1 "$PAINT_ATTEMPTS"); do
@@ -337,6 +401,7 @@ if [[ "${PI_CALENDAR_PAINT_WATCHDOG:-1}" != "0" ]] && command -v curl >/dev/null
         reload_page || break
         if wait_for_paint "$PAINT_STEP"; then
           log "display: page drew $(paint_elapsed)s after launch, after reload attempt ${attempt}"
+          live_phase
           exit 0
         fi
       done

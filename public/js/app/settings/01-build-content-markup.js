@@ -279,6 +279,10 @@ function renderSettings_Build_contentMarkup(_c) {
           ${tzOptions.map(([tz,label]) => `<option value="${tz}" ${((s.timezone_override||'')===tz)?'selected':''}>${label}</option>`).join('')}
         </select>
       </div>
+      <div class="settings-row">
+        <label>Address people use to reach this <span class="info-btn" onclick="showInfoPopup('reachable-address-help')">ⓘ</span></label>
+        <input class="form-input" id="s-reachable-address" value="${escapeHtml(s.reachable_address || '')}" placeholder="Detected automatically" maxlength="120" autocapitalize="none" autocorrect="off" spellcheck="false">
+      </div>
     </div>
 
     <div class="section-header">Photo Widget Defaults</div>

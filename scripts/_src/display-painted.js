@@ -9,7 +9,9 @@ module.exports = function registerDisplayPainted({ crypto, app }) {
   // so a window that is not being composited never reports). Only the kiosk browser on this device counts
   // (loopback, no proxy headers); the launcher compares the count with the one it saw at launch. boot_id changes
   // when the server restarts, so a restart can't be mistaken for "no paint".
-  const DISPLAY_STATE = { bootId: crypto.randomBytes(4).toString('hex'), paintedCount: 0, lastPaintedAt: 0 };
+  const DISPLAY_STATE = { bootId: crypto.randomBytes(4).toString('hex'), paintedCount: 0, lastPaintedAt: 0, lastPaintedMono: null };
+  // The page keeps sending this while it is drawing (every ~20 s, only when the browser really composites a frame), so the launcher can tell a page that has
+  // STOPPED drawing - the browser window frozen, or hidden behind something - from a healthy one, and reload it. since_painted_ms is read on a monotonic clock.
   function displayReqIsLocal(req) {
     const a = String(req.socket.remoteAddress || '').replace(/^::ffff:/i, '');
     const loopback = a === '::1' || /^127\./.test(a);
@@ -17,12 +19,13 @@ module.exports = function registerDisplayPainted({ crypto, app }) {
     return loopback && !proxied;
   }
   app.post('/api/display/painted', (req, res) => {
-    if (displayReqIsLocal(req)) { DISPLAY_STATE.paintedCount++; DISPLAY_STATE.lastPaintedAt = Date.now(); }
+    if (displayReqIsLocal(req)) { DISPLAY_STATE.paintedCount++; DISPLAY_STATE.lastPaintedAt = Date.now(); DISPLAY_STATE.lastPaintedMono = process.hrtime.bigint(); }
     res.json({ ok: true });
   });
   app.get('/api/display/state', (req, res) => {
     if (!displayReqIsLocal(req)) return res.status(404).json({ error: 'Not found' });
     res.set('Cache-Control', 'no-store');
-    res.json({ boot_id: DISPLAY_STATE.bootId, painted_count: DISPLAY_STATE.paintedCount, last_painted_at: DISPLAY_STATE.lastPaintedAt });
+    const since = DISPLAY_STATE.lastPaintedMono === null ? null : Math.round(Number(process.hrtime.bigint() - DISPLAY_STATE.lastPaintedMono) / 1e6);
+    res.json({ boot_id: DISPLAY_STATE.bootId, painted_count: DISPLAY_STATE.paintedCount, last_painted_at: DISPLAY_STATE.lastPaintedAt, since_painted_ms: since });
   });
 };
