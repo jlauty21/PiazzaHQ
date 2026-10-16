@@ -29,8 +29,8 @@ module.exports = function registerMealPlan({ app, db, isSlave, demoCleanText, br
     // A stable slot order (breakfast -> lunch -> dinner) so the client doesn't
     // have to re-sort.
     res.json(db.prepare(`
-    SELECT * FROM meals WHERE date BETWEEN ? AND ?
-    ORDER BY date, CASE slot WHEN 'breakfast' THEN 0 WHEN 'lunch' THEN 1 ELSE 2 END
+    SELECT m.*, r.title AS recipe_title FROM meals m LEFT JOIN recipes r ON r.id = m.recipe_id WHERE m.date BETWEEN ? AND ?
+    ORDER BY m.date, CASE m.slot WHEN 'breakfast' THEN 0 WHEN 'lunch' THEN 1 ELSE 2 END
   `).all(from, to));
   });
 
@@ -38,8 +38,16 @@ module.exports = function registerMealPlan({ app, db, isSlave, demoCleanText, br
     if (!MEAL_DATE_RE.test(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
     if (!MEAL_SLOTS.includes(slot)) return res.status(400).json({ error: 'slot must be breakfast, lunch or dinner' });
     const b = req.body || {};
-    const title = demoCleanText((b.title || '').toString().slice(0, 80), 80).trim();
+    let title = demoCleanText((b.title || '').toString().slice(0, 80), 80).trim();
     const notes = demoCleanText((b.notes || '').toString().slice(0, 300), 300).trim();
+    // A meal can be linked to a recipe (recipe_id; null or a recipe that does not exist = no link). A recipe alone is enough: the meal is then named after it. When the
+    // caller says nothing about a recipe (the wall widget and older apps only send a title) the link is kept as long as the title is not changed.
+    const cur = db.prepare(`SELECT * FROM meals WHERE date = ? AND slot = ?`).get(date, slot);
+    let recipeId = null;
+    if (b.recipe_id !== undefined && b.recipe_id !== null && b.recipe_id !== '') {
+      const rr = db.prepare(`SELECT id, title FROM recipes WHERE id = ?`).get(Number(b.recipe_id));
+      if (rr) { recipeId = rr.id; if (!title) title = demoCleanText(String(rr.title).slice(0, 80), 80).trim(); }
+    } else if (b.recipe_id === undefined && cur && cur.recipe_id && cur.title === title) recipeId = cur.recipe_id;
     if (!title) {
       // Empty title = clear this slot.
       db.prepare(`DELETE FROM meals WHERE date = ? AND slot = ?`).run(date, slot);
@@ -47,11 +55,11 @@ module.exports = function registerMealPlan({ app, db, isSlave, demoCleanText, br
       return res.json({ ok: true, cleared: true });
     }
     db.prepare(`
-    INSERT INTO meals (date, slot, title, notes, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(date, slot) DO UPDATE SET title = excluded.title, notes = excluded.notes, updated_at = excluded.updated_at
-  `).run(date, slot, title, notes);
+    INSERT INTO meals (date, slot, title, notes, recipe_id, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(date, slot) DO UPDATE SET title = excluded.title, notes = excluded.notes, recipe_id = excluded.recipe_id, updated_at = excluded.updated_at
+  `).run(date, slot, title, notes, recipeId);
     broadcastUpdate('meals');
-    res.json(db.prepare(`SELECT * FROM meals WHERE date = ? AND slot = ?`).get(date, slot));
+    res.json(db.prepare(`SELECT m.*, r.title AS recipe_title FROM meals m LEFT JOIN recipes r ON r.id = m.recipe_id WHERE m.date = ? AND m.slot = ?`).get(date, slot));
   }
   // /api/meals/:date defaults to the dinner slot (back-compat with the
   // pre-slots widget/app); /api/meals/:date/:slot is explicit.

@@ -90,6 +90,12 @@ function renderSettings_Build_contentMarkup(_c) {
       </div>
       <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
         <div style="flex:1;padding-right:12px">
+          <label style="margin-bottom:0">Recipes ${infoBtn("Show the Recipes tab in Family Hub: a recipe box with ingredients and steps, a servings scaler, tags, photos and search.")}</label>
+        </div>
+        <input type="checkbox" id="s-recipes-enabled" ${s.recipes_enabled!=='0'?'checked':''} style="width:20px;height:20px;accent-color:var(--accent);flex:0 0 auto">
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <div style="flex:1;padding-right:12px">
           <label style="margin-bottom:0">Reminders ${infoBtn("Show the Reminders tab in Family Hub — manage trash day, recycling, or anything else on a rotating schedule from here, not just from a Reminders widget's own settings.")}</label>
         </div>
         <input type="checkbox" id="s-reminders-enabled" ${s.reminders_enabled!=='0'?'checked':''} style="width:20px;height:20px;accent-color:var(--accent);flex:0 0 auto">
@@ -712,6 +718,13 @@ function renderSettings_Build_contentMarkup(_c) {
           another Shopping list (like Costco) or a To-Do list instead. Alexa also works, using the same underlying
           endpoint but a separate setup — needs its own public HTTPS endpoint and an
           Alexa Developer Console skill (endpoint: <code style="word-break:break-all">${window.location.origin}/api/alexa</code>).
+        </p>
+        <p style="font-size:12px;color:var(--muted);margin-top:10px">
+          <b>Recipes by voice.</b> Build two more Shortcuts the same way, with these addresses (use the same token). To add a recipe's ingredients to your shopping list:
+          <code style="word-break:break-all">${window.location.origin}/api/voice/recipe-ingredients?token=YOUR_TOKEN&amp;recipe=lasagna</code>
+          (add <code>&amp;list=Costco</code> for another shopping list). To start a recipe on a screen:
+          <code style="word-break:break-all">${window.location.origin}/api/voice/cook?token=YOUR_TOKEN&amp;recipe=lasagna&amp;screen=kitchen</code>
+          (leave out the screen if only one is on).
         </p>
       </div>
     </div>

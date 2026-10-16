@@ -49,6 +49,7 @@ module.exports = function registerScreens({ getReachableAddresses, app, PORT, IS
         screensaver_schedule: normaliseSaverSchedule(s.screensaver_schedule),
         presentation_deck_id: s.presentation_deck_id || null,
         presentation_playlist_id: s.presentation_playlist_id || null,
+        presentation_recipe_id: s.presentation_recipe_id || null,
         presentation_mode: s.presentation_mode || '',
         ambient_blur_bg: s.ambient_blur_bg !== '0',
         ambient_fade_duration: s.ambient_fade_duration || '2',

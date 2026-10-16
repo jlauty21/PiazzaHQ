@@ -6,9 +6,14 @@
 // Files live under uploads/decks/<deckId>/ (page: p<pageId>.<ext>, small preview: t<pageId>.jpg). Mirrors copy them with the photos (see syncPhotoFiles
 // in server.js) and receive the two tables in the sync snapshot.
 //
+// A RECIPE can be shown too ("cook it on a screen"): its pages are built here from the recipe, at the servings chosen, as TEXT pages (type 'text': the display draws
+// them itself): a cover, the ingredients (a few per page), one page per step with an optional timer, and a closing page. Which recipe and servings a screen is
+// cooking is stored on the screen (presentation_recipe_id / presentation_recipe_servings), like a deck.
 // Which deck a screen is showing is stored on the screen (screens.presentation_deck_id / presentation_mode: '' stopped, 'auto' timed, 'manual' by hand),
 // so a screen that restarts goes back to its presentation. The page it is on is only held in memory: the display reports it after every change.
 // A screen that belongs to another device (a mirror) is controlled by passing the request on to that device's own server, like the TV buttons.
+const { ingredientDisplay } = require('./recipe-parse');
+
 module.exports = function registerPresentations({ path, fs, app, db, UPLOAD_DIR, multer, broadcastUpdate, sendScreenCommand, DEVICE_ID, PORT, http, URL }) {
   const DECKS_DIR = path.join(UPLOAD_DIR, 'decks');
   const MAX_DECKS = 50;
@@ -202,13 +207,56 @@ module.exports = function registerPresentations({ path, fs, app, db, UPLOAD_DIR,
     }
     return out.slice(0, 1000);
   }
-  function sourceOf(kind, id) {
+  // ── a recipe as pages (text pages the display draws itself) ─────────────────────────────────────────
+  const recipeRow = (id) => db.prepare(`SELECT * FROM recipes WHERE id = ?`).get(id);
+  const INGREDIENTS_PER_PAGE = 9;
+  // The ingredient lines at a scale, with a section title ({ group }) ahead of its lines.
+  function recipeIngredientEntries(r, factor) {
+    const entries = [];
+    let group = '';
+    for (const i of db.prepare(`SELECT * FROM recipe_ingredients WHERE recipe_id = ? ORDER BY position ASC, id ASC`).all(r.id)) {
+      if ((i.group_label || '') !== group) { group = i.group_label || ''; if (group) entries.push({ group }); }
+      entries.push({ text: ingredientDisplay(i, factor) });
+    }
+    return entries;
+  }
+  function recipePagesFlat(r, servings) {
+    const base = Number(r.servings) > 0 ? Number(r.servings) : 4;
+    const factor = servings / base;
+    const text = (extra) => ({ type: 'text', url: '', thumb: '', seconds: 0, fit: 'contain', background: 'black', transition: 'fade', rotation: 0, ...extra });
+    const pages = [text({ kind: 'cover', title: r.title, description: String(r.description || '').slice(0, 300), meta: { servings, prep_min: r.prep_min || 0, cook_min: r.cook_min || 0 }, photo: r.photo ? urlOf(r.photo) : '' })];
+    // ingredients, a few to a page; a section title is never left at the bottom of a page
+    const entries = recipeIngredientEntries(r, factor);
+    const chunks = [];
+    let cur = [];
+    for (const e of entries) {
+      if (cur.length >= INGREDIENTS_PER_PAGE) { const carry = cur[cur.length - 1].group ? [cur.pop()] : []; chunks.push(cur); cur = carry; }
+      cur.push(e);
+    }
+    if (cur.length) chunks.push(cur);
+    chunks.forEach((lines, n) => pages.push(text({ kind: 'ingredients', part: n + 1, parts: chunks.length, lines })));
+    const steps = db.prepare(`SELECT * FROM recipe_steps WHERE recipe_id = ? ORDER BY position ASC, id ASC`).all(r.id);
+    steps.forEach((s, n) => pages.push(text({ kind: 'step', n: n + 1, of: steps.length, body: s.text, timer_sec: s.timer_sec || 0 })));
+    pages.push(text({ kind: 'end', body: String(r.notes || '').slice(0, 600) }));
+    return pages;
+  }
+  const clampServings = (v, dflt) => (Number(v) > 0 ? Math.min(1000, Math.max(0.5, Number(v))) : dflt);
+  function sourceOf(kind, id, servings) {
+    if (kind === 'recipe') {
+      const r = recipeRow(id);
+      if (!r) return null;
+      const want = clampServings(servings, Number(r.servings) > 0 ? Number(r.servings) : 4);
+      // 'pages' is what a remote steps through (and what an older display draws); 'recipe' is the whole recipe for a display that shows ingredients and steps side by side
+      const recipe = { title: r.title, description: String(r.description || '').slice(0, 300), photo: r.photo ? urlOf(r.photo) : '', meta: { servings: want, prep_min: r.prep_min || 0, cook_min: r.cook_min || 0 },
+        ingredients: recipeIngredientEntries(r, want / (Number(r.servings) > 0 ? Number(r.servings) : 4)), notes: String(r.notes || '').slice(0, 600) };
+      return { kind, id: r.id, name: r.title, loop: false, touch: true, timed: false, servings: want, recipe, pages: recipePagesFlat(r, want) };
+    }
     if (kind === 'deck') { const d = deckRow(id); return d ? { kind, id: d.id, name: d.name, loop: !!d.looping, touch: !!d.touch, timed: d.interval_sec > 0, pages: deckPagesFlat(d) } : null; }
     if (kind === 'playlist') { const p = playlistRow(id); return p ? { kind, id: p.id, name: p.name, loop: !!p.looping, touch: !!p.touch, timed: true, pages: playlistPagesFlat(p) } : null; }
     return null;
   }
   app.get('/api/present/:kind/:id', (req, res) => {
-    const src = sourceOf(req.params.kind, req.params.id);
+    const src = sourceOf(req.params.kind, req.params.id, req.query.servings);
     if (!src) return res.status(404).json({ error: 'Presentation not found' });
     res.json(src);
   });
@@ -281,9 +329,9 @@ module.exports = function registerPresentations({ path, fs, app, db, UPLOAD_DIR,
 
   // A deck or playlist is going away: stop any screen showing it and drop it from schedules (and from playlists, for a deck).
   function forgetTarget(kind, id) {
-    const col = kind === 'deck' ? 'presentation_deck_id' : 'presentation_playlist_id';
+    const col = kind === 'deck' ? 'presentation_deck_id' : kind === 'recipe' ? 'presentation_recipe_id' : 'presentation_playlist_id';
     const showing = db.prepare(`SELECT device_id FROM screens WHERE ${col} = ?`).all(id);
-    db.prepare(`UPDATE screens SET ${col} = NULL, presentation_mode = '' WHERE ${col} = ?`).run(id);
+    db.prepare(`UPDATE screens SET ${col} = NULL, presentation_mode = '' WHERE ${col} = ?`).run(id);   // (a recipe's servings stay behind, harmlessly)
     for (const s of showing) { live.delete(s.device_id); sendScreenCommand(s.device_id, 'presentation', { action: 'stop' }); }
     for (const s of db.prepare(`SELECT device_id, presentation_schedule FROM screens`).all()) {
       let rules; try { rules = JSON.parse(s.presentation_schedule || '[]'); } catch { rules = []; }
@@ -338,10 +386,10 @@ module.exports = function registerPresentations({ path, fs, app, db, UPLOAD_DIR,
     const out = [];
     for (const r of raw) {
       if (!r || !HM.test(String(r.start)) || !HM.test(String(r.end)) || r.start === r.end) return null;
-      if (r.kind !== 'deck' && r.kind !== 'playlist') return null;
+      if (r.kind !== 'deck' && r.kind !== 'playlist' && r.kind !== 'recipe') return null;
       if (!sourceOf(r.kind, r.id)) return null;
       const days = Array.isArray(r.days) ? [...new Set(r.days.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort() : [];
-      out.push({ start: r.start, end: r.end, days: days.length === 7 ? [] : days, kind: r.kind, id: Number(r.id) });
+      out.push({ start: r.start, end: r.end, days: days.length === 7 ? [] : days, kind: r.kind, id: Number(r.id), ...(r.kind === 'recipe' && Number(r.servings) > 0 ? { servings: clampServings(r.servings, 4) } : {}) });
     }
     return out;
   }
@@ -349,16 +397,16 @@ module.exports = function registerPresentations({ path, fs, app, db, UPLOAD_DIR,
 
   // What is saved on the screen (the person's own start) and what is showing right now (that, or a scheduled one the display reports).
   function stateOf(s) {
-    let kind = s.presentation_deck_id ? 'deck' : s.presentation_playlist_id ? 'playlist' : null;
-    let ref = kind === 'deck' ? s.presentation_deck_id : kind === 'playlist' ? s.presentation_playlist_id : null;
-    let src = kind ? sourceOf(kind, ref) : null;
+    let kind = s.presentation_deck_id ? 'deck' : s.presentation_playlist_id ? 'playlist' : s.presentation_recipe_id ? 'recipe' : null;
+    let ref = kind === 'deck' ? s.presentation_deck_id : kind === 'playlist' ? s.presentation_playlist_id : kind === 'recipe' ? s.presentation_recipe_id : null;
+    let src = kind ? sourceOf(kind, ref, s.presentation_recipe_servings) : null;
     if (kind && !src) {   // gone (deleted on the host): no longer presenting
-      db.prepare(`UPDATE screens SET presentation_deck_id = NULL, presentation_playlist_id = NULL, presentation_mode = '' WHERE device_id = ?`).run(s.device_id);
+      db.prepare(`UPDATE screens SET presentation_deck_id = NULL, presentation_playlist_id = NULL, presentation_recipe_id = NULL, presentation_mode = '' WHERE device_id = ?`).run(s.device_id);
       live.delete(s.device_id); kind = null; ref = null;
     }
     const l = live.get(s.device_id);
     const fresh = l && Date.now() - l.at < LIVE_FRESH_MS;
-    const out = { kind, ref_id: ref, deck_id: kind === 'deck' ? ref : null, playlist_id: kind === 'playlist' ? ref : null, schedule: scheduleOf(s), active: false, source: '', mode: '', playing: false, index: 0, page_count: 0, name: '', deck_name: '' };
+    const out = { kind, ref_id: ref, deck_id: kind === 'deck' ? ref : null, playlist_id: kind === 'playlist' ? ref : null, recipe_id: kind === 'recipe' ? ref : null, servings: src && src.servings ? src.servings : null, schedule: scheduleOf(s), active: false, source: '', mode: '', playing: false, index: 0, page_count: 0, name: '', deck_name: '' };
     if (src) {
       const mode = MODES.includes(s.presentation_mode) ? s.presentation_mode : 'manual';
       const m = fresh && l.mode ? l.mode : mode;
@@ -381,46 +429,44 @@ module.exports = function registerPresentations({ path, fs, app, db, UPLOAD_DIR,
     res.json(stateOf(s));
   });
 
-  app.post('/api/screens/:deviceId/presentation', async (req, res) => {
-    const s = screenRow(req.params.deviceId);
-    if (!s) return res.status(404).json({ error: 'Screen not found' });
-    const b = req.body || {};
+  async function screenAction(s, b) {
+    b = b || {};
     const action = String(b.action || '');
-    if (!['start', 'stop', 'next', 'prev', 'goto', 'play', 'pause', 'rotate'].includes(action)) return res.status(400).json({ error: 'Unknown presentation action.' });
+    if (!['start', 'stop', 'next', 'prev', 'goto', 'play', 'pause', 'rotate'].includes(action)) return { status: 400, body: { error: 'Unknown presentation action.' } };
     if (isRemoteScreen(s)) {
       const base = remoteBase(s);
-      if (!base || !screenSeenRecently(s)) return res.status(502).json({ error: 'This screen is offline.' });
-      try { return res.json(await sendJson('POST', `${base}/api/screens/${encodeURIComponent(s.device_id)}/presentation`, b, 8000)); }
-      catch (e) { return res.status(502).json({ error: 'Could not reach this screen: ' + e.message }); }
+      if (!base || !screenSeenRecently(s)) return { status: 502, body: { error: 'This screen is offline.' } };
+      try { return { status: 200, body: await sendJson('POST', `${base}/api/screens/${encodeURIComponent(s.device_id)}/presentation`, b, 8000) }; }
+      catch (e) { return { status: 502, body: { error: 'Could not reach this screen: ' + e.message } }; }
     }
     const cmd = { action };
     const cur = stateOf(s);
     if (action === 'start') {
-      const kind = b.kind === 'playlist' ? 'playlist' : 'deck';
+      const kind = b.kind === 'playlist' ? 'playlist' : b.kind === 'recipe' ? 'recipe' : 'deck';
       const id = b.kind ? b.id : b.deck_id;           // deck_id: how it was asked for before playlists existed
-      const src = sourceOf(kind, id);
-      if (!src) return res.status(404).json({ error: 'Presentation not found' });
-      if (!src.pages.length) return res.status(400).json({ error: kind === 'deck' ? 'That presentation has no pages yet.' : 'That playlist has nothing to show yet.' });
+      const src = sourceOf(kind, id, b.servings);
+      if (!src) return { status: 404, body: { error: kind === 'recipe' ? 'That recipe no longer exists.' : 'Presentation not found' } };
+      if (!src.pages.length) return { status: 400, body: { error: kind === 'deck' ? 'That presentation has no pages yet.' : 'That playlist has nothing to show yet.' } };
       const mode = MODES.includes(b.mode) ? b.mode : (src.timed ? 'auto' : 'manual');
       const index = clampInt(b.index, 0, src.pages.length - 1, 0);
-      db.prepare(`UPDATE screens SET presentation_deck_id = ?, presentation_playlist_id = ?, presentation_mode = ? WHERE device_id = ?`).run(kind === 'deck' ? src.id : null, kind === 'playlist' ? src.id : null, mode, s.device_id);
+      db.prepare(`UPDATE screens SET presentation_deck_id = ?, presentation_playlist_id = ?, presentation_recipe_id = ?, presentation_recipe_servings = ?, presentation_mode = ? WHERE device_id = ?`).run(kind === 'deck' ? src.id : null, kind === 'playlist' ? src.id : null, kind === 'recipe' ? src.id : null, kind === 'recipe' ? src.servings : null, mode, s.device_id);
       live.set(s.device_id, { index, mode, kind, ref: src.id, name: src.name, count: src.pages.length, source: 'manual', at: Date.now() });
-      Object.assign(cmd, { kind, id: src.id, deck_id: kind === 'deck' ? src.id : undefined, mode, index });
+      Object.assign(cmd, { kind, id: src.id, deck_id: kind === 'deck' ? src.id : undefined, servings: kind === 'recipe' ? src.servings : undefined, mode, index });
     } else if (action === 'stop') {
-      db.prepare(`UPDATE screens SET presentation_deck_id = NULL, presentation_playlist_id = NULL, presentation_mode = '' WHERE device_id = ?`).run(s.device_id);
+      db.prepare(`UPDATE screens SET presentation_deck_id = NULL, presentation_playlist_id = NULL, presentation_recipe_id = NULL, presentation_mode = '' WHERE device_id = ?`).run(s.device_id);
       live.delete(s.device_id);
     } else {
-      if (!cur.active) return res.status(409).json({ error: 'This screen is not showing a presentation.' });
+      if (!cur.active) return { status: 409, body: { error: 'This screen is not showing a presentation.' } };
       const l = live.get(s.device_id) || { index: 0, mode: cur.mode };
       if (action === 'goto') { cmd.index = clampInt(b.index, 0, Math.max(0, cur.page_count - 1), 0); live.set(s.device_id, { ...l, index: cmd.index, at: Date.now() }); }
       if (action === 'rotate') {
         // Turn the page that is on screen now (by default a quarter turn clockwise). A page of a presentation keeps its new turn; a photo in a playlist
         // is only turned for as long as it is up.
         const by = [90, -90, 180, 270].includes(Number(b.by)) ? Number(b.by) : 90;
-        const src = sourceOf(cur.active_kind, cur.active_ref);
+        const src = sourceOf(cur.active_kind, cur.active_ref, cur.servings);
         const index = Math.min(l.index || 0, Math.max(0, (src ? src.pages.length : 1) - 1));
         const pg = src && src.pages[index];
-        if (!pg) return res.status(409).json({ error: 'There is no page to turn.' });
+        if (!pg) return { status: 409, body: { error: 'There is no page to turn.' } };
         const to = (((Number(pg.rotation) || 0) + by) % 360 + 360) % 360;
         Object.assign(cmd, { index, rotation: to });
         if (pg.pageId) { db.prepare(`UPDATE deck_pages SET rotation = ? WHERE id = ?`).run(to, pg.pageId); broadcastUpdate('decks'); }
@@ -433,7 +479,13 @@ module.exports = function registerPresentations({ path, fs, app, db, UPLOAD_DIR,
     }
     const delivered = sendScreenCommand(s.device_id, 'presentation', cmd);
     broadcastUpdate('screens');
-    res.json({ ok: true, delivered, state: stateOf(screenRow(s.device_id)) });
+    return { status: 200, body: { ok: true, delivered, state: stateOf(screenRow(s.device_id)) } };
+  }
+  app.post('/api/screens/:deviceId/presentation', async (req, res) => {
+    const s = screenRow(req.params.deviceId);
+    if (!s) return res.status(404).json({ error: 'Screen not found' });
+    const out = await screenAction(s, req.body);
+    res.status(out.status).json(out.body);
   });
 
   // The display says where it is (after every page change, and when it ends or is paused by touch), so the remote shows the right page. A scheduled
@@ -443,10 +495,10 @@ module.exports = function registerPresentations({ path, fs, app, db, UPLOAD_DIR,
     if (!s) return res.status(404).json({ error: 'Screen not found' });
     const b = req.body || {};
     const source = b.source === 'schedule' ? 'schedule' : 'manual';
-    const persisted = !!(s.presentation_deck_id || s.presentation_playlist_id);
+    const persisted = !!(s.presentation_deck_id || s.presentation_playlist_id || s.presentation_recipe_id);
     if (source === 'manual' && !persisted) return res.json({ ok: true });
     const mode = MODES.includes(b.mode) ? b.mode : (s.presentation_mode || 'manual');
-    live.set(s.device_id, { index: clampInt(b.index, 0, 100000, 0), mode, kind: b.kind === 'playlist' ? 'playlist' : 'deck', ref: Number(b.ref) || null, name: cleanName(b.name), count: clampInt(b.count, 0, 100000, 0), source, at: Date.now() });
+    live.set(s.device_id, { index: clampInt(b.index, 0, 100000, 0), mode, kind: b.kind === 'playlist' ? 'playlist' : b.kind === 'recipe' ? 'recipe' : 'deck', ref: Number(b.ref) || null, name: cleanName(b.name), count: clampInt(b.count, 0, 100000, 0), source, at: Date.now() });
     if (source === 'manual' && mode !== s.presentation_mode) db.prepare(`UPDATE screens SET presentation_mode = ? WHERE device_id = ?`).run(mode, s.device_id);
     res.json({ ok: true });
   });
@@ -486,4 +538,6 @@ module.exports = function registerPresentations({ path, fs, app, db, UPLOAD_DIR,
     sendScreenCommand(s.device_id, 'presentation', { action: 'refresh' });
     res.json({ ok: true, schedule: clean });
   });
+
+  return { forgetTarget, screenAction, screenRow, screenSeenRecently };       // the recipes module calls this when a recipe is deleted
 };

@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="google" content="notranslate"><!-- the app translates itself (see js/shared/i18n.js); Chrome must not offer to translate it as well -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recipe</title>
+<script src="/js/shared/i18n.js"></script>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #fff; color: #161a22; font: 17px/1.5 Georgia, 'Times New Roman', serif; }
+  .bar { position: sticky; top: 0; z-index: 2; display: flex; gap: 8px; align-items: center; padding: 10px 14px; background: #f2f4f8; border-bottom: 1px solid #d5dae3; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  .bar button { font: inherit; font-size: 15px; font-weight: 600; padding: 9px 14px; border-radius: 9px; border: 1px solid #c3cad8; background: #fff; color: #161a22; cursor: pointer; }
+  .bar button.primary { background: #2f6fbd; border-color: #2f6fbd; color: #fff; }
+  .bar a.btn { font: inherit; font-size: 15px; font-weight: 600; padding: 9px 14px; border-radius: 9px; border: 1px solid #c3cad8; background: #fff; color: #161a22; text-decoration: none; }
+  .bar a.btn.primary { background: #2f6fbd; border-color: #2f6fbd; color: #fff; }
+  .bar button.primary.demoted { background: #fff; border-color: #c3cad8; color: #161a22; }
+  #tip { display: none; margin: 10px 14px 0; padding: 10px 12px; border-radius: 9px; background: #eef4fc; color: #24456b; font: 14px/1.4 system-ui, -apple-system, sans-serif; }
+  .grow { flex: 1; }
+  #sheet { max-width: 780px; margin: 0 auto; padding: 22px 20px 48px; }
+  #msg { color: #5b6477; font-family: system-ui, sans-serif; }
+  .pr-photo { display: block; width: 100%; max-height: 300px; object-fit: cover; border-radius: 10px; margin: 0 0 14px; }
+  h1 { font-size: 30px; line-height: 1.15; margin: 0 0 6px; }
+  h2 { font: 700 13px/1 system-ui, -apple-system, 'Segoe UI', sans-serif; text-transform: uppercase; letter-spacing: 0.08em; color: #5b6477; margin: 26px 0 10px; border-bottom: 1px solid #d5dae3; padding-bottom: 6px; }
+  .pr-desc { color: #3b4254; margin: 0 0 10px; white-space: pre-wrap; }
+  .pr-meta { display: flex; gap: 16px; flex-wrap: wrap; font: 15px/1.3 system-ui, -apple-system, 'Segoe UI', sans-serif; color: #3b4254; margin: 6px 0 0; }
+  .pr-meta .lbl { font-weight: 700; color: #5b6477; }
+  ul.pr-ing { list-style: none; margin: 0; padding: 0; }
+  ul.pr-ing li { padding: 5px 0; border-bottom: 1px dotted #c9cfdb; }
+  ul.pr-ing li.grp { font: 700 15px/1.3 system-ui, -apple-system, 'Segoe UI', sans-serif; border-bottom: none; padding: 12px 0 2px; }
+  ol.pr-steps { margin: 0; padding-left: 1.4em; }
+  ol.pr-steps li { padding: 5px 0 8px 4px; }
+  .pr-notes { white-space: pre-wrap; background: #f6f7fa; border-radius: 8px; padding: 10px 12px; }
+  .pr-src { margin-top: 18px; font: 14px/1.3 system-ui, -apple-system, 'Segoe UI', sans-serif; color: #5b6477; }
+  #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: #161a22; color: #fff; padding: 10px 16px; border-radius: 10px; font: 15px system-ui, sans-serif; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.on { opacity: 1; }
+  @media print {
+    .bar, #toast, #tip { display: none !important; }
+    body { font-size: 12pt; }
+    #sheet { max-width: none; padding: 0; }
+    ul.pr-ing li, ol.pr-steps li { break-inside: avoid; }
+    .pr-photo { max-height: 200px; }
+  }
+</style>
+</head>
+<body>
+<div class="bar"><button id="back">‹ Back</button><span class="grow"></span><button id="print" class="primary">Print</button><a id="pdf" class="btn" href="#">Download PDF</a><button id="share" hidden>Share</button><button id="copy">Copy text</button></div>
+<div id="tip" role="note">On an iPhone, tap Download PDF, then the share button and Print.</div>
+<div id="sheet"><p id="msg">Loading…</p></div>
+<div id="toast" role="status"></div>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var q = new URLSearchParams(location.search);
+  var id = Number(q.get('id')), servings = Number(q.get('servings')) || 0, auto = q.get('auto') === '1';
+  var COURSES = { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Dinner', appetizer: 'Appetizer', main: 'Main dish', side: 'Side dish', soup: 'Soup', salad: 'Salad', dessert: 'Dessert', drink: 'Drink', snack: 'Snack' };
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+  function say(text) { var t = $('toast'); t.textContent = text; t.classList.add('on'); clearTimeout(say.timer); say.timer = setTimeout(function () { t.classList.remove('on'); }, 1800); }
+  function fact(label, value, unit) { var s = el('span'); s.appendChild(el('span', 'lbl', label)); s.appendChild(document.createTextNode(' ' + value + (unit ? ' ' : ''))); if (unit) s.appendChild(el('span', '', unit)); return s; }
+
+  // Back: this page opens in a new tab from the recipe, so closing that tab is the way back to exactly where the recipe was. If it was opened in the same tab
+  // (pop-ups blocked) go back in history (only when a page of ours sent us here); if there is nothing to go back to, reopen the app on the Recipes screen (the recipe that was open comes back open).
+  var from = q.get('from') || '';
+  function leave() {
+    try {
+      localStorage.setItem('rcp_view_v1', JSON.stringify({ id: id, servings: servings || 0, at: Date.now() }));
+      localStorage.setItem('hub_active_tab', 'home'); localStorage.setItem('hub_active_subtab', 'recipes');
+      if (from && !/^\/hub(\?|$)/.test(from)) { localStorage.setItem('family_hub_subtab', 'recipes'); localStorage.setItem('pull_refresh_return_tab', 'family'); }
+    } catch (e) { /* storage unavailable: the app opens where it opens */ }
+    location.href = /^\/[^\/\\]/.test(from) ? from : '/hub';
+  }
+  $('back').addEventListener('click', function () {
+    if (window.opener) { try { window.close(); } catch (e) { /* not ours to close */ } setTimeout(function () { if (!window.closed) leave(); }, 300); return; }
+    var ref = ''; try { ref = document.referrer && new URL(document.referrer).origin === location.origin ? document.referrer : ''; } catch (e) { ref = ''; }
+    if (ref && history.length > 1) history.back(); else leave();     // came from a page of ours: back to it; opened cold: reopen the app on Recipes
+  });
+  // The PDF is the dependable way to print from a phone: it opens in the phone's own viewer, where Share and Print always work (a page on the home network has no share sheet, and Safari
+  // does not always open its print dialog). Safari gets it as the main button, with a one-line how-to.
+  $('pdf').href = '/api/recipes/' + id + '/pdf' + (servings ? '?servings=' + encodeURIComponent(servings) : '');
+  var onSafari = /safari/i.test(navigator.userAgent) && !/chrome|chromium|crios|fxios|edg|android/i.test(navigator.userAgent);
+  if (onSafari) { $('pdf').classList.add('primary'); $('print').classList.add('demoted'); $('print').classList.remove('primary'); if (/iphone|ipad|ipod/i.test(navigator.userAgent)) $('tip').style.display = 'block'; }
+  $('print').addEventListener('click', function () { try { window.print(); } catch (e) { say('Printing is not available here. Try Share or Copy text.'); } });
+  if (navigator.share) { $('share').hidden = false; $('share').addEventListener('click', function () { navigator.share({ title: document.title, text: $('sheet').innerText }).catch(function () { /* cancelled */ }); }); }
+  $('copy').addEventListener('click', function () {
+    var text = $('sheet').innerText;
+    function fallback() { var ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); say('Copied'); } catch (e) { say('Could not copy'); } ta.remove(); }
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { say('Copied'); }, fallback); else fallback();
+  });
+
+  function render(r) {
+    var sheet = $('sheet'); sheet.textContent = '';
+    document.title = r.title;
+    if (r.photo) { var im = el('img', 'pr-photo'); im.alt = ''; im.src = r.photo; sheet.appendChild(im); }
+    sheet.appendChild(el('h1', '', r.title));
+    if (r.description) sheet.appendChild(el('p', 'pr-desc', r.description));
+    var meta = el('div', 'pr-meta');
+    if (r.course && COURSES[r.course]) meta.appendChild(el('span', '', COURSES[r.course]));
+    meta.appendChild(fact('Servings', String(Math.round(r.servings * 100) / 100)));
+    if (r.prep_min) meta.appendChild(fact('Prep', String(r.prep_min), 'min'));
+    if (r.cook_min) meta.appendChild(fact('Cook', String(r.cook_min), 'min'));
+    sheet.appendChild(meta);
+    if (r.ingredients.length) {
+      sheet.appendChild(el('h2', '', 'Ingredients'));
+      var ul = el('ul', 'pr-ing'), group = '';
+      r.ingredients.forEach(function (i) {
+        if (i.group_label && i.group_label !== group) ul.appendChild(el('li', 'grp', i.group_label));
+        group = i.group_label || '';
+        ul.appendChild(el('li', '', i.display));
+      });
+      sheet.appendChild(ul);
+    }
+    if (r.steps.length) {
+      sheet.appendChild(el('h2', '', 'Steps'));
+      var ol = el('ol', 'pr-steps');
+      r.steps.forEach(function (s) { ol.appendChild(el('li', '', s.text)); });
+      sheet.appendChild(ol);
+    }
+    if (r.notes) { sheet.appendChild(el('h2', '', 'Notes')); sheet.appendChild(el('div', 'pr-notes', r.notes)); }
+    if (r.source_name || r.source_url) { var src = el('div', 'pr-src'); src.appendChild(el('span', '', 'Source')); src.appendChild(document.createTextNode(': ' + (r.source_name || r.source_url) + (r.source_name && r.source_url ? ' (' + r.source_url + ')' : ''))); sheet.appendChild(src); }
+    // Safari (an iPhone, an iPad, a Mac) refuses a print that no tap asked for ("blocked for automatic printing") and can then ignore the real button too, so there the page just waits for the Print button.
+    if (auto && !onSafari) setTimeout(function () { try { window.print(); } catch (e) { /* the Print button is there */ } }, 500);
+  }
+
+  if (!id) { $('msg').textContent = 'The recipe could not be loaded.'; $('pdf').style.display = 'none'; return; }
+  fetch('/api/recipes/' + id + (servings ? '?servings=' + encodeURIComponent(servings) : ''), { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+    .then(render)
+    .catch(function () { $('msg').textContent = 'The recipe could not be loaded.'; });
+})();
+</script>
+</body>
+</html>

@@ -223,8 +223,9 @@ function connectLiveUpdates() {
         renderLayout();
         applyBackground();
       }
-    } else if (topic === 'decks' || topic === 'playlists') {
+    } else if (topic === 'decks' || topic === 'playlists' || topic === 'recipes') {
       if (window.presentationDecksChanged) window.presentationDecksChanged();
+      if (topic === 'recipes' && typeof rcwReset === 'function') rcwReset();
     } else if (topic === 'photos') {
       if (window.presentationDecksChanged) window.presentationDecksChanged();
       await fetchPhotos();

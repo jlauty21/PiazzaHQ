@@ -185,6 +185,49 @@ async function drawWidgetSettingsPanel_Build_mealplan(_c) {
     `;
 }
 
+async function drawWidgetSettingsPanel_Build_recipe(_c) {
+  const { w, _st } = _c;
+    // Parallel copy of display.html's renderRecipeAdvancedSettings — keep in sync.
+    const mode = w.rcMode === 'chosen' ? 'chosen' : 'tonight';
+    const slot = ['breakfast', 'lunch', 'dinner'].includes(w.rcSlot) ? w.rcSlot : 'dinner';
+    const show = ['ingredients', 'steps', 'both'].includes(w.rcShow) ? w.rcShow : 'ingredients';
+    const fontPx = w.rcFontPx || 15;
+    let list = []; try { list = await apiFetch('/api/recipes'); } catch {}
+    if (!Array.isArray(list)) list = [];
+    const o = (v, label, cur) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${label}</option>`;
+    _st.typeSpecificHtml = `
+      <div class="settings-row">
+        <label>Which recipe</label>
+        <select class="form-input" id="rcw-mode">${o('tonight', "The meal plan's recipe for today", mode)}${o('chosen', 'One chosen recipe', mode)}</select>
+      </div>
+      <div class="settings-row" id="rcw-slot-row" ${mode === 'tonight' ? '' : 'style="display:none"'}>
+        <label>Which meal</label>
+        <select class="form-input" id="rcw-slot">${o('breakfast', 'Breakfast', slot)}${o('lunch', 'Lunch', slot)}${o('dinner', 'Dinner', slot)}</select>
+        <p style="font-size:11px;color:var(--muted);margin:6px 0 0">Shows the recipe linked to today's meal, and changes by itself as the meal plan does. Link a recipe to a meal from Family Hub → Meals or a recipe's Plan a meal.</p>
+      </div>
+      <div class="settings-row" id="rcw-recipe-row" ${mode === 'chosen' ? '' : 'style="display:none"'}>
+        <label>Recipe</label>
+        <select class="form-input" id="rcw-recipe"><option value="">Choose a recipe…</option>${list.map(r => `<option value="${r.id}" ${Number(w.rcId) === r.id ? 'selected' : ''}>${escapeHtml(r.title)}</option>`).join('')}</select>
+      </div>
+      <div class="settings-row">
+        <label>Show</label>
+        <select class="form-input" id="rcw-show">${o('ingredients', 'The ingredients', show)}${o('steps', 'The steps', show)}${o('both', 'Ingredients and steps', show)}</select>
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show the picture</label>
+        <input type="checkbox" id="rcw-photo" ${w.rcShowPhoto === false ? '' : 'checked'} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <div class="settings-row">
+        <label>Font Size (px)</label>
+        <div class="range-row">
+          <input type="range" id="rcw-font-range" min="10" max="40" step="1" value="${fontPx}">
+          <span class="range-val" id="rcw-font-val">${fontPx}px</span>
+        </div>
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">The Cook button on the widget starts the recipe on the screen it is shown on.</p>
+    `;
+}
+
 async function drawWidgetSettingsPanel_Build_flightmap(_c) {
   const { w, _st } = _c;
     // Parallel copy of display.html's renderFlightMapAdvancedSettings — keep in sync.

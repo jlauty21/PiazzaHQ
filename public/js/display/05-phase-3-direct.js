@@ -466,6 +466,7 @@ const WIDGET_BASIC_SETTINGS = {
   chorelb:       { fontField: 'lbFontPx',       fontDefault: 15, fontMin: 8,  fontMax: 80, fontStep: 1, titleField: 'lbTitle', titlePlaceholder: 'Chore Leaderboard' },
   messageboard:  { fontField: 'mbFontPx',       fontDefault: 14, fontMin: 10, fontMax: 40, fontStep: 1 },
   mealplan:      { fontField: 'mpFontPx',       fontDefault: 15, fontMin: 10, fontMax: 36, fontStep: 1 },
+  recipe:        { fontField: 'rcFontPx',       fontDefault: 15, fontMin: 10, fontMax: 40, fontStep: 1 },
   flightmap:     { fontField: 'fmFontPx',       fontDefault: 13, fontMin: 9,  fontMax: 28, fontStep: 1 },
   countdown:     { fontField: 'cdFontPx',       fontDefault: 22, fontMin: 8,  fontMax: 100, fontStep: 1, titleField: 'cdTitle', titlePlaceholder: 'Countdown' },
   moonphase:     { fontField: 'mpFontPx',       fontDefault: 20, fontMin: 8,  fontMax: 80,  fontStep: 1 },
@@ -783,7 +784,7 @@ function rerenderSingleWidget(id) {
   // replaced DOM. All idempotent (each checks its own _tapWired flag before
   // attaching), so calling them broadly here is safe and simpler than
   // scoping each one to just this element.
-  wireChoreChartTaps(); wireMessageBoardTaps(); wireMealPlanTaps(); wireCameraStreams(); wireCameraTaps(); wireFlightMaps(); wireTodoWidgetTaps(); wireShoppingWidgetTaps(); wireTasksWidgetTaps(); wireMiniCalNav(); wireEntityStatusTaps(); wireHaSparklines(); wireLayoutSwitcherTaps(); wireWeatherComboTabTaps(); wireEventDetailTaps();
+  wireChoreChartTaps(); wireMessageBoardTaps(); wireMealPlanTaps(); wireRecipeWidgetTaps(); wireCameraStreams(); wireCameraTaps(); wireFlightMaps(); wireTodoWidgetTaps(); wireShoppingWidgetTaps(); wireTasksWidgetTaps(); wireMiniCalNav(); wireEntityStatusTaps(); wireHaSparklines(); wireLayoutSwitcherTaps(); wireWeatherComboTabTaps(); wireEventDetailTaps();
   // QR codes are generated into their container by a separate pass after
   // any render (renderQRCodes(), normally run after a full renderLayout())
   // — innerHTML alone only creates an empty .qr-container div, so without
@@ -854,7 +855,7 @@ async function deleteWidget(id) {
 // separately-built settings UI ported field-for-field from app.html's own
 // drawWidgetSettingsPanel(), not a generic renderer. Add to this list only
 // alongside actually building that type's render/wire functions.
-const WIDGET_ADVANCED_TYPES = ['webpage', 'minical', 'weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast', 'todo', 'shoppinglist', 'chorechart', 'chorelb', 'countdown', 'radar', 'qrcode', 'timer', 'moonphase', 'airquality', 'onthisday', 'dailyquote', 'metar', 'clock', 'date', 'news', 'stocks', 'travel', 'sports', 'text', 'decoration', 'upcoming', 'today', 'agenda', 'photo', 'tasks', 'tasksCombined', 'entitystatus', 'smarthomeDashboard', 'groupcontrol', 'messageboard', 'mealplan', 'camera', 'flightmap'];
+const WIDGET_ADVANCED_TYPES = ['webpage', 'minical', 'weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast', 'todo', 'shoppinglist', 'chorechart', 'chorelb', 'countdown', 'radar', 'qrcode', 'timer', 'moonphase', 'airquality', 'onthisday', 'dailyquote', 'metar', 'clock', 'date', 'news', 'stocks', 'travel', 'sports', 'text', 'decoration', 'upcoming', 'today', 'agenda', 'photo', 'tasks', 'tasksCombined', 'entitystatus', 'smarthomeDashboard', 'groupcontrol', 'messageboard', 'mealplan', 'recipe', 'camera', 'flightmap'];
 
 function openWidgetSettingsPanel(id) {
   const w = state.layout.find(x => String(x.id) === String(id));
@@ -1303,6 +1304,10 @@ async function openWidgetAdvancedPanel(id) {
     title.textContent = 'Message Board Settings';
     body.innerHTML = renderMessageBoardAdvancedSettings(w);
     wireMessageBoardAdvancedSettings(w);
+  } else if (w.type === 'recipe') {
+    title.textContent = 'Recipe Settings';
+    body.innerHTML = renderRecipeAdvancedSettings(w);
+    wireRecipeAdvancedSettings(w);
   } else if (w.type === 'mealplan') {
     title.textContent = 'Meal Plan Settings';
     body.innerHTML = renderMealPlanAdvancedSettings(w);

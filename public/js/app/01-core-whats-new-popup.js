@@ -30,6 +30,10 @@ let currentTab = getDefaultTab();
 // version bump with no entry here just won't trigger a popup for it,
 // silently (not an error), so it's fine to skip purely-internal versions.
 const RELEASE_NOTES = {
+  '1.93.0': [
+    'New: Recipes. Keep your family’s recipes in the Family Hub: type them in or import them from a web address, search and filter by course or tag, scale the servings, add the ingredients to your shopping list, and put a recipe on the meal plan. Cook on any screen with the ingredients and steps side by side, step timers and a text size control, or show tonight’s dinner on the wall with the new Recipe widget. Print a recipe or save it as a PDF from your phone, ask Siri to add the ingredients or start a recipe, and share your favorites with other Piazza HQ households in the new Community library.',
+    'Other minor security and bug improvements.',
+  ],
   '1.92.3': [
     'New: Presentations. Show a PDF, a slide deck, a menu or a set of pictures full screen on any display. In the app, go to Photos → Presentations and upload a PDF or pictures (from PowerPoint, Keynote or Google Slides, use File → Export → PDF first). Step through by hand, by tapping or swiping the screen, or let it run on its own.',
     'New: control a presentation from anywhere. Start, step, pause and stop it from the app, from a full-screen controller that turns your phone or tablet into a clicker (with Now and Next previews, big buttons, and an option to open it as soon as you start), or from a simple page at /remote. Add schedules (for example a menu from 11:00 to 14:00 on weekdays) and playlists that chain presentations and photos together.',

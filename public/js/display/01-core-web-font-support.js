@@ -895,6 +895,7 @@ function renderLayout() {
   requestAnimationFrame(wireChoreChartTaps);
   requestAnimationFrame(wireMessageBoardTaps);
   requestAnimationFrame(wireMealPlanTaps);
+  requestAnimationFrame(wireRecipeWidgetTaps);
   requestAnimationFrame(wireCameraStreams);
   requestAnimationFrame(wireCameraTaps);
   requestAnimationFrame(wireFlightMaps);
@@ -1095,6 +1096,7 @@ function renderWidget(w) {
     case 'shoppinglist': return renderShoppingListWidget(w);
     case 'messageboard': return renderMessageBoard(w);
     case 'mealplan': return renderMealPlan(w);
+    case 'recipe': return renderRecipeWidget(w);
     case 'camera': return renderCamera(w);
     case 'flightmap': return renderFlightMap(w);
     case 'countdown': return renderCountdown(w);

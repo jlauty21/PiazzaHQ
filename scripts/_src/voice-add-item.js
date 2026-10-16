@@ -96,9 +96,10 @@ module.exports = function registerVoiceAddItem({ crypto, app, db, broadcastUpdat
   //      who'd rather not have the token sitting in a URL for other reasons.
   // Whichever path supplies a token, it's checked identically via
   // timingSafeEqual against the configured voice_token.
-  function voiceAddItemHandler(req, res) {
+  // true when the request carries the right token; otherwise the error answer has been sent and it is false
+  function voiceAuth(req, res) {
     const configuredToken = getSetting('voice_token');
-    if (!configuredToken) return res.status(403).json({ error: 'Voice control isn\'t set up yet — generate a token in Settings first.' });
+    if (!configuredToken) { res.status(403).json({ error: 'Voice control isn\'t set up yet — generate a token in Settings first.' }); return false; }
 
     const authHeader = req.headers['authorization'] || '';
     const headerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
@@ -124,8 +125,12 @@ module.exports = function registerVoiceAddItem({ crypto, app, db, broadcastUpdat
       crypto.timingSafeEqual(configuredBuf, configuredBuf); // dummy same-length compare, for constant-ish time
       isValid = false;
     }
-    if (!isValid) return res.status(401).json({ error: 'Invalid token' });
+    if (!isValid) { res.status(401).json({ error: 'Invalid token' }); return false; }
 
+    return true;
+  }
+  function voiceAddItemHandler(req, res) {
+    if (!voiceAuth(req, res)) return;
     const text = req.query.text || (req.body && req.body.text);
     const list = req.query.list || (req.body && req.body.list);
     const result = addVoiceItem(text, list);
@@ -134,5 +139,5 @@ module.exports = function registerVoiceAddItem({ crypto, app, db, broadcastUpdat
   }
   app.get('/api/voice/add-item', voiceAddItemHandler);
   app.post('/api/voice/add-item', voiceAddItemHandler);
-  return { addVoiceItem };
+  return { addVoiceItem, voiceAuth };
 };

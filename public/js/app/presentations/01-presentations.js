@@ -133,7 +133,7 @@ async function presImportFiles(files, { deckId = '', quality = 'standard', exist
 }
 
 // ── state ────────────────────────────────────────────────────────────────────────────────────────────────
-let presDecks = [], presPlaylists = [], presScreens = [], presStates = {}, presPollTimer = null, presEditId = '', presPlEditId = '';
+let presDecks = [], presPlaylists = [], presRecipes = [], presScreens = [], presStates = {}, presPollTimer = null, presEditId = '', presPlEditId = '';
 const presEligibleScreens = () => presScreens.filter((s) => s.name && s.online && !String(s.device_id).startsWith('preview_'));   // a screen that is off is not worth listing (or waiting for)
 function stopPresPolling() { if (presPollTimer) { clearInterval(presPollTimer); presPollTimer = null; } }
 const presVisible = () => currentTab === 'photos' && photosSubtab() === 'presentations' && !presEditId && !presPlEditId;
@@ -144,7 +144,8 @@ async function renderPresentations() {
   stopPresPolling();
   if (presEditId) return renderDeckEditor(presEditId);
   if (presPlEditId) return renderPlaylistEditor(presPlEditId);
-  [presDecks, presPlaylists, presScreens] = await Promise.all([apiFetch('/api/decks').catch(() => []), apiFetch('/api/playlists').catch(() => []), apiFetch('/api/screens').catch(() => [])]);
+  [presDecks, presPlaylists, presScreens, presRecipes] = await Promise.all([apiFetch('/api/decks').catch(() => []), apiFetch('/api/playlists').catch(() => []), apiFetch('/api/screens').catch(() => []), apiFetch('/api/recipes').catch(() => [])]);
+  if (!Array.isArray(presRecipes)) presRecipes = [];
   if (!Array.isArray(presDecks)) presDecks = [];
   if (!Array.isArray(presPlaylists)) presPlaylists = [];
   if (!Array.isArray(presScreens)) presScreens = [];
@@ -308,11 +309,11 @@ async function presControl(deviceId, body) {
   setTimeout(() => { if (presVisible()) pollPresStates().then(() => renderRemote()); }, 1500);      // confirm with a fresh read
   return r;
 }
-// What can be started: presentations with pages, and playlists with something in them. Value "deck:5" / "playlist:3".
+// What can be started: presentations with pages, playlists with something in them, and recipes (cooked at their own servings). Value "deck:5" / "playlist:3" / "recipe:9".
 const presTargetOptions = (cur) => {
-  const decks = presDecks.filter((d) => d.page_count), lists = presPlaylists.filter((p) => p.page_count);
+  const decks = presDecks.filter((d) => d.page_count), lists = presPlaylists.filter((p) => p.page_count), recs = presRecipes;
   const o = (v, label) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-  return (decks.length ? `<optgroup label="Presentations">${decks.map((d) => o('deck:' + d.id, d.name)).join('')}</optgroup>` : '') + (lists.length ? `<optgroup label="Playlists">${lists.map((p) => o('playlist:' + p.id, p.name)).join('')}</optgroup>` : '');
+  return (decks.length ? `<optgroup label="Presentations">${decks.map((d) => o('deck:' + d.id, d.name)).join('')}</optgroup>` : '') + (lists.length ? `<optgroup label="Playlists">${lists.map((p) => o('playlist:' + p.id, p.name)).join('')}</optgroup>` : '') + (recs.length ? `<optgroup label="Recipes">${recs.map((r) => o('recipe:' + r.id, r.title)).join('')}</optgroup>` : '');
 };
 const presParseTarget = (v) => { const [kind, id] = String(v || '').split(':'); return kind && id ? { kind, id: Number(id) } : null; };
 function renderRemote(force) {
@@ -326,7 +327,7 @@ function renderRemote(force) {
   }
   presRemoteSig = sig;
   const screens = presEligibleScreens();
-  if (!screens.length || (!presDecks.length && !presPlaylists.length)) { el.innerHTML = ''; return; }
+  if (!screens.length || (!presDecks.length && !presPlaylists.length && !presRecipes.length)) { el.innerHTML = ''; return; }
   const rows = screens.map((s) => {
     const st = presStates[s.device_id] || {};
     const id = escapeHtml(s.device_id);
@@ -410,7 +411,7 @@ function renderSchedules() {
   const el = $('pres-schedules');
   if (!el) return;
   const screens = presEligibleScreens();
-  if (!screens.length || (!presDecks.some((d) => d.page_count) && !presPlaylists.some((p) => p.page_count))) { el.innerHTML = `<div style="font-size:12px;color:var(--muted);padding:0 2px">Add a presentation and name a screen in Devices to set a schedule.</div>`; return; }
+  if (!screens.length || (!presDecks.some((d) => d.page_count) && !presPlaylists.some((p) => p.page_count) && !presRecipes.length)) { el.innerHTML = `<div style="font-size:12px;color:var(--muted);padding:0 2px">Add a presentation and name a screen in Devices to set a schedule.</div>`; return; }
   el.innerHTML = screens.map((s) => {
     const st = presStates[s.device_id] || {};
     const rules = Array.isArray(st.schedule) ? st.schedule : [];
@@ -651,6 +652,12 @@ function closePresentController(fromBrowser) {
   f.el.remove();
   if (presVisible && presVisible()) { pollPresStates().then(() => renderRemote(true)); }
 }
+// A recipe's text page, drawn small for the controller's Now and Next previews.
+function presTextCard(p) {
+  const lines = p.kind === 'cover' ? [p.title] : p.kind === 'ingredients' ? (p.lines || []).slice(0, 5).map((l) => l.group || l.text) : p.kind === 'step' ? [String(p.body || '').slice(0, 140)] : [p.body || ''];
+  const head = p.kind === 'step' ? `<div style="font-size:11px;opacity:.7;margin-bottom:4px">${p.n} / ${p.of}</div>` : p.kind === 'ingredients' ? `<div style="font-size:11px;opacity:.7;margin-bottom:4px">${p.part} / ${p.parts}</div>` : '';
+  return `<div style="position:absolute;inset:0;padding:8px 10px;overflow:hidden;background:#0b0f1a;color:#eef2fb;font-size:${p.kind === 'cover' ? 15 : 12}px;line-height:1.25;${p.kind === 'cover' || p.kind === 'end' ? 'display:flex;align-items:center;justify-content:center;text-align:center;font-weight:700' : ''}">${head}${p.kind === 'end' && !lines[0] ? '🍽️' : lines.map((l) => `<div>${escapeHtml(l)}</div>`).join('')}</div>`;
+}
 async function presFsRefresh(force) {
   const f = presFs;
   if (!f) return;
@@ -661,10 +668,10 @@ async function presFsRefresh(force) {
   } catch { presStates[f.id] = { error: 'unreachable' }; }
   if (presFs !== f) return;
   const st = presStates[f.id] || {};
-  const key = st.active ? `${st.active_kind}:${st.active_ref}` : '';
+  const key = st.active ? `${st.active_kind}:${st.active_ref}${st.active_kind === 'recipe' ? ':' + st.servings : ''}` : '';
   if (key && key !== f.srcKey) {
     f.srcKey = key; f.src = null;
-    try { f.src = await apiFetch(`/api/present/${encodeURIComponent(st.active_kind)}/${encodeURIComponent(st.active_ref)}`); } catch { /* no previews, the buttons still work */ }
+    try { f.src = await apiFetch(`/api/present/${encodeURIComponent(st.active_kind)}/${encodeURIComponent(st.active_ref)}${st.active_kind === 'recipe' && st.servings ? '?servings=' + encodeURIComponent(st.servings) : ''}`); } catch { /* no previews, the buttons still work */ }
     if (presFs !== f) return;
   } else if (!key) { f.srcKey = ''; f.src = null; }
   presFsRender(force);
@@ -693,7 +700,7 @@ function presFsRender(force) {
   const cur = pages[st.index] || null, nxt = pages[st.index + 1] || (f.src && f.src.loop ? pages[0] : null);
   const btn = 'border:none;border-radius:18px;background:#262d44;color:#fff;font:inherit;font-weight:700;cursor:pointer;';
   const big = (id, label, flex, bg) => `<button id="${id}"${dis} style="${btn}flex:${flex};font-size:min(18vw,110px);${bg ? `background:${bg};` : ''}">${label}</button>`;
-  const pic = (p, label, w) => `<div style="flex:${w};min-width:0;display:flex;flex-direction:column"><div style="font-size:12px;color:#9aa6c0;margin:0 0 4px">${label}</div><div class="fs-pic" style="flex:1;min-height:0;position:relative;overflow:hidden;container-type:size;background:#000;border-radius:10px;border:1px solid rgba(255,255,255,0.12)">${p ? presTurnedPic(p.thumb || p.url, p.rotation) : ''}</div></div>`;
+  const pic = (p, label, w) => `<div style="flex:${w};min-width:0;display:flex;flex-direction:column"><div style="font-size:12px;color:#9aa6c0;margin:0 0 4px">${label}</div><div class="fs-pic" style="flex:1;min-height:0;position:relative;overflow:hidden;container-type:size;background:#000;border-radius:10px;border:1px solid rgba(255,255,255,0.12)">${p && p.type === 'text' ? presTextCard(p) : (p ? presTurnedPic(p.thumb || p.url, p.rotation) : '')}</div></div>`;
   let body;
   if (st.error) body = `<div style="flex:1;display:flex;align-items:center;justify-content:center;color:#9aa6c0;text-align:center">Can't reach this screen right now.</div>`;
   else if (st.active) {

@@ -1467,6 +1467,70 @@ function wireMessageBoardAdvancedSettings(w) {
   });
 }
 
+function renderRecipeAdvancedSettings(w) {
+  const mode = w.rcMode === 'chosen' ? 'chosen' : 'tonight';
+  const slot = rcwSlot(w), show = ['ingredients', 'steps', 'both'].includes(w.rcShow) ? w.rcShow : 'ingredients';
+  const fontPx = w.rcFontPx || 15;
+  const o = (v, label, cur) => `<option value="${v}"${v === cur ? ' selected' : ''}>${label}</option>`;
+  return `
+    <div class="was-row">
+      <label>Which recipe</label>
+      <select class="form-input" id="rcw-mode">${o('tonight', "The meal plan's recipe for today", mode)}${o('chosen', 'One chosen recipe', mode)}</select>
+    </div>
+    <div class="was-row" id="rcw-slot-row" ${mode === 'tonight' ? '' : 'style="display:none"'}>
+      <label>Which meal</label>
+      <select class="form-input" id="rcw-slot">${o('breakfast', 'Breakfast', slot)}${o('lunch', 'Lunch', slot)}${o('dinner', 'Dinner', slot)}</select>
+      <p class="was-hint" style="margin-top:6px">Shows the recipe linked to today's meal, and changes by itself as the meal plan does. Link a recipe to a meal from Family Hub → Meals or a recipe's Plan a meal.</p>
+    </div>
+    <div class="was-row" id="rcw-recipe-row" ${mode === 'chosen' ? '' : 'style="display:none"'}>
+      <label>Recipe</label>
+      <select class="form-input" id="rcw-recipe" data-current="${Number(w.rcId) || 0}"><option value="">Loading…</option></select>
+    </div>
+    <div class="was-row">
+      <label>Show</label>
+      <select class="form-input" id="rcw-show">${o('ingredients', 'The ingredients', show)}${o('steps', 'The steps', show)}${o('both', 'Ingredients and steps', show)}</select>
+    </div>
+    <div class="was-toggle-row">
+      <label>Show the picture</label>
+      <input type="checkbox" id="rcw-photo" ${w.rcShowPhoto === false ? '' : 'checked'}>
+    </div>
+    <div class="was-row">
+      <label>Font Size (px)</label>
+      <div class="was-range-row">
+        <input type="range" id="rcw-font-range" min="10" max="40" step="1" value="${fontPx}">
+        <span class="was-range-val" id="rcw-font-val">${fontPx}px</span>
+      </div>
+    </div>
+    <p class="was-hint">The Cook button on the widget starts the recipe on this screen.</p>
+  `;
+}
+function wireRecipeAdvancedSettings(w) {
+  const again = () => { rerenderSingleWidget(w.id); scheduleLayoutSave(); };
+  const mode = document.getElementById('rcw-mode');
+  if (mode) mode.addEventListener('change', (e) => {
+    w.rcMode = e.target.value === 'chosen' ? 'chosen' : 'tonight';
+    document.getElementById('rcw-slot-row').style.display = w.rcMode === 'tonight' ? '' : 'none';
+    document.getElementById('rcw-recipe-row').style.display = w.rcMode === 'chosen' ? '' : 'none';
+    again();
+  });
+  const slot = document.getElementById('rcw-slot');
+  if (slot) slot.addEventListener('change', (e) => { w.rcSlot = e.target.value; again(); });
+  const show = document.getElementById('rcw-show');
+  if (show) show.addEventListener('change', (e) => { w.rcShow = e.target.value; again(); });
+  const photo = document.getElementById('rcw-photo');
+  if (photo) photo.addEventListener('change', (e) => { w.rcShowPhoto = e.target.checked; again(); });
+  const font = document.getElementById('rcw-font-range');
+  if (font) font.addEventListener('input', (e) => { w.rcFontPx = parseInt(e.target.value, 10); document.getElementById('rcw-font-val').textContent = w.rcFontPx + 'px'; again(); });
+  const sel = document.getElementById('rcw-recipe');
+  if (sel) {
+    fetch('/api/recipes').then(r => (r.ok ? r.json() : [])).catch(() => []).then(list => {
+      const cur = Number(sel.dataset.current) || 0;
+      sel.innerHTML = '<option value="">Choose a recipe…</option>' + (Array.isArray(list) ? list : []).map(r => `<option value="${r.id}"${r.id === cur ? ' selected' : ''}>${escapeHtmlD(r.title)}</option>`).join('');
+    });
+    sel.addEventListener('change', (e) => { w.rcId = Number(e.target.value) || 0; again(); });
+  }
+}
+
 function renderMealPlanAdvancedSettings(w) {
   const days = Math.max(3, Math.min(14, Number(w.mpDays) || 7));
   const fontPx = w.mpFontPx || 15;

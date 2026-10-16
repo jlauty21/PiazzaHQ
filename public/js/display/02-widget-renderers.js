@@ -688,7 +688,7 @@ function renderMealPlan(widget) {
       rows.push(`<div class="mp-row${i === 0 ? ' mp-today' : ''}" data-interactive="1" data-mp-date="${date}" data-mp-slot="${slot0}">
         <span class="mp-day">${escapeHtmlD(dayLabel)}</span>
         <span class="mp-dom">${i > 1 ? dd : ''}</span>
-        ${m ? `<span class="mp-title">${escapeHtmlD(m.title)}</span>` : `<span class="mp-empty">—</span>`}
+        ${m ? `<span class="mp-title">${m.recipe_id ? '<span class="mp-rcp" aria-hidden="true">🍳</span> ' : ''}${escapeHtmlD(m.title)}</span>` : `<span class="mp-empty">—</span>`}
       </div>`);
     } else {
       const visSlots = hideEmpty ? slots.filter(s => dayMeals[s]) : slots;
@@ -698,7 +698,7 @@ function renderMealPlan(widget) {
         const m = dayMeals[s];
         return `<div class="mp-slotline" data-interactive="1" data-mp-date="${date}" data-mp-slot="${s}">
           <span class="mp-slot">${MP_SLOT_ABBR[s]}</span>
-          ${m ? `<span class="mp-title">${escapeHtmlD(m.title)}</span>` : `<span class="mp-empty">—</span>`}
+          ${m ? `<span class="mp-title">${m.recipe_id ? '<span class="mp-rcp" aria-hidden="true">🍳</span> ' : ''}${escapeHtmlD(m.title)}</span>` : `<span class="mp-empty">—</span>`}
         </div>`;
       }).join('');
       rows.push(`<div class="mp-daygroup${i === 0 ? ' mp-today' : ''}">
@@ -741,6 +741,7 @@ function openMealEditSheet(date, slot) {
         <div id="mp-edit-heading">Dinner</div>
         <input type="text" id="mp-edit-title" maxlength="80" placeholder="Tacos, leftovers, Grandma's…">
         <textarea id="mp-edit-notes" maxlength="300" rows="2" placeholder="Notes (optional)"></textarea>
+        <button id="mp-edit-cook" type="button" style="display:none">🍳 Cook this recipe here</button>
         <div id="mp-edit-error" class="ea-error" style="display:none"></div>
         <div class="ea-actions">
           <button id="mp-edit-clear">Clear</button>
@@ -775,6 +776,10 @@ function openMealEditSheet(date, slot) {
       submit(t);
     });
     document.getElementById('mp-edit-clear').addEventListener('click', () => submit(''));
+    document.getElementById('mp-edit-cook').addEventListener('click', () => {
+      const m = ((state.meals || {})[overlay.dataset.date] || {})[overlay.dataset.slot];
+      if (m && m.recipe_id) { close(); rcwCookHere(m.recipe_id); }
+    });
   }
   overlay.dataset.date = date;
   overlay.dataset.slot = slot;
@@ -785,11 +790,83 @@ function openMealEditSheet(date, slot) {
   document.getElementById('mp-edit-title').value = m.title || '';
   document.getElementById('mp-edit-notes').value = m.notes || '';
   document.getElementById('mp-edit-error').style.display = 'none';
+  document.getElementById('mp-edit-cook').style.display = m.recipe_id ? 'block' : 'none';             // a planned meal that is a recipe can be cooked from here
   const save = document.getElementById('mp-edit-save');
   const clr = document.getElementById('mp-edit-clear');
   save.disabled = clr.disabled = false;
   overlay.style.display = 'flex';
   setTimeout(() => { try { document.getElementById('mp-edit-title').focus(); } catch {} }, 50);
+}
+
+// ── Recipe widget ─────────────────────────────────────────────────────────
+// "Tonight's dinner" (the recipe linked to today's meal in the chosen slot, which follows the meal plan by itself) or one chosen recipe, with its picture, times and
+// the ingredients and/or steps, and a Cook button that starts it on this screen (the cook board, see 13a-presentation.js). The recipe is fetched once and kept;
+// the 'recipes' SSE topic clears what is kept.
+const RCW = { cache: {}, loading: {} };
+function rcwSlot(w) { return MP_SLOT_ORDER.includes(w && w.rcSlot) ? w.rcSlot : 'dinner'; }
+function rcwRecipeId(w) {
+  if (w && w.rcMode === 'chosen') return Number(w.rcId) || 0;
+  const m = ((state.meals || {})[todayStr()] || {})[rcwSlot(w)];
+  return m && m.recipe_id ? Number(m.recipe_id) : 0;
+}
+function rcwEnsure(id) {
+  if (RCW.cache[id] !== undefined || RCW.loading[id]) return;
+  RCW.loading[id] = true;
+  fetch('/api/recipes/' + id, { cache: 'no-store' }).then(r => (r.ok ? r.json() : null)).catch(() => null).then(d => {
+    RCW.loading[id] = false; RCW.cache[id] = d;
+    if (document.querySelector('.w-recipe')) renderLayout();
+  });
+}
+function rcwReset() { RCW.cache = {}; RCW.loading = {}; if (document.querySelector('.w-recipe')) renderLayout(); }
+function rcwCookHere(id) {
+  if (!id || typeof SCREEN_ID === 'undefined' || !SCREEN_ID) return;
+  fetch('/api/screens/' + encodeURIComponent(SCREEN_ID) + '/presentation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'start', kind: 'recipe', id: Number(id) }) }).catch(() => {});
+}
+function renderRecipeWidget(widget) {
+  const w = widget || {};
+  const fontPx = w.rcFontPx || 15;
+  const style = ` style="--rc-font:calc(${fontPx}px * var(--ui-scale,1))"`;
+  const tonight = w.rcMode !== 'chosen';
+  const slotName = MP_SLOT_NAME[rcwSlot(w)];
+  const head = tonight ? `<div class="rcw-head">${w.rcSlot === 'lunch' ? "Today's lunch" : w.rcSlot === 'breakfast' ? "Today's breakfast" : "Tonight's dinner"}</div>` : '';
+  const say = (text) => `<div class="w-recipe"${style}>${head}<div class="rcw-empty">${escapeHtmlD(text)}</div></div>`;
+  const id = rcwRecipeId(w);
+  if (!id) {
+    if (!tonight) return say(editModeActive ? "Choose a recipe in this widget's settings" : '');
+    return say(editModeActive ? `No recipe planned for today's ${slotName.toLowerCase()} yet — link one from Meals` : 'Nothing planned');
+  }
+  rcwEnsure(id);
+  const r = RCW.cache[id];
+  if (!r) return say(r === null ? 'That recipe is not available' : '');
+  const show = ['ingredients', 'steps', 'both'].includes(w.rcShow) ? w.rcShow : 'ingredients';
+  const meta = [];
+  if (r.servings) meta.push(`<span><span class="rcw-lbl">Serves</span> ${Math.round(r.servings * 100) / 100}</span>`);
+  if (r.prep_min) meta.push(`<span><span class="rcw-lbl">Prep</span> ${r.prep_min} min</span>`);
+  if (r.cook_min) meta.push(`<span><span class="rcw-lbl">Cook</span> ${r.cook_min} min</span>`);
+  let group = '';
+  const ings = (r.ingredients || []).map(i => {
+    const g = i.group_label && i.group_label !== group ? `<li class="rcw-group">${escapeHtmlD(i.group_label)}</li>` : '';
+    group = i.group_label || '';
+    return g + `<li>${escapeHtmlD(i.display)}</li>`;
+  }).join('');
+  const steps = (r.steps || []).map(s => `<li>${escapeHtmlD(s.text)}</li>`).join('');
+  const body = (show !== 'steps' ? `<ul class="rcw-ings">${ings}</ul>` : '') + (show !== 'ingredients' ? `<ol class="rcw-steps">${steps}</ol>` : '');
+  const photo = w.rcShowPhoto !== false && r.photo ? `<img class="rcw-photo" src="${escapeHtmlD(r.photo)}" alt="" draggable="false">` : '';
+  return `<div class="w-recipe"${style}>
+    ${head}
+    ${photo}
+    <div class="rcw-title">${escapeHtmlD(r.title)}</div>
+    ${meta.length ? `<div class="rcw-meta">${meta.join('')}</div>` : ''}
+    <div class="rcw-body">${body}</div>
+    <button class="rcw-cook" type="button" data-interactive="1" data-rc-id="${r.id}">🍳 Cook</button>
+  </div>`;
+}
+function wireRecipeWidgetTaps() {
+  document.querySelectorAll('.w-recipe .rcw-cook').forEach(el => {
+    if (el._tapWired) return;
+    el._tapWired = true;
+    el.addEventListener('click', (e) => { e.stopPropagation(); if (editModeActive) return; rcwCookHere(el.dataset.rcId); });
+  });
 }
 
 // ── Camera widget ─────────────────────────────────────────────────────────

@@ -51,7 +51,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let token = ''; try { token = localStorage.getItem('pi_cal_token') || ''; } catch { /* no storage */ }
-let screens = [], decks = [], lists = [], states = {}, timer = null, pending = {}, lastAct = {}, polling = false;
+let screens = [], decks = [], lists = [], recipes = [], states = {}, timer = null, pending = {}, lastAct = {}, polling = false;
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const api = async (path, opts = {}) => {
   const { timeout, ...rest } = opts;
@@ -84,12 +84,12 @@ $('pin-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('pi
 
 async function load() {
   try {
-    [screens, decks, lists] = await Promise.all([api('/api/screens'), api('/api/decks'), api('/api/playlists')]);
+    [screens, decks, lists, recipes] = await Promise.all([api('/api/screens'), api('/api/decks'), api('/api/playlists'), api('/api/recipes').catch(() => [])]);
   } catch (e) { if (e.locked) { start(); return; } $('msg').textContent = 'Could not reach the server.'; return; }
   screens = (Array.isArray(screens) ? screens : []).filter((s) => s.name && s.online && !String(s.device_id).startsWith('preview_'));   // a screen that is off is not worth listing
-  decks = (Array.isArray(decks) ? decks : []).filter((d) => d.page_count); lists = (Array.isArray(lists) ? lists : []).filter((p) => p.page_count);
+  decks = (Array.isArray(decks) ? decks : []).filter((d) => d.page_count); lists = (Array.isArray(lists) ? lists : []).filter((p) => p.page_count); recipes = Array.isArray(recipes) ? recipes : [];
   if (!screens.length) { $('msg').textContent = 'No screens are on right now. Connect a display and give it a name in the Piazza HQ app first.'; return; }
-  if (!decks.length && !lists.length) { $('msg').textContent = 'No presentations yet. Add one in the Piazza HQ app, under Photos, then Presentations.'; return; }
+  if (!decks.length && !lists.length && !recipes.length) { $('msg').textContent = 'No presentations yet. Add one in the Piazza HQ app, under Photos, then Presentations.'; return; }
   $('msg').style.display = 'none';
   render(true);
   poll();                                                                                       // not awaited: each screen fills in as its answer arrives
@@ -97,12 +97,12 @@ async function load() {
 async function poll() {
   await Promise.all(screens.map((s) => { const t0 = Date.now(); return api(`/api/screens/${encodeURIComponent(s.device_id)}/presentation`, { timeout: 4000 }).then((r) => ({ r })).catch(() => ({ r: null })).then((x) => { if ((lastAct[s.device_id] || 0) > t0) return; states[s.device_id] = x.r && !x.r.error ? x.r : { error: true }; render(); }); }));   // a read that began before a command is out of date; each screen is drawn as soon as it answers
 }
-const options = () => (decks.length ? `<optgroup label="Presentations">${decks.map((d) => `<option value="deck:${d.id}">${esc(d.name)}</option>`).join('')}</optgroup>` : '') + (lists.length ? `<optgroup label="Playlists">${lists.map((p) => `<option value="playlist:${p.id}">${esc(p.name)}</option>`).join('')}</optgroup>` : '');
+const options = () => (decks.length ? `<optgroup label="Presentations">${decks.map((d) => `<option value="deck:${d.id}">${esc(d.name)}</option>`).join('')}</optgroup>` : '') + (lists.length ? `<optgroup label="Playlists">${lists.map((p) => `<option value="playlist:${p.id}">${esc(p.name)}</option>`).join('')}</optgroup>` : '') + (recipes.length ? `<optgroup label="Recipes">${recipes.map((r) => `<option value="recipe:${r.id}">${esc(r.title)}</option>`).join('')}</optgroup>` : '');
 let lastSig = '', pressAt = 0;
 document.addEventListener('pointerdown', () => { pressAt = Date.now(); }, true);
 function render(force) {
   const el = $('screens');
-  const sig = JSON.stringify([screens.map((s) => [s.device_id, s.name]), states, pending, decks.map((d) => d.id), lists.map((p) => p.id)]);
+  const sig = JSON.stringify([screens.map((s) => [s.device_id, s.name]), states, pending, decks.map((d) => d.id), lists.map((p) => p.id), recipes.map((r) => r.id)]);
   if (!force) {
     if (sig === lastSig) return;                                                                      // nothing changed: leave the buttons alone
     if (Date.now() - pressAt < 1500) return;                                                          // a finger is on or just left a button

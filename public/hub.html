@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Family Hub</title>
 <script src="/js/shared/i18n.js"></script>
+<script src="/js/shared/recipes-ui.js"></script>
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icons/hub-apple-touch.png">
 <meta name="theme-color" content="#1b2340">
@@ -286,6 +287,7 @@
         <button id="subtab-chores" class="active"><span class="ic">🧹</span>Chores</button>
         <button id="subtab-todos"><span class="ic">✅</span>To-Dos</button>
         <button id="subtab-shopping"><span class="ic">🛒</span>Shopping</button>
+        <button id="subtab-recipes"><span class="ic">🍳</span>Recipes</button>
       </div>
       <div id="home-subviews">
         <div id="view-chores" class="subview active">
@@ -317,6 +319,10 @@
             <input type="text" id="todo-new-item-input" placeholder="Add an item…" autocomplete="off">
             <button id="todo-new-item-btn">+</button>
           </div>
+        </div>
+
+        <div id="view-recipes" class="subview">
+          <div id="recipes-root" style="flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch"></div>
         </div>
 
         <div id="view-shopping" class="subview">
@@ -483,6 +489,10 @@
         <input type="checkbox" id="hs-shopping-enabled">
       </div>
       <div class="editor-toggle-row">
+        <span>🍳 Recipes</span>
+        <input type="checkbox" id="hs-recipes-enabled">
+      </div>
+      <div class="editor-toggle-row">
         <span>🏠 Home (smart home controls)</span>
         <input type="checkbox" id="hs-smarthome-enabled">
       </div>
@@ -527,8 +537,8 @@ const $ = id => document.getElementById(id);
 
 // ── Tab switching ────────────────────────────────────────────────────────────
 const TAB_KEY = 'hub_active_tab';           // 'home' | 'smarthome'
-const SUBTAB_KEY = 'hub_active_subtab';      // 'chores' | 'todos' | 'shopping' — only meaningful within Home
-let lastEnabledState = { chores: true, todos: false, shopping: false, smarthome: false }; // refreshed by applyFeatureVisibility(); used so click handlers don't need their own API round-trip just to know what's currently clickable
+const SUBTAB_KEY = 'hub_active_subtab';      // 'chores' | 'todos' | 'shopping' | 'recipes' — only meaningful within Home
+let lastEnabledState = { chores: true, todos: false, shopping: false, recipes: true, smarthome: false }; // refreshed by applyFeatureVisibility(); used so click handlers don't need their own API round-trip just to know what's currently clickable
 function showTab(tab) {
   $('tab-home').classList.toggle('active', tab === 'home');
   $('tab-smarthome').classList.toggle('active', tab === 'smarthome');
@@ -541,6 +551,8 @@ function showSubtab(subtab) {
   $('subtab-chores').classList.toggle('active', subtab === 'chores');
   $('subtab-todos').classList.toggle('active', subtab === 'todos');
   $('subtab-shopping').classList.toggle('active', subtab === 'shopping');
+  $('subtab-recipes').classList.toggle('active', subtab === 'recipes');
+  $('view-recipes').classList.toggle('active', subtab === 'recipes');
   $('view-chores').classList.toggle('active', subtab === 'chores');
   $('view-todos').classList.toggle('active', subtab === 'todos');
   $('view-shopping').classList.toggle('active', subtab === 'shopping');
@@ -548,6 +560,17 @@ function showSubtab(subtab) {
   if (subtab === 'chores') loadChoresTab();
   if (subtab === 'todos') loadTodoLists();
   if (subtab === 'shopping') loadShoppingList();
+  if (subtab === 'recipes') loadRecipesTab();
+}
+// Recipes: the screens live in js/shared/recipes-ui.js (the control app uses the same ones). Mounted once, redrawn when a live update arrives.
+let recipesUi = null;
+function loadRecipesTab() {
+  if (recipesUi) { recipesUi.refresh(); return; }
+  recipesUi = RecipesUI.mount($('recipes-root'), {
+    api: (path, init) => api(path, init),
+    upload: (path, fd) => fetch(path, { method: 'POST', body: fd, cache: 'no-store' }).then((r) => r.json()),
+    toast: (m) => showToastKid(m),
+  });
 }
 // Shared by the Home tab-button click handler, initial load, and the
 // settings-changed fallback — "enter Home" always means "show it, then pick
@@ -560,7 +583,7 @@ function enterHomeTab() {
   let subtab = 'chores';
   try { subtab = localStorage.getItem(SUBTAB_KEY) || 'chores'; } catch {}
   if (!lastEnabledState[subtab]) {
-    subtab = ['chores', 'todos', 'shopping'].find(t => lastEnabledState[t]);
+    subtab = ['chores', 'todos', 'shopping', 'recipes'].find(t => lastEnabledState[t]);
   }
   if (subtab) {
     showSubtab(subtab);
@@ -580,6 +603,7 @@ $('tab-smarthome').addEventListener('click', () => showTab('smarthome'));
 $('subtab-chores').addEventListener('click', () => showSubtab('chores'));
 $('subtab-todos').addEventListener('click', () => showSubtab('todos'));
 $('subtab-shopping').addEventListener('click', () => showSubtab('shopping'));
+$('subtab-recipes').addEventListener('click', () => showSubtab('recipes'));
 
 // ── To-Dos ───────────────────────────────────────────────────────────────────
 const api = async (path, opts = {}) => {
@@ -1334,6 +1358,7 @@ try {
       if (d.topic === 'todos' && $('view-todos').classList.contains('active')) loadTodoLists();
       if (d.topic === 'shopping' && $('view-shopping').classList.contains('active')) loadShoppingList();
       if (d.topic === 'chores' && $('view-chores').classList.contains('active')) loadChoresTab();
+      if (d.topic === 'recipes' && recipesUi && $('view-recipes').classList.contains('active')) recipesUi.refresh();
       // The real fix for "toggle a feature, checkbox updates instantly, but
       // the tab never appears without a reload": the server broadcasts a
       // 'settings' topic on every settings change (from the full app, this
@@ -1724,6 +1749,7 @@ async function applyFeatureVisibility() {
     chores: settings.chores_enabled !== '0',   // chores defaults ON
     todos: settings.todo_enabled === '1',       // to-do/shopping/smart home default OFF
     shopping: settings.shopping_enabled === '1',
+    recipes: settings.recipes_enabled !== '0',  // recipes default ON, like chores
     smarthome: settings.smarthome_enabled === '1',
   };
   lastEnabledState = enabled; // cached for click handlers — see enterHomeTab() above
@@ -1735,7 +1761,8 @@ async function applyFeatureVisibility() {
   $('subtab-chores').style.display = enabled.chores ? '' : 'none';
   $('subtab-todos').style.display = enabled.todos ? '' : 'none';
   $('subtab-shopping').style.display = enabled.shopping ? '' : 'none';
-  const anyHomeFeature = enabled.chores || enabled.todos || enabled.shopping;
+  $('subtab-recipes').style.display = enabled.recipes ? '' : 'none';
+  const anyHomeFeature = enabled.chores || enabled.todos || enabled.shopping || enabled.recipes;
   $('tab-home').style.display = anyHomeFeature ? '' : 'none';
   $('tab-smarthome').style.display = enabled.smarthome ? '' : 'none';
   return enabled;
@@ -1762,6 +1789,7 @@ async function loadHubSettingsToggles() {
   $('hs-chores-enabled').checked = settings.chores_enabled !== '0';
   $('hs-todo-enabled').checked = settings.todo_enabled === '1';
   $('hs-shopping-enabled').checked = settings.shopping_enabled === '1';
+  $('hs-recipes-enabled').checked = settings.recipes_enabled !== '0';
   $('hs-smarthome-enabled').checked = settings.smarthome_enabled === '1';
 }
 
@@ -1779,7 +1807,7 @@ async function syncTabVisibilityAndFallback() {
   const enabled = await applyFeatureVisibility();
   let currentTab = 'home';
   try { currentTab = localStorage.getItem(TAB_KEY) || 'home'; } catch {}
-  const anyHomeFeature = enabled.chores || enabled.todos || enabled.shopping;
+  const anyHomeFeature = enabled.chores || enabled.todos || enabled.shopping || enabled.recipes;
   const currentTabStillUsable = currentTab === 'home' ? anyHomeFeature : enabled.smarthome;
 
   if (!currentTabStillUsable) {
@@ -1801,7 +1829,7 @@ async function syncTabVisibilityAndFallback() {
     let currentSubtab = 'chores';
     try { currentSubtab = localStorage.getItem(SUBTAB_KEY) || 'chores'; } catch {}
     if (!enabled[currentSubtab]) {
-      const fallbackSubtab = ['chores', 'todos', 'shopping'].find(t => enabled[t]);
+      const fallbackSubtab = ['chores', 'todos', 'shopping', 'recipes'].find(t => enabled[t]);
       if (fallbackSubtab) showSubtab(fallbackSubtab);
     }
   }
@@ -1815,6 +1843,7 @@ async function toggleHubFeature(settingKey, checked) {
 $('hs-chores-enabled').addEventListener('change', (e) => toggleHubFeature('chores_enabled', e.target.checked));
 $('hs-todo-enabled').addEventListener('change', (e) => toggleHubFeature('todo_enabled', e.target.checked));
 $('hs-shopping-enabled').addEventListener('change', (e) => toggleHubFeature('shopping_enabled', e.target.checked));
+$('hs-recipes-enabled').addEventListener('change', (e) => toggleHubFeature('recipes_enabled', e.target.checked));
 $('hs-smarthome-enabled').addEventListener('change', (e) => toggleHubFeature('smarthome_enabled', e.target.checked));
 
 // ── Initial tab activation — deliberately LAST in the script, not near the
@@ -1831,7 +1860,7 @@ $('hs-smarthome-enabled').addEventListener('change', (e) => toggleHubFeature('sm
   const enabled = await applyFeatureVisibility();
   let initialTab = 'home';
   try { initialTab = localStorage.getItem(TAB_KEY) || 'home'; } catch {}
-  const anyHomeFeature = enabled.chores || enabled.todos || enabled.shopping;
+  const anyHomeFeature = enabled.chores || enabled.todos || enabled.shopping || enabled.recipes;
   // The remembered/default tab might now be disabled (a feature the person
   // just turned off, or a stale localStorage value from before it was) — fall
   // back to whichever top-level tab is actually usable rather than showing

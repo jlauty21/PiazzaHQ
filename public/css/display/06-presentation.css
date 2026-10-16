@@ -28,5 +28,67 @@
 #presentation .pres-note { position:absolute; left:50%; top:3vmin; transform:translateX(-50%); padding:1vmin 2vmin; border-radius:999px; background:rgba(10,14,26,0.8); color:#e8edf5;
   font:600 max(14px,2.2vmin)/1 system-ui,-apple-system,Segoe UI,sans-serif; opacity:0; transition:opacity .3s; pointer-events:none; }
 #presentation .pres-note.shown { opacity:1; }
+/* A recipe being cooked: text pages the display draws itself (sizes in vmin, so a screen turned sideways still reads right). */
+#presentation .pres-slide.pres-text { background:#0b0f1a; color:#eef2fb; font-family:system-ui,-apple-system,Segoe UI,sans-serif; display:flex; align-items:center; justify-content:center; text-align:left; }
+#presentation .pres-slide.pres-text[data-kind="cover"], #presentation .pres-slide.pres-text[data-kind="end"] { text-align:center; }
+#presentation .rt-inner { width:100%; max-height:100%; padding:7vmin 8vmin; box-sizing:border-box; display:flex; flex-direction:column; justify-content:center; gap:3.2vmin; overflow:hidden; }
+#presentation .pres-text[data-kind="cover"] .rt-inner, #presentation .pres-text[data-kind="end"] .rt-inner { align-items:center; }
+#presentation .rt-photo { width:min(60%, 46vmin); aspect-ratio:4/3; border-radius:2vmin; overflow:hidden; box-shadow:0 1vmin 4vmin rgba(0,0,0,0.5); }
+#presentation .rt-photo img { position:static; width:100%; height:100%; object-fit:cover; display:block; }
+#presentation .rt-title { margin:0; font-size:9vmin; line-height:1.1; font-weight:800; text-wrap:balance; }
+#presentation .rt-meta { display:flex; gap:4vmin; flex-wrap:wrap; justify-content:center; font-size:3.6vmin; color:#b9c4dc; }
+#presentation .rt-label { color:#8ea0c4; text-transform:uppercase; letter-spacing:0.06em; font-size:0.8em; font-weight:700; }
+#presentation .rt-desc { font-size:3.6vmin; color:#b9c4dc; max-width:70ch; line-height:1.35; }
+#presentation .rt-head { font-size:3.4vmin; text-transform:uppercase; letter-spacing:0.08em; color:#8ea0c4; font-weight:800; }
+#presentation .rt-list { list-style:none; margin:0; padding:0; font-size:5.2vmin; line-height:1.28; display:flex; flex-direction:column; gap:1.6vmin; }
+#presentation .rt-list li { padding-bottom:1.2vmin; border-bottom:1px solid rgba(255,255,255,0.1); }
+#presentation .rt-list li.rt-group { border:none; padding:1.6vmin 0 0; font-size:3.8vmin; font-weight:800; color:#8ea0c4; text-transform:none; }
+#presentation .rt-body { font-size:6.4vmin; line-height:1.3; font-weight:500; text-wrap:pretty; }
+#presentation .rt-body.rt-notes { font-size:4vmin; color:#b9c4dc; max-width:60ch; }
+#presentation .rt-timer { align-self:flex-start; font:700 4.4vmin/1 inherit; background:#4A90D9; color:#fff; border:none; border-radius:999px; padding:2vmin 4vmin; cursor:pointer; pointer-events:auto; }
+#presentation .rt-timer:active { background:#3b7bbd; }
+#presentation .rt-chip { position:absolute; right:3vmin; top:3vmin; z-index:3; display:flex; gap:0; align-items:center; font:700 4.2vmin/1 system-ui,-apple-system,Segoe UI,sans-serif; color:#fff; background:rgba(74,144,217,0.92); border:none; border-radius:999px; padding:1.6vmin 3vmin; cursor:pointer; box-shadow:0 0.6vmin 2.4vmin rgba(0,0,0,0.5); font-variant-numeric:tabular-nums; }
+#presentation .rt-chip .rt-chip-label { font-weight:600; opacity:.85; font-size:0.8em; }
+#presentation .rt-chip.done { background:#e0584c; animation:rt-pulse 0.9s ease-in-out infinite; }
+@keyframes rt-pulse { 0%,100% { transform:scale(1); } 50% { transform:scale(1.08); } }
+@media (prefers-reduced-motion: reduce) { #presentation .rt-chip.done { animation:none; } }
 body.presenting #floating-switcher { display:none !important; }
 @media (prefers-reduced-motion: reduce) { #presentation .pres-slide { transition:none !important; } }
+/* The cook board (a recipe): ingredients and steps side by side, each scrolling by itself. Sizes are in vmin times --rc-z (the text size control). */
+#presentation.cooking .pres-controls { display:none; }
+#presentation .rc-board { position:absolute; inset:0; display:flex; flex-direction:column; background:#0b0f1a; color:#eef2fb; --rc-z:1; pointer-events:auto; touch-action:pan-y;
+  font-family:system-ui,-apple-system,Segoe UI,sans-serif; }
+#presentation .rc-head { padding:2.4vmin 3vmin 1.2vmin; padding-right:24vmin; display:flex; flex-wrap:wrap; align-items:baseline; gap:0.6vmin 3vmin; }
+#presentation .rc-title { font-size:4.8vmin; line-height:1.15; font-weight:800; text-wrap:balance; }
+#presentation .rc-meta { display:flex; gap:2.4vmin; flex-wrap:wrap; font-size:2.6vmin; color:#b9c4dc; }
+#presentation .rc-panes { flex:1; min-height:0; display:grid; grid-template-columns:minmax(0,4fr) minmax(0,6fr); gap:2vmin; padding:0 3vmin 1.5vmin; }
+#presentation .rc-board[data-view="ing"] .rc-panes, #presentation .rc-board[data-view="steps"] .rc-panes { grid-template-columns:minmax(0,1fr); }
+#presentation .rc-board[data-view="ing"] .rc-steps, #presentation .rc-board[data-view="steps"] .rc-ing { display:none; }
+#presentation .rc-pane { position:relative; min-height:0; overflow-y:auto; overscroll-behavior:contain; touch-action:pan-y; scrollbar-width:thin; scrollbar-color:#51618a transparent;
+  background:rgba(255,255,255,0.045); border-radius:2vmin; padding:2vmin 2.4vmin 3vmin; font-size:calc(3.3vmin * var(--rc-z)); line-height:1.3; }
+#presentation .rc-h { position:sticky; top:-2vmin; margin:-2vmin -2.4vmin 1vmin; padding:2vmin 2.4vmin 1vmin; background:#141a2b; border-radius:2vmin 2vmin 0 0; z-index:1;
+  font-size:2.6vmin; text-transform:uppercase; letter-spacing:0.08em; color:#8ea0c4; font-weight:800; }
+#presentation .rc-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:0.9em; }
+#presentation .rc-ingredient { padding-bottom:0.5em; border-bottom:1px solid rgba(255,255,255,0.1); cursor:pointer; }
+#presentation .rc-ingredient.done { text-decoration:line-through; opacity:.4; }
+#presentation .rc-group { padding-top:0.6em; font-weight:800; font-size:0.85em; color:#8ea0c4; }
+#presentation .rc-step { display:flex; gap:0.7em; padding:0.6em 0.7em; border-radius:0.6em; border-left:0.25em solid transparent; font-size:1.12em; cursor:pointer; }
+#presentation .rc-step.cur { background:rgba(74,144,217,0.2); border-left-color:#4A90D9; }
+#presentation .rc-step.past { opacity:.5; }
+#presentation .rc-n { flex:none; min-width:1.6em; height:1.6em; border-radius:999px; background:rgba(255,255,255,0.14); display:flex; align-items:center; justify-content:center; font-size:0.8em; font-weight:800; font-variant-numeric:tabular-nums; }
+#presentation .rc-step.cur .rc-n { background:#4A90D9; }
+#presentation .rc-text { min-width:0; flex:1; display:flex; flex-direction:column; align-items:flex-start; gap:0.5em; text-wrap:pretty; }
+#presentation .rc-timer { font:700 0.8em/1 inherit; background:#4A90D9; color:#fff; border:none; border-radius:999px; padding:0.55em 1.1em; cursor:pointer; }
+#presentation .rc-timer:active { background:#3b7bbd; }
+#presentation .rc-notes { margin-top:1.4em; font-size:0.85em; color:#b9c4dc; white-space:pre-wrap; display:flex; flex-direction:column; gap:0.3em; }
+#presentation .rc-bar { flex:none; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:1vmin 2vmin; padding:1.2vmin 3vmin 2vmin;
+  border-top:1px solid rgba(255,255,255,0.12); background:#0e1424; font:600 max(15px,2.4vmin)/1 system-ui,-apple-system,Segoe UI,sans-serif; }
+#presentation .rc-grp { display:flex; align-items:center; gap:1vmin; }
+#presentation .rc-bar button { background:rgba(255,255,255,0.12); color:inherit; border:none; border-radius:999px; min-width:max(44px,6vmin); height:max(44px,6vmin); font:inherit; cursor:pointer; padding:0 1.8vmin; }
+#presentation .rc-bar button:active { background:rgba(255,255,255,0.28); }
+#presentation .rc-bar button:focus-visible { outline:3px solid #8cc0ff; outline-offset:2px; }
+#presentation .rc-zval, #presentation .rc-pos { min-width:5ch; text-align:center; font-variant-numeric:tabular-nums; opacity:.9; }
+#presentation .rc-pos { min-width:9ch; }
+#presentation .rc-view.on { background:#4A90D9; }
+#presentation .rc-board[data-layout="narrow"] .rc-view[data-v="both"] { display:none; }
+#presentation .rc-bar .rc-close { background:rgba(220,70,70,0.8); }

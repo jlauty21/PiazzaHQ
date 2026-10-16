@@ -7,6 +7,63 @@
 // rewrite all three to render into a sub-container, the subtab bar is
 // prepended AFTER whichever one runs, via insertAdjacentHTML. Lower-risk
 // than restructuring three large existing render functions.
+// The sub-tab bar: as many tabs as fit, the rest under "More". Which ones are in the bar is automatic (the ones used most, with recent use counting more) or
+// chosen by hand in "Arrange tabs", and the tab that is open is always in the bar. Kept per browser.
+const FAMILY_TABS = [['chores', '🧹', 'Chores'], ['todo', '✅', 'To-Do'], ['shopping', '🛒', 'Shopping'], ['reminders', '🗑️', 'Reminders'], ['board', '📝', 'Board'], ['meals', '🍽️', 'Meals'], ['recipes', '🍳', 'Recipes']];
+const FAMILY_PREF_KEY = 'family_hub_tabs_v1';
+function familyPrefs() { try { return JSON.parse(localStorage.getItem(FAMILY_PREF_KEY) || 'null') || {}; } catch { return {}; } }
+function saveFamilyPrefs(p) { try { localStorage.setItem(FAMILY_PREF_KEY, JSON.stringify(p)); } catch { /* not kept */ } }
+const familyBarCapacity = () => (window.innerWidth < 560 ? 4 : 6);
+function familyUseScore(uses, key) { const now = Date.now(); return ((uses && uses[key]) || []).reduce((s, t) => s + Math.pow(0.5, (now - t) / (10 * 86400000)), 0); }
+function recordFamilyUse(key) { const p = familyPrefs(); p.uses = p.uses || {}; p.uses[key] = (p.uses[key] || []).concat(Date.now()).slice(-30); saveFamilyPrefs(p); }
+function familyBarLayout(enabled, active, prefs) {
+  const keys = FAMILY_TABS.map((t) => t[0]).filter((k) => enabled[k]);
+  const cap = familyBarCapacity();
+  if (keys.length <= cap) return { bar: keys, more: [], cap };
+  const uses = (prefs && prefs.uses) || {};
+  const byUse = (a, b) => familyUseScore(uses, b) - familyUseScore(uses, a) || keys.indexOf(a) - keys.indexOf(b);
+  const manual = prefs && prefs.mode === 'manual' && Array.isArray(prefs.bar) && prefs.bar.some((k) => keys.includes(k));
+  let pick = manual ? keys.filter((k) => prefs.bar.includes(k)).slice(0, cap) : keys.slice().sort(byUse).slice(0, cap);
+  if (!pick.includes(active) && keys.includes(active)) {                  // the open tab takes the place of the one used least
+    const drop = pick.slice().sort((a, b) => familyUseScore(uses, a) - familyUseScore(uses, b) || keys.indexOf(b) - keys.indexOf(a))[0];
+    pick = pick.filter((k) => k !== drop).concat(active);
+  }
+  const bar = keys.filter((k) => pick.includes(k));
+  return { bar, more: keys.filter((k) => !bar.includes(k)), cap };
+}
+function openFamilyArrange(enabled, subtab) {
+  const prefs = familyPrefs();
+  const keys = FAMILY_TABS.map((t) => t[0]).filter((k) => enabled[k]);
+  const cap = familyBarCapacity();
+  const cur = familyBarLayout(enabled, subtab, prefs).bar;
+  const auto = prefs.mode !== 'manual';
+  showSheet(`<div style="padding:18px 18px 22px">
+    <h3 style="margin:0 0 8px">Arrange tabs</h3>
+    <label class="fa-row"><input type="radio" name="fa-mode" value="auto" ${auto ? 'checked' : ''}><span>Automatic: the tabs I use most stay in the bar</span></label>
+    <label class="fa-row"><input type="radio" name="fa-mode" value="manual" ${auto ? '' : 'checked'}><span>I choose which tabs are in the bar</span></label>
+    <div id="fa-list" style="margin:10px 0 4px">${keys.map((k) => { const tab = FAMILY_TABS.find((x) => x[0] === k); return `<label class="fa-row"><input type="checkbox" class="fa-box" value="${k}" ${cur.includes(k) ? 'checked' : ''} ${auto ? 'disabled' : ''}><span>${tab[1]} ${tab[2]}</span></label>`; }).join('')}</div>
+    <div style="font-size:12px;color:var(--muted);margin:0 0 14px"><span>The bar has room for</span> ${cap}</div>
+    <button class="btn btn-primary" id="fa-done">Done</button>
+  </div>`);
+  const boxes = () => [...document.querySelectorAll('#chore-sheet .fa-box')];
+  const sync = () => {
+    const manual = document.querySelector('#chore-sheet input[name="fa-mode"][value="manual"]').checked;
+    const on = boxes().filter((b) => b.checked).length;
+    boxes().forEach((b) => { b.disabled = !manual || (!b.checked && on >= cap); });                 // the bar only has room for so many
+  };
+  document.querySelectorAll('#chore-sheet input[name="fa-mode"]').forEach((r) => r.addEventListener('change', sync));
+  boxes().forEach((b) => b.addEventListener('change', sync));
+  sync();
+  document.getElementById('fa-done').addEventListener('click', () => {
+    const manual = document.querySelector('#chore-sheet input[name="fa-mode"][value="manual"]').checked;
+    const p = familyPrefs();
+    p.mode = manual ? 'manual' : 'auto';
+    if (manual) p.bar = boxes().filter((b) => b.checked).map((b) => b.value);
+    saveFamilyPrefs(p);
+    closeSheet();
+    renderFamilySubtab(subtab, enabled);
+  });
+}
 let familySubtab = 'chores';
 async function renderFamilyHubTab() {
   try { familySubtab = localStorage.getItem('family_hub_subtab') || 'chores'; } catch {}
@@ -17,9 +74,10 @@ async function renderFamilyHubTab() {
     reminders: window._remindersEnabled !== false,
     board: !!window._messageboardEnabled,
     meals: !!window._mealplanEnabled,
+    recipes: window._recipesEnabled !== false,
   };
   if (!enabled[familySubtab]) {
-    familySubtab = ['chores', 'todo', 'shopping', 'reminders', 'board', 'meals'].find(t => enabled[t]) || 'chores';
+    familySubtab = ['chores', 'todo', 'shopping', 'reminders', 'board', 'meals', 'recipes'].find(t => enabled[t]) || 'chores';
   }
   await renderFamilySubtab(familySubtab, enabled);
 }
@@ -31,6 +89,7 @@ async function renderFamilySubtab(subtab, enabled) {
   else if (subtab === 'reminders') await renderRemindersFamilyTab();
   else if (subtab === 'board') await renderBoardFamilyTab();
   else if (subtab === 'meals') await renderMealsFamilyTab();
+  else if (subtab === 'recipes') await renderRecipesFamilyTab();
   else await renderChoresTab();
 
   enabled = enabled || {
@@ -40,20 +99,31 @@ async function renderFamilySubtab(subtab, enabled) {
     reminders: window._remindersEnabled !== false,
     board: !!window._messageboardEnabled,
     meals: !!window._mealplanEnabled,
+    recipes: window._recipesEnabled !== false,
   };
   const content = $('content');
+  const prefs = familyPrefs();
+  const lay = familyBarLayout(enabled, subtab, prefs);
+  const item = (k, cls) => { const tab = FAMILY_TABS.find((x) => x[0] === k); return `<button class="${cls} ${subtab === k && cls === 'family-subtab' ? 'active' : ''}" data-subtab="${k}">${tab[1]} ${tab[2]}</button>`; };
   content.insertAdjacentHTML('afterbegin', `
-    <div class="family-subtabbar">
-      <button class="family-subtab ${subtab === 'chores' ? 'active' : ''}" data-subtab="chores" style="display:${enabled.chores ? '' : 'none'}">🧹 Chores</button>
-      <button class="family-subtab ${subtab === 'todo' ? 'active' : ''}" data-subtab="todo" style="display:${enabled.todo ? '' : 'none'}">✅ To-Do</button>
-      <button class="family-subtab ${subtab === 'shopping' ? 'active' : ''}" data-subtab="shopping" style="display:${enabled.shopping ? '' : 'none'}">🛒 Shopping</button>
-      <button class="family-subtab ${subtab === 'reminders' ? 'active' : ''}" data-subtab="reminders" style="display:${enabled.reminders ? '' : 'none'}">🗑️ Reminders</button>
-      <button class="family-subtab ${subtab === 'board' ? 'active' : ''}" data-subtab="board" style="display:${enabled.board ? '' : 'none'}">📝 Board</button>
-      <button class="family-subtab ${subtab === 'meals' ? 'active' : ''}" data-subtab="meals" style="display:${enabled.meals ? '' : 'none'}">🍽️ Meals</button>
+    <div class="family-subtabwrap">
+      <div class="family-subtabbar">${lay.bar.map((k) => item(k, 'family-subtab')).join('')}${lay.more.length ? `<button class="family-subtab family-more" aria-haspopup="menu" aria-expanded="false">⋯ <span>More</span></button>` : ''}</div>
+      ${lay.more.length ? `<div class="family-more-menu" role="menu" hidden>${lay.more.map((k) => item(k, 'family-more-item')).join('')}<button class="family-more-item family-arrange" role="menuitem"><span>Arrange tabs…</span></button></div>` : ''}
     </div>`);
-  content.querySelectorAll('.family-subtab').forEach(btn => {
-    btn.addEventListener('click', () => renderFamilySubtab(btn.dataset.subtab, enabled));
-  });
+  const go = (k) => { recordFamilyUse(k); renderFamilySubtab(k, enabled); };
+  content.querySelectorAll('.family-subtab[data-subtab], .family-more-item[data-subtab]').forEach((btn) => btn.addEventListener('click', () => go(btn.dataset.subtab)));
+  const more = content.querySelector('.family-more'), menu = content.querySelector('.family-more-menu');
+  if (more && menu) {
+    const close = () => { menu.hidden = true; more.setAttribute('aria-expanded', 'false'); document.removeEventListener('click', away, true); document.removeEventListener('keydown', esc, true); };
+    const away = (e) => { if (!e.target.closest('.family-subtabwrap')) close(); };
+    const esc = (e) => { if (e.key === 'Escape') close(); };
+    more.addEventListener('click', () => {
+      if (!menu.hidden) return close();
+      menu.hidden = false; more.setAttribute('aria-expanded', 'true');
+      document.addEventListener('click', away, true); document.addEventListener('keydown', esc, true);
+    });
+    content.querySelector('.family-arrange').addEventListener('click', () => { close(); openFamilyArrange(enabled, subtab); });
+  }
 }
 // Shared by the settings-save handler and the initial page load (previously
 // duplicated per-tab logic in both places, once for each of the three now-
@@ -70,9 +140,10 @@ function updateFamilyHubVisibility(s) {
   window._remindersEnabled = s.reminders_enabled !== '0';
   window._messageboardEnabled = s.messageboard_enabled === '1';
   window._mealplanEnabled = s.mealplan_enabled === '1';
+  window._recipesEnabled = s.recipes_enabled !== '0';
   window._flightmapEnabled = s.flightmap_enabled === '1';
-  const enabled = { chores: window._choresEnabled, todo: window._todoEnabled, shopping: window._shoppingEnabled, reminders: window._remindersEnabled, board: window._messageboardEnabled, meals: window._mealplanEnabled };
-  const anyEnabled = enabled.chores || enabled.todo || enabled.shopping || enabled.reminders || enabled.board || enabled.meals;
+  const enabled = { chores: window._choresEnabled, todo: window._todoEnabled, shopping: window._shoppingEnabled, reminders: window._remindersEnabled, board: window._messageboardEnabled, meals: window._mealplanEnabled, recipes: window._recipesEnabled };
+  const anyEnabled = enabled.chores || enabled.todo || enabled.shopping || enabled.reminders || enabled.board || enabled.meals || enabled.recipes;
   const familyTabEl = document.getElementById('tab-family');
   if (familyTabEl) {
     familyTabEl.style.display = anyEnabled ? '' : 'none';
@@ -80,7 +151,7 @@ function updateFamilyHubVisibility(s) {
       const calTab = document.querySelector('.tab[data-tab="calendars"]');
       if (calTab) calTab.click();
     } else if (familyTabEl.classList.contains('active') && !enabled[familySubtab]) {
-      renderFamilySubtab(['chores', 'todo', 'shopping', 'reminders', 'board', 'meals'].find(t => enabled[t]), enabled);
+      renderFamilySubtab(['chores', 'todo', 'shopping', 'reminders', 'board', 'meals', 'recipes'].find(t => enabled[t]), enabled);
     }
   }
 }

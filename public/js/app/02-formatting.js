@@ -976,7 +976,7 @@ const FAVORITE_CARD_DEFS = {
   },
   // One card per screen: start a presentation on that screen and step through it (next, previous, play, pause, stop). The decks are made in Photos > Presentations.
   presentation: {
-    label: 'Presentation', icon: '📽️', category: 'Quick actions', needs: ['screens', 'decks', 'playlists'], configField: 'screen',
+    label: 'Presentation', icon: '📽️', category: 'Quick actions', needs: ['screens', 'decks', 'playlists', 'recipes'], configField: 'screen',
     render(card, data) {
       const scr = (data.screens || []).find(x => x.device_id === card.config.device_id);
       if (!scr) return `<p style="font-size:12px;color:var(--muted);margin:0">That screen no longer exists. Remove this card.</p>`;
@@ -997,12 +997,12 @@ const FAVORITE_CARD_DEFS = {
             <button class="btn fav-pr-btn" data-id="${scr.device_id}" data-a="stop" style="width:auto;margin-top:0;padding:8px 14px;background:var(--card);border:1px solid var(--border);color:#c0392b">■</button>
           </div>`;
       }
-      const decks = (data.decks || []).filter(d => d.page_count), lists = (data.playlists || []).filter(p => p.page_count);
-      if (!decks.length && !lists.length) return `<div style="font-size:12.5px;font-weight:600">📽️ ${name}</div><p style="font-size:12px;color:var(--muted);margin:2px 0 0">No presentations yet. Add one in Photos, under Presentations.</p>`;
+      const decks = (data.decks || []).filter(d => d.page_count), lists = (data.playlists || []).filter(p => p.page_count), recs = data.recipes || [];
+      if (!decks.length && !lists.length && !recs.length) return `<div style="font-size:12.5px;font-weight:600">📽️ ${name}</div><p style="font-size:12px;color:var(--muted);margin:2px 0 0">No presentations yet. Add one in Photos, under Presentations.</p>`;
       return `
         <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📽️ ${name}</div>
         <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${scr.online ? 'Not presenting' : 'Offline · not presenting'}</div>
-        <select class="form-input fav-pr-deck" data-id="${scr.device_id}" style="width:100%;padding:10px;font-size:14px;margin-bottom:8px">${decks.length ? `<optgroup label="Presentations">${decks.map(d => `<option value="deck:${d.id}">${escapeHtml(d.name)}</option>`).join('')}</optgroup>` : ''}${lists.length ? `<optgroup label="Playlists">${lists.map(p => `<option value="playlist:${p.id}">${escapeHtml(p.name)}</option>`).join('')}</optgroup>` : ''}</select>
+        <select class="form-input fav-pr-deck" data-id="${scr.device_id}" style="width:100%;padding:10px;font-size:14px;margin-bottom:8px">${decks.length ? `<optgroup label="Presentations">${decks.map(d => `<option value="deck:${d.id}">${escapeHtml(d.name)}</option>`).join('')}</optgroup>` : ''}${lists.length ? `<optgroup label="Playlists">${lists.map(p => `<option value="playlist:${p.id}">${escapeHtml(p.name)}</option>`).join('')}</optgroup>` : ''}${recs.length ? `<optgroup label="Recipes">${recs.map(r => `<option value="recipe:${r.id}">${escapeHtml(r.title)}</option>`).join('')}</optgroup>` : ''}</select>
         <button class="btn btn-primary fav-pr-btn" data-id="${scr.device_id}" data-a="start" style="margin-top:0;padding:10px">Start</button>`;
     },
     wire(card) {
@@ -1355,6 +1355,7 @@ async function renderFavoritesTab() {
   if (needs.has('rewards')) fetches.push(apiFetch('/api/rewards').then(r => data.rewards = r).catch(() => { data.rewards = []; }));
   if (needs.has('playlists')) fetches.push(apiFetch('/api/playlists').then(r => data.playlists = Array.isArray(r) ? r : []).catch(() => { data.playlists = []; }));
   if (needs.has('decks')) fetches.push(apiFetch('/api/decks').then(r => data.decks = Array.isArray(r) ? r : []).catch(() => { data.decks = []; }));
+  if (needs.has('recipes')) fetches.push(apiFetch('/api/recipes').then(r => data.recipes = Array.isArray(r) ? r : []).catch(() => { data.recipes = []; }));
   if (needs.has('displays')) fetches.push(apiFetch('/api/displays').then(r => data.displays = Array.isArray(r) ? r : []).catch(() => { data.displays = []; }));
   if (needs.has('screens')) fetches.push(apiFetch('/api/screens').then(r => data.screens = r).catch(() => { data.screens = []; }));
   if (needs.has('shopping')) fetches.push(apiFetch('/api/shopping-list?list=all').then(r => data.shopping = r).catch(() => { data.shopping = []; }));

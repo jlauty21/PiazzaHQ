@@ -534,6 +534,48 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_playlist_items ON playlist_items (playlist_id, position);
 
+  -- Recipes: a household recipe box. Ingredients are kept both as the line that was typed (raw) and read into amount / unit / name so they can be scaled
+  -- and put on a shopping list; steps are plain text. The photo is a flat file in uploads/ (recipe-<id>-<random>.<ext>) so mirrors copy it with the photos.
+  CREATE TABLE IF NOT EXISTS recipes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    title       TEXT    NOT NULL,
+    description TEXT    DEFAULT '',
+    servings    REAL    DEFAULT 4,
+    prep_min    INTEGER DEFAULT 0,
+    cook_min    INTEGER DEFAULT 0,
+    source_url  TEXT    DEFAULT '',
+    source_name TEXT    DEFAULT '',
+    tags        TEXT    DEFAULT '',        -- comma list, like photo tags
+    photo       TEXT    DEFAULT '',
+    notes       TEXT    DEFAULT '',
+    favorite    INTEGER DEFAULT 0,
+    course      TEXT    DEFAULT '',        -- breakfast | appetizer | main | side | soup | salad | dessert | drink | snack ('' = none)
+    origin      TEXT    DEFAULT 'own',     -- own | imported | shared (only 'own' may ever be shared with other households)
+    created_at  TEXT    DEFAULT (datetime('now')),
+    updated_at  TEXT    DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS recipe_ingredients (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    recipe_id    INTEGER NOT NULL,
+    position     INTEGER NOT NULL,
+    quantity     REAL,                     -- NULL = no amount ("salt")
+    quantity_max REAL,                     -- the top of a range ("1-2 cloves")
+    unit         TEXT    DEFAULT '',
+    name         TEXT    NOT NULL,
+    note         TEXT    DEFAULT '',
+    group_label  TEXT    DEFAULT '',       -- the section it is under ("For the sauce")
+    raw          TEXT    DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS idx_recipe_ingredients ON recipe_ingredients (recipe_id, position);
+  CREATE TABLE IF NOT EXISTS recipe_steps (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    recipe_id INTEGER NOT NULL,
+    position  INTEGER NOT NULL,
+    text      TEXT    NOT NULL,
+    timer_sec INTEGER DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_recipe_steps ON recipe_steps (recipe_id, position);
+
   CREATE TABLE IF NOT EXISTS photo_settings (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -1291,6 +1333,14 @@ if (!columnExists('screens', 'presentation_deck_id')) { db.exec(`ALTER TABLE scr
 // Presentations: turning pages (a PDF page can be on its side). The deck's turn, and a turn of a page's own.
 if (!columnExists('decks', 'rotation'))      { db.exec(`ALTER TABLE decks ADD COLUMN rotation INTEGER DEFAULT 0`);       console.log('Migrated: added rotation column to decks'); }
 if (!columnExists('deck_pages', 'rotation')) { db.exec(`ALTER TABLE deck_pages ADD COLUMN rotation INTEGER DEFAULT -1`); console.log('Migrated: added rotation column to deck_pages'); }
+if (!columnExists('recipes', 'course')) { db.exec(`ALTER TABLE recipes ADD COLUMN course TEXT DEFAULT ''`); console.log('Migrated: added course column to recipes'); }
+// Community library: a recipe this household shared keeps the library's id for it, the secret that proves it is theirs (never sent to a browser), the author name they chose and when.
+for (const col of ['library_id', 'library_token', 'library_author', 'library_location', 'library_shared_at']) {
+  if (!columnExists('recipes', col)) { db.exec(`ALTER TABLE recipes ADD COLUMN ${col} TEXT DEFAULT ''`); console.log('Migrated: added ' + col + ' column to recipes'); }
+}
+if (!columnExists('meals', 'recipe_id')) { db.exec(`ALTER TABLE meals ADD COLUMN recipe_id INTEGER`); console.log('Migrated: added recipe_id column to meals'); }
+if (!columnExists('screens', 'presentation_recipe_id'))   { db.exec(`ALTER TABLE screens ADD COLUMN presentation_recipe_id INTEGER`);   console.log('Migrated: added presentation_recipe_id column to screens'); }
+if (!columnExists('screens', 'presentation_recipe_servings')) { db.exec(`ALTER TABLE screens ADD COLUMN presentation_recipe_servings REAL`); console.log('Migrated: added presentation_recipe_servings column to screens'); }
 if (!columnExists('screens', 'presentation_playlist_id')) { db.exec(`ALTER TABLE screens ADD COLUMN presentation_playlist_id INTEGER`); console.log('Migrated: added presentation_playlist_id column to screens'); }
 if (!columnExists('screens', 'presentation_schedule')) { db.exec(`ALTER TABLE screens ADD COLUMN presentation_schedule TEXT DEFAULT '[]'`); console.log('Migrated: added presentation_schedule column to screens'); }
 if (!columnExists('screens', 'presentation_mode'))    { db.exec(`ALTER TABLE screens ADD COLUMN presentation_mode TEXT DEFAULT ''`);   console.log('Migrated: added presentation_mode column to screens'); }
@@ -1818,6 +1868,7 @@ const defaultSettings = {
   messageboard_enabled: '0',      // show the Message Board (Family Hub "Board" sub-tab + the widget) — off by default, opt-in like todo/shopping
   messageboard_autoclear_days: '14', // notes older than this (and not pinned) are swept; '0' = never
   mealplan_enabled:   '0',        // show the Meal Plan (Family Hub "Meals" sub-tab + the widget) — off by default, opt-in like the board
+  recipes_enabled:    '1',        // show the Recipes sub-tab in the Family Hub (on by default; a recipe box costs nothing until used)
   mealplan_slots:     'dinner',   // which meal slots the household plans — comma list of breakfast,lunch,dinner (order-insensitive; 'dinner' = the original one-per-day behaviour)
   go2rtc_port:        '1984',     // localhost port the managed go2rtc media process binds to (camera widget)
   camera_service_autostart: '1',  // '0' = never launch the go2rtc process even when a camera widget exists (hard off switch)
@@ -2492,7 +2543,7 @@ function remoteBlockedPath(req) {
 // closed there if its own secret is wrong.
 function remoteSelfAuthenticatingPath(req) {
   const p = req.path, m = req.method;
-  if ((m === 'GET' || m === 'POST') && p === '/api/voice/add-item') return true;
+  if ((m === 'GET' || m === 'POST') && (p === '/api/voice/add-item' || p === '/api/voice/recipe-ingredients' || p === '/api/voice/cook')) return true;
   if (m === 'POST' && p === '/api/alexa') return true;
   if (/^Bearer /.test(req.headers.authorization || '') && (
     (m === 'POST' && (/^\/api\/screens\/[^/]+\/tv\/[^/]+$/.test(p) || /^\/api\/saved-layouts\/[^/]+\/apply$/.test(p))) ||
@@ -2927,7 +2978,7 @@ function markHostEditing(ms = 8000) { HOST_EDITING_UNTIL = Date.now() + ms; }
 // 'screens' is included so that assigning a profile to a remote slave bumps the
 // version — the slave's watcher then re-syncs (and re-registers, learning its new
 // assigned profile) within seconds instead of waiting for the slow timer.
-const SHARED_TOPICS = new Set(['events', 'photos', 'settings', 'photo-settings', 'feeds', 'displays', 'layout', 'screens', 'chores', 'todos', 'shopping', 'favorites', 'reminders', 'profiles', 'messages', 'cameras', 'meals', 'flight_watch', 'decks', 'playlists']);
+const SHARED_TOPICS = new Set(['events', 'photos', 'settings', 'photo-settings', 'feeds', 'displays', 'layout', 'screens', 'chores', 'todos', 'shopping', 'favorites', 'reminders', 'profiles', 'messages', 'cameras', 'meals', 'flight_watch', 'decks', 'playlists', 'recipes']);
 
 function broadcastUpdate(topic, displayId) {
   if (SHARED_TOPICS.has(topic)) HOST_DATA_VERSION = Date.now();
@@ -3220,7 +3271,7 @@ function requireAuth(req, res, next) {
   // /api/voice/add-item now accepts GET too (a single URL is much simpler
   // for Shortcuts to build than separate Headers/Body panels — see that
   // route's own comment), so both methods need the exemption, not just POST.
-  if ((req.method === 'GET' || req.method === 'POST') && fullPath === '/api/voice/add-item') return next();
+  if ((req.method === 'GET' || req.method === 'POST') && (fullPath === '/api/voice/add-item' || fullPath === '/api/voice/recipe-ingredients' || fullPath === '/api/voice/cook')) return next();   // the recipe ones check the same voice token
   if (req.method === 'POST' && fullPath === '/api/alexa') return next();
   // Home Assistant (or any automation) controlling a small, explicit set of
   // device-control routes with its own bearer token — same "authenticates
@@ -4153,7 +4204,7 @@ require('./src/mqtt-routes.js')({ crypto, mqttBridge, app, getSetting: (k) => ge
 
 // ── Voice add-item (Siri Shortcuts; also used by the Alexa skill) ──────────────────
 // This code lives in src/voice-add-item.js. It runs here, at the same place in the file as before.
-const { addVoiceItem } = require('./src/voice-add-item.js')({ crypto, app, db, broadcastUpdate, getSetting: (k) => getSetting(k), defaultShoppingListId });
+const { addVoiceItem, voiceAuth } = require('./src/voice-add-item.js')({ crypto, app, db, broadcastUpdate, getSetting: (k) => getSetting(k), defaultShoppingListId });
 
 // ── Voice control: Alexa skill ────────────────────────────────────────────────
 // This code lives in src/alexa.js. It runs here, at the same place in the file as before.
@@ -4691,6 +4742,10 @@ function buildSyncSnapshot() {
       deck_pages: tableRows('deck_pages'),
       playlists: tableRows('playlists'),
       playlist_items: tableRows('playlist_items'),
+      // Recipes (the photo files travel with the photos, see /api/sync/photos).
+      recipes: tableRows('recipes'),
+      recipe_ingredients: tableRows('recipe_ingredients'),
+      recipe_steps: tableRows('recipe_steps'),
     },
   };
 }
@@ -4765,6 +4820,8 @@ app.get('/api/sync/photos', (req, res) => {
   for (const r of reminderIcons) {
     if (r.icon_image) files.push(r.icon_image);
   }
+  // Recipe photos (flat files in uploads/).
+  for (const r of db.prepare(`SELECT photo FROM recipes WHERE photo IS NOT NULL AND photo != ''`).all()) files.push(r.photo);
   // Presentation page pictures and previews (uploads/decks/<id>/<file>).
   for (const p of db.prepare(`SELECT filename, thumb FROM deck_pages`).all()) {
     if (p.filename) files.push(p.filename);
@@ -4808,7 +4865,9 @@ const applySyncSnapshot = db.transaction((snap) => {
     if (!Array.isArray(rows)) return;
     db.prepare(`DELETE FROM ${name}`).run();
     if (!rows.length) return;
-    const cols = Object.keys(rows[0]);
+    const have = new Set(db.prepare(`PRAGMA table_info(${name})`).all().map((c) => c.name));
+    const cols = Object.keys(rows[0]).filter((c) => have.has(c));            // a column this version does not have (a newer host) is skipped, not an error
+    if (!cols.length) return;
     const ph = cols.map(() => '?').join(',');
     const ins = db.prepare(`INSERT INTO ${name} (${cols.join(',')}) VALUES (${ph})`);
     for (const row of rows) ins.run(...cols.map(c => row[c]));
@@ -4848,6 +4907,9 @@ const applySyncSnapshot = db.transaction((snap) => {
   if (T.deck_pages) replaceTable('deck_pages', T.deck_pages);
   if (T.playlists) replaceTable('playlists', T.playlists);
   if (T.playlist_items) replaceTable('playlist_items', T.playlist_items);
+  if (T.recipes) replaceTable('recipes', T.recipes);
+  if (T.recipe_ingredients) replaceTable('recipe_ingredients', T.recipe_ingredients);
+  if (T.recipe_steps) replaceTable('recipe_steps', T.recipe_steps);
 });
 
 // Pull any photo image files this slave is missing, so cached photos actually
@@ -5810,7 +5872,12 @@ const { applySavedLayoutToDisplay } = require('./src/layout-library.js')({ app, 
 
 // ── Screens manager ───────────────────────────────────────────────────────────
 // This code lives in src/screens.js. It runs here, at the same place in the file as before.
-require('./src/presentations.js')({ path, fs, app, db, UPLOAD_DIR, multer, broadcastUpdate, sendScreenCommand, DEVICE_ID, PORT, http, URL });
+const presentations = require('./src/presentations.js')({ path, fs, app, db, UPLOAD_DIR, multer, broadcastUpdate, sendScreenCommand, DEVICE_ID, PORT, http, URL });
+const recipesApi = require('./src/recipes.js')({ path, fs, crypto, app, db, UPLOAD_DIR, multer, broadcastUpdate, forgetRecipe: (id) => presentations.forgetTarget('recipe', id) });
+// Voice for recipes (the Siri Shortcuts routes): src/voice-recipes.js.
+require('./src/voice-recipes.js')({ app, db, voiceAuth, recipes: recipesApi, presentations });
+// The community recipe library (share your own, browse and copy): src/recipe-library.js; the library itself is on the central server.
+require('./src/recipe-library.js')({ app, db, fs, path, URL, UPLOAD_DIR, recipes: recipesApi, isSlave: () => isSlave(), broadcastUpdate, central: { base: () => resolveFeedbackUrl(), key: () => resolveFeedbackKey(), fetch: fetchWithTimeout, deviceId: () => updateSetting('screen_device_id_cache', '') || DEVICE_ID || '' } });
 require('./src/screens.js')({ getReachableAddresses, app, PORT, IS_DEMO, db, broadcastUpdate, sendScreenCommand, SCREEN_ONLINE_MS, DEVICE_ID, getSetting, isSlave, resolveDisplay, previewScreenName, updateSetting });
 
 // ── Layout API ────────────────────────────────────────────────────────────────
@@ -7154,7 +7221,8 @@ app.get('/', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dir
 app.get('/app', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'app.html')));
 app.get(['/kids', '/chores'], demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'kids.html')));
 app.get('/hub', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'hub.html')));
-app.get('/remote', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'remote.html')));   // the presentation remote for phones
+app.get('/remote', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'remote.html')));
+app.get('/recipe-print', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'recipe-print.html')));   // a recipe laid out to print, share or copy   // the presentation remote for phones
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 // A thin wrapper around app.listen. `httpServer` is captured at module scope
@@ -7421,9 +7489,11 @@ function buildSelfUpdateZip() {
   // clear, actionable message either way instead of a cryptic ENOENT.
   assertZipToolAvailable();
 
-  const stageRoot = path.join(UPDATE_TMP, 'self-push-stage');
+  // Every packaging run gets its own folder, and clearing away old ones is best effort: on Windows a virus scanner can hold freshly copied files open for a
+  // while, and a folder left from an earlier run that cannot be deleted yet must never stop the next push (seen 2026-10-12: EPERM on the PDF reader's files).
+  try { for (const e of fs.readdirSync(UPDATE_TMP)) if (/^self-push-stage/.test(e)) { try { fs.rmSync(path.join(UPDATE_TMP, e), { recursive: true, force: true }); } catch { /* still held: leave it */ } } } catch { /* no temp folder yet */ }
+  const stageRoot = path.join(UPDATE_TMP, 'self-push-stage-' + process.pid + '-' + Date.now().toString(36));
   const stageDir = path.join(stageRoot, 'piazzahq');
-  fs.rmSync(stageRoot, { recursive: true, force: true });
   fs.mkdirSync(stageDir, { recursive: true });
   // Same file list installFromZip() expects/backs up — now sharing the
   // actual constant (UPDATE_CODE_ITEMS) instead of a separately maintained
@@ -7440,7 +7510,7 @@ function buildSelfUpdateZip() {
   const zipPath = path.join(UPDATE_TMP, 'self-push.zip');
   try { fs.unlinkSync(zipPath); } catch {}
   makeZip(zipPath, stageRoot, 'piazzahq');
-  fs.rmSync(stageRoot, { recursive: true, force: true });
+  try { fs.rmSync(stageRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 150 }); } catch { /* swept at the next run */ }
   return zipPath;
 }
 

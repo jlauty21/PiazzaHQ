@@ -1493,6 +1493,7 @@ async function renderSettings() {
       chores_enabled: ($('s-chores-enabled') && $('s-chores-enabled').checked) ? '1' : '0',
       todo_enabled: ($('s-todo-enabled') && $('s-todo-enabled').checked) ? '1' : '0',
       shopping_enabled: ($('s-shopping-enabled') && $('s-shopping-enabled').checked) ? '1' : '0',
+      ...($('s-recipes-enabled') ? { recipes_enabled: $('s-recipes-enabled').checked ? '1' : '0' } : {}),
       reminders_enabled: ($('s-reminders-enabled') && $('s-reminders-enabled').checked) ? '1' : '0',
       messageboard_enabled: ($('s-messageboard-enabled') && $('s-messageboard-enabled').checked) ? '1' : '0',
       messageboard_autoclear_days: $('s-messageboard-autoclear-days') ? String(Math.max(0, parseInt($('s-messageboard-autoclear-days').value, 10) || 0)) : '14',

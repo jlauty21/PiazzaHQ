@@ -181,8 +181,9 @@ let _mpEdit = null; // { date, slot } of the open inline editor, or null
 async function renderMealsFamilyTab() {
   const content = $('content');
   const from = mpIso(0), to = mpIso(13);
-  let rows = [], settings = {};
-  try { [rows, settings] = await Promise.all([apiFetch(`/api/meals?from=${from}&to=${to}`), apiFetch('/api/settings')]); } catch {}
+  let rows = [], settings = {}, recipes = [];
+  try { [rows, settings, recipes] = await Promise.all([apiFetch(`/api/meals?from=${from}&to=${to}`), apiFetch('/api/settings'), apiFetch('/api/recipes').catch(() => [])]); } catch {}
+  if (!Array.isArray(recipes)) recipes = [];
   const activeSlots = mpParseSlots(settings && settings.mealplan_slots);
   const byKey = {};
   (Array.isArray(rows) ? rows : []).forEach(m => { byKey[m.date + '|' + (m.slot || 'dinner')] = m; });
@@ -205,6 +206,7 @@ async function renderMealsFamilyTab() {
           <div class="mp-editrow" data-mp-date="${date}" data-mp-slot="${slot}" style="padding:8px 0 4px">
             <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:6px">${activeSlots.length > 1 ? MP_SLOT_NAME[slot] + ' · ' : ''}${label}</div>
             <input class="form-input mp-f-title" maxlength="80" placeholder="Tacos, leftovers, Grandma's…" value="${escapeHtml(m ? m.title : '')}">
+            ${recipes.length ? `<select class="form-input mp-f-recipe" style="margin-top:8px"><option value="">No recipe</option>${recipes.map(r => `<option value="${r.id}" data-title="${escapeHtml(r.title)}" ${m && m.recipe_id === r.id ? 'selected' : ''}>🍳 ${escapeHtml(r.title)}</option>`).join('')}</select>` : ''}
             <textarea class="form-input mp-f-notes" rows="2" maxlength="300" placeholder="Notes (optional)" style="margin-top:8px;resize:none">${escapeHtml(m ? m.notes : '')}</textarea>
             <div style="display:flex;gap:8px;margin-top:8px">
               <button type="button" class="mp-f-save" style="flex:1;background:var(--accent);border:none;border-radius:10px;padding:9px;color:#fff;font-weight:700;cursor:pointer">Save</button>
@@ -217,6 +219,7 @@ async function renderMealsFamilyTab() {
         <div class="mp-slot-row" data-mp-date="${date}" data-mp-slot="${slot}" style="display:flex;align-items:center;gap:10px;padding:7px 0;cursor:pointer">
           ${activeSlots.length > 1 ? `<span style="font-size:11px;font-weight:700;color:var(--muted);min-width:64px">${MP_SLOT_NAME[slot]}</span>` : ''}
           <span style="flex:1;font-size:14px;${m ? 'color:var(--text)' : 'color:var(--muted);opacity:0.7'}">${m ? escapeHtml(m.title) : '+ Add'}</span>
+          ${m && m.recipe_id && m.recipe_title ? `<button type="button" class="mp-open-recipe ghost small" data-recipe="${m.recipe_id}" title="Open the recipe">🍳</button><button type="button" class="mp-cook ghost small" data-recipe="${m.recipe_id}" data-title="${escapeHtml(m.recipe_title)}">Cook</button>` : ''}
         </div>`;
     }).join('');
     dayCards.push(`
@@ -254,14 +257,28 @@ function wireMealsFamilyTab(activeSlots) {
     _mpEdit = { date: row.dataset.mpDate, slot: row.dataset.mpSlot };
     renderMealsFamilyTab();
   }));
+  // a planned meal that is a recipe: open it (in the Recipes tab), or cook it on a screen
+  document.querySelectorAll('.mp-open-recipe').forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    try { localStorage.setItem('rcp_view_v1', JSON.stringify({ id: Number(b.dataset.recipe), servings: 0, at: Date.now() })); } catch {}
+    if (typeof renderFamilySubtab === 'function') renderFamilySubtab('recipes');
+  }));
+  document.querySelectorAll('.mp-cook').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); mpCook(Number(b.dataset.recipe)); }));
   const openRow = _mpEdit ? document.querySelector(`.mp-editrow[data-mp-date="${_mpEdit.date}"][data-mp-slot="${_mpEdit.slot}"]`) : null;
   if (openRow) {
     const titleEl = openRow.querySelector('.mp-f-title');
     if (titleEl) setTimeout(() => titleEl.focus(), 30);
+    const recipeSel = openRow.querySelector('.mp-f-recipe');
+    if (recipeSel) recipeSel.addEventListener('change', () => {          // choosing a recipe names the meal after it when no name has been typed
+      const titleInput = openRow.querySelector('.mp-f-title'), opt = recipeSel.selectedOptions[0];
+      if (opt && opt.dataset.title && !titleInput.value.trim()) titleInput.value = opt.dataset.title;
+    });
     const submit = async (title) => {
       const notes = openRow.querySelector('.mp-f-notes').value || '';
+      const body = { title, notes };
+      if (recipeSel) body.recipe_id = recipeSel.value ? Number(recipeSel.value) : null;
       try {
-        const r = await apiFetch(`/api/meals/${_mpEdit.date}/${_mpEdit.slot}`, { method: 'PUT', body: JSON.stringify({ title, notes }) });
+        const r = await apiFetch(`/api/meals/${_mpEdit.date}/${_mpEdit.slot}`, { method: 'PUT', body: JSON.stringify(body) });
         if (r && r.error) { showToast('❌ ' + r.error); return; }
         _mpEdit = null;
         renderMealsFamilyTab();
@@ -293,7 +310,7 @@ function wireMealsFamilyTab(activeSlots) {
           const src = prevByKey[i + '|' + slot];
           const dstKey = mpIso(i) + '|' + slot;
           if (src && src.title && !curKeys.has(dstKey)) {
-            await apiFetch(`/api/meals/${mpIso(i)}/${slot}`, { method: 'PUT', body: JSON.stringify({ title: src.title, notes: src.notes || '' }) });
+            await apiFetch(`/api/meals/${mpIso(i)}/${slot}`, { method: 'PUT', body: JSON.stringify({ title: src.title, notes: src.notes || '', recipe_id: src.recipe_id || null }) });
             copied++;
           }
         }
@@ -776,6 +793,8 @@ async function drawWidgetSettingsPanel() {
     drawWidgetSettingsPanel_Build_messageboard({ w, _st });
   } else if (w.type === 'mealplan') {
     await drawWidgetSettingsPanel_Build_mealplan({ w, _st });
+  } else if (w.type === 'recipe') {
+    await drawWidgetSettingsPanel_Build_recipe({ w, _st });
   } else if (w.type === 'flightmap') {
     await drawWidgetSettingsPanel_Build_flightmap({ w, _st });
   } else if (w.type === 'camera') {
@@ -1208,6 +1227,17 @@ async function drawWidgetSettingsPanel() {
       else w.mpSlots = picked;
       rebuildCanvas();
     }));
+  } else if (w.type === 'recipe') {
+    $('rcw-mode').addEventListener('change', (e) => {
+      w.rcMode = e.target.value === 'chosen' ? 'chosen' : 'tonight';
+      $('rcw-slot-row').style.display = w.rcMode === 'tonight' ? '' : 'none';
+      $('rcw-recipe-row').style.display = w.rcMode === 'chosen' ? '' : 'none';
+    });
+    $('rcw-slot').addEventListener('change', (e) => { w.rcSlot = e.target.value; });
+    $('rcw-recipe').addEventListener('change', (e) => { w.rcId = Number(e.target.value) || 0; });
+    $('rcw-show').addEventListener('change', (e) => { w.rcShow = e.target.value; });
+    $('rcw-photo').addEventListener('change', (e) => { w.rcShowPhoto = e.target.checked; });
+    $('rcw-font-range').addEventListener('input', (e) => { w.rcFontPx = parseInt(e.target.value); $('rcw-font-val').textContent = w.rcFontPx + 'px'; });
   } else if (w.type === 'flightmap') {
     drawWidgetSettingsPanel_Wire_flightmap({ w });
   } else if (w.type === 'camera') {
@@ -1563,3 +1593,36 @@ async function drawWidgetSettingsPanel() {
   $('layer-down-btn').addEventListener('click', () => { moveLayer(w, -1); });
 }
 
+
+// ── Recipes (Family Hub sub-tab): the screens are js/shared/recipes-ui.js, the same ones the phone Family Hub page uses ──
+let _recipesUi = null;
+async function renderRecipesFamilyTab() {
+  const content = $('content');
+  content.innerHTML = '<div id="recipes-root"></div>';
+  _recipesUi = RecipesUI.mount($('recipes-root'), {
+    api: (path, init) => apiFetch(path, init),
+    upload: (path, fd) => apiFetch(path, { method: 'POST', body: fd }),
+    toast: (m) => showToast(m),
+    afterCook: async (screenId) => {            // the same choice as for presentations: open the full-screen controller as the cooking starts
+      if (typeof presWantsController !== 'function' || !presWantsController() || typeof openPresentController !== 'function') return;
+      try { const all = await apiFetch('/api/screens'); if (Array.isArray(all)) presScreens = all; } catch { /* use what is loaded */ }
+      openPresentController(screenId);
+    },
+  });
+}
+
+// Cook a planned recipe on a screen (from the Meals tab): pick the screen, start it at the recipe's own servings.
+async function mpCook(recipeId) {
+  let all = [];
+  try { all = await apiFetch('/api/screens'); } catch {}
+  const screens = (Array.isArray(all) ? all : []).filter(s => s.name && s.online && !String(s.device_id).startsWith('preview_'));
+  if (!screens.length) { showToast('No screens are on right now. Connect a display and give it a name in Devices first.'); return; }
+  showSheet(`<div style="padding:18px 18px 22px"><h3 style="margin:0 0 10px">Cook on a screen</h3>${screens.map(s => `<button class="btn mp-cook-pick" data-id="${escapeHtml(s.device_id)}" style="display:block;width:100%;text-align:left;margin:0 0 8px;background:var(--card);border:1px solid var(--border)">🖥️ ${escapeHtml(s.name)}</button>`).join('')}<button class="btn" id="mp-cook-cancel" style="width:100%;margin-top:4px;background:transparent;border:1px solid var(--border)">Cancel</button></div>`);
+  document.getElementById('mp-cook-cancel').addEventListener('click', closeSheet);
+  document.querySelectorAll('.mp-cook-pick').forEach(b => b.addEventListener('click', async () => {
+    closeSheet();
+    const r = await apiFetch(`/api/screens/${encodeURIComponent(b.dataset.id)}/presentation`, { method: 'POST', body: JSON.stringify({ action: 'start', kind: 'recipe', id: recipeId }) }).catch(() => null);
+    if (!r || r.error || r.__networkError || r.__authFailed || r.__parseError) { showToast((r && r.error) ? '❌ ' + r.error : '❌ The recipe could not be started on that screen.'); return; }
+    showToast(r.delivered ? 'Started on the screen' : 'Saved. The screen starts when it next connects.');
+  }));
+}

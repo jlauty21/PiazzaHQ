@@ -103,6 +103,7 @@ const WIDGET_DEFS = [
   { type:'shoppinglist', label:'Shopping List', icon:'🛒' },
   { type:'messageboard', label:'Message Board', icon:'📝' },
   { type:'mealplan', label:'Meal Plan', icon:'🍽️' },
+  { type:'recipe', label:'Recipe', icon:'🍳' },
   { type:'camera', label:'Camera', icon:'📹' },
   { type:'flightmap', label:'Flight Map', icon:'✈️' },
   { type:'countdown', label:'Countdown', icon:'⏳' },
@@ -133,7 +134,7 @@ const WIDGET_CATEGORIES = [
   { id:'tasks',    label:'Tasks',    icon:'✅', types:['tasks','tasksCombined','todo'] },
   { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel','flightmap'] },
   { id:'photos',   label:'Photos',   icon:'🖼️', types:['photo'] },
-  { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan'] },
+  { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan','recipe'] },
   { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode','webpage','layoutswitcher'] },
   { id:'decor',    label:'Decor',    icon:'🌿', types:['decoration'] },
   { id:'smarthome', label:'Smart Home', icon:'🏠', types:['entitystatus','smarthomeDashboard','groupcontrol','camera'] },
@@ -552,7 +553,7 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
 
     <div class="section-header">Add Widget</div>
     <div class="widget-cats">
-      ${WIDGET_CATEGORIES.filter(c => c.id !== 'smarthome' || typeof profileAllows !== 'function' || profileAllows('ha')).map(c=>{ const visibleTypes = c.types.filter(t => (t !== 'todo' || window._todoEnabled) && (t !== 'shoppinglist' || window._shoppingEnabled) && (t !== 'messageboard' || window._messageboardEnabled) && (t !== 'mealplan' || window._mealplanEnabled) && (t !== 'flightmap' || window._flightmapEnabled)); return `
+      ${WIDGET_CATEGORIES.filter(c => c.id !== 'smarthome' || typeof profileAllows !== 'function' || profileAllows('ha')).map(c=>{ const visibleTypes = c.types.filter(t => (t !== 'todo' || window._todoEnabled) && (t !== 'shoppinglist' || window._shoppingEnabled) && (t !== 'messageboard' || window._messageboardEnabled) && (t !== 'mealplan' || window._mealplanEnabled) && (t !== 'recipe' || window._recipesEnabled !== false) && (t !== 'flightmap' || window._flightmapEnabled)); return `
         <div class="widget-cat" data-cat="${c.id}">
           <button class="cat-head" data-cat-toggle="${c.id}">
             <span class="cat-ic">${c.icon}</span>
@@ -687,6 +688,9 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
       }
       if (def.type === 'mealplan') {
         newWidget.w = 30; newWidget.h = 34; newWidget.mpDays = 7; newWidget.mpFontPx = 15;
+      }
+      if (def.type === 'recipe') {
+        newWidget.w = 30; newWidget.h = 44; newWidget.rcMode = 'tonight'; newWidget.rcSlot = 'dinner'; newWidget.rcShow = 'ingredients'; newWidget.rcFontPx = 15;
       }
       if (def.type === 'camera') {
         newWidget.w = 44; newWidget.h = 32; newWidget.camFit = 'contain'; newWidget.camShowTitle = true;
