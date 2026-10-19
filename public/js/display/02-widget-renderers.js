@@ -457,8 +457,8 @@ function renderReminders(widget) {
 // ── Family Message Board widget ───────────────────────────────────────────
 // A whiteboard corner, not a chat: short notes household members leave for
 // each other, newest first, pinned ones on top. Data lives in state.messages
-// (fetchMessages(), kept live via the 'messages' SSE topic). Colour-coded by
-// author the same way events are colour-coded by owner — profile colour when
+// (fetchMessages(), kept live via the 'messages' SSE topic). Color-coded by
+// author the same way events are color-coded by owner — profile color when
 // author_profile_id links to a live profile, else the note's stored color.
 function mbNoteColor(msg) {
   if (msg && msg.author_profile_id != null) {
@@ -867,6 +867,112 @@ function wireRecipeWidgetTaps() {
     el._tapWired = true;
     el.addEventListener('click', (e) => { e.stopPropagation(); if (editModeActive) return; rcwCookHere(el.dataset.rcId); });
   });
+}
+
+// ── Whiteboard widget ─────────────────────────────────────────────────────
+// A drawing board you draw on with a finger or stylus (the drawing itself lives in js/shared/draw-ui.js; the board is kept by the server, src/whiteboard.js, and
+// widgets with the same board name share one board, so two screens show the same drawing). The element is kept across layout redraws while its settings are unchanged
+// (see renderLayout), so a drawing in progress is never wiped by a calendar refresh.
+function wbBoardId(w) { return String((w && w.wbBoard) || ('wb_' + (w && w.id))).replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 40) || 'wb'; }
+function whiteboardFingerprint(w) { return [wbBoardId(w), w.wbToolbar === 'always' ? 'always' : 'touch', w.wbReadOnly ? 1 : 0, w.wbName || ''].join('|'); }
+function renderWhiteboard(widget) {
+  const w = widget || {};
+  return `<div class="w-whiteboard" data-wb-board="${escapeHtmlD(wbBoardId(w))}" data-interactive="1"></div>`;
+}
+const wbCtls = new Map();            // widget id -> { el, host, ctl }
+let wbTimer = null;
+const wbApi = (path, init) => fetch(path, { ...(init || {}), headers: { 'Content-Type': 'application/json', ...((init && init.headers) || {}) } }).then((r) => r.json());
+function initWhiteboards() {
+  for (const [id, c] of wbCtls) { if (!c.el.isConnected) { try { c.ctl.destroy(); } catch (e) { /* gone */ } wbCtls.delete(id); } }
+  if (typeof DrawUI === 'undefined') return;
+  document.querySelectorAll('#canvas .widget-whiteboard').forEach((el) => {
+    const id = el.dataset.widgetId;
+    const w = (state.layout || []).find((x) => String(x.id) === String(id));
+    const host = el.querySelector('.w-whiteboard');
+    if (!w || !host) return;
+    const have = wbCtls.get(id);
+    if (have && have.el === el && have.host === host && host.firstChild) return;            // already drawn, and kept as it is
+    if (have) { try { have.ctl.destroy(); } catch (e) { /* gone */ } }
+    const ctl = DrawUI.mount(host, { board: wbBoardId(w), api: wbApi, readOnly: !!w.wbReadOnly, toolbar: w.wbToolbar === 'always' ? 'always' : 'touch', isEditing: () => editModeActive, name: w.wbName || 'Whiteboard' });
+    wbCtls.set(id, { el, host, ctl });
+  });
+  if (!wbTimer && wbCtls.size) wbTimer = setInterval(wbAutoClearTick, 60000);
+}
+function wbRefreshAll() { wbCtls.forEach((c) => { try { c.ctl.refresh(); } catch (e) { /* ignore */ } }); }
+// A board that wipes itself: 'daily' (at HH:MM local, if anything was drawn before that time) or 'hours' (after N hours with no new drawing).
+function wbAutoClearDue(mode, hours, hhmm, lastMs, nowMs, count) {
+  if (!count || !lastMs) return false;
+  if (mode === 'hours') return nowMs - lastMs >= Math.max(1, Number(hours) || 1) * 3600e3;
+  if (mode === 'daily') {
+    const m = /^(\d\d):(\d\d)$/.exec(String(hhmm || '03:00')) || [0, '03', '00'];
+    const b = new Date(nowMs); b.setHours(Number(m[1]), Number(m[2]), 0, 0);
+    if (b.getTime() > nowMs) b.setDate(b.getDate() - 1);          // the most recent time it was HH:MM
+    return lastMs < b.getTime();
+  }
+  return false;
+}
+async function wbAutoClearTick() {
+  if (typeof editModeActive !== 'undefined' && editModeActive) return;
+  const done = new Set();
+  for (const w of state.layout || []) {
+    if (w.type !== 'whiteboard' || !w.wbAutoClear || w.wbAutoClear === 'never' || w.wbReadOnly) continue;
+    const id = wbBoardId(w);
+    if (done.has(id)) continue; done.add(id);
+    try {
+      const b = await wbApi('/api/boards/' + encodeURIComponent(id));
+      const last = Date.parse(String(b.updated_at || '').replace(' ', 'T') + 'Z');
+      if (wbAutoClearDue(w.wbAutoClear, w.wbAutoHours, w.wbAutoTime, last, Date.now(), (b.strokes || []).length + (b.ink ? 1 : 0))) await wbApi('/api/boards/' + encodeURIComponent(id) + '/clear', { method: 'POST', body: '{}' });
+    } catch (e) { /* try again in a minute */ }
+  }
+}
+
+// ── Kids' Drawing widget ──────────────────────────────────────────────────
+// Shows the drawings in the newest "show" (src/whiteboard.js, kid_drawings): the drawing a kid just sent, or the ones a kid picked to rotate. With several, each is shown for a
+// few seconds in turn. The newest show wins, whichever kid made it. A kid can open an older drawing on the pad, change it and send it again, which makes it the newest.
+let kdList = [], kdSig = null, kdFetchedAt = 0, kdTimer = null;
+const kdIdx = {}, kdSince = {};
+const kdSeconds = (w) => Math.max(3, Math.min(600, Number(w && w.kdSeconds) || 15));
+function kdCurrent(w) { return kdList.length ? kdList[(kdIdx[w.id] || 0) % kdList.length] : null; }
+function renderKidDrawing(widget) {
+  const w = widget || {}, d = kdCurrent(w);
+  const fit = w.kdFit === 'cover' ? 'cover' : 'contain';
+  const font = Math.max(10, Math.min(60, Number(w.kdFontPx) || 18));
+  const body = d && d.filename
+    ? `<img class="kd-img" src="/uploads/${encodeURIComponent(d.filename)}" alt="" style="object-fit:${fit}">${w.kdCaption === false ? '' : `<div class="kd-cap">${escapeHtmlD(d.label || d.name || '')}</div>`}`
+    : `<div class="kd-empty">${escapeHtmlD("Kids' drawings show here")}</div>`;
+  return `<div class="w-kiddrawing" style="--kd-font:${font}px">${body}</div>`;
+}
+// the next drawing of the rotation, swapped into the widget without rebuilding it
+function kdShow(w) {
+  const el = document.querySelector(`#canvas .widget[data-widget-id="${CSS.escape(String(w.id))}"] .w-kiddrawing`);
+  const d = kdCurrent(w);
+  if (!el || !d) return;
+  const img = el.querySelector('.kd-img'), cap = el.querySelector('.kd-cap');
+  if (img) { img.style.animation = 'none'; void img.offsetWidth; img.style.animation = ''; img.src = '/uploads/' + encodeURIComponent(d.filename); }
+  if (cap) cap.textContent = d.label || d.name || '';
+}
+function kdTick() {
+  if (kdList.length < 2) return;
+  const now = Date.now();
+  for (const w of state.layout || []) {
+    if (w.type !== 'kiddrawing') continue;
+    if (now - (kdSince[w.id] || 0) < kdSeconds(w) * 1000) continue;
+    kdSince[w.id] = now; kdIdx[w.id] = ((kdIdx[w.id] || 0) + 1) % kdList.length;
+    kdShow(w);
+  }
+}
+async function refreshKidDrawing(force) {
+  if (!(state.layout || []).some((w) => w.type === 'kiddrawing')) return;
+  if (!force && Date.now() - kdFetchedAt < 20000) return;
+  kdFetchedAt = Date.now();
+  let j = null;
+  try { const r = await fetch('/api/kid-drawings/showing'); j = r.ok ? await r.json() : null; } catch (e) { return; }
+  const list = j && Array.isArray(j.drawings) ? j.drawings : [];
+  const sig = list.map((d) => d.id + ':' + d.filename).join(',');
+  if (sig === kdSig) return;
+  kdSig = sig; kdList = list;
+  for (const w of state.layout || []) if (w.type === 'kiddrawing') { kdIdx[w.id] = 0; kdSince[w.id] = Date.now(); rerenderSingleWidget(w.id); }
+  if (!kdTimer) kdTimer = setInterval(kdTick, 1000);
 }
 
 // ── Camera widget ─────────────────────────────────────────────────────────

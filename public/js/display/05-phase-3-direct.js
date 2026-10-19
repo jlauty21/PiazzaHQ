@@ -779,12 +779,13 @@ function rerenderSingleWidget(id) {
   // wrongly conclude nothing changed, and keep showing the OLD map/settings
   // instead of picking up what was just saved.
   if (w.type === 'radar') el.dataset.radarFingerprint = radarFingerprint(w);
+  if (w.type === 'whiteboard') { const fp = whiteboardFingerprint(w); if (el.dataset.wbFingerprint === fp && el.querySelector('.dw')) return; el.dataset.wbFingerprint = fp; }
   el.innerHTML = renderWidget(w);
   // Re-wire any tap-to-interact listeners inside this widget's freshly-
   // replaced DOM. All idempotent (each checks its own _tapWired flag before
   // attaching), so calling them broadly here is safe and simpler than
   // scoping each one to just this element.
-  wireChoreChartTaps(); wireMessageBoardTaps(); wireMealPlanTaps(); wireRecipeWidgetTaps(); wireCameraStreams(); wireCameraTaps(); wireFlightMaps(); wireTodoWidgetTaps(); wireShoppingWidgetTaps(); wireTasksWidgetTaps(); wireMiniCalNav(); wireEntityStatusTaps(); wireHaSparklines(); wireLayoutSwitcherTaps(); wireWeatherComboTabTaps(); wireEventDetailTaps();
+  wireChoreChartTaps(); wireMessageBoardTaps(); wireMealPlanTaps(); wireRecipeWidgetTaps(); initWhiteboards(); wireCameraStreams(); wireCameraTaps(); wireFlightMaps(); wireTodoWidgetTaps(); wireShoppingWidgetTaps(); wireTasksWidgetTaps(); wireMiniCalNav(); wireEntityStatusTaps(); wireHaSparklines(); wireLayoutSwitcherTaps(); wireWeatherComboTabTaps(); wireEventDetailTaps();
   // QR codes are generated into their container by a separate pass after
   // any render (renderQRCodes(), normally run after a full renderLayout())
   // — innerHTML alone only creates an empty .qr-container div, so without
@@ -855,7 +856,7 @@ async function deleteWidget(id) {
 // separately-built settings UI ported field-for-field from app.html's own
 // drawWidgetSettingsPanel(), not a generic renderer. Add to this list only
 // alongside actually building that type's render/wire functions.
-const WIDGET_ADVANCED_TYPES = ['webpage', 'minical', 'weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast', 'todo', 'shoppinglist', 'chorechart', 'chorelb', 'countdown', 'radar', 'qrcode', 'timer', 'moonphase', 'airquality', 'onthisday', 'dailyquote', 'metar', 'clock', 'date', 'news', 'stocks', 'travel', 'sports', 'text', 'decoration', 'upcoming', 'today', 'agenda', 'photo', 'tasks', 'tasksCombined', 'entitystatus', 'smarthomeDashboard', 'groupcontrol', 'messageboard', 'mealplan', 'recipe', 'camera', 'flightmap'];
+const WIDGET_ADVANCED_TYPES = ['webpage', 'minical', 'weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast', 'todo', 'shoppinglist', 'chorechart', 'chorelb', 'countdown', 'radar', 'qrcode', 'timer', 'moonphase', 'airquality', 'onthisday', 'dailyquote', 'metar', 'clock', 'date', 'news', 'stocks', 'travel', 'sports', 'text', 'decoration', 'upcoming', 'today', 'agenda', 'photo', 'tasks', 'tasksCombined', 'entitystatus', 'smarthomeDashboard', 'groupcontrol', 'messageboard', 'mealplan', 'recipe', 'whiteboard', 'kiddrawing', 'camera', 'flightmap'];
 
 function openWidgetSettingsPanel(id) {
   const w = state.layout.find(x => String(x.id) === String(id));
@@ -1304,6 +1305,14 @@ async function openWidgetAdvancedPanel(id) {
     title.textContent = 'Message Board Settings';
     body.innerHTML = renderMessageBoardAdvancedSettings(w);
     wireMessageBoardAdvancedSettings(w);
+  } else if (w.type === 'kiddrawing') {
+    title.textContent = "Kids' Drawing Settings";
+    body.innerHTML = renderKidDrawingAdvancedSettings(w);
+    wireKidDrawingAdvancedSettings(w);
+  } else if (w.type === 'whiteboard') {
+    title.textContent = 'Whiteboard Settings';
+    body.innerHTML = renderWhiteboardAdvancedSettings(w);
+    wireWhiteboardAdvancedSettings(w);
   } else if (w.type === 'recipe') {
     title.textContent = 'Recipe Settings';
     body.innerHTML = renderRecipeAdvancedSettings(w);

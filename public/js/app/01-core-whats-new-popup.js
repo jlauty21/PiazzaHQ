@@ -30,6 +30,12 @@ let currentTab = getDefaultTab();
 // version bump with no entry here just won't trigger a popup for it,
 // silently (not an error), so it's fine to skip purely-internal versions.
 const RELEASE_NOTES = {
+  '1.93.1': [
+    'New: Whiteboard. A Whiteboard widget for the wall display: draw with a finger or stylus, with a pen, marker, eraser, paint bucket, shapes, text, emoji stickers (or stickers made from your own pictures), any color, and a brush size slider. Tap anything on the board to move, resize, recolor or delete it, pinch to zoom, and undo or redo with two buttons in the corner. Replay a drawing (and save the replay as a video), print it, or keep it. Boards can clear themselves, and the Family Hub has a Board tab to draw on the wall from your phone.',
+    'New: kids can draw. The kids page has a Draw pad: draw a picture and send it to the wall, or draw live on a wall whiteboard. Every drawing is kept, so a kid can open an old one, change it and send it again, or pick several to rotate. The new Kids’ Drawing widget shows the newest. In the Chores tab, the Drawing pad card can ask a grown-up to approve each drawing first, and lets you pin one to stay on the wall.',
+    'New: Pantry staples. List what you always have at home (Shopping tab), and a recipe’s shopping list starts those ingredients unticked.',
+    'Other minor security and bug improvements.',
+  ],
   '1.93.0': [
     'New: Recipes. Keep your family’s recipes in the Family Hub: type them in or import them from a web address, search and filter by course or tag, scale the servings, add the ingredients to your shopping list, and put a recipe on the meal plan. Cook on any screen with the ingredients and steps side by side, step timers and a text size control, or show tonight’s dinner on the wall with the new Recipe widget. Print a recipe or save it as a PDF from your phone, ask Siri to add the ingredients or start a recipe, and share your favorites with other Piazza HQ households in the new Community library.',
     'Other minor security and bug improvements.',
@@ -127,7 +133,7 @@ const RELEASE_NOTES = {
   ],
   '1.85.0': [
     'Family profiles: give each person their own view of the app. Hide the tabs and features they don\'t use, pick a preset (Basic / Intermediate / Advanced), and switch profiles instantly from the avatar in the header. Optional per-profile PIN. With no profiles set up, nothing changes.',
-    'Tag an event "for" a family member (added on the wall display) and it colour-codes by that person everywhere; the event list gets a "just mine" filter.',
+    'Tag an event "for" a family member (added on the wall display) and it color-codes by that person everywhere; the event list gets a "just mine" filter.',
     'Event locations: the venue or address from a calendar can now show under each event in the Agenda / Upcoming / Today views. Turn it on per calendar in Settings → Calendars, and fine-tune it per widget.',
     'Home Assistant: search for an entity by name or id when picking one, edit an alert rule in place, and set each display\'s alert banner position, size and style independently. Active alerts now also show in the app.',
     'Home Assistant buttons (lights, covers, scenes) respond as soon as the command is accepted instead of waiting for the device to finish moving.',
@@ -303,7 +309,7 @@ window._infoTexts = {
     `Controls how a fired Home Assistant alert appears <b>on this screen</b> — each display can differ, so a banner readable across the room on a big TV can be smaller on a nearby tablet.<br><br>
     <b>Position</b>: <b>Top</b> / <b>Bottom</b> are edge strips (the logical edge — they rotate with the layout, so they stay upright on a sideways-mounted screen). <b>Center (card)</b> floats a notification card in the middle of the screen over a dimmed background — hardest to miss.<br><br>
     <b>Text size</b> scales with the screen, so "Large" on a 4K TV is genuinely large. "Huge" is for a big display seen from across a room.<br><br>
-    <b>Style</b>: <b>Solid red bar</b> is the default full-width strip. <b>Bold</b> adds heavier framing. <b>Amber</b> is a less-alarming colour. <b>Dark w/ red edge</b> and <b>Dark outline</b> are lower-key. <b>Corner toast</b> is a smaller rounded card in the corner.<br><br>
+    <b>Style</b>: <b>Solid red bar</b> is the default full-width strip. <b>Bold</b> adds heavier framing. <b>Amber</b> is a less-alarming color. <b>Dark w/ red edge</b> and <b>Dark outline</b> are lower-key. <b>Corner toast</b> is a smaller rounded card in the corner.<br><br>
     Changes apply live — if a banner is currently showing it updates immediately.`,
   'screen-settings-help':
     `Orientation and rotation here follow this physical screen — handy for a TV mounted sideways.<br><br>

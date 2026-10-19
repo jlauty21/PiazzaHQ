@@ -387,7 +387,7 @@
        A scrollable column of short note cards. Sizes scale off --mb-font
        (default 14) so one "Font Size" control grows the whole thing, same
        pattern as .w-reminders / .w-agenda. Each card's left rail + dot take
-       the author's colour (profile colour when linked, else the stored
+       the author's color (profile color when linked, else the stored
        msg.color). */
     .w-messageboard {
       --mb-font: 14px; width:100%; height:100%;

@@ -381,7 +381,7 @@
     #ha-alert-banner .ha-alert-x { flex-shrink:0; background:rgba(255,255,255,0.22); color:#fff;
       border:none; width:1.7em; height:1.7em; border-radius:50%;
       font-size:0.82em; cursor:pointer; line-height:1; }
-    /* Style variants (colour/framing only — geometry stays with position) */
+    /* Style variants (color/framing only — geometry stays with position) */
     #ha-alert-banner[data-style="bar"] .ha-alert-row {
       background:rgba(20,16,16,0.92); color:#ffd7d2; border-left:0.32em solid #e0433a; box-shadow:none; }
     #ha-alert-banner[data-style="bar"] .ha-alert-x { background:rgba(255,255,255,0.14); color:#ffd7d2; }

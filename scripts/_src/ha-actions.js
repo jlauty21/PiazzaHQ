@@ -43,7 +43,7 @@ module.exports = function registerHaActions({ app, getSetting, haRequestWith, ha
     // Fan variable speed: fan.set_percentage carrying `percentage` (added in
     // the route from fan_pct).
     set_fan_speed:        () => ({ domain: 'fan', service: 'set_percentage' }),
-    // Light colour: both are light.turn_on with a colour arg added in the route.
+    // Light color: both are light.turn_on with a color arg added in the route.
     set_color_temp:       () => ({ domain: 'light', service: 'turn_on' }),
     set_color:            () => ({ domain: 'light', service: 'turn_on' }),
   };

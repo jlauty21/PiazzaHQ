@@ -1510,7 +1510,7 @@ function openProfileEditor(profile) {
         <input id="pf-name" class="form-input" maxlength="40" placeholder="e.g. Mom" value="${escapeHtml(p.name)}"></div>
       <div class="pf-field"><label>Avatar — emoji or initials (optional)</label>
         <input id="pf-avatar" class="form-input" maxlength="8" placeholder="Auto from name" value="${escapeHtml(p.avatar || '')}"></div>
-      <div class="pf-field"><label>Colour</label>
+      <div class="pf-field"><label>Color</label>
         <div class="pf-swatches" id="pf-swatches">${PROFILE_COLORS.map(c => `<span class="pf-swatch${c === color ? ' sel' : ''}" data-c="${c}" style="background:${c}"></span>`).join('')}</div></div>
       <div class="pf-field"><label>Preset</label>
         <select id="pf-preset" class="form-input">${['basic', 'intermediate', 'advanced', 'custom'].map(k => `<option value="${k}"${k === (p.preset || 'custom') ? ' selected' : ''}>${PROFILE_PRESET_LABELS[k]}</option>`).join('')}</select></div>
@@ -1573,7 +1573,7 @@ function openProfileEditor(profile) {
 
   const del = back.querySelector('#pf-delete');
   if (del) del.addEventListener('click', async () => {
-    if (!confirm(`Delete the profile "${p.name}"? Events they own lose their colour tag.`)) return;
+    if (!confirm(`Delete the profile "${p.name}"? Events they own lose their color tag.`)) return;
     const r = await apiFetch(`/api/profiles/${p.id}`, { method: 'DELETE' });
     if (r && r.ok) {
       back.remove();

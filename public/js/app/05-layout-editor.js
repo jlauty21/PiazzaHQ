@@ -104,6 +104,8 @@ const WIDGET_DEFS = [
   { type:'messageboard', label:'Message Board', icon:'📝' },
   { type:'mealplan', label:'Meal Plan', icon:'🍽️' },
   { type:'recipe', label:'Recipe', icon:'🍳' },
+  { type:'whiteboard', label:'Whiteboard', icon:'🖍️' },
+  { type:'kiddrawing', label:"Kids' Drawing", icon:'🖼️' },
   { type:'camera', label:'Camera', icon:'📹' },
   { type:'flightmap', label:'Flight Map', icon:'✈️' },
   { type:'countdown', label:'Countdown', icon:'⏳' },
@@ -134,7 +136,7 @@ const WIDGET_CATEGORIES = [
   { id:'tasks',    label:'Tasks',    icon:'✅', types:['tasks','tasksCombined','todo'] },
   { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel','flightmap'] },
   { id:'photos',   label:'Photos',   icon:'🖼️', types:['photo'] },
-  { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan','recipe'] },
+  { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan','recipe','whiteboard','kiddrawing'] },
   { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode','webpage','layoutswitcher'] },
   { id:'decor',    label:'Decor',    icon:'🌿', types:['decoration'] },
   { id:'smarthome', label:'Smart Home', icon:'🏠', types:['entitystatus','smarthomeDashboard','groupcontrol','camera'] },
@@ -688,6 +690,12 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
       }
       if (def.type === 'mealplan') {
         newWidget.w = 30; newWidget.h = 34; newWidget.mpDays = 7; newWidget.mpFontPx = 15;
+      }
+      if (def.type === 'kiddrawing') {
+        newWidget.w = 30; newWidget.h = 40; newWidget.kdCaption = true; newWidget.kdFit = 'contain'; newWidget.kdSeconds = 15;
+      }
+      if (def.type === 'whiteboard') {
+        newWidget.w = 40; newWidget.h = 50; newWidget.wbToolbar = 'touch';
       }
       if (def.type === 'recipe') {
         newWidget.w = 30; newWidget.h = 44; newWidget.rcMode = 'tonight'; newWidget.rcSlot = 'dinner'; newWidget.rcShow = 'ingredients'; newWidget.rcFontPx = 15;

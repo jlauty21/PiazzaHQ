@@ -576,6 +576,45 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_recipe_steps ON recipe_steps (recipe_id, position);
 
+  -- Whiteboards (the Whiteboard widget): a board is a list of strokes (see src/whiteboard.js), not a picture.
+  -- Kids' drawings that were sent to the wall (src/whiteboard.js): the strokes are kept, so a kid can open one again on the pad, change it and send it again.
+  CREATE TABLE IF NOT EXISTS kid_drawings (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kid_id      INTEGER,
+    kid_name    TEXT    DEFAULT '',
+    label       TEXT    DEFAULT '',
+    strokes     TEXT    DEFAULT '[]',
+    background  TEXT    DEFAULT 'white',
+    photo       TEXT    DEFAULT '',
+    png         TEXT    DEFAULT '',
+    status      TEXT    DEFAULT 'shown',     -- 'shown' (the Kids' Drawing widget may show it) or 'pending' (waiting for a grown-up)
+    sent_at     TEXT    DEFAULT (datetime('now')),
+    show_id     INTEGER DEFAULT 0,       -- the show this drawing is part of: the highest show_id among drawings that may be shown is what the Kids' Drawing widgets rotate through
+    show_pos    INTEGER DEFAULT 0        -- its place in that rotation
+  );
+  -- Pictures the household made into stamps for the Whiteboard (src/whiteboard.js): a stamp stroke names one as 's: "img:<filename>"'.
+  CREATE TABLE IF NOT EXISTS stamps (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename    TEXT    NOT NULL,
+    deleted     INTEGER DEFAULT 0,       -- taken off the list; the file stays while a board or a kept drawing still uses it
+    created_at  TEXT    DEFAULT (datetime('now'))
+  );
+  -- Each kid's drawing pad remembers their color, size and tool (src/whiteboard.js).
+  CREATE TABLE IF NOT EXISTS kid_draw_prefs (
+    kid_id  INTEGER PRIMARY KEY,
+    prefs   TEXT DEFAULT '{}'
+  );
+  CREATE TABLE IF NOT EXISTS whiteboards (
+    id          TEXT PRIMARY KEY,
+    background  TEXT    DEFAULT 'white',
+    strokes     TEXT    DEFAULT '[]',
+    version     INTEGER DEFAULT 0,
+    updated_at  TEXT    DEFAULT '',
+    cleared_at  TEXT    DEFAULT '',
+    photo       TEXT    DEFAULT '',
+    ink         TEXT    DEFAULT ''     -- a picture of strokes that were flattened into the board when it filled up (they are drawn first, under the new strokes)
+  );
+
   CREATE TABLE IF NOT EXISTS photo_settings (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -1217,7 +1256,7 @@ if (!columnExists('events', 'google_push_error')){ db.exec(`ALTER TABLE events A
 if (!columnExists('events', 'target_calendar')) { db.exec(`ALTER TABLE events ADD COLUMN target_calendar TEXT`); console.log('Migrated: added target_calendar column to events'); }
 // Family member profiles: which profile "owns" a locally-created event. NULL =
 // unassigned (the pre-profiles default, and what an event falls back to if its
-// owning profile is later deleted). Used for per-person colour-coding on the
+// owning profile is later deleted). Used for per-person color-coding on the
 // wall display and the "Mine only" filter in the app.
 if (!columnExists('events', 'owner_profile_id')) { db.exec(`ALTER TABLE events ADD COLUMN owner_profile_id INTEGER`); console.log('Migrated: added owner_profile_id column to events'); }
 // Event location (venue/address). For local events it's whatever was typed on
@@ -1485,6 +1524,18 @@ if (!columnExists('feedback', 'image')) {
 }
 // Allowance: kids gain allowance settings, chores gain a pay rate + optional notes,
 // chore_instances snapshot the rate they were created with.
+if (!columnExists('whiteboards', 'ink')) {
+  db.exec(`ALTER TABLE whiteboards ADD COLUMN ink TEXT DEFAULT ''`);
+  console.log('Migrated: added ink column to whiteboards');
+}
+if (!columnExists('kid_drawings', 'ink')) {
+  db.exec(`ALTER TABLE kid_drawings ADD COLUMN ink TEXT DEFAULT ''`);
+  console.log('Migrated: added ink column to kid_drawings');
+}
+if (!columnExists('whiteboards', 'photo')) {
+  db.exec(`ALTER TABLE whiteboards ADD COLUMN photo TEXT DEFAULT ''`);
+  console.log('Migrated: added photo column to whiteboards');
+}
 if (!columnExists('kids', 'allowance_enabled')) {
   db.exec(`ALTER TABLE kids ADD COLUMN allowance_enabled INTEGER DEFAULT 0`);
   console.log('Migrated: added allowance_enabled column to kids');
@@ -1742,6 +1793,9 @@ const defaultSettings = {
                                  // same override pattern already used for location (wxLat/wxLon)
   theme: 'dark',
   show_weather: '1',
+  kids_draw_enabled: '1',   // the Draw button on the kids page (src/whiteboard.js)
+  kids_draw_live: '1',      // a kid may draw live on the wall's Whiteboard boards from the kids page (not only Send a finished drawing)
+  kids_draw_approval: '0',  // '1' = a kid's drawing waits for a grown-up's OK before it is shown on the wall
   app_pin: '',  // empty = no PIN required
   remote_access_require_auth: '0', // '1' = LAN devices must sign in with the remote password too (needs one to be set); the kiosk on the box itself never does
   todoist_token: '',  // empty = Todoist widget disabled
@@ -2782,7 +2836,7 @@ function remoteGate(req, res, next) {
     if (!remoteGateEnabled(req)) return next();
     // A mirror of this household syncing with us has no human to type a password. It presents the household
     // key it already sends on every host call; on the home network / Tailscale that is enough to get past the
-    // "also ask on home Wi-Fi" login (the App PIN still applies as before). Never honoured from the internet.
+    // "also ask on home Wi-Fi" login (the App PIN still applies as before). Never honored from the internet.
     if (!requestIsRemote(req) && mirrorKeyMatches(req)) return next();
 
     if (findRemoteSession(req)) {
@@ -2978,7 +3032,7 @@ function markHostEditing(ms = 8000) { HOST_EDITING_UNTIL = Date.now() + ms; }
 // 'screens' is included so that assigning a profile to a remote slave bumps the
 // version — the slave's watcher then re-syncs (and re-registers, learning its new
 // assigned profile) within seconds instead of waiting for the slow timer.
-const SHARED_TOPICS = new Set(['events', 'photos', 'settings', 'photo-settings', 'feeds', 'displays', 'layout', 'screens', 'chores', 'todos', 'shopping', 'favorites', 'reminders', 'profiles', 'messages', 'cameras', 'meals', 'flight_watch', 'decks', 'playlists', 'recipes']);
+const SHARED_TOPICS = new Set(['events', 'photos', 'settings', 'photo-settings', 'feeds', 'displays', 'layout', 'screens', 'chores', 'todos', 'shopping', 'favorites', 'reminders', 'profiles', 'messages', 'cameras', 'meals', 'flight_watch', 'decks', 'playlists', 'recipes', 'boards', 'drawings']);
 
 function broadcastUpdate(topic, displayId) {
   if (SHARED_TOPICS.has(topic)) HOST_DATA_VERSION = Date.now();
@@ -3309,6 +3363,17 @@ function requireAuth(req, res, next) {
     { method: 'GET', path: '/api/weather' },
     { method: 'GET', path: '/api/photo-settings' },
     { method: 'GET', path: '/api/photos' },
+    // Whiteboard widget (display) and the kids' drawing pad (kids.html): both login-less pages, like everything on this list
+    { method: 'GET', path: '/api/stamps' },
+    { method: 'POST', path: '/api/stamps' },
+    { method: 'DELETE', path: '/api/stamps' },
+    { method: 'GET', path: '/api/boards' },
+    { method: 'POST', path: '/api/boards' },
+    { method: 'PUT', path: '/api/boards' },
+    { method: 'DELETE', path: '/api/boards' },
+    { method: 'GET', path: '/api/kid-drawing' },
+    { method: 'POST', path: '/api/kid-drawing' },
+    { method: 'PUT', path: '/api/kid-drawing' },
     { method: 'GET', path: '/api/feeds' },
     { method: 'GET', path: '/api/layouts' },
     { method: 'GET', path: '/api/geocode' },
@@ -3417,7 +3482,7 @@ function requireAuth(req, res, next) {
     // Flight Watch/Flight Map, Home Assistant areas, Handwriting input,
     // hiding a calendar event, the Message Board, the alert-banner
     // notifications, On This Day, family Profiles (per-person event
-    // colour), Reminders, Saved Layouts, and even the running-version check
+    // color), Reminders, Saved Layouts, and even the running-version check
     // itself were all likely silently broken on any device with a PIN set —
     // same "physical/local access IS the trust boundary" design as
     // everything else on this list, just never actually reachable.
@@ -4726,7 +4791,7 @@ function buildSyncSnapshot() {
       stickers: tableRows('stickers'),
       rewards: tableRows('rewards'),
       sticker_redemptions: tableRows('sticker_redemptions'),
-      // Family member profiles — a mirror needs these to colour-code local
+      // Family member profiles — a mirror needs these to color-code local
       // events by owner (owner_profile_id rides along in `events` above).
       profiles: tableRows('profiles'),
       messages: tableRows('messages'),
@@ -4746,6 +4811,10 @@ function buildSyncSnapshot() {
       recipes: tableRows('recipes'),
       recipe_ingredients: tableRows('recipe_ingredients'),
       recipe_steps: tableRows('recipe_steps'),
+      whiteboards: tableRows('whiteboards'),
+      kid_drawings: tableRows('kid_drawings'),
+      stamps: tableRows('stamps'),
+      kid_draw_prefs: tableRows('kid_draw_prefs'),
     },
   };
 }
@@ -4805,6 +4874,10 @@ app.get('/api/sync/photos', (req, res) => {
   if (licenseError) return res.status(403).json(licenseError);
   const rows = db.prepare(`SELECT filename FROM photos`).all();
   const files = rows.map(r => r.filename).filter(Boolean);
+  // pictures drawn on in a Whiteboard (src/whiteboard.js), so a mirror shows them behind the drawing
+  for (const b of db.prepare(`SELECT photo, ink FROM whiteboards WHERE photo != '' OR ink != ''`).all()) { if (b.photo) files.push(b.photo); if (b.ink) files.push(b.ink); }
+  for (const st of db.prepare(`SELECT filename FROM stamps`).all()) if (st.filename) files.push(st.filename);
+  for (const d of db.prepare(`SELECT png, photo, ink FROM kid_drawings`).all()) { if (d.png) files.push(d.png); if (d.photo) files.push(d.photo); if (d.ink) files.push(d.ink); }
   // Chore icons may be uploaded images (stored as "img:<filename>"); include those
   // so a kid's tablet pointed at a slave shows the picture, not a broken image.
   const choreIcons = db.prepare(`SELECT icon FROM chores WHERE icon LIKE 'img:%'`).all();
@@ -4910,6 +4983,10 @@ const applySyncSnapshot = db.transaction((snap) => {
   if (T.recipes) replaceTable('recipes', T.recipes);
   if (T.recipe_ingredients) replaceTable('recipe_ingredients', T.recipe_ingredients);
   if (T.recipe_steps) replaceTable('recipe_steps', T.recipe_steps);
+  if (T.whiteboards) replaceTable('whiteboards', T.whiteboards);
+  if (T.kid_drawings) replaceTable('kid_drawings', T.kid_drawings);
+  if (T.stamps) replaceTable('stamps', T.stamps);
+  if (T.kid_draw_prefs) replaceTable('kid_draw_prefs', T.kid_draw_prefs);
 });
 
 // Pull any photo image files this slave is missing, so cached photos actually
@@ -5873,6 +5950,8 @@ const { applySavedLayoutToDisplay } = require('./src/layout-library.js')({ app, 
 // ── Screens manager ───────────────────────────────────────────────────────────
 // This code lives in src/screens.js. It runs here, at the same place in the file as before.
 const presentations = require('./src/presentations.js')({ path, fs, app, db, UPLOAD_DIR, multer, broadcastUpdate, sendScreenCommand, DEVICE_ID, PORT, http, URL });
+// Whiteboards (the Whiteboard widget and, later, the kids' drawing pad): src/whiteboard.js.
+require('./src/whiteboard.js')({ app, express, db, fs, path, crypto, UPLOAD_DIR, broadcastUpdate });
 const recipesApi = require('./src/recipes.js')({ path, fs, crypto, app, db, UPLOAD_DIR, multer, broadcastUpdate, forgetRecipe: (id) => presentations.forgetTarget('recipe', id) });
 // Voice for recipes (the Siri Shortcuts routes): src/voice-recipes.js.
 require('./src/voice-recipes.js')({ app, db, voiceAuth, recipes: recipesApi, presentations });

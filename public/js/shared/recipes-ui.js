@@ -82,6 +82,10 @@
   .rcp-star { background: none; border: none; font-size: 24px; color: var(--muted, #9aa6c0); padding: 2px 6px; }
   .rcp-star.on { color: #f5b942; }
   .rcp-sheet { background: var(--card, #1b2133); border: 1px solid var(--border, rgba(255,255,255,0.14)); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; }
+  .rcp-pickrow { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; }
+  .rcp-pickrow .rcp-pick { flex: 1 1 60%; min-width: 0; }
+  .rcp-pantry-tag { font-size: 12px; color: var(--muted, #9aa6c0); border: 1px solid var(--border, rgba(255,255,255,0.14)); border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+  .rcp-link { background: none; border: none; color: var(--accent, #4A90D9); font-size: 12px; padding: 4px 2px; cursor: pointer; white-space: nowrap; }
   .rcp-pick { display: flex; gap: 10px; align-items: center; padding: 7px 2px; font-size: 15px; cursor: pointer; }
   .rcp-pick input { width: 20px; height: 20px; accent-color: var(--accent, #4A90D9); flex: 0 0 auto; }
   .rcp-note { background: var(--card, #1b2133); border: 1px solid var(--accent, #4A90D9); border-radius: 10px; padding: 8px 12px; margin-bottom: 12px; font-size: 14px; display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
@@ -527,10 +531,28 @@
       host.innerHTML = `<div class="rcp-sheet">
         <div class="rcp-sec" style="margin-top:0">Add to shopping list</div>
         ${many ? `<div class="rcp-field"><label>List</label><select class="rcp-input" id="rcp-shop-list">${lists.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}</select></div>` : ''}
-        ${r.ingredients.map((i) => `<label class="rcp-pick"><input type="checkbox" class="rcp-pick-box" value="${i.id}" checked><span>${esc(i.display)}</span></label>`).join('') || '<div class="rcp-help">No ingredients.</div>'}
-        <div class="rcp-row" style="margin-top:10px"><button class="rcp-btn primary rcp-shop-go">Add</button><button class="rcp-btn rcp-shop-cancel">Cancel</button></div>
+        ${r.ingredients.map((i) => `<div class="rcp-pickrow"><label class="rcp-pick"><input type="checkbox" class="rcp-pick-box" value="${i.id}" ${i.pantry ? '' : 'checked'}><span>${esc(i.display)}</span></label>${i.pantry ? '<span class="rcp-pantry-tag">In your pantry</span>' : `<button type="button" class="rcp-link rcp-have" data-name="${esc(i.name)}">We always have this</button>`}</div>`).join('') || '<div class="rcp-help">No ingredients.</div>'}
+        <div class="rcp-row" style="margin-top:10px"><button class="rcp-btn primary rcp-shop-go">Add</button><button class="rcp-btn rcp-shop-cancel">Cancel</button>${window.PantryUI ? '<button class="rcp-link rcp-pantry-manage">Pantry staples</button>' : ''}</div>
       </div>`;
       host.querySelector('.rcp-shop-cancel').addEventListener('click', () => { host.innerHTML = ''; });
+      // a staple is added from here as you shop: the name is asked for (so "coarse Kosher salt" can become "salt" and match every recipe), then the sheet is drawn again with it applied
+      host.querySelectorAll('.rcp-have').forEach((b) => b.addEventListener('click', async () => {
+        const name = String(window.prompt('Add to your pantry as:', b.dataset.name) || '').trim();
+        if (!name) return;
+        const cur = await api('/api/pantry').catch(() => null);
+        const res = await api('/api/pantry', { method: 'PUT', body: JSON.stringify({ items: ((cur && cur.items) || []).concat([name]) }) }).catch(() => null);
+        if (bad(res) || !Array.isArray(res.items)) return fail(res, '❌ The pantry could not be saved.');
+        say('Added to your pantry');
+        const fresh = await api(`/api/recipes/${r.id}${S.servings && S.servings !== r.base_servings ? '?servings=' + encodeURIComponent(S.servings) : ''}`).catch(() => null);
+        if (!bad(fresh)) S.recipe = fresh;
+        openShopping();
+      }));
+      const manage = host.querySelector('.rcp-pantry-manage');
+      if (manage) manage.addEventListener('click', () => window.PantryUI.open(host, { api, say, onClose: async () => {
+        const fresh = await api(`/api/recipes/${r.id}${S.servings && S.servings !== r.base_servings ? '?servings=' + encodeURIComponent(S.servings) : ''}`).catch(() => null);
+        if (!bad(fresh)) S.recipe = fresh;
+        openShopping();
+      } }));
       host.querySelector('.rcp-shop-go').addEventListener('click', async () => {
         const ids = [...host.querySelectorAll('.rcp-pick-box:checked')].map((c) => Number(c.value));
         if (!ids.length) { host.innerHTML = ''; return; }

@@ -185,6 +185,54 @@ async function drawWidgetSettingsPanel_Build_mealplan(_c) {
     `;
 }
 
+async function drawWidgetSettingsPanel_Build_kiddrawing(_c) {
+  const { w, _st } = _c;
+    // Parallel copy of display.html's renderKidDrawingAdvancedSettings — keep in sync.
+    _st.typeSpecificHtml = `
+      <p style="font-size:11.5px;color:var(--muted);margin:0 0 10px">Shows the newest thing a kid sent to the wall: one drawing, or the drawings they picked to rotate. Whoever sends or picks last wins. Older drawings stay on the kids' pads.</p>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show who drew it and when</label>
+        <input type="checkbox" id="kd-caption" ${w.kdCaption === false ? '' : 'checked'} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <div class="settings-row">
+        <label>Seconds per drawing (when several rotate)</label>
+        <input class="form-input" id="kd-secs" type="number" min="3" max="600" value="${Number(w.kdSeconds) || 15}">
+      </div>
+      <div class="settings-row">
+        <label>Picture fit</label>
+        <select class="form-input" id="kd-fit"><option value="contain" ${w.kdFit === 'cover' ? '' : 'selected'}>Show all of it</option><option value="cover" ${w.kdFit === 'cover' ? 'selected' : ''}>Fill the widget</option></select>
+      </div>
+    `;
+}
+
+async function drawWidgetSettingsPanel_Build_whiteboard(_c) {
+  const { w, _st } = _c;
+    // Parallel copy of display.html's renderWhiteboardAdvancedSettings — keep in sync.
+    const mode = ['daily', 'hours'].includes(w.wbAutoClear) ? w.wbAutoClear : 'never';
+    const o = (v, label, cur) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${label}</option>`;
+    _st.typeSpecificHtml = `
+      <div class="settings-row">
+        <label>Board name ${infoBtn("Whiteboards with the same name share one drawing, so two screens (or two widgets) can show and draw on the same board. Leave it empty for a board of its own.")}</label>
+        <input class="form-input" id="wb-board" type="text" maxlength="40" placeholder="Just this widget" value="${escapeHtml(w.wbBoard || '')}">
+      </div>
+      <div class="settings-row">
+        <label>Toolbar</label>
+        <select class="form-input" id="wb-toolbar">${o('touch', 'Show when touched', w.wbToolbar === 'always' ? 'always' : 'touch')}${o('always', 'Always show', w.wbToolbar === 'always' ? 'always' : 'touch')}</select>
+      </div>
+      <div class="settings-row">
+        <label>Clear the board by itself</label>
+        <select class="form-input" id="wb-auto">${o('never', 'Never', mode)}${o('daily', 'Every day at…', mode)}${o('hours', 'After some hours with no drawing', mode)}</select>
+      </div>
+      <div class="settings-row" id="wb-time-row" ${mode === 'daily' ? '' : 'style="display:none"'}><label>Time</label><input class="form-input" id="wb-time" type="time" value="${escapeHtml(w.wbAutoTime || '03:00')}"></div>
+      <div class="settings-row" id="wb-hours-row" ${mode === 'hours' ? '' : 'style="display:none"'}><label>Hours</label><input class="form-input" id="wb-hours" type="number" min="1" max="720" value="${Number(w.wbAutoHours) || 12}"></div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show only (no drawing on this screen)</label>
+        <input type="checkbox" id="wb-ro" ${w.wbReadOnly ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">Draw with a finger or a stylus. The toolbar has a pen, a marker, a rubbing eraser, a paint bucket, shapes, stamps, colors, undo and redo, clear, a background or a picture behind the drawing, replay (also as a video), print and Keep (saves the drawing as a creation: a photo tagged "drawings").</p>
+    `;
+}
+
 async function drawWidgetSettingsPanel_Build_recipe(_c) {
   const { w, _st } = _c;
     // Parallel copy of display.html's renderRecipeAdvancedSettings — keep in sync.

@@ -1467,6 +1467,72 @@ function wireMessageBoardAdvancedSettings(w) {
   });
 }
 
+function renderKidDrawingAdvancedSettings(w) {
+  return `
+    <p class="was-hint">Shows the newest thing a kid sent to the wall: one drawing, or the drawings they picked to rotate. Whoever sends or picks last wins. Older drawings stay on the kids' pads.</p>
+    <div class="was-toggle-row">
+      <label>Show who drew it and when</label>
+      <input type="checkbox" id="kd-caption" ${w.kdCaption === false ? '' : 'checked'}>
+    </div>
+    <div class="was-row">
+      <label>Seconds per drawing (when several rotate)</label>
+      <input class="form-input" id="kd-secs" type="number" min="3" max="600" value="${Number(w.kdSeconds) || 15}">
+    </div>
+    <div class="was-row">
+      <label>Picture fit</label>
+      <select class="form-input" id="kd-fit"><option value="contain" ${w.kdFit === 'cover' ? '' : 'selected'}>Show all of it</option><option value="cover" ${w.kdFit === 'cover' ? 'selected' : ''}>Fill the widget</option></select>
+    </div>
+  `;
+}
+function wireKidDrawingAdvancedSettings(w) {
+  const again = () => { rerenderSingleWidget(w.id); scheduleLayoutSave(); };
+  const get = (id) => document.getElementById(id);
+  if (get('kd-caption')) get('kd-caption').addEventListener('change', (e) => { w.kdCaption = e.target.checked; again(); });
+  if (get('kd-secs')) get('kd-secs').addEventListener('change', (e) => { w.kdSeconds = Math.max(3, Math.min(600, parseInt(e.target.value, 10) || 15)); scheduleLayoutSave(); });
+  if (get('kd-fit')) get('kd-fit').addEventListener('change', (e) => { w.kdFit = e.target.value; again(); });
+}
+
+function renderWhiteboardAdvancedSettings(w) {
+  const mode = ['daily', 'hours'].includes(w.wbAutoClear) ? w.wbAutoClear : 'never';
+  const o = (v, label, cur) => `<option value="${v}"${v === cur ? ' selected' : ''}>${label}</option>`;
+  return `
+    <div class="was-row">
+      <label>Board name ${infoBtn("Whiteboards with the same name share one drawing, so two screens (or two widgets) can show and draw on the same board. Leave it empty for a board of its own.")}</label>
+      <input class="form-input" id="wb-board" type="text" maxlength="40" placeholder="Just this widget" value="${escapeHtmlD(w.wbBoard || '')}">
+    </div>
+    <div class="was-row">
+      <label>Toolbar</label>
+      <select class="form-input" id="wb-toolbar">${o('touch', 'Show when touched', w.wbToolbar === 'always' ? 'always' : 'touch')}${o('always', 'Always show', w.wbToolbar === 'always' ? 'always' : 'touch')}</select>
+    </div>
+    <div class="was-row">
+      <label>Clear the board by itself</label>
+      <select class="form-input" id="wb-auto">${o('never', 'Never', mode)}${o('daily', 'Every day at…', mode)}${o('hours', 'After some hours with no drawing', mode)}</select>
+    </div>
+    <div class="was-row" id="wb-time-row" ${mode === 'daily' ? '' : 'style="display:none"'}><label>Time</label><input class="form-input" id="wb-time" type="time" value="${escapeHtmlD(w.wbAutoTime || '03:00')}"></div>
+    <div class="was-row" id="wb-hours-row" ${mode === 'hours' ? '' : 'style="display:none"'}><label>Hours</label><input class="form-input" id="wb-hours" type="number" min="1" max="720" value="${Number(w.wbAutoHours) || 12}"></div>
+    <div class="was-toggle-row">
+      <label>Show only (no drawing on this screen) ${infoBtn("For a screen without a touchscreen: it shows the board, drawn from another screen.")}</label>
+      <input type="checkbox" id="wb-ro" ${w.wbReadOnly ? 'checked' : ''}>
+    </div>
+    <p class="was-hint">Draw with a finger or a stylus. The toolbar has a pen, a marker, a rubbing eraser, a paint bucket, shapes, stamps, colors, undo and redo, clear, a background or a picture behind the drawing, replay (also as a video), print and Keep (saves the drawing as a creation: a photo tagged "drawings").</p>
+  `;
+}
+function wireWhiteboardAdvancedSettings(w) {
+  const again = () => { rerenderSingleWidget(w.id); scheduleLayoutSave(); };
+  const get = (id) => document.getElementById(id);
+  if (get('wb-board')) get('wb-board').addEventListener('change', (e) => { w.wbBoard = e.target.value.trim(); again(); });
+  if (get('wb-toolbar')) get('wb-toolbar').addEventListener('change', (e) => { w.wbToolbar = e.target.value; again(); });
+  if (get('wb-auto')) get('wb-auto').addEventListener('change', (e) => {
+    w.wbAutoClear = e.target.value;
+    get('wb-time-row').style.display = w.wbAutoClear === 'daily' ? '' : 'none';
+    get('wb-hours-row').style.display = w.wbAutoClear === 'hours' ? '' : 'none';
+    scheduleLayoutSave();
+  });
+  if (get('wb-time')) get('wb-time').addEventListener('change', (e) => { w.wbAutoTime = e.target.value || '03:00'; scheduleLayoutSave(); });
+  if (get('wb-hours')) get('wb-hours').addEventListener('change', (e) => { w.wbAutoHours = Math.max(1, Math.min(720, parseInt(e.target.value, 10) || 12)); scheduleLayoutSave(); });
+  if (get('wb-ro')) get('wb-ro').addEventListener('change', (e) => { w.wbReadOnly = e.target.checked; again(); });
+}
+
 function renderRecipeAdvancedSettings(w) {
   const mode = w.rcMode === 'chosen' ? 'chosen' : 'tonight';
   const slot = rcwSlot(w), show = ['ingredients', 'steps', 'both'].includes(w.rcShow) ? w.rcShow : 'ingredients';

@@ -549,6 +549,8 @@ const WIDGET_DEFS = [
   { type:'messageboard', label:'Message Board', icon:'📝' },
   { type:'mealplan', label:'Meal Plan', icon:'🍽️' },
   { type:'recipe', label:'Recipe', icon:'🍳' },
+  { type:'whiteboard', label:'Whiteboard', icon:'🖍️' },
+  { type:'kiddrawing', label:"Kids' Drawing", icon:'🖼️' },
   { type:'camera', label:'Camera', icon:'📹' },
   { type:'flightmap', label:'Flight Map', icon:'✈️' },
   { type:'countdown', label:'Countdown', icon:'⏳' },
@@ -575,7 +577,7 @@ const WIDGET_CATEGORIES = [
   { id:'tasks',    label:'Tasks',    icon:'✅', types:['tasks','tasksCombined','todo'] },
   { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel','flightmap'] },
   { id:'photos',   label:'Photos',   icon:'🖼️', types:['photo'] },
-  { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan','recipe'] },
+  { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan','recipe','whiteboard','kiddrawing'] },
   { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode','webpage'] },
   { id:'decor',    label:'Decor',    icon:'🌿', types:['decoration'] },
   { id:'smarthome', label:'Smart Home', icon:'🏠', types:['entitystatus','smarthomeDashboard','groupcontrol','camera'] },
@@ -601,6 +603,8 @@ function buildNewWidgetDefaults(type) {
   else if (type === 'reminders') { w.w = 30; w.h = 20; w.remStyle = 'banner'; w.remFontPx = 22; }
   else if (type === 'messageboard') { w.w = 34; w.h = 26; w.mbFontPx = 14; }
   else if (type === 'mealplan') { w.w = 30; w.h = 34; w.mpDays = 7; w.mpFontPx = 15; }
+  else if (type === 'kiddrawing') { w.w = 30; w.h = 40; w.kdCaption = true; w.kdFit = 'contain'; w.kdSeconds = 15; }
+  else if (type === 'whiteboard') { w.w = 40; w.h = 50; w.wbToolbar = 'touch'; }
   else if (type === 'recipe') { w.w = 30; w.h = 44; w.rcMode = 'tonight'; w.rcSlot = 'dinner'; w.rcShow = 'ingredients'; w.rcFontPx = 15; }
   else if (type === 'camera') { w.w = 44; w.h = 32; w.camFit = 'contain'; w.camShowTitle = true; }
   else if (type === 'flightmap') { w.w = 46; w.h = 38; w.fmSubject = 'filter'; w.fmFilter = { mil: true }; w.fmFollow = false; w.fmTrailMin = 30; w.fmShowData = true; w.fmLabels = true; w.fmFontPx = 13; }

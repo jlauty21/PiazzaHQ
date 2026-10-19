@@ -448,21 +448,21 @@ function renderHaEntityControl(entityId, data, label, showUnit, wAttrs, sparklin
       slider = { pct: Math.max(1, Math.round(data.fanPercentage)),
         action: 'set_fan_speed', param: 'fan_pct', aria: 'Speed' };
     }
-    // Colour controls for an on light: a warm↔cool slider if it's a
-    // tunable-white light, and a strip of preset swatches if it does colour.
+    // Color controls for an on light: a warm↔cool slider if it's a
+    // tunable-white light, and a strip of preset swatches if it does color.
     const modes = Array.isArray(data.colorModes) ? data.colorModes : [];
     const extras = [];
     if (isOn && domain === 'light' && typeof data.colorTempK === 'number' && modes.includes('color_temp')) {
       const lo = data.minColorTempK || 2000, hi = data.maxColorTempK || 6500;
       extras.push(`<input type="range" class="ha-bright-slider ha-ct-slider" min="${lo}" max="${hi}" value="${Math.round(data.colorTempK)}"
         data-entity-id="${escapeHtmlD(entityId)}" data-ha-action="set_color_temp" data-ha-param="kelvin"
-        data-interactive="1"${wAttrs} aria-label="Colour temperature for ${escapeHtmlD(label)}">`);
+        data-interactive="1"${wAttrs} aria-label="Color temperature for ${escapeHtmlD(label)}">`);
     }
     if (isOn && domain === 'light' && (modes.includes('hs') || modes.includes('rgb') || modes.includes('xy') || modes.includes('rgbw') || modes.includes('rgbww'))) {
       const SWATCHES = ['255,86,86', '255,170,60', '255,236,120', '120,220,120', '110,180,255', '190,130,255', '255,255,255'];
       extras.push(`<div class="ha-swatch-row">` + SWATCHES.map(rgb =>
         `<button type="button" class="ha-swatch" data-entity-id="${escapeHtmlD(entityId)}" data-ha-action="set_color" data-ha-rgb="${rgb}"
-          data-interactive="1"${wAttrs} aria-label="Set colour" style="background:rgb(${rgb})"></button>`).join('') + `</div>`);
+          data-interactive="1"${wAttrs} aria-label="Set color" style="background:rgb(${rgb})"></button>`).join('') + `</div>`);
     }
     return `<div class="ha-label">${escapeHtmlD(label)}</div>
       <button type="button" class="ha-toggle-switch ${isOn ? 'on' : 'off'}" data-entity-id="${escapeHtmlD(entityId)}"
@@ -1491,7 +1491,7 @@ function wireEntityStatusTaps() {
     });
   });
   // Buttons that carry their own action: cover (open/stop/close), lock
-  // (lock/unlock), media transport, and light colour swatches. Any extra
+  // (lock/unlock), media transport, and light color swatches. Any extra
   // params (a swatch's rgb) ride along in data-ha-* attrs.
   document.querySelectorAll('.ha-action-btn[data-ha-action][data-interactive], .ha-swatch[data-ha-action][data-interactive]').forEach(btn => {
     if (btn._tapWired) return; btn._tapWired = true;

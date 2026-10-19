@@ -64,6 +64,37 @@ module.exports = function registerRecipes({ path, fs, crypto, app, db, UPLOAD_DI
     return out;
   }
 
+  // ── pantry staples: things the household always has (salt, olive oil). A household setting (a JSON list), so it follows the settings to mirrors. An ingredient matches a
+  // staple when every word of the staple is among the ingredient's words (plurals folded), so "salt" matches "coarse Kosher salt" and "olive oil" matches "extra virgin olive
+  // oil". The recipe shows the match and the shopping sheet starts those unticked; nothing is ever dropped silently.
+  const stemWord = (w) => { if (w.length > 4 && w.endsWith('ies')) return w.slice(0, -3) + 'y'; if (w.length > 4 && w.endsWith('oes')) return w.slice(0, -2); if (w.length > 3 && w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1); return w; };
+  const wordsOf = (t) => String(t == null ? '' : t).toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(Boolean).map(stemWord);
+  function readPantry() {
+    try { const r = db.prepare(`SELECT value FROM settings WHERE key = 'pantry_staples'`).get(); const a = r ? JSON.parse(r.value) : []; return Array.isArray(a) ? a.filter((x) => typeof x === 'string') : []; } catch { return []; }
+  }
+  function cleanPantry(list) {
+    const seen = new Set(), out = [];
+    for (const x of Array.isArray(list) ? list : []) {
+      if (typeof x !== 'string') continue;
+      const name = oneLine(x, 60), key = wordsOf(name).join(' ');
+      if (!name || !key || seen.has(key)) continue;
+      seen.add(key); out.push(name);
+      if (out.length >= 300) break;
+    }
+    return out;
+  }
+  function pantryMatcher() {
+    const sets = readPantry().map(wordsOf).filter((a) => a.length);
+    return (name) => { if (!sets.length) return false; const have = new Set(wordsOf(name)); return sets.some((s) => s.every((w) => have.has(w))); };
+  }
+  app.get('/api/pantry', (req, res) => { res.json({ items: readPantry() }); });
+  app.put('/api/pantry', (req, res) => {
+    const items = cleanPantry((req.body || {}).items);
+    db.prepare(`INSERT INTO settings (key, value) VALUES ('pantry_staples', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(items));
+    broadcastUpdate('recipes');
+    res.json({ items });
+  });
+
   function recipeRow(id) { return db.prepare(`SELECT * FROM recipes WHERE id = ?`).get(id); }
   function listOut(r) {
     return {
@@ -78,8 +109,9 @@ module.exports = function registerRecipes({ path, fs, crypto, app, db, UPLOAD_DI
     const base = Number(r.servings) > 0 ? Number(r.servings) : 4;
     const want = Number(servings) > 0 ? clampNum(servings, 0.5, 1000, base) : base;
     const factor = want / base;
+    const inPantry = pantryMatcher();
     const ings = db.prepare(`SELECT * FROM recipe_ingredients WHERE recipe_id = ? ORDER BY position ASC, id ASC`).all(r.id).map((i) => ({
-      id: i.id, position: i.position, group_label: i.group_label || '', quantity: i.quantity, quantity_max: i.quantity_max, unit: i.unit || '', name: i.name,
+      pantry: inPantry(i.name), id: i.id, position: i.position, group_label: i.group_label || '', quantity: i.quantity, quantity_max: i.quantity_max, unit: i.unit || '', name: i.name,
       note: i.note || '', raw: i.raw || '', display: ingredientDisplay(i, factor),
     }));
     const steps = db.prepare(`SELECT id, position, text, timer_sec FROM recipe_steps WHERE recipe_id = ? ORDER BY position ASC, id ASC`).all(r.id);

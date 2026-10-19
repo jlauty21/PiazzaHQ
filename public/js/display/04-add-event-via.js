@@ -65,7 +65,7 @@ function closeEventAddSheet() {
   eaClosePad();
 }
 // Family member profiles: let whoever's adding an event on the wall tag it
-// for a person, so it colour-codes by owner. Row stays hidden unless the
+// for a person, so it color-codes by owner. Row stays hidden unless the
 // household has set up profiles.
 function eaLoadOwners() {
   const row = document.getElementById('ea-owner-row');

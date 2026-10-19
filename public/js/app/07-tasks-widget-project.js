@@ -741,8 +741,10 @@ async function renderShoppingTab() {
           <option value="amazon" ${store==='amazon'?'selected':''}>Amazon</option>
         </select>
         <div class="spacer"></div>
+        <button type="button" id="shop-pantry-btn" class="ghost small">🥫 Pantry staples</button>
         <button type="button" id="shop-clear-btn" class="ghost small">Clear checked</button>
       </div>
+      <div id="shop-pantry-host"></div>
       <div id="shop-items" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px">
         ${(items && items.length) ? items.map(it => `
           <div class="settings-card" style="display:flex;align-items:center;gap:10px;padding:10px 12px" data-item-id="${it.id}">
@@ -826,6 +828,7 @@ function wireShoppingListManager(store, cur) {
     renderShoppingTab();
   }));
 
+  if ($('shop-pantry-btn')) $('shop-pantry-btn').addEventListener('click', () => { if (window.PantryUI) PantryUI.open($('shop-pantry-host'), { api: (p, i) => apiFetch(p, i), say: (m) => showToast(m) }); });
   if ($('shop-clear-btn')) $('shop-clear-btn').addEventListener('click', async () => {
     if (!confirm('Clear every checked-off item on this list?')) return;
     await apiFetch('/api/shopping-list/clear-done' + (listId !== undefined ? '?list=' + listId : ''), { method: 'POST' });
@@ -837,12 +840,17 @@ let _choreState = { kids: [], chores: [] };
 
 async function renderChoresTab() {
   const content = $('content');
-  let kids = [], chores = [], choreChart = null, rewards = [], stickerMode = 'manual';
+  let kids = [], chores = [], choreChart = null, rewards = [], stickerMode = 'manual', drawOn = true, drawApproval = false, drawLive = true, drawWaiting = [], drawRecent = [];
   try {
     [kids, chores, choreChart, rewards] = await Promise.all([apiFetch('/api/kids'), apiFetch('/api/chores'), apiFetch('/api/chore-chart'), apiFetch('/api/rewards')]);
     const s = await apiFetch('/api/settings');
     stickerMode = (s && s.sticker_award_mode) || 'manual';
+    drawOn = !s || s.kids_draw_enabled !== '0';
+    drawApproval = !!s && s.kids_draw_approval === '1';
+    drawLive = !s || s.kids_draw_live !== '0';
   } catch {}
+  try { const w = await apiFetch('/api/drawings/pending'); if (Array.isArray(w)) drawWaiting = w; } catch {}
+  try { const w = await apiFetch('/api/drawings/all'); if (Array.isArray(w)) drawRecent = w.filter(d => d.status === 'shown').slice(0, 24); } catch {}
   _choreState.kids = kids; _choreState.chores = chores;
 
   const kidName = id => { const k = kids.find(x => x.id === parseInt(id)); return k ? k.name : 'Unknown'; };
@@ -939,6 +947,18 @@ async function renderChoresTab() {
     <div id="kids-list">${kidCards}</div>
     <button class="btn" id="add-kid-btn" style="background:var(--card);border:1px solid var(--border);margin-top:8px">+ Add Kid</button>
 
+    <div class="section-header" style="margin-top:22px">🎨 Drawing pad</div>
+    <div class="settings-card" style="padding:14px 16px">
+      <label style="display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px;font-weight:600">Kids can draw <input type="checkbox" id="draw-on" ${drawOn ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)"></label>
+      <div style="font-size:11px;color:var(--muted);margin:2px 0 10px">A 🎨 button on the kids page opens a drawing pad. Send to the wall shows the drawing on a Kids' Drawing widget (the most recent one sent is the one shown). A kid can open any of their earlier drawings from the pad, change it and send it again.</div>
+      <label style="display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px;font-weight:600">Kids can draw live on the wall's whiteboards <input type="checkbox" id="draw-live" ${drawLive ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)"></label>
+      <div style="font-size:11px;color:var(--muted);margin:2px 0 10px">The kids' pad can draw straight onto a Whiteboard widget's board, and it shows on the wall as they draw. Off: they only draw their own picture and send it.</div>
+      <label style="display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px;font-weight:600">A grown-up approves a drawing first <input type="checkbox" id="draw-approval" ${drawApproval ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)"></label>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">Off: a sent drawing goes straight to the wall.</div>
+      <div id="draw-waiting" style="margin-top:12px">${drawWaiting.length ? `<div style="font-size:13px;font-weight:600;margin-bottom:6px">Waiting for you (${drawWaiting.length})</div>` + drawWaiting.map(p => `<div class="draw-wait" data-id="${p.id}" style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><img src="/uploads/${encodeURIComponent(p.filename)}" alt="" style="width:84px;height:64px;object-fit:cover;border-radius:8px;background:#fff"><div style="flex:1;font-size:13px">${escapeHtml(p.label || '')}</div><button class="btn btn-primary draw-ok" style="padding:6px 12px">Show it</button><button class="icon-btn del draw-no" title="Delete">🗑️</button></div>`).join('') : ''}</div>
+      <div id="draw-recent" style="margin-top:12px">${drawRecent.length ? `<div style="font-size:13px;font-weight:600;margin-bottom:6px">Recent drawings</div>` + drawRecent.map(p => `<div class="draw-rec" data-id="${p.id}" data-pinned="${p.pinned ? '1' : ''}" style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><img src="/uploads/${encodeURIComponent(p.filename)}" alt="" style="width:84px;height:64px;object-fit:cover;border-radius:8px;background:#fff"><div style="flex:1;font-size:13px">${escapeHtml(p.label || '')}${p.showing ? ` <span style="font-size:11px;font-weight:700;color:#06240f;background:#3ec97a;border-radius:8px;padding:1px 7px;margin-left:4px">Now showing</span>` : ''}${p.pinned ? ` <span style="font-size:11px">📌 Pinned</span>` : ''}</div><button class="btn draw-pin" style="padding:6px 10px;background:var(--card);border:1px solid var(--border)">${p.pinned ? 'Unpin' : '📌 Pin'}</button><button class="icon-btn del draw-del" title="Delete">🗑️</button></div>`).join('') + `<div style="font-size:11px;color:var(--muted)">Pin one drawing to keep it on the wall whatever is sent after it.</div>` : ''}</div>
+    </div>
+
     <div class="section-header" style="margin-top:22px">Chores</div>
     <div id="chores-list">${choreCards}</div>
     <button class="btn btn-primary" id="add-chore-btn" style="margin-top:8px">+ Add Chore</button>
@@ -975,6 +995,37 @@ async function renderChoresTab() {
       e.target.value = ''; e.target.disabled = false;
     }
   }));
+  const saveDraw = async (key, val, undo) => {
+    const r = await apiFetch('/api/settings', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ [key]: val }) });
+    if (r && !r.__authFailed) showToast('✓ Saved'); else { showToast('❌ Could not save'); undo(); }
+  };
+  $('draw-on').addEventListener('change', (e) => saveDraw('kids_draw_enabled', e.target.checked ? '1' : '0', () => { e.target.checked = !e.target.checked; }));
+  $('draw-live').addEventListener('change', (e) => saveDraw('kids_draw_live', e.target.checked ? '1' : '0', () => { e.target.checked = !e.target.checked; }));
+  $('draw-approval').addEventListener('change', (e) => saveDraw('kids_draw_approval', e.target.checked ? '1' : '0', () => { e.target.checked = !e.target.checked; }));
+  content.querySelectorAll('.draw-wait').forEach(row => {
+    const id = row.dataset.id;
+    row.querySelector('.draw-ok').addEventListener('click', async () => {
+      const r = await apiFetch('/api/drawings/' + id + '/approve', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+      if (r && r.ok) { showToast('🖼️ On the wall'); renderChoresTab(); } else showToast('❌ Could not do that');
+    });
+    row.querySelector('.draw-no').addEventListener('click', async () => {
+      if (!confirm('Delete this drawing?')) return;
+      const r = await apiFetch('/api/drawings/' + id, { method:'DELETE' });
+      if (r && r.ok) { showToast('Deleted'); renderChoresTab(); } else showToast('❌ Could not do that');
+    });
+  });
+  content.querySelectorAll('.draw-rec').forEach(row => {
+    const id = row.dataset.id, pinned = row.dataset.pinned === '1';
+    row.querySelector('.draw-pin').addEventListener('click', async () => {
+      const r = pinned ? await apiFetch('/api/drawings/pin', { method:'DELETE' }) : await apiFetch('/api/drawings/' + id + '/pin', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+      if (r && r.ok) { showToast(pinned ? 'Unpinned' : '📌 Pinned to the wall'); renderChoresTab(); } else showToast('❌ Could not do that');
+    });
+    row.querySelector('.draw-del').addEventListener('click', async () => {
+      if (!confirm('Delete this drawing?')) return;
+      const r = await apiFetch('/api/drawings/' + id, { method:'DELETE' });
+      if (r && r.ok) { showToast('Deleted'); renderChoresTab(); } else showToast('❌ Could not do that');
+    });
+  });
   $('add-kid-btn').addEventListener('click', () => openKidEditor(null));
   $('add-chore-btn').addEventListener('click', () => openChoreEditor(null));
   $('add-reward-btn').addEventListener('click', () => openRewardEditor(null));

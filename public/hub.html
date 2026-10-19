@@ -7,6 +7,8 @@
 <title>Family Hub</title>
 <script src="/js/shared/i18n.js"></script>
 <script src="/js/shared/recipes-ui.js"></script>
+<script src="/js/shared/pantry-ui.js"></script>
+<script src="/js/shared/draw-ui.js"></script>
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icons/hub-apple-touch.png">
 <meta name="theme-color" content="#1b2340">
@@ -129,6 +131,7 @@
   #shopping-toolbar .store-label { font-size:12px; color:var(--muted); flex-shrink:0; }
   #shopping-store-select { flex:1; max-width:160px; background:var(--card); color:var(--text); border:1px solid var(--muted);
     border-radius:10px; padding:8px 10px; font-size:13px; }
+  #shopping-pantry-btn { background:none; border:1px solid var(--muted); color:var(--muted); border-radius:10px; padding:6px 12px; font-size:13px; }
   #shopping-clear-btn { background:none; border:1px solid var(--muted); color:var(--muted); border-radius:10px;
     padding:8px 12px; font-size:12px; cursor:pointer; white-space:nowrap; }
   #shopping-mode-btn { background:var(--accent); border:none; color:#fff; border-radius:10px;
@@ -288,6 +291,7 @@
         <button id="subtab-todos"><span class="ic">✅</span>To-Dos</button>
         <button id="subtab-shopping"><span class="ic">🛒</span>Shopping</button>
         <button id="subtab-recipes"><span class="ic">🍳</span>Recipes</button>
+        <button id="subtab-board" style="display:none"><span class="ic">🖍️</span>Board</button>
       </div>
       <div id="home-subviews">
         <div id="view-chores" class="subview active">
@@ -321,6 +325,11 @@
           </div>
         </div>
 
+        <div id="view-board" class="subview">
+          <div id="board-bar" style="display:none;padding:8px 12px"><select id="board-select" style="width:100%;padding:10px;border-radius:10px;background:var(--card);color:var(--text);border:1px solid var(--border,#333);font-size:15px"></select></div>
+          <div id="board-host" style="flex:1;min-height:0;padding:0 8px 8px"></div>
+        </div>
+
         <div id="view-recipes" class="subview">
           <div id="recipes-root" style="flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch"></div>
         </div>
@@ -341,8 +350,10 @@
               <option value="amazon">Amazon</option>
             </select>
             <button id="shopping-mode-btn">🛍️ Shopping Mode</button>
+            <button id="shopping-pantry-btn">🥫 Pantry staples</button>
             <button id="shopping-clear-btn">Clear checked</button>
           </div>
+          <div id="shopping-pantry-host" style="padding:0 16px"></div>
           <div id="shopping-items-wrap"><div id="todo-empty-lists"><div class="emoji">🛒</div><p>Nothing on the list yet.</p></div></div>
           <div id="shopping-add-item-row">
             <input type="text" id="shopping-new-item-input" placeholder="Add an item…" autocomplete="off">
@@ -553,6 +564,9 @@ function showSubtab(subtab) {
   $('subtab-shopping').classList.toggle('active', subtab === 'shopping');
   $('subtab-recipes').classList.toggle('active', subtab === 'recipes');
   $('view-recipes').classList.toggle('active', subtab === 'recipes');
+  $('subtab-board').classList.toggle('active', subtab === 'board');
+  $('view-board').classList.toggle('active', subtab === 'board');
+  if (subtab !== 'board') closeBoard();
   $('view-chores').classList.toggle('active', subtab === 'chores');
   $('view-todos').classList.toggle('active', subtab === 'todos');
   $('view-shopping').classList.toggle('active', subtab === 'shopping');
@@ -561,6 +575,7 @@ function showSubtab(subtab) {
   if (subtab === 'todos') loadTodoLists();
   if (subtab === 'shopping') loadShoppingList();
   if (subtab === 'recipes') loadRecipesTab();
+  if (subtab === 'board') loadBoardTab();
 }
 // Recipes: the screens live in js/shared/recipes-ui.js (the control app uses the same ones). Mounted once, redrawn when a live update arrives.
 let recipesUi = null;
@@ -572,6 +587,31 @@ function loadRecipesTab() {
     toast: (m) => showToastKid(m),
   });
 }
+// Board: draw on the wall's Whiteboard from the phone. The same drawing tools as the wall (js/shared/draw-ui.js); the board is kept by the server, so what is drawn here
+// shows on the wall at once (and the other way round, through the 'boards' live update).
+let boardCtl = null, boardList = [];
+function closeBoard() { if (boardCtl) { try { boardCtl.destroy(); } catch {} boardCtl = null; } }
+function mountBoard(id) {
+  closeBoard();
+  const host = $('board-host'); host.innerHTML = '';
+  try { localStorage.setItem('hub_board_id', id); } catch {}
+  boardCtl = DrawUI.mount(host, { board: id, api: (path, init) => api(path, init), toolbar: 'always', big: true, name: 'Whiteboard', isEditing: () => false });
+}
+async function loadBoardTab() {
+  try { boardList = await api('/api/boards'); } catch { boardList = []; }
+  if (!Array.isArray(boardList)) boardList = [];
+  const sel = $('board-select');
+  sel.innerHTML = boardList.map(b => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join('');
+  $('board-bar').style.display = boardList.length > 1 ? 'block' : 'none';
+  if (!boardList.length) { $('board-host').innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">No whiteboard on a wall screen yet. Add the Whiteboard widget to a layout first.</div>'; return; }
+  let want = ''; try { want = localStorage.getItem('hub_board_id') || ''; } catch {}
+  const pick = boardList.some(b => b.id === want) ? want : boardList[0].id;
+  sel.value = pick;
+  mountBoard(pick);
+}
+$('board-select').addEventListener('change', (e) => mountBoard(e.target.value));
+$('subtab-board').addEventListener('click', () => showSubtab('board'));
+
 // Shared by the Home tab-button click handler, initial load, and the
 // settings-changed fallback — "enter Home" always means "show it, then pick
 // whichever subtab actually makes sense right now," not just switching the
@@ -583,7 +623,7 @@ function enterHomeTab() {
   let subtab = 'chores';
   try { subtab = localStorage.getItem(SUBTAB_KEY) || 'chores'; } catch {}
   if (!lastEnabledState[subtab]) {
-    subtab = ['chores', 'todos', 'shopping', 'recipes'].find(t => lastEnabledState[t]);
+    subtab = ['chores', 'todos', 'shopping', 'recipes', 'board'].find(t => lastEnabledState[t]);
   }
   if (subtab) {
     showSubtab(subtab);
@@ -926,6 +966,7 @@ async function deleteShoppingItem(id) {
   try { await api(`/api/shopping-items/${id}`, { method: 'DELETE' }); } catch { loadShoppingList(); }
 }
 
+$('shopping-pantry-btn').addEventListener('click', () => { if (window.PantryUI) PantryUI.open($('shopping-pantry-host'), { api: (path, init) => api(path, init), say: (m) => showToastKid(m) }); });
 $('shopping-new-item-btn').addEventListener('click', addShoppingItem);
 $('shopping-new-item-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') addShoppingItem(); });
 async function addShoppingItem() {
@@ -1358,6 +1399,7 @@ try {
       if (d.topic === 'todos' && $('view-todos').classList.contains('active')) loadTodoLists();
       if (d.topic === 'shopping' && $('view-shopping').classList.contains('active')) loadShoppingList();
       if (d.topic === 'chores' && $('view-chores').classList.contains('active')) loadChoresTab();
+      if (d.topic === 'boards' && boardCtl && $('view-board').classList.contains('active')) boardCtl.refresh();
       if (d.topic === 'recipes' && recipesUi && $('view-recipes').classList.contains('active')) recipesUi.refresh();
       // The real fix for "toggle a feature, checkbox updates instantly, but
       // the tab never appears without a reload": the server broadcasts a
@@ -1751,7 +1793,9 @@ async function applyFeatureVisibility() {
     shopping: settings.shopping_enabled === '1',
     recipes: settings.recipes_enabled !== '0',  // recipes default ON, like chores
     smarthome: settings.smarthome_enabled === '1',
+    board: false,
   };
+  try { const bl = await api('/api/boards'); enabled.board = Array.isArray(bl) && bl.length > 0 && typeof DrawUI !== 'undefined'; } catch {}   // there is a Whiteboard widget on some wall layout
   lastEnabledState = enabled; // cached for click handlers — see enterHomeTab() above
   // Home's 3 subtab buttons individually show/hide exactly like the old flat
   // top-level tabs did. The Home tab ITSELF only makes sense to show at all
@@ -1762,7 +1806,8 @@ async function applyFeatureVisibility() {
   $('subtab-todos').style.display = enabled.todos ? '' : 'none';
   $('subtab-shopping').style.display = enabled.shopping ? '' : 'none';
   $('subtab-recipes').style.display = enabled.recipes ? '' : 'none';
-  const anyHomeFeature = enabled.chores || enabled.todos || enabled.shopping || enabled.recipes;
+  $('subtab-board').style.display = enabled.board ? '' : 'none';
+  const anyHomeFeature = enabled.chores || enabled.todos || enabled.shopping || enabled.recipes || enabled.board;
   $('tab-home').style.display = anyHomeFeature ? '' : 'none';
   $('tab-smarthome').style.display = enabled.smarthome ? '' : 'none';
   return enabled;

@@ -849,7 +849,7 @@ async function fetchCameras() {
   } catch {}
 }
 
-// Family member profiles — used here only to colour-code local events by
+// Family member profiles — used here only to color-code local events by
 // their owner (owner_profile_id). The wall has no "active profile"; this is
 // purely a lookup table. Empty on a household that hasn't set any up.
 let _profileColorById = new Map();
@@ -868,7 +868,7 @@ function profileNameByIdD(id) {
 function profileByIdD(id) {
   return (state.profiles || []).find(x => Number(x.id) === Number(id)) || null;
 }
-// Small round avatar chip (emoji on the profile's colour) — the wall version
+// Small round avatar chip (emoji on the profile's color) — the wall version
 // of app.html's profileAvatarHtml.
 function profileAvatarHtmlD(p, px) {
   if (!p) return '';

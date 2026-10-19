@@ -13,7 +13,7 @@ function fmStartInstance(el, w) {
   };
   _fmInst.set(id, inst);
 
-  // Resolve theme colours to concrete rgb()/rgba() strings the 2D canvas can
+  // Resolve theme colors to concrete rgb()/rgba() strings the 2D canvas can
   // always parse. Read the vars from the widget element itself (not <html>) —
   // themes are set on body[data-theme], which document.documentElement does
   // NOT inherit, so reading from <html> gave the wrong (default-dark) palette
@@ -1356,8 +1356,8 @@ function hexWithOpacity(hex, opacity) {
 // the feed's own global setting (which every OTHER widget/display still
 // reads from by default).
 function eventPillColor(e, widget) {
-  // A local event tagged to a family member takes that person's colour;
-  // everything else keeps its feed / stored colour.
+  // A local event tagged to a family member takes that person's color;
+  // everything else keeps its feed / stored color.
   let hex = e.color || '#4A90D9';
   if (e.owner_profile_id != null && _profileColorById.has(Number(e.owner_profile_id))) {
     hex = _profileColorById.get(Number(e.owner_profile_id)) || hex;

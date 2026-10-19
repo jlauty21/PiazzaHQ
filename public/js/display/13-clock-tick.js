@@ -170,6 +170,10 @@ function connectLiveUpdates() {
     } else if (topic === 'cameras') {
       await fetchCameras();
       renderLayout();
+    } else if (topic === 'drawings') {
+      if (typeof refreshKidDrawing === 'function') refreshKidDrawing(true);          // a kid sent a drawing: the newest one is shown
+    } else if (topic === 'boards') {
+      if (typeof wbRefreshAll === 'function') wbRefreshAll();          // a drawing changed on another screen: each board fetches only if its version is new
     } else if (topic === 'meals') {
       await fetchMeals();
       renderLayout();

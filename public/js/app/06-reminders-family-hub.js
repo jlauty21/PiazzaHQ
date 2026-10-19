@@ -793,6 +793,10 @@ async function drawWidgetSettingsPanel() {
     drawWidgetSettingsPanel_Build_messageboard({ w, _st });
   } else if (w.type === 'mealplan') {
     await drawWidgetSettingsPanel_Build_mealplan({ w, _st });
+  } else if (w.type === 'kiddrawing') {
+    await drawWidgetSettingsPanel_Build_kiddrawing({ w, _st });
+  } else if (w.type === 'whiteboard') {
+    await drawWidgetSettingsPanel_Build_whiteboard({ w, _st });
   } else if (w.type === 'recipe') {
     await drawWidgetSettingsPanel_Build_recipe({ w, _st });
   } else if (w.type === 'flightmap') {
@@ -1227,6 +1231,21 @@ async function drawWidgetSettingsPanel() {
       else w.mpSlots = picked;
       rebuildCanvas();
     }));
+  } else if (w.type === 'kiddrawing') {
+    $('kd-caption').addEventListener('change', (e) => { w.kdCaption = e.target.checked; });
+    $('kd-secs').addEventListener('change', (e) => { w.kdSeconds = Math.max(3, Math.min(600, parseInt(e.target.value, 10) || 15)); });
+    $('kd-fit').addEventListener('change', (e) => { w.kdFit = e.target.value; });
+  } else if (w.type === 'whiteboard') {
+    $('wb-board').addEventListener('change', (e) => { w.wbBoard = e.target.value.trim(); });
+    $('wb-toolbar').addEventListener('change', (e) => { w.wbToolbar = e.target.value; });
+    $('wb-auto').addEventListener('change', (e) => {
+      w.wbAutoClear = e.target.value;
+      $('wb-time-row').style.display = w.wbAutoClear === 'daily' ? '' : 'none';
+      $('wb-hours-row').style.display = w.wbAutoClear === 'hours' ? '' : 'none';
+    });
+    $('wb-time').addEventListener('change', (e) => { w.wbAutoTime = e.target.value || '03:00'; });
+    $('wb-hours').addEventListener('change', (e) => { w.wbAutoHours = Math.max(1, Math.min(720, parseInt(e.target.value, 10) || 12)); });
+    $('wb-ro').addEventListener('change', (e) => { w.wbReadOnly = e.target.checked; });
   } else if (w.type === 'recipe') {
     $('rcw-mode').addEventListener('change', (e) => {
       w.rcMode = e.target.value === 'chosen' ? 'chosen' : 'tonight';

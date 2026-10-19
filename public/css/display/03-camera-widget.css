@@ -60,7 +60,7 @@
        Self-drawn world map (canvas) with live ADS-B aircraft. Two stacked
        canvases: fm-base (land/borders, redrawn only on view change) and
        fm-air (aircraft/trails, redrawn each frame for smooth motion).
-       Every colour resolves off theme vars so it conforms to custom
+       Every color resolves off theme vars so it conforms to custom
        templates like every other widget. */
     .w-flightmap { position:relative; width:100%; height:100%; border-radius:8px; overflow:hidden;
       background:color-mix(in srgb, var(--text) 4%, transparent); }

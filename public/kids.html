@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>My Chores</title>
 <script src="/js/shared/i18n.js"></script>
+<script src="/js/shared/draw-ui.js"></script>
 <style>
   :root { --bg:#0f1320; --card:#1b2133; --text:#eef2fb; --muted:#9aa6c0; --accent:#4A90D9; --done:#3ec97a; }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -28,7 +29,9 @@
   header { display:flex; align-items:center; gap:14px; padding:16px 20px; background:var(--card);
     position:sticky; top:0; z-index:5; box-shadow:0 2px 10px rgba(0,0,0,0.3); }
   header .av { font-size:40px; }
-  header .who { flex:1; }
+  header .who { flex:1; min-width:0; }
+  header .who .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  @media (max-width:480px) { header { gap:8px; padding:14px 12px; } header .switch { padding:8px 9px; } }
   header .who .nm { font-size:22px; font-weight:700; }
   header .who .sub { font-size:13px; color:var(--muted); }
   header .switch { background:transparent; border:1px solid var(--muted); color:var(--muted);
@@ -81,6 +84,31 @@
     padding:10px 16px; font-size:14px; font-weight:700; cursor:pointer; white-space:nowrap; }
 
   /* History overlay */
+  #draw-overlay { position:fixed; inset:0; background:var(--bg); z-index:45; display:none; flex-direction:column; }
+  #draw-top { display:flex; align-items:center; gap:10px; padding:10px 12px; }
+  #draw-top .ttl { flex:1; min-width:0; font-size:20px; font-weight:800; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #draw-top button { flex:0 0 auto; white-space:nowrap; border:0; border-radius:14px; padding:12px 18px; font-size:17px; font-weight:800; cursor:pointer; color:var(--text); background:var(--card); }
+  #draw-top select { flex:0 1 190px; min-width:0; border:0; border-radius:14px; padding:12px 10px; font-size:16px; font-weight:700; color:var(--text); background:var(--card); }
+  #draw-gallery { position:absolute; inset:64px 0 0 0; background:var(--bg); z-index:3; display:none; flex-direction:column; }
+  #draw-gallery h3 { margin:6px 14px 10px; font-size:18px; }
+  #draw-gallery .grid { flex:1; min-height:0; overflow-y:auto; display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; padding:0 14px 14px; align-content:start; }
+  #draw-gallery .card { position:relative; }
+  #draw-gallery .card .open { display:block; width:100%; border:0; background:none; padding:0; color:inherit; cursor:pointer; font:inherit; }
+  #draw-gallery .card .pick { position:absolute; top:12px; right:12px; width:38px; height:38px; border-radius:50%; border:3px solid #fff; background:rgba(15,19,32,.55); color:transparent; font-size:22px; font-weight:900; line-height:1; cursor:pointer; padding:0; display:flex; align-items:center; justify-content:center; }
+  #draw-gallery .card.sel .pick { background:var(--done); color:#06240f; border-color:var(--done); }
+  #draw-gallery .bar { flex:0 0 auto; display:flex; align-items:center; gap:12px; padding:10px 14px; background:var(--card); }
+  #draw-gallery .bar .hint { flex:1; font-size:14px; color:var(--muted); }
+  #draw-gallery .bar button { border:0; border-radius:14px; padding:14px 18px; font-size:17px; font-weight:800; background:var(--done); color:#06240f; cursor:pointer; white-space:nowrap; }
+  #draw-gallery .bar button:disabled { opacity:.45; }
+  #draw-gallery .card { background:var(--card); border:0; border-radius:14px; padding:8px; color:var(--text); cursor:pointer; text-align:center; }
+  #draw-gallery .card img { width:100%; aspect-ratio:4/3; object-fit:contain; background:#fff; border-radius:8px; display:block; }
+  #draw-gallery .card span { display:block; margin-top:6px; font-size:14px; font-weight:700; }
+  #draw-gallery .card em { display:block; font-size:12px; color:var(--muted); font-style:normal; }
+  #draw-gallery .none { padding:30px 14px; text-align:center; color:var(--muted); font-size:17px; grid-column:1/-1; }
+  #draw-top #draw-send { background:var(--done); color:#06240f; }
+  #draw-top #draw-send:disabled { opacity:.5; }
+  #draw-board { flex:1; min-height:0; padding:0 10px 10px; }
+  #draw-msg { position:fixed; left:50%; top:76px; transform:translateX(-50%); background:rgba(16,20,32,.95); color:#fff; padding:12px 20px; border-radius:999px; font-size:17px; font-weight:700; z-index:50; display:none; max-width:92%; text-align:center; }
   #hist-overlay { position:fixed; inset:0; background:var(--bg); z-index:40; display:none;
     flex-direction:column; padding:20px; overflow-y:auto; }
   #hist-overlay h2 { margin:0 0 16px; }
@@ -130,6 +158,7 @@
     <div class="who"><div class="nm" id="h-name"></div><div class="sub" id="h-date"></div></div>
     <div class="streak" id="h-streak" style="display:none">🔥 <span id="h-streak-n"></span></div>
     <button class="stickers-badge" id="stickers-btn"><span id="h-sticker-icon">⭐</span><span id="h-sticker-n">0</span></button>
+    <button class="switch" id="draw-btn" title="Draw" style="display:none">🎨</button>
     <button class="switch" id="hist-btn" title="History">📊</button>
     <button class="switch" id="switch-btn">Switch</button>
   </header>
@@ -151,6 +180,20 @@
   </div>
   <div id="celebrate"></div>
   <input type="file" id="proof-file-input" accept="image/*" capture="environment" style="display:none">
+
+  <!-- Drawing pad: the same drawing tools as the Whiteboard widget. The unfinished drawing is kept on the server (a draft board for this kid), so it is still here next time. -->
+  <div id="draw-overlay">
+    <div id="draw-top">
+      <button id="draw-back">← Back</button>
+      <div class="ttl" id="draw-title">Draw</div>
+      <button id="draw-gallery-btn" aria-label="My drawings" title="My drawings">📂</button>
+      <select id="draw-target" style="display:none" aria-label="Draw on"></select>
+      <button id="draw-send">🖼️ Send to the wall</button>
+    </div>
+    <div id="draw-board"></div>
+    <div id="draw-gallery"><h3>My drawings</h3><div class="grid" id="draw-gallery-grid"></div><div class="bar"><span class="hint" id="gal-hint"></span><button id="gal-show" disabled>🖼️ Show on the wall</button></div></div>
+  </div>
+  <div id="draw-msg"></div>
 
   <div id="hist-overlay">
     <h2>📊 My History</h2>
@@ -239,6 +282,7 @@ function selectKid(id) {
   document.getElementById('h-av').textContent = currentKid.avatar || '🙂';
   const nm = document.getElementById('h-name'); nm.textContent = currentKid.name; nm.style.color = currentKid.color;
   document.getElementById('h-sticker-icon').innerHTML = stickerBadgeHtml(currentKid, 18);
+  loadDrawStatus();
   loadChores();
   loadBonusChores();
 }
@@ -253,6 +297,7 @@ function switchKid() {
   document.getElementById('alldone').style.display = 'none';
   document.getElementById('bonus-wrap').style.display = 'none';
   closeHistory();
+  if (typeof closeDraw === 'function') closeDraw();
   loadKids();
 }
 
@@ -507,12 +552,126 @@ document.getElementById('hist-close').addEventListener('click', closeHistory);
 document.getElementById('stickers-btn').addEventListener('click', openStickers);
 document.getElementById('sticker-close').addEventListener('click', closeStickers);
 
+// ── Drawing pad ──────────────────────────────────────────────────────────────────────────────────────────────────────
+let drawCtl = null, drawOn = false, drawApproval = false, drawLive = false, drawBoards = [], drawMsgTimer = null;
+const tr = (s) => (window.i18n && typeof window.i18n.t === 'function' ? window.i18n.t(s) : s);
+function drawSay(msg) {
+  const m = document.getElementById('draw-msg'); m.textContent = msg; m.style.display = 'block';
+  clearTimeout(drawMsgTimer); drawMsgTimer = setTimeout(() => { m.style.display = 'none'; }, 3200);
+}
+async function loadDrawStatus() {
+  try { const s = await api('/api/kid-drawing/status'); drawOn = !!s.enabled; drawApproval = !!s.approval; drawLive = !!s.live; } catch { drawOn = false; }
+  document.getElementById('draw-btn').style.display = drawOn && currentKid ? '' : 'none';
+}
+// What the pad draws on: 'mine' (this kid's own drawing, which Send turns into a creation) or the id of a wall Whiteboard board (drawn on live: what a kid draws shows on the wall at once).
+let drawTarget = 'mine';
+function mountDraw() {
+  closeGallery();
+  const live = drawTarget !== 'mine';
+  const host = document.getElementById('draw-board'); host.innerHTML = '';
+  if (drawCtl) { try { drawCtl.destroy(); } catch {} }
+  document.getElementById('draw-send').style.display = live ? 'none' : '';
+  drawCtl = DrawUI.mount(host, { board: live ? drawTarget : 'kid-' + currentKid.id, api: (path, init) => api(path, { ...(init || {}), headers: { 'Content-Type': 'application/json', ...((init && init.headers) || {}) } }), toolbar: 'always', big: true, noKeep: true, name: currentKid.name, isEditing: () => false,
+    prefs: { load: () => api('/api/kid-drawing/' + currentKid.id + '/prefs'), save: (p) => fetch('/api/kid-drawing/' + currentKid.id + '/prefs', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) }) } });
+}
+async function openDraw() {
+  if (!currentKid || typeof DrawUI === 'undefined') return;
+  document.getElementById('draw-overlay').style.display = 'flex';
+  document.getElementById('draw-title').textContent = tr('Draw') + ' · ' + currentKid.name;
+  drawBoards = [];
+  if (drawLive) { try { const l = await api('/api/boards'); if (Array.isArray(l)) drawBoards = l; } catch {} }
+  const sel = document.getElementById('draw-target');
+  sel.innerHTML = '<option value="mine">' + esc(tr('My drawing')) + '</option>' + drawBoards.map(b => '<option value="' + esc(b.id) + '">' + esc(tr('Live on the wall') + ': ' + b.name) + '</option>').join('');
+  sel.style.display = drawBoards.length ? '' : 'none';
+  let want = 'mine'; try { want = localStorage.getItem('kids-draw-target') || 'mine'; } catch {}
+  drawTarget = drawBoards.some(b => b.id === want) ? want : 'mine';
+  sel.value = drawTarget;
+  mountDraw();
+}
+document.getElementById('draw-target').addEventListener('change', (e) => { drawTarget = e.target.value; try { localStorage.setItem('kids-draw-target', drawTarget); } catch {} mountDraw(); });
+function closeDraw() {
+  document.getElementById('draw-overlay').style.display = 'none';
+  document.getElementById('draw-gallery').style.display = 'none';
+  if (drawCtl) { try { drawCtl.destroy(); } catch {} drawCtl = null; }
+}
+async function sendDraw() {
+  if (!drawCtl || !currentKid) return;
+  if (!drawCtl.strokes().length) return drawSay(tr('Draw something first.'));
+  const btn = document.getElementById('draw-send'); btn.disabled = true;
+  await drawCtl.flush();                                       // every stroke is on the server before it is kept with the picture
+  drawCtl.png(async (blob) => {
+    try {
+      if (!blob) throw new Error('png');
+      const r = await fetch('/api/kid-drawing/' + currentKid.id, { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: blob });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || 'http ' + r.status);
+      drawSay(j.pending ? tr('Sent! A grown-up will look at it first.') : tr('Sent! It will show up on the wall.'));
+    } catch (e) { drawSay(/grown-up/.test(String(e.message)) ? tr('A grown-up needs to look at the other drawings first.') : tr('Could not send. Try again.')); }
+    btn.disabled = false;
+  });
+}
+// My drawings: every drawing this kid has sent (newest first). Tap one to open it on the pad, change it and send it again.
+let galPick = [], galList = [];
+function galSync() {
+  document.querySelectorAll('#draw-gallery .card').forEach(c => c.classList.toggle('sel', galPick.includes(Number(c.dataset.id))));
+  const btn = document.getElementById('gal-show');
+  btn.disabled = !galPick.length;
+  btn.textContent = '🖼️ ' + tr('Show on the wall') + (galPick.length ? ' (' + galPick.length + ')' : '');
+  document.getElementById('gal-hint').textContent = tr('Tap the circle on the drawings you want to rotate on the wall. Tap a drawing to open it.');
+}
+async function openGallery() {
+  const g = document.getElementById('draw-gallery'), grid = document.getElementById('draw-gallery-grid');
+  g.style.display = 'flex'; grid.innerHTML = '';
+  let list = [];
+  try { list = await api('/api/kid-drawings?kid=' + currentKid.id); } catch {}
+  galList = Array.isArray(list) ? list : [];
+  galPick = galList.filter(d => d.showing).map(d => d.id);             // what is on the wall now starts picked
+  if (!galList.length) { grid.innerHTML = '<div class="none">' + esc(tr('Nothing sent yet.')) + '</div>'; galSync(); return; }
+  grid.innerHTML = galList.map(d => '<div class="card" data-id="' + d.id + '"><button class="open"><img src="/uploads/' + encodeURIComponent(d.filename) + '" alt=""><span>' + esc(d.label || '') + '</span>' + (d.status === 'pending' ? '<em>' + esc(tr('Waiting for a grown-up')) + '</em>' : '') + '</button>' + (d.status === 'pending' ? '' : '<button class="pick">✓</button>') + '</div>').join('');
+  grid.querySelectorAll('.pick').forEach(b => b.setAttribute('aria-label', tr('Show on the wall')));
+  galSync();
+}
+async function showPicked() {
+  if (!galPick.length) return;
+  const btn = document.getElementById('gal-show'); btn.disabled = true;
+  try {
+    const r = await fetch('/api/kid-drawing/' + currentKid.id + '/show', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: galPick }) });
+    if (!r.ok) throw new Error('http ' + r.status);
+    drawSay(tr('Showing on the wall.'));
+    closeGallery();
+  } catch { drawSay(tr('Could not do that. Try again.')); galSync(); }
+}
+function closeGallery() { document.getElementById('draw-gallery').style.display = 'none'; }
+async function openSent(id) {
+  if (drawCtl && drawTarget === 'mine' && drawCtl.strokes().length && !confirm(tr('Replace what is on the pad with this drawing?'))) return;
+  try {
+    const r = await fetch('/api/kid-drawing/' + currentKid.id + '/load/' + id, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!r.ok) throw new Error('http ' + r.status);
+  } catch { return drawSay(tr('Could not open it. Try again.')); }
+  drawTarget = 'mine'; document.getElementById('draw-target').value = 'mine';
+  closeGallery(); mountDraw();
+  drawSay(tr('Opened. Change it and send it again.'));
+}
+document.getElementById('draw-gallery-btn').addEventListener('click', () => { if (document.getElementById('draw-gallery').style.display === 'flex') closeGallery(); else openGallery(); });
+document.getElementById('draw-gallery-grid').addEventListener('click', (e) => {
+  const c = e.target.closest('.card'); if (!c) return;
+  const id = Number(c.dataset.id);
+  if (e.target.closest('.pick')) { galPick = galPick.includes(id) ? galPick.filter(x => x !== id) : galPick.concat(id); galSync(); return; }
+  openSent(id);
+});
+document.getElementById('gal-show').addEventListener('click', showPicked);
+document.getElementById('draw-btn').addEventListener('click', openDraw);
+// a drawing changed on another screen (the wall, a phone, a sibling): a live board follows it
+function onBoardsTopic() { if (drawCtl && drawTarget !== 'mine' && document.getElementById('draw-overlay').style.display !== 'none') drawCtl.refresh(); }
+document.getElementById('draw-back').addEventListener('click', closeDraw);
+document.getElementById('draw-send').addEventListener('click', sendDraw);
+
 // Live updates: refresh when chores change on the host (parent edits, other tablets).
 function connectLive() {
   try {
     const es = new EventSource('/api/live');
     es.onmessage = (ev) => {
-      try { const d = JSON.parse(ev.data); if (d.topic === 'chores' && currentKid) { loadChores(); loadBonusChores(); } } catch {}
+      try { const d = JSON.parse(ev.data); if (d.topic === 'chores' && currentKid) { loadChores(); loadBonusChores(); } if (d.topic === 'boards') onBoardsTopic(); } catch {}
     };
     es.onerror = () => {};
   } catch {}

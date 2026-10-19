@@ -725,11 +725,18 @@ function renderLayout() {
   // (found in a real browser: reusing the element alone still reloaded the page on every redraw). So frames that will
   // be reused are never detached: clear everything EXCEPT them, and don't re-append them below. Layering is by explicit
   // z-index, so their position among the siblings in the DOM does not matter.
+  const preservedWbEls = new Map();
+  canvas.querySelectorAll('.widget-whiteboard[data-widget-id]').forEach(el => { const id = el.dataset.widgetId; if (id) preservedWbEls.set(id, el); });
   const keepWebEls = new Set();
   (state.layout || []).forEach(w => {
     if (w.type !== 'webpage') return;
     const c = preservedWebEls.get(String(w.id));
     if (c && c.dataset.wpFingerprint === webPageFingerprint(w)) keepWebEls.add(c);
+  });
+  (state.layout || []).forEach(w => {
+    if (w.type !== 'whiteboard') return;
+    const c = preservedWbEls.get(String(w.id));
+    if (c && c.dataset.wbFingerprint === whiteboardFingerprint(w)) keepWebEls.add(c);        // never detached: a stroke being drawn keeps its pointer
   });
   Array.from(canvas.childNodes).forEach(n => { if (!keepWebEls.has(n)) canvas.removeChild(n); });
 
@@ -739,6 +746,10 @@ function renderLayout() {
     if (w.type === 'webpage') {
       const candidate = preservedWebEls.get(String(w.id));
       if (candidate && candidate.dataset.wpFingerprint === webPageFingerprint(w)) { el = candidate; reused = true; preservedWebEls.delete(String(w.id)); }
+    }
+    if (w.type === 'whiteboard') {
+      const candidate = preservedWbEls.get(String(w.id));
+      if (candidate && candidate.dataset.wbFingerprint === whiteboardFingerprint(w)) { el = candidate; reused = true; preservedWbEls.delete(String(w.id)); }
     }
     if (w.type === 'radar') {
       const candidate = preservedRadarEls.get(String(w.id));
@@ -764,6 +775,7 @@ function renderLayout() {
     el.dataset.widgetId = w.id || '';
     if (w.type === 'radar') el.dataset.radarFingerprint = radarFingerprint(w);
     if (w.type === 'webpage') el.dataset.wpFingerprint = webPageFingerprint(w);
+    if (w.type === 'whiteboard') el.dataset.wbFingerprint = whiteboardFingerprint(w);
     if (w.photoFullscreenBg) {
       // Full-screen background: a rendering-time-only override, deliberately
       // never touches the widget's own stored x/y/w/h/z — turning this off
@@ -891,6 +903,8 @@ function renderLayout() {
   requestAnimationFrame(() => { adaptCalendarEventFontSizes(); fitCalendarCells(); });
   requestAnimationFrame(renderQRCodes);
   requestAnimationFrame(initWebPages);
+  requestAnimationFrame(initWhiteboards);
+  requestAnimationFrame(() => refreshKidDrawing());
   requestAnimationFrame(initRadarWidgets);
   requestAnimationFrame(wireChoreChartTaps);
   requestAnimationFrame(wireMessageBoardTaps);
@@ -1097,6 +1111,8 @@ function renderWidget(w) {
     case 'messageboard': return renderMessageBoard(w);
     case 'mealplan': return renderMealPlan(w);
     case 'recipe': return renderRecipeWidget(w);
+    case 'whiteboard': return renderWhiteboard(w);
+    case 'kiddrawing': return renderKidDrawing(w);
     case 'camera': return renderCamera(w);
     case 'flightmap': return renderFlightMap(w);
     case 'countdown': return renderCountdown(w);

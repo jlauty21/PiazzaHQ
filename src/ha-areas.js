@@ -189,7 +189,7 @@ module.exports = function registerHaAreas({ URL, WebSocketClient, app, getSettin
       // Light brightness (0-255) for the dimmer slider — only present on a
       // dimmable light that's currently on, a no-op trim for everything else.
       if (attrs.brightness !== undefined && attrs.brightness !== null) trimmed.brightness = attrs.brightness;
-      // Light colour: temp (kelvin) + range for the warm/cool slider, and the
+      // Light color: temp (kelvin) + range for the warm/cool slider, and the
       // supported modes so the client knows whether to offer temp / swatches.
       if (attrs.color_temp_kelvin !== undefined && attrs.color_temp_kelvin !== null) trimmed.colorTempK = attrs.color_temp_kelvin;
       if (attrs.min_color_temp_kelvin !== undefined) trimmed.minColorTempK = attrs.min_color_temp_kelvin;

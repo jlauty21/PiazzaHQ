@@ -136,7 +136,7 @@ module.exports = function registerEventsApi({ app, demoCleanText, db, broadcastU
   // Coerce a client-supplied owner_profile_id to a positive integer or null. Any
   // junk (0, negative, non-numeric, absent) becomes null = unassigned — we don't
   // verify the profile row exists here; a stale id just renders with the default
-  // colour, same as null, and a real orphan is cleaned up on profile delete.
+  // color, same as null, and a real orphan is cleaned up on profile delete.
   function coerceOwnerProfileId(v) {
     const n = Number(v);
     return Number.isInteger(n) && n > 0 ? n : null;

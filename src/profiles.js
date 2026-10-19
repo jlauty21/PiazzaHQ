@@ -1,5 +1,5 @@
 'use strict';
-// Family member profiles: who is in the household, their colours/avatars, which tabs and features each can use, and the optional profile PIN (with its rate limit).
+// Family member profiles: who is in the household, their colors/avatars, which tabs and features each can use, and the optional profile PIN (with its rate limit).
 // Moved out of server.js (part of the split, see TODO.md). Behavior is unchanged: the code runs at the same point in server.js as before (route
 // order matters in Express), and everything it uses comes in through the one object below. Covered by test/api/profiles.test.js and test/api/profile-pin.test.js.
 module.exports = function registerProfiles({ crypto, app, db, makeRateLimiter, broadcastUpdate, clientIp }) {
@@ -138,7 +138,7 @@ module.exports = function registerProfiles({ crypto, app, db, makeRateLimiter, b
   });
 
   // DELETE /api/profiles/:id — refuses to remove the last manager; orphaned
-  // events fall back to owner_profile_id = NULL (default colour).
+  // events fall back to owner_profile_id = NULL (default color).
   app.delete('/api/profiles/:id', (req, res) => {
     const existing = db.prepare(`SELECT * FROM profiles WHERE id = ?`).get(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Profile not found' });
