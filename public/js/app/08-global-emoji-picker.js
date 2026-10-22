@@ -1483,6 +1483,7 @@ async function renderSettings() {
       text_shadow: $('s-text-shadow') ? $('s-text-shadow').value : 'off',
       display_refresh_min: $('s-display-refresh') ? $('s-display-refresh').value : '0',
       force_real_display: ($('s-force-real-display') && $('s-force-real-display').checked) ? '1' : '0',
+      ...($('s-show-cursor') ? { show_cursor: $('s-show-cursor').value } : {}),
       week_start_day: $('s-week-start') ? $('s-week-start').value : '0',
       time_format: $('s-time-format') ? $('s-time-format').value : '12',
       ampm_case: $('s-ampm-case') ? $('s-ampm-case').value : 'lower',

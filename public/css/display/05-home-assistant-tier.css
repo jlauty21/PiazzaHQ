@@ -108,6 +108,27 @@
     .w-qrcode .qr-container img, .w-qrcode .qr-container canvas { display:block; width:100%; height:100%; }
     /* Whiteboard widget: a drawing board (js/shared/draw-ui.js draws it and brings its own styles) */
     .w-whiteboard { position:relative; width:100%; height:100%; }
+    /* Rotating widgets (14-widget-rotation.js): all but the member on show are hidden (never removed), with a short fade or slide between them */
+    .widget[data-rot] { transition: opacity .5s ease, translate .5s ease; }
+    .widget[data-rot][data-rotfx="none"] { transition: none; }
+    .widget[data-rot][data-rotfx="slide"].rot-off { translate: -40px 0; }
+    .widget.rot-off { opacity:0 !important; visibility:hidden; pointer-events:none; transition: opacity .5s ease, translate .5s ease, visibility 0s linear .5s; }
+    .widget[data-rotfx="none"].rot-off { transition: none; }
+    .rot-dots, .rot-edit { position:absolute; pointer-events:none; }
+    .rot-dots .rot-dots-row { position:absolute; left:50%; bottom:6px; transform:translateX(-50%); display:flex; gap:10px; padding:5px 10px; border-radius:999px; background:rgba(0,0,0,0.28); pointer-events:auto; }
+    .rot-dots button { width:11px; height:11px; padding:0; border-radius:50%; border:0; background:rgba(255,255,255,0.45); cursor:pointer; }
+    .rot-dots button.on { background:#fff; transform:scale(1.25); }
+    .rot-edit { display:flex; align-items:flex-start; justify-content:flex-start; gap:6px; }
+    .rot-edit > * { pointer-events:auto; background:rgba(10,14,26,0.88); color:#e8edf5; border:0; border-radius:8px; padding:6px 12px; font-size:15px; font-weight:700; margin:4px 0 0 4px; }
+    .rot-edit > span { padding:7px 12px; }
+    .rot-member { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+    .rot-member-name { flex:1; }
+    .rot-member button, .rot-out { background:rgba(255,255,255,0.12); color:#e8edf5; border:0; border-radius:8px; padding:8px 12px; font-size:14px; }
+    .rot-member button:disabled { opacity:.3; }
+    #widget-advanced-body .rot-days { display: flex; gap: 4px; flex-wrap: wrap; }
+#widget-advanced-body .rot-day { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: inherit; padding: 6px 9px; font-size: 13px; cursor: pointer; }
+#widget-advanced-body .rot-day.on { background: var(--accent, #4a90d9); border-color: transparent; color: #fff; }
+#wep-rotation-btn { background:rgba(255,255,255,0.12); color:#e8edf5; border:none; border-radius:8px; padding:9px 16px; font-size:14px; font-weight:600; }
     /* Kids' Drawing widget: the drawing a kid sent most recently */
     .w-kiddrawing { position:relative; width:100%; height:100%; display:flex; flex-direction:column; gap:6px; }
     .w-kiddrawing .kd-img { flex:1; min-height:0; width:100%; border-radius:10px; background:#fff; animation:kdIn .6s ease; }
@@ -155,6 +176,20 @@
     .w-onthisday .otd-text { font-size:var(--otd-font); line-height:1.35; color:var(--text); }
 
     /* ── Daily Quote widget ── */
+    .w-version { justify-content:center; gap:calc(var(--ver-font) * 0.35); font-size:var(--ver-font); }
+    .w-version .ver-title { font-size:calc(var(--ver-font) * 0.75); text-transform:uppercase; letter-spacing:.08em; opacity:.7; }
+    .w-version .ver-row { display:flex; flex-wrap:wrap; align-items:baseline; gap:.4em .8em; }
+    .w-version .ver-label { opacity:.75; min-width:4.5em; }
+    .w-version .ver-num { font-weight:700; font-variant-numeric:tabular-nums; }
+    .w-version .ver-chip { font-size:.8em; padding:.1em .6em; border-radius:999px; background:rgba(128,128,128,0.22); white-space:nowrap; }
+    .w-version .ver-chip.ok { background:rgba(62,201,122,0.22); color:#3ec97a; }
+    .w-version .ver-chip.warn { background:rgba(255,180,84,0.25); color:#ffb454; font-weight:700; }
+    .w-version .ver-hint { font-size:.78em; opacity:.85; }
+    .w-version .ver-screens { margin-top:.2em; border-top:1px solid rgba(128,128,128,0.3); padding-top:.4em; }
+    .w-version .ver-sub { font-size:.7em; text-transform:uppercase; letter-spacing:.08em; opacity:.6; margin-bottom:.2em; }
+    .w-version .ver-screen { display:flex; align-items:baseline; gap:.6em; font-size:.85em; }
+    .w-version .ver-screen.off { opacity:.5; }
+    .w-version .ver-sname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .w-dailyquote { align-items:center; justify-content:center; text-align:center; --dq-font: 20px; padding:0 8px; }
     .w-dailyquote .dq-mark { font-size:calc(var(--dq-font) * 2.2); line-height:0.5; color:var(--accent); opacity:0.7; font-family:Georgia,serif; }
     .w-dailyquote .dq-text { font-size:var(--dq-font); font-style:italic; line-height:1.4; margin-top:4px; }

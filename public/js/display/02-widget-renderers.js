@@ -874,7 +874,7 @@ function wireRecipeWidgetTaps() {
 // widgets with the same board name share one board, so two screens show the same drawing). The element is kept across layout redraws while its settings are unchanged
 // (see renderLayout), so a drawing in progress is never wiped by a calendar refresh.
 function wbBoardId(w) { return String((w && w.wbBoard) || ('wb_' + (w && w.id))).replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 40) || 'wb'; }
-function whiteboardFingerprint(w) { return [wbBoardId(w), w.wbToolbar === 'always' ? 'always' : 'touch', w.wbReadOnly ? 1 : 0, w.wbName || ''].join('|'); }
+function whiteboardFingerprint(w) { return [wbBoardId(w), w.wbToolbar === 'always' ? 'always' : 'touch', w.wbReadOnly ? 1 : 0, w.wbCursor ? 1 : 0, w.wbBorder || 'auto', w.wbName || ''].join('|'); }
 function renderWhiteboard(widget) {
   const w = widget || {};
   return `<div class="w-whiteboard" data-wb-board="${escapeHtmlD(wbBoardId(w))}" data-interactive="1"></div>`;
@@ -893,10 +893,18 @@ function initWhiteboards() {
     const have = wbCtls.get(id);
     if (have && have.el === el && have.host === host && host.firstChild) return;            // already drawn, and kept as it is
     if (have) { try { have.ctl.destroy(); } catch (e) { /* gone */ } }
-    const ctl = DrawUI.mount(host, { board: wbBoardId(w), api: wbApi, readOnly: !!w.wbReadOnly, toolbar: w.wbToolbar === 'always' ? 'always' : 'touch', isEditing: () => editModeActive, name: w.wbName || 'Whiteboard' });
+    const ctl = DrawUI.mount(host, { board: wbBoardId(w), api: wbApi, readOnly: !!w.wbReadOnly, toolbar: w.wbToolbar === 'always' ? 'always' : 'touch', cursor: wbShowsPointer(w), border: w.wbBorder === 'on' || w.wbBorder === 'off' ? w.wbBorder : 'auto', isEditing: () => editModeActive, name: w.wbName || 'Whiteboard' });
     wbCtls.set(id, { el, host, ctl });
   });
+  if (typeof syncPointerWant === 'function') syncPointerWant();                          // a board's "Show the mouse pointer" switch changed: the Pi's pointer hider follows at once
   if (!wbTimer && wbCtls.size) wbTimer = setInterval(wbAutoClearTick, 60000);
+}
+// the device's mouse pointer setting changed: every board shows or hides the pointer without being rebuilt
+function wbApplyCursor() {
+  wbCtls.forEach((c, id) => {
+    const w = (state.layout || []).find((x) => String(x.id) === String(id));
+    if (w && c.ctl && c.ctl.setCursor) c.ctl.setCursor(wbShowsPointer(w));
+  });
 }
 function wbRefreshAll() { wbCtls.forEach((c) => { try { c.ctl.refresh(); } catch (e) { /* ignore */ } }); }
 // A board that wipes itself: 'daily' (at HH:MM local, if anything was drawn before that time) or 'hours' (after N hours with no new drawing).
@@ -931,14 +939,17 @@ async function wbAutoClearTick() {
 // few seconds in turn. The newest show wins, whichever kid made it. A kid can open an older drawing on the pad, change it and send it again, which makes it the newest.
 let kdList = [], kdSig = null, kdFetchedAt = 0, kdTimer = null;
 const kdIdx = {}, kdSince = {};
+const kdLast = {};                                       // widget id -> the picture it is showing: the fade-in plays when the picture changes, not on every redraw of the screen
 const kdSeconds = (w) => Math.max(3, Math.min(600, Number(w && w.kdSeconds) || 15));
 function kdCurrent(w) { return kdList.length ? kdList[(kdIdx[w.id] || 0) % kdList.length] : null; }
 function renderKidDrawing(widget) {
   const w = widget || {}, d = kdCurrent(w);
   const fit = w.kdFit === 'cover' ? 'cover' : 'contain';
   const font = Math.max(10, Math.min(60, Number(w.kdFontPx) || 18));
+  const same = !!(d && d.filename && kdLast[w.id] === d.filename);
+  if (d && d.filename) kdLast[w.id] = d.filename;
   const body = d && d.filename
-    ? `<img class="kd-img" src="/uploads/${encodeURIComponent(d.filename)}" alt="" style="object-fit:${fit}">${w.kdCaption === false ? '' : `<div class="kd-cap">${escapeHtmlD(d.label || d.name || '')}</div>`}`
+    ? `<img class="kd-img" src="/uploads/${encodeURIComponent(d.filename)}" alt="" style="object-fit:${fit}${same ? ';animation:none' : ''}">${w.kdCaption === false ? '' : `<div class="kd-cap">${escapeHtmlD(d.label || d.name || '')}</div>`}`
     : `<div class="kd-empty">${escapeHtmlD("Kids' drawings show here")}</div>`;
   return `<div class="w-kiddrawing" style="--kd-font:${font}px">${body}</div>`;
 }
@@ -948,7 +959,7 @@ function kdShow(w) {
   const d = kdCurrent(w);
   if (!el || !d) return;
   const img = el.querySelector('.kd-img'), cap = el.querySelector('.kd-cap');
-  if (img) { img.style.animation = 'none'; void img.offsetWidth; img.style.animation = ''; img.src = '/uploads/' + encodeURIComponent(d.filename); }
+  if (img) { img.style.animation = 'none'; void img.offsetWidth; img.style.animation = ''; img.src = '/uploads/' + encodeURIComponent(d.filename); kdLast[w.id] = d.filename; }
   if (cap) cap.textContent = d.label || d.name || '';
 }
 function kdTick() {
@@ -1021,6 +1032,7 @@ function wireCameraStreams() {
       el.mode = 'webrtc,mse,mjpeg'; // WebRTC first (co-located go2rtc), fall back through MSE to MJPEG
       if (el.video) { el.video.controls = false; el.video.muted = true; if (el.dataset.camPoster) el.video.poster = el.dataset.camPoster; }
       el.src = el.dataset.camSrc;   // setter -> connects
+      if (el.closest('.widget.rot-off')) { try { el.ondisconnect(); } catch {} }   // in a rotation but not on show: stay disconnected until its turn (rotPauseHidden reconnects)
       // oninit() may run a tick later on first paint; make sure controls stay off.
       setTimeout(() => { if (el.video) { el.video.controls = false; el.video.muted = true; if (el.dataset.camPoster && !el.video.poster) el.video.poster = el.dataset.camPoster; } }, 0);
     } catch (e) { console.warn('camera wire failed', e); }
@@ -1320,11 +1332,13 @@ let _fmFetchInFlight = new Set();
 async function fetchFlightmap(force) {
   const widgets = (state.layout || []).filter(w => w && w.type === 'flightmap');
   const keys = new Set();
+  const shownKeys = new Set(widgets.filter(w => !(typeof rotHidden === 'function' && rotHidden(w.id))).map(fmKey));   // a map in a rotation that is not on show is not refreshed
   for (const w of widgets) {
     const key = fmKey(w);
     if (keys.has(key)) continue;
     keys.add(key);
     const cur = state.flightmap[key];
+    if (!force && cur && !shownKeys.has(key)) continue;
     if (!force && cur && Date.now() - cur.at < 8000) continue;
     if (_fmFetchInFlight.has(key)) continue;
     _fmFetchInFlight.add(key);

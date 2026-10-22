@@ -184,7 +184,10 @@ function connectLiveUpdates() {
       fetchFlightmap(true);
     } else if (topic === 'settings') {
       const sRes = await fetch('/api/settings');
+      const rotBefore = typeof browserRotation === 'function' ? browserRotation() : 0;
       state.settings = await sRes.json();
+      try { syncPointerClass(); } catch {}
+      if (typeof browserRotation === 'function' && browserRotation() !== rotBefore) { try { applyRotation(); renderLayout(); } catch {} }   // the screen is now turned by the system (or no longer): the page stops (or starts) turning itself
       // A mirror gets host changes through its sync, which announces only the
       // generic topics (this one included) - never 'photo-settings'. Re-read the
       // photo settings here too so a slideshow switched on/off or re-timed on the

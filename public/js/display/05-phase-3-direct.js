@@ -225,6 +225,7 @@ function enterEditMode() {
     return;
   }
   editModeActive = true;
+  if (typeof applyRotations === 'function') applyRotations();          // rotating widgets: the rotation stands still, one shows with a stepper
   document.body.classList.add('edit-mode-active');
   document.getElementById('edit-mode-trigger').classList.remove('shown');
   const editBar = document.getElementById('edit-mode-bar');
@@ -266,6 +267,7 @@ function enterEditMode() {
 }
 function exitEditMode() {
   editModeActive = false;
+  if (typeof applyRotations === 'function') applyRotations();
   // Originally added because a schedule rule that became due WHILE
   // actively editing used to "catch up" and fire on the very next check
   // after editing ended — which meant a rule due during an editing session
@@ -420,6 +422,7 @@ async function onDragEnd(e) {
     newX = Math.max(0, Math.min(100 - w.w, newX));
     newY = Math.max(0, Math.min(100 - w.h, newY));
     w.x = newX; w.y = newY;
+    if (typeof rotSyncGeometry === 'function') rotSyncGeometry(w);
     // Snap the visual position to the clamped/final value too, in case the
     // drag went past a boundary — otherwise the widget would visually sit
     // somewhere the saved data doesn't actually match.
@@ -477,6 +480,7 @@ const WIDGET_BASIC_SETTINGS = {
   timer:         { fontField: 'timerFontPx',    fontDefault: 32, fontMin: 12, fontMax: 110, fontStep: 1, titleField: 'timerTitle', titlePlaceholder: '(none)' },
   onthisday:     { fontField: 'otdFontPx',      fontDefault: 15, fontMin: 8,  fontMax: 64,  fontStep: 1 },
   dailyquote:    { fontField: 'dqFontPx',       fontDefault: 20, fontMin: 10, fontMax: 80,  fontStep: 1 },
+  version:       { fontField: 'verFontPx',      fontDefault: 20, fontMin: 10, fontMax: 64,  fontStep: 1, titleField: 'verTitle', titlePlaceholder: 'Piazza HQ' },
   sports:        { fontField: 'spFontPx',       fontDefault: 16, fontMin: 8,  fontMax: 64,  fontStep: 1 },
   metar:         { fontField: 'wxFontPx',       fontDefault: 16, fontMin: 8,  fontMax: 64,  fontStep: 1 },
   text:          { fontField: 'textFontPx',     fontDefault: 28, fontMin: 10, fontMax: 480, fontStep: 2 },
@@ -676,6 +680,7 @@ async function onResizeEnd(e) {
   // renderLayout()) — re-run it here too so a just-resized calendar doesn't
   // sit with stale overflow trimming until the next unrelated re-render.
   try { adaptCalendarEventFontSizes(); fitCalendarCells(); } catch {}
+  if (typeof rotSyncGeometry === 'function') { const rw = state.layout.find(x => String(x.id) === String(el.dataset.widgetId)); if (rw) rotSyncGeometry(rw); }
   await saveLayoutNow();
   if (_renderDeferredDuringDrag) { _renderDeferredDuringDrag = false; renderLayout(); }
 }
@@ -928,6 +933,10 @@ function openWidgetSettingsPanel(id) {
     document.getElementById('wep-delete-btn').addEventListener('click', () => {
       if (selectedWidgetId == null) return;
       deleteWidget(selectedWidgetId);
+    });
+    document.getElementById('wep-rotation-btn').addEventListener('click', () => {
+      if (selectedWidgetId == null) return;
+      openRotationPanel(selectedWidgetId);
     });
     document.getElementById('wep-advanced-btn').addEventListener('click', () => {
       if (selectedWidgetId == null) return;

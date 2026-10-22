@@ -276,6 +276,7 @@ function initRadarWidgets() {
             // instead of ever letting one actually finish and display
             // smoothly. Better to hold the current frame a little longer.
             if (frameLoading) return;
+            if (typeof rotHidden === 'function' && rotHidden(id)) return;   // a rotating widget that is not on show stays on its frame
             i = (i + 1) % frames.length;
             showFrame(data.host, frames[i]);
           }, 800);

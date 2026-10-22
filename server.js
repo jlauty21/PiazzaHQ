@@ -3384,6 +3384,9 @@ function requireAuth(req, res, next) {
     { method: 'GET', path: '/api/stocks' },
     // The kiosk's "I drew a frame" signal and the launcher's read of it. Loopback-only inside the handlers.
     { method: 'POST', path: '/api/display/painted' },
+    // The wall display's own pointer requests (loopback-only inside the handlers, src/pointer.js)
+    { method: 'POST', path: '/api/pointer/' },
+    { method: 'GET', path: '/api/version-status' },   // the Version widget
     { method: 'GET', path: '/api/display/state' },
 
     // Widget-data endpoints display.html calls directly (same never-
@@ -4433,6 +4436,8 @@ app.put('/api/settings', (req, res) => {
       if (demoSettingBlocked(k)) delete req.body[k];
     }
   }
+  // The screen's system rotation is set only through /api/system-rotation (a trial that is put back unless kept), never by a plain settings save.
+  delete req.body.system_rotation;
   // The tunnel's on/off, address and run token are owned by the /api/remote-access routes; a generic
   // settings save must not be able to switch a tunnel on, or point it somewhere else.
   for (const k of Object.keys(req.body)) {
@@ -4515,6 +4520,7 @@ app.put('/api/settings', (req, res) => {
   if ('update_schedule_mode' in req.body || 'update_schedule_time' in req.body) {
     scheduleNextDailyUpdateInstall();
   }
+  if ('show_cursor' in req.body) pointer.onSaved();
   // The go2rtc port or the camera on/off switch changing needs the media
   // process rewritten/restarted (or stopped) to match.
   if ('go2rtc_port' in req.body || 'camera_service_autostart' in req.body) {
@@ -4674,6 +4680,8 @@ const LOCAL_ONLY_SETTINGS = new Set([
   'remote_access_allow_control', 'remote_access_notice', // this box's own remote-access choices - never synced
   'remote_events_seen_at', // per-device: when THIS box's owner last looked at the remote sign-in activity
   'remote_access_mode', 'remote_access_address', 'remote_access_tunnel_token', 'remote_access_device_id', // this box's own tunnel - never synced to a mirror
+  'system_rotation',     // per-device: whether THIS screen is turned by the desktop itself (src/system-rotation.js)
+  'show_cursor',         // per-device: whether THIS screen is used with a mouse, so its pointer must stay visible (src/pointer.js)
   'tour_completed',      // per-device: whether THIS screen's spotlight tour has run
   'checklist_done', 'checklist_dismissed',  // per-device: getting-started checklist state
   'sync_interval_min', 'last_sync_at', 'last_sync_status',
@@ -4905,6 +4913,7 @@ app.get('/api/sync/photos', (req, res) => {
 
 // Apply a fetched snapshot into THIS device's database (slave side). Replaces the
 // shared tables and shared settings wholesale; leaves all LOCAL_ONLY_* untouched.
+const syncTopics = require('./src/sync-topics.js')({ crypto });
 const applySyncSnapshot = db.transaction((snap) => {
   // Shared settings (skip anything local). IMPORTANT: a blank/empty value coming from
   // the host must NEVER overwrite a populated local value. This protects credentials
@@ -5097,7 +5106,8 @@ async function syncDataOnly() {
     if (snap && snap.error) throw new Error(snap.error);
     applySyncSnapshot(snap);
     setSyncStatus('ok');
-    broadcastUpdate('settings'); broadcastUpdate('events'); broadcastUpdate('reminders'); broadcastUpdate('photos'); broadcastUpdate('layout'); broadcastUpdate('cameras');
+    // only what really changed is announced (src/sync-topics.js): announcing everything made a mirror redraw its whole screen, and flash every picture on it, after each stroke drawn on a whiteboard
+    for (const topic of syncTopics.changedTopics(snap)) broadcastUpdate(topic);
     // The cameras table may have changed — regenerate this slave's own go2rtc
     // config and (re)start/stop its media process to match.
     try { reloadCameraService(); } catch {}
@@ -5392,6 +5402,8 @@ function slaveWriteGuard(req, res, next) {
                     p.startsWith('/api/auth') ||        // local login/PIN
                     p.startsWith('/api/remote-auth') || // this device's own remote password/sessions — never proxied to the host
                     p.startsWith('/api/display/') ||    // this device's own kiosk browser reporting that it drew (must not be forwarded to the host)
+                    p.startsWith('/api/system-rotation') || // this device's own screen: the host cannot turn it
+                    p.startsWith('/api/pointer/') ||    // this device's own screen asking for its own mouse pointer (the host would refuse it: not its loopback)
                     p.startsWith('/api/remote-access') || // this device's own tunnel - a mirror must answer "use your host" itself, not switch the HOST's tunnel on
                     // This device's OWN license key, not the host's — unlike most proxied
                     // writes, a mirror legitimately holds its own independently-verified
@@ -5427,6 +5439,7 @@ function slaveWriteGuard(req, res, next) {
 async function proxySettingsWrite(req, res, next) {
   const body = req.body || {};
   const localKeys = {}, sharedKeys = {};
+  delete body.system_rotation;                               // only /api/system-rotation sets it
   for (const [k, v] of Object.entries(body)) {
     if (LOCAL_ONLY_SETTINGS.has(k)) localKeys[k] = v; else sharedKeys[k] = v;
   }
@@ -5434,6 +5447,7 @@ async function proxySettingsWrite(req, res, next) {
   if (Object.keys(localKeys).length) {
     const up = db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`);
     for (const [k, v] of Object.entries(localKeys)) up.run(k, String(v));
+    if ('show_cursor' in localKeys) pointer.onSaved();
     broadcastUpdate('settings');
   }
   // Forward shared keys to the host, then sync so they reflect back locally.
@@ -5814,6 +5828,7 @@ async function periodicUpdateCheck() {
     return;
   }
   storeLicenseInfo(info); // license check-in — happens regardless of platform
+  try { versionStatus.noteUpdateInfo(info); } catch {}   // the Version widget shows the newest version this check found
   try {
     if (info && info.updateAvailable && info.downloadUrl) {
       if (IS_CONTAINER) {
@@ -5917,6 +5932,12 @@ function setSetting(key, value) {
 
 // ── Wi-Fi power saving off (Pi only) ──
 // This code lives in src/wifi-power.js. It runs here, after setSetting(); it only starts a timer and adds no routes.
+// The mouse pointer on a Pi kiosk: the setting "Always show the mouse pointer" stops (or starts again) the pointer hider the installer set up. src/pointer.js.
+const pointer = require('./src/pointer.js')({ fs, path, os, execFile, spawn, dataPath, getSetting: (k) => getSetting(k), setSetting: (k, v) => setSetting(k, v), broadcastUpdate: (t) => broadcastUpdate(t), app, log: (m) => console.log(m) });
+// "Rotate this screen at the system level" (Settings): the Pi's desktop turns the screen, so the mouse and touch follow. src/system-rotation.js.
+const systemRotation = require('./src/system-rotation.js')({ app, fs, path, os, execFile, dataPath, getSetting: (k) => getSetting(k), setSetting: (k, v) => setSetting(k, v), broadcastUpdate: (t) => broadcastUpdate(t), IS_CONTAINER, IS_DEMO, log: (m) => console.log(m) });
+// Version status for the Version widget (GET /api/version-status): this device's version, the newest one, and each screen's version. src/version-status.js.
+const versionStatus = require('./src/version-status.js')({ app, db, http, https, URL, APP_VERSION, DEPLOYMENT, IS_CONTAINER, isBetaVersion, isSlave, hostBaseURL, hostHeaders: () => ({ 'x-host-pin': getSetting('app_pin') || '', 'x-mirror-license': getSetting('update_license_key') || '' }), fetchUpdateInfo, SCREEN_ONLINE_MS, log: (m) => console.log(m) });
 require('./src/wifi-power.js')({ fs, path, os, execFile, DEPLOYMENT, IS_DEMO, getSetting: (k) => getSetting(k), setSetting });
 
 // ── The `kiosk` command: repair a stale root-owned copy (Pi only) ──
@@ -7342,6 +7363,8 @@ function startServer(attempt = 0) {
     // widget (a reboot, or a fresh slave that just synced one in). Deferred a
     // beat so it never delays the "running at" line / first requests.
     setTimeout(() => { try { reloadCameraService(); } catch {} }, 2500);
+    try { pointer.startup(); } catch (e) { console.error('[pointer] startup:', e.message); }
+    try { systemRotation.startup(); } catch (e) { console.error('[system-rotation] startup:', e.message); }
     // Flight Map: start the ADS-B poll loop and pre-fetch the basemap if the
     // widget is enabled / in use. Deferred for the same reason as the camera.
     setTimeout(() => {
@@ -7715,6 +7738,69 @@ async function runTvAction(deviceId, action, extra = {}) {
   }
   throw new Error('Unknown TV action.');
 }
+
+// A screen's system rotation (the Devices tab): this device's own screen is handled here; a mirror's is relayed to that mirror's own server, because only the Pi the screen is
+// plugged into can turn it (same reasoning as runTvAction above). The mirror knows the host by the household PIN, sent as x-host-pin like every other host-to-mirror request.
+// sub: '' (status, or set with a body) | '/keep' | '/revert'.
+async function screenRotationCall(deviceId, method, sub, body) {
+  const screen = db.prepare(`SELECT * FROM screens WHERE device_id = ?`).get(deviceId);
+  if (!screen) return { status: 404, json: { error: 'Screen not found.' } };
+  if (deviceId === DEVICE_ID || !screen.is_remote) {
+    if (method === 'GET') return { status: 200, json: await systemRotation.status() };
+    if (sub === '/keep') return { status: 200, json: systemRotation.keep() };
+    if (sub === '/revert') return { status: 200, json: await systemRotation.revert() };
+    const r = await systemRotation.set(String((body && body.rotation) || ''));
+    return r.error ? { status: r.status, json: { error: r.error } } : { status: 200, json: { ok: true, setting: r.setting, pendingSeconds: r.pendingSeconds } };
+  }
+  if (!screen.remote_addr) return { status: 409, json: { error: 'This screen is offline or unreachable.' } };
+  const addr = screen.remote_addr.includes(':') ? screen.remote_addr : `${screen.remote_addr}:${PORT}`;
+  try {
+    const r = await fetchWithTimeout(`http://${addr}/api/system-rotation${sub}`, {
+      method, timeoutMs: 15000,
+      headers: { 'Content-Type': 'application/json', 'x-host-pin': getSetting('app_pin') || '' },
+      body: method === 'GET' ? undefined : JSON.stringify(body || {}),
+    });
+    let json = {}; try { json = await r.json(); } catch { json = {}; }
+    return { status: r.status, json };
+  } catch (e) {
+    return { status: 502, json: { error: 'Could not reach that screen: ' + String(e.message || e).slice(0, 100) } };
+  }
+}
+// The same for a screen's mouse pointer choice ('0' hidden / 'board' only over whiteboards / '1' everywhere): this device's own is set here, a mirror's through that mirror's own
+// settings (show_cursor is a per-device setting there), so the choice is made from the host's Devices tab like the rotation.
+async function screenPointerCall(deviceId, method, body) {
+  const screen = db.prepare(`SELECT * FROM screens WHERE device_id = ?`).get(deviceId);
+  if (!screen) return { status: 404, json: { error: 'Screen not found.' } };
+  if (deviceId === DEVICE_ID || !screen.is_remote) {
+    if (method === 'GET') return { status: 200, json: await pointer.status() };
+    const r = await pointer.setMode(String((body && body.mode) || ''));
+    return r.error ? { status: r.status, json: { error: r.error } } : { status: 200, json: { ok: true, mode: r.mode } };
+  }
+  if (!screen.remote_addr) return { status: 409, json: { error: 'This screen is offline or unreachable.' } };
+  const addr = screen.remote_addr.includes(':') ? screen.remote_addr : `${screen.remote_addr}:${PORT}`;
+  const headers = { 'Content-Type': 'application/json', 'x-host-pin': getSetting('app_pin') || '' };
+  try {
+    if (method === 'GET') {
+      const r = await fetchWithTimeout(`http://${addr}/api/pointer`, { method: 'GET', headers, timeoutMs: 15000 });
+      let json = {}; try { json = await r.json(); } catch { json = {}; }
+      if (r.status === 404) return { status: 409, json: { error: 'This screen needs to be updated before it can be set from here.' } };
+      return { status: r.status, json };
+    }
+    const mode = String((body && body.mode) || '');
+    if (!['0', 'board', '1'].includes(mode)) return { status: 400, json: { error: 'That is not a choice.' } };
+    const r = await fetchWithTimeout(`http://${addr}/api/settings`, { method: 'PUT', headers, body: JSON.stringify({ show_cursor: mode }), timeoutMs: 15000 });
+    let json = {}; try { json = await r.json(); } catch { json = {}; }
+    return r.ok ? { status: 200, json: { ok: true, mode } } : { status: r.status, json: { error: json.error || 'That screen did not accept it.' } };
+  } catch (e) {
+    return { status: 502, json: { error: 'Could not reach that screen: ' + String(e.message || e).slice(0, 100) } };
+  }
+}
+app.get('/api/screens/:deviceId/pointer', async (req, res) => { const r = await screenPointerCall(req.params.deviceId, 'GET', null); res.status(r.status).json(r.json); });
+app.post('/api/screens/:deviceId/pointer', async (req, res) => { const r = await screenPointerCall(req.params.deviceId, 'POST', req.body || {}); res.status(r.status).json(r.json); });
+app.get('/api/screens/:deviceId/system-rotation', async (req, res) => { const r = await screenRotationCall(req.params.deviceId, 'GET', '', null); res.status(r.status).json(r.json); });
+app.post('/api/screens/:deviceId/system-rotation', async (req, res) => { const r = await screenRotationCall(req.params.deviceId, 'POST', '', req.body || {}); res.status(r.status).json(r.json); });
+app.post('/api/screens/:deviceId/system-rotation/keep', async (req, res) => { const r = await screenRotationCall(req.params.deviceId, 'POST', '/keep', {}); res.status(r.status).json(r.json); });
+app.post('/api/screens/:deviceId/system-rotation/revert', async (req, res) => { const r = await screenRotationCall(req.params.deviceId, 'POST', '/revert', {}); res.status(r.status).json(r.json); });
 
 app.post('/api/screens/:deviceId/tv/:action', async (req, res) => {
   try {

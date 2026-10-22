@@ -523,6 +523,7 @@ function renderLayerList() {
 // Persist the current layout to the server immediately (used by manual save and the
 // debounced auto-save). Pushes to the display in real time via the normal layout API.
 async function persistLayoutNow() {
+  if (typeof appRotNormalize === 'function') appRotNormalize();
   const displayParam = currentDisplaySlug ? '?display=' + encodeURIComponent(currentDisplaySlug) : '';
   const attemptedWidgets = layoutWidgets;
   const r = await apiFetch(`/api/layouts/${layoutOrientation}${displayParam}`, {
@@ -559,7 +560,9 @@ function rebuildCanvas() {
   const canvas = $('editor-canvas');
   if (!canvas) return;
   canvas.innerHTML = '';
-  layoutWidgets.forEach(w => canvas.appendChild(makeEditorWidget(w)));
+  // A rotation shows as one box (the member being edited); the others wait behind it. See 11-widget-rotation.js.
+  if (typeof appRotNormalize === 'function') appRotNormalize();
+  layoutWidgets.forEach(w => { if (typeof appRotIsFront !== 'function' || appRotIsFront(w)) canvas.appendChild(makeEditorWidget(w)); });
   autoSaveLayout(); // any change that rebuilds the canvas also pushes to the display
 }
 
@@ -615,7 +618,7 @@ function makeEditorWidget(w) {
   // again steps to the next one underneath (and wraps around). This is how you reach
   // a widget hidden behind a full-screen photo without fighting the z-order.
   el.addEventListener('pointerdown', (e) => {
-    if (e.target.classList.contains('w-del') || e.target.classList.contains('resize-handle')) return;
+    if (e.target.classList.contains('w-del') || e.target.classList.contains('resize-handle') || e.target.closest('.w-rot-badge')) return;
     e.preventDefault();
 
     // Which widgets sit under this point, topmost last.
@@ -652,6 +655,8 @@ function makeEditorWidget(w) {
     window.addEventListener('pointerup', onUp);
   });
 
+  if (typeof appRotBadge === 'function') appRotBadge(el, w);
+
   // Delete
   el.querySelector('.w-del').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -674,6 +679,8 @@ function makeEditorWidget(w) {
 
 function selectWidget(id) {
   selectedId = id;
+  // Picking a member of a rotation brings it to the front of its box.
+  if (layoutWidgets.some(w => w.id === id) && !document.querySelector('.editor-widget[data-id="' + id + '"]')) rebuildCanvas();
   document.querySelectorAll('.editor-widget').forEach(el => {
     el.classList.toggle('selected', el.dataset.id === id);
   });
@@ -698,7 +705,7 @@ function widgetsAtPoint(clientX, clientY) {
   const px = ((clientX - rect.left) / rect.width) * 100;
   const py = ((clientY - rect.top) / rect.height) * 100;
   return layoutWidgets.filter(w =>
-    px >= w.x && px <= w.x + w.w && py >= w.y && py <= w.y + w.h
+    (typeof appRotIsFront !== 'function' || appRotIsFront(w)) && px >= w.x && px <= w.x + w.w && py >= w.y && py <= w.y + w.h
   );
 }
 
@@ -949,6 +956,26 @@ async function drawWidgetSettingsPanel() {
       </div>
       <p style="font-size:11px;color:var(--muted);margin-top:6px">A new inspirational quote each day, with attribution.</p>
     `;
+  } else if (w.type === 'version') {
+    const fontPx = w.verFontPx || 20;
+    _st.typeSpecificHtml = `
+      <div class="settings-row">
+        <label>Heading</label>
+        <input class="form-input" id="ver-title" type="text" maxlength="40" placeholder="Piazza HQ" value="${(w.verTitle || '').replace(/"/g, '&quot;')}">
+      </div>
+      <div class="settings-row">
+        <label>Font Size (px)</label>
+        <div class="range-row">
+          <input type="range" id="ver-font-range" min="10" max="64" step="1" value="${fontPx}">
+          <span class="range-val" id="ver-font-val">${fontPx}px</span>
+        </div>
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show every screen's version</label>
+        <input type="checkbox" id="ver-screens" ${w.verShowScreens ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:6px">Shows the version this device runs and whether an update is waiting. On a Docker install it says when to update the image. On a mirror screen it also shows how the main host is doing.</p>
+    `;
   } else if (w.type === 'sports') {
     drawWidgetSettingsPanel_Build_sports({ w, _st });
   } else if (w.type === 'metar') {
@@ -1059,6 +1086,7 @@ async function drawWidgetSettingsPanel() {
   `;
 
   drawWidgetSettingsPanel_Wire_panelInnerHTML({ panel, w, def, colorHtml, fontHtml, _st });
+  if (typeof wireRotationSection === 'function') wireRotationSection(w);
 
   $('widget-lock-toggle').addEventListener('change', (e) => {
     w.locked = e.target.checked;
@@ -1238,6 +1266,12 @@ async function drawWidgetSettingsPanel() {
   } else if (w.type === 'whiteboard') {
     $('wb-board').addEventListener('change', (e) => { w.wbBoard = e.target.value.trim(); });
     $('wb-toolbar').addEventListener('change', (e) => { w.wbToolbar = e.target.value; });
+    $('wb-border').addEventListener('change', (e) => { if (e.target.value === 'on' || e.target.value === 'off') w.wbBorder = e.target.value; else delete w.wbBorder; });
+    $('wb-bg').addEventListener('change', async (e) => {                                   // the background is kept with the board, so it is saved there at once
+      if (e.target.value === 'custom') return;
+      const r = await apiFetch('/api/boards/' + encodeURIComponent(wbBoardIdApp(w)), { method: 'PUT', body: JSON.stringify({ background: e.target.value }) });
+      if (r && r.error) showToast(r.error);
+    });
     $('wb-auto').addEventListener('change', (e) => {
       w.wbAutoClear = e.target.value;
       $('wb-time-row').style.display = w.wbAutoClear === 'daily' ? '' : 'none';
@@ -1246,6 +1280,7 @@ async function drawWidgetSettingsPanel() {
     $('wb-time').addEventListener('change', (e) => { w.wbAutoTime = e.target.value || '03:00'; });
     $('wb-hours').addEventListener('change', (e) => { w.wbAutoHours = Math.max(1, Math.min(720, parseInt(e.target.value, 10) || 12)); });
     $('wb-ro').addEventListener('change', (e) => { w.wbReadOnly = e.target.checked; });
+    $('wb-cursor').addEventListener('change', (e) => { if (e.target.checked) w.wbCursor = true; else delete w.wbCursor; });
   } else if (w.type === 'recipe') {
     $('rcw-mode').addEventListener('change', (e) => {
       w.rcMode = e.target.value === 'chosen' ? 'chosen' : 'tonight';
@@ -1497,6 +1532,12 @@ async function drawWidgetSettingsPanel() {
       w.otdFontPx = parseInt(e.target.value);
       $('otd-font-val').textContent = w.otdFontPx + 'px';
     });
+  }
+
+  if (w.type === 'version') {
+    $('ver-title').addEventListener('input', (e) => { const v = e.target.value.trim(); if (v) w.verTitle = v; else delete w.verTitle; });
+    $('ver-font-range').addEventListener('input', (e) => { w.verFontPx = parseInt(e.target.value, 10); $('ver-font-val').textContent = w.verFontPx + 'px'; });
+    $('ver-screens').addEventListener('change', (e) => { if (e.target.checked) w.verShowScreens = true; else delete w.verShowScreens; });
   }
 
   if (w.type === 'dailyquote') {

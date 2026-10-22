@@ -216,6 +216,29 @@ function renderSettings_Build_contentMarkup(_c) {
         <input type="checkbox" id="s-force-real-display" ${s.force_real_display==='1'?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
       <p style="font-size:11px;color:var(--muted);margin-top:6px">A legacy safety net — shouldn't normally be needed. Only turn this on if Live Editing (tap-to-edit on the wall display itself) is ever unexpectedly unavailable on a real screen.</p>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Mouse pointer</label>
+        <select class="form-input" id="s-show-cursor" style="width:auto;max-width:60%">
+          <option value="0" ${(s.show_cursor!=='1'&&s.show_cursor!=='board')?'selected':''}>Hidden</option>
+          <option value="board" ${s.show_cursor==='board'?'selected':''}>Only over whiteboards</option>
+          <option value="1" ${s.show_cursor==='1'?'selected':''}>Everywhere</option>
+        </select>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:6px">For a screen you use with a mouse instead of a touchscreen. The display normally hides the pointer, and on a Raspberry Pi a small tool also hides it after the mouse stops. Choose "Only over whiteboards" to show it just on the whiteboards (a crosshair on the drawing), or "Everywhere" to show it all over this screen. It works at once, with no restart, for this screen only, and on the display itself Ctrl+Shift+M steps through the three choices. <span id="s-pointer-status"></span></p>
+      <div class="settings-row" id="s-sysrot-row" style="display:none;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Rotate this screen at the system level</label>
+        <select class="form-input" id="s-sysrot" style="width:auto;max-width:60%">
+          <option value="off">Off</option>
+          <option value="left">Left</option>
+          <option value="right">Right</option>
+          <option value="inverted">Upside down</option>
+        </select>
+      </div>
+      <p id="s-sysrot-help" style="display:none;font-size:11px;color:var(--muted);margin-top:6px">For a Raspberry Pi screen that is turned (on its side or upside down). The Pi's desktop turns the picture itself, so the mouse and touch move the right way, and the app stops turning the page inside the browser for this screen. Pick the way the screen is turned, the same names as Raspberry Pi's Screen Configuration. It tries the change first and puts it back after 20 seconds unless you keep it.</p>
+      <div id="s-sysrot-confirm" style="display:none;margin:8px 0;padding:10px;border:1px solid var(--accent);border-radius:10px">
+        <div style="font-size:13px;margin-bottom:8px">Does the screen look right? It goes back by itself unless you keep this.</div>
+        <div style="display:flex;gap:8px;align-items:center"><button class="icon-btn" id="s-sysrot-keep" type="button">Keep</button><button class="icon-btn" id="s-sysrot-back" type="button">Put it back</button><span id="s-sysrot-sec" style="font-size:13px;color:var(--muted)"></span></div>
+      </div>
       <div class="settings-row">
         <label>Language</label>
         <select class="form-input" id="s-ui-language" translate="no">

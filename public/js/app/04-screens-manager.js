@@ -241,6 +241,7 @@ async function loadScreens() {
   // just the one that changed — otherwise checking a box in one list would
   // silently wipe out whatever was already checked in the other.
   loadScreens_block1021({ list, onlineScreens });
+  if (typeof wireScreenRotation === 'function') wireScreenRotation(list);          // Screen Rotation in each card (12-screen-rotation.js)
 
   list.querySelectorAll('.screen-rename-btn').forEach(btn => {
     btn.addEventListener('click', async () => {

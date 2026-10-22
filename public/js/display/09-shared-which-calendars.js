@@ -563,6 +563,7 @@ const WIDGET_DEFS = [
   { type:'timer', label:'Timer', icon:'⏱️' },
   { type:'onthisday', label:'On This Day', icon:'📜' },
   { type:'dailyquote', label:'Daily Quote', icon:'💬' },
+  { type:'version', label:'Version', icon:'🔖' },
   { type:'sports', label:'Sports Scores', icon:'🏈' },
   { type:'metar', label:'METAR/TAF', icon:'✈️' },
   { type:'decoration', label:'Decoration', icon:'🌿' },
@@ -575,7 +576,7 @@ const WIDGET_CATEGORIES = [
   { id:'calendar', label:'Calendar', icon:'🗓️', types:['minical','upcoming','today','agenda'] },
   { id:'weather',  label:'Weather',  icon:'☀️', types:['weather','weatherCurrent','weatherForecast','weatherHourly','weatherComboForecast','airquality','moonphase','metar','radar'] },
   { id:'tasks',    label:'Tasks',    icon:'✅', types:['tasks','tasksCombined','todo'] },
-  { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel','flightmap'] },
+  { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel','flightmap','version'] },
   { id:'photos',   label:'Photos',   icon:'🖼️', types:['photo'] },
   { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan','recipe','whiteboard','kiddrawing'] },
   { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode','webpage'] },
@@ -625,6 +626,7 @@ function buildNewWidgetDefaults(type) {
   else if (type === 'timer') { w.w = 22; w.h = 18; w.timerTitle = 'Timer'; w.timerMinutes = 5; w.timerFontPx = 32; }
   else if (type === 'onthisday') { w.w = 30; w.h = 40; w.otdFontPx = 15; w.otdMaxItems = 4; }
   else if (type === 'dailyquote') { w.w = 32; w.h = 20; w.dqFontPx = 20; }
+  else if (type === 'version') { w.w = 30; w.h = 16; w.verFontPx = 20; w.verShowScreens = false; }
   else if (type === 'sports') { w.w = 24; w.h = 32; w.spFontPx = 16; }
   else if (type === 'metar') { w.w = 26; w.h = 34; w.wxIcao = ''; w.wxShowTaf = true; w.wxFontPx = 16; }
   else if (type === 'agenda') { w.w = 32; w.h = 55; w.agDays = 7; }

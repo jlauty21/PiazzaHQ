@@ -87,7 +87,10 @@ function initWebPages() {
     const w = (state.layout || []).find((x) => String(x.id) === id) || {};
     const mins = parseInt(w.wpRefreshMin, 10) || 0;
     const old = webPageTimers.get(id); if (old) { clearInterval(old); webPageTimers.delete(id); }
-    if (mins > 0) webPageTimers.set(id, setInterval(() => { try { arm(); frame.src = frame.src; } catch {} }, mins * 60000));
+    if (mins > 0) webPageTimers.set(id, setInterval(() => {
+      if (typeof rotHidden === 'function' && rotHidden(id)) { frame._wpStale = true; return; }   // not on show: reload when it comes back
+      try { arm(); frame.src = frame.src; } catch {}
+    }, mins * 60000));
   });
   for (const [id, t] of webPageTimers) if (!live.has(id)) { clearInterval(t); webPageTimers.delete(id); }
 }

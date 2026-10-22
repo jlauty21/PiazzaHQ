@@ -29,6 +29,7 @@
 // Every change raises the board's version and tells the other screens ('boards'), which fetch it only if the version is new to them. Covered by test/api/whiteboard.test.js.
 module.exports = function registerWhiteboard({ app, express, db, fs, path, crypto, UPLOAD_DIR, broadcastUpdate }) {
   const ID = /^[A-Za-z0-9_-]{1,40}$/;
+  const BG_COLOR_RE = /^color:#[0-9a-f]{6}([0-9a-f]{2})?$/;                                          // any color, with an optional see-through amount: color:#rrggbb or color:#rrggbbaa
   const BACKGROUNDS = ['white', 'chalkboard', 'paper', 'grid', 'lined', 'clear', 'photo'];        // 'photo': a picture behind the drawing (the board's photo)
   const FREE = ['pen', 'marker', 'eraser'];           // p = the path
   const SHAPES = ['line', 'rect', 'ellipse'];         // p = [x1, y1, x2, y2]; f: 1 = filled (rect, ellipse)
@@ -211,7 +212,7 @@ module.exports = function registerWhiteboard({ app, express, db, fs, path, crypt
   app.put('/api/boards/:id', (req, res) => {
     if (!idOk(req, res) || !room(req.params.id, res)) return;
     const bg = (req.body || {}).background;
-    if (!BACKGROUNDS.includes(bg)) return res.status(400).json({ error: 'That is not a background.' });
+    if (!BACKGROUNDS.includes(bg) && !(typeof bg === 'string' && BG_COLOR_RE.test(bg))) return res.status(400).json({ error: 'That is not a background.' });
     const row = rowOf(req.params.id);
     let photo;
     if (bg === 'photo') {

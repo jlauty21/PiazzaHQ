@@ -1,6 +1,58 @@
 function renderSettings_Wire_block1982Etc() {
   { const y = $('copyright-year'); if (y) y.textContent = new Date().getFullYear(); }
 
+  // ── Rotate this screen at the system level (a Raspberry Pi only): shown when this device can turn its own screen ──────
+  (function wireSystemRotation() {
+    const sel = $('s-sysrot'), row = $('s-sysrot-row');
+    if (!sel || !row) return;
+    const conf = $('s-sysrot-confirm'), sec = $('s-sysrot-sec');
+    let tick = null;
+    const hideConfirm = () => { if (tick) clearInterval(tick); tick = null; conf.style.display = 'none'; };
+    const showConfirm = (seconds) => {
+      let left = seconds; conf.style.display = 'block'; sec.textContent = left;
+      if (tick) clearInterval(tick);
+      tick = setInterval(() => { left--; sec.textContent = left > 0 ? left : ''; if (left <= 0) { hideConfirm(); refresh(); } }, 1000);
+    };
+    const refresh = () => apiFetch('/api/system-rotation').then((r) => {
+      if (!r || r.error || !r.supported) return;
+      row.style.display = 'flex'; $('s-sysrot-help').style.display = 'block';
+      sel.value = r.setting || 'off';
+      if (r.pendingSeconds > 0) showConfirm(r.pendingSeconds);
+    }).catch(() => {});
+    sel.addEventListener('change', async () => {
+      const r = await apiFetch('/api/system-rotation', { method: 'POST', body: JSON.stringify({ rotation: sel.value }) });
+      if (r && r.error) { showToast(r.error); refresh(); return; }
+      if (sel.value === 'off') { hideConfirm(); showToast('Screen rotation turned off'); return; }
+      showConfirm(r && r.pendingSeconds ? r.pendingSeconds : 20);
+    });
+    $('s-sysrot-keep').addEventListener('click', async () => { await apiFetch('/api/system-rotation/keep', { method: 'POST', body: '{}' }); hideConfirm(); showToast('Screen rotation kept'); });
+    $('s-sysrot-back').addEventListener('click', async () => { await apiFetch('/api/system-rotation/revert', { method: 'POST', body: '{}' }); hideConfirm(); refresh(); showToast('Screen rotation put back'); });
+    refresh();
+  })();
+
+  // ── Always show the mouse pointer: say what is hiding it on this device ──────
+  (function wirePointerStatus() {
+    const box = $('s-show-cursor'), note = $('s-pointer-status');
+    if (!box || !note) return;
+    const refresh = () => apiFetch('/api/pointer').then((r) => {
+      if (!r || r.error) return;
+      if (r.hider) note.textContent = 'A pointer hider is running on this device.';
+      else if (r.linux && r.canHide) note.textContent = 'The pointer hider is not running on this device right now.';
+      else note.textContent = 'Nothing else is hiding the pointer on this device.';
+    }).catch(() => {});
+    box.dataset.was = box.value;
+    refresh();
+    // live: it takes effect the moment it is switched (no Save, no restart); the main Save button would only send the same value again
+    box.addEventListener('change', async () => {
+      const before = box.dataset.was || '0', now = box.value;
+      const r = await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify({ show_cursor: now }) });
+      if (r && r.error) { box.value = before; showToast(r.error); return; }
+      box.dataset.was = now;
+      showToast(now === '1' ? 'Mouse pointer shown' : now === 'board' ? 'Mouse pointer: only over whiteboards' : 'Mouse pointer hidden');
+      setTimeout(refresh, 1200);
+    });
+  })();
+
   // ── Weather provider: show the API key field only for OpenWeatherMap ─────────
   (function wireWeatherProvider() {
     const sel = $('s-weather-provider'), keyRow = $('s-weather-key-row');

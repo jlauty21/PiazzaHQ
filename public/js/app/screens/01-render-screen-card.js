@@ -370,6 +370,9 @@ function loadScreens_renderScreenCard(_c, s) {
           </div>
         </div>
 
+        ${typeof screenRotationSectionHtml === 'function' ? screenRotationSectionHtml(s) : ''}
+        ${typeof screenPointerSectionHtml === 'function' ? screenPointerSectionHtml(s) : ''}
+
         <div class="acc-section${openScreenSubAccordions.has(s.device_id+':fls')?' open':''}" data-acc="screensub-${s.device_id}-fls">
           <button class="acc-head" data-acc-toggle="screensub-${s.device_id}-fls">
             <span class="acc-ic">🔀</span>

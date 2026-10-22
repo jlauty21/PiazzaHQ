@@ -30,6 +30,15 @@ let currentTab = getDefaultTab();
 // version bump with no entry here just won't trigger a popup for it,
 // silently (not an error), so it's fine to skip purely-internal versions.
 const RELEASE_NOTES = {
+  '1.93.2': [
+    'New: rotating widgets. Put several widgets in the same spot and let them take turns: give each the same rotation group (Live Edit, Rotation), then choose the order, how long each stays, a fade or slide, whether to skip empty ones, and the hours and days it runs. Rotations can also be set to change together.',
+    'New: Whiteboard backgrounds and mouse use. Pick a background color, a transparent background (the screen shows through), or a border for a Whiteboard. Pens pick a readable color on their own, and with a mouse you get shortcuts and a scroll wheel for the pen size.',
+    'New: Raspberry Pi screens with a mouse, and rotation. Choose per screen whether the mouse pointer is hidden, shows only over Whiteboards, or shows everywhere, and turn a screen to the left, right or upside down, all from the Devices tab, with no need to open the mirror’s own app. Ctrl+Shift+M on the screen switches the pointer choice.',
+    'New: Version widget (Info). Shows which version each of your screens is running and whether an update is available.',
+    'Fixed: a mirror screen flashing while someone draws on a Whiteboard.',
+    'Fixed: the mouse pointer staying on screen after a reload or a switch of layout on a Raspberry Pi.',
+    'Other minor security and bug improvements.',
+  ],
   '1.93.1': [
     'New: Whiteboard. A Whiteboard widget for the wall display: draw with a finger or stylus, with a pen, marker, eraser, paint bucket, shapes, text, emoji stickers (or stickers made from your own pictures), any color, and a brush size slider. Tap anything on the board to move, resize, recolor or delete it, pinch to zoom, and undo or redo with two buttons in the corner. Replay a drawing (and save the replay as a video), print it, or keep it. Boards can clear themselves, and the Family Hub has a Board tab to draw on the wall from your phone.',
     'New: kids can draw. The kids page has a Draw pad: draw a picture and send it to the wall, or draw live on a wall whiteboard. Every drawing is kept, so a kid can open an old one, change it and send it again, or pick several to rotate. The new Kids’ Drawing widget shows the newest. In the Chores tab, the Drawing pad card can ask a grown-up to approve each drawing first, and lets you pin one to stay on the wall.',
@@ -657,7 +666,7 @@ function wireScreenSubAccordions() {
   document.querySelectorAll('#screens-list .acc-section[data-acc^="screensub-"]').forEach(sec => {
     const btn = sec.querySelector(':scope > .acc-head');
     if (!btn) return;
-    const [, deviceId, subId] = sec.dataset.acc.match(/^screensub-(.+)-(display|ambient|tv|fls)$/) || [];
+    const [, deviceId, subId] = sec.dataset.acc.match(/^screensub-(.+)-(display|ambient|tv|fls|rot|ptr)$/) || [];
     if (!deviceId) return;
     btn.addEventListener('click', (e) => {
       e.stopPropagation(); // don't let this also trigger the outer Screen Settings toggle
@@ -669,7 +678,7 @@ function wireScreenSubAccordions() {
         otherSec.classList.remove('open');
         if (otherBody) otherBody.style.display = 'none';
         if (otherCaret) otherCaret.textContent = '▸';
-        const [, , otherSubId] = otherSec.dataset.acc.match(/^screensub-(.+)-(display|ambient|tv|fls)$/) || [];
+        const [, , otherSubId] = otherSec.dataset.acc.match(/^screensub-(.+)-(display|ambient|tv|fls|rot|ptr)$/) || [];
         if (otherSubId) openScreenSubAccordions.delete(deviceId + ':' + otherSubId);
       });
       if (!isOpen) {

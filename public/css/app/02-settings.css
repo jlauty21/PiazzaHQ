@@ -274,6 +274,29 @@
       display: flex; align-items: center; justify-content: center;
       pointer-events: none;
     }
+    .editor-widget .w-rot-badge {
+      position: absolute; left: 50%; bottom: 3px; transform: translateX(-50%); z-index: 3;
+      display: flex; align-items: center; gap: 2px; padding: 1px 3px;
+      background: rgba(0,0,0,0.65); border-radius: 10px; color: #fff; font-size: 10px; white-space: nowrap;
+    }
+    .editor-widget .w-rot-badge button {
+      background: none; border: none; color: #fff; font-size: 14px; line-height: 1; padding: 2px 6px; cursor: pointer;
+    }
+    .editor-widget .w-rot-count { padding: 0 2px; }
+    #rot-section .rot-hint { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+    #rot-section .rot-sub { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 10px 0 4px; }
+    #rot-section .rot-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0; font-size: 13px; }
+    #rot-section .rot-line .form-input { max-width: 55%; }
+    #rot-section .rot-check { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0; font-size: 13px; }
+    #rot-section .rot-member { display: flex; align-items: center; gap: 4px; margin: 2px 0; }
+    #rot-section .rot-member.current .rot-member-name { font-weight: 700; border-color: var(--accent); }
+    #rot-section .rot-member-name { flex: 1; text-align: left; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; color: inherit; font-size: 13px; cursor: pointer; }
+    #rot-section .rot-up, #rot-section .rot-down { background: var(--card); border: 1px solid var(--border); border-radius: 8px; color: inherit; padding: 6px 9px; cursor: pointer; }
+    #rot-section .rot-up:disabled, #rot-section .rot-down:disabled { opacity: .35; cursor: default; }
+    #rot-section .rot-days { display: flex; gap: 4px; flex-wrap: wrap; margin: 2px 0 6px; }
+    #rot-section .rot-day { background: var(--card); border: 1px solid var(--border); border-radius: 8px; color: inherit; padding: 5px 8px; font-size: 12px; cursor: pointer; }
+    #rot-section .rot-day.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+    #rot-section .rot-out { width: 100%; margin: 6px 0; font-size: 12px; }
     .resize-handle {
       position: absolute;
       width: 18px; height: 18px;

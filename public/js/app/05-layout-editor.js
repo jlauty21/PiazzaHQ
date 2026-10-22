@@ -119,6 +119,7 @@ const WIDGET_DEFS = [
   { type:'timer', label:'Timer', icon:'⏱️' },
   { type:'onthisday', label:'On This Day', icon:'📜' },
   { type:'dailyquote', label:'Daily Quote', icon:'💬' },
+  { type:'version', label:'Version', icon:'🔖' },
   { type:'sports', label:'Sports Scores', icon:'🏈' },
   { type:'metar', label:'METAR/TAF', icon:'✈️' },
   { type:'decoration', label:'Decoration', icon:'🌿' },
@@ -134,7 +135,7 @@ const WIDGET_CATEGORIES = [
   { id:'calendar', label:'Calendar', icon:'🗓️', types:['minical','upcoming','today','agenda'] },
   { id:'weather',  label:'Weather',  icon:'☀️', types:['weather','weatherCurrent','weatherForecast','weatherHourly','weatherComboForecast','airquality','moonphase','metar','radar'] },
   { id:'tasks',    label:'Tasks',    icon:'✅', types:['tasks','tasksCombined','todo'] },
-  { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel','flightmap'] },
+  { id:'info',     label:'Info',     icon:'📰', types:['news','stocks','text','onthisday','dailyquote','sports','travel','flightmap','version'] },
   { id:'photos',   label:'Photos',   icon:'🖼️', types:['photo'] },
   { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan','recipe','whiteboard','kiddrawing'] },
   { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode','webpage','layoutswitcher'] },
@@ -670,134 +671,146 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
   $('preview-res-w').addEventListener('input', updateLivePreview);
   $('preview-res-h').addEventListener('input', updateLivePreview);
 
+  // Build a new widget of a given catalog type with its default size and settings.
+  function newWidgetOfType(def) {
+    const newWidget = { id: nextId(), type: def.type, x: 10, y: 10, w: 30, h: 20 };
+    if (def.type === 'minical') {
+      newWidget.w = 60; newWidget.h = 50; newWidget.calView = 'month';
+    }
+    if (def.type === 'datetime') {
+      newWidget.w = 34; newWidget.h = 30; newWidget.dtStyle = 'classic'; newWidget.dtFontPx = 70;
+      newWidget.dtShowSeconds = true; newWidget.dtShowDate = true; newWidget.dtShowTemp = true;
+    }
+    if (def.type === 'reminders') {
+      newWidget.w = 30; newWidget.h = 20; newWidget.remStyle = 'banner'; newWidget.remFontPx = 22;
+    }
+    if (def.type === 'messageboard') {
+      newWidget.w = 34; newWidget.h = 26; newWidget.mbFontPx = 14;
+    }
+    if (def.type === 'mealplan') {
+      newWidget.w = 30; newWidget.h = 34; newWidget.mpDays = 7; newWidget.mpFontPx = 15;
+    }
+    if (def.type === 'kiddrawing') {
+      newWidget.w = 30; newWidget.h = 40; newWidget.kdCaption = true; newWidget.kdFit = 'contain'; newWidget.kdSeconds = 15;
+    }
+    if (def.type === 'whiteboard') {
+      newWidget.w = 40; newWidget.h = 50; newWidget.wbToolbar = 'touch';
+    }
+    if (def.type === 'recipe') {
+      newWidget.w = 30; newWidget.h = 44; newWidget.rcMode = 'tonight'; newWidget.rcSlot = 'dinner'; newWidget.rcShow = 'ingredients'; newWidget.rcFontPx = 15;
+    }
+    if (def.type === 'camera') {
+      newWidget.w = 44; newWidget.h = 32; newWidget.camFit = 'contain'; newWidget.camShowTitle = true;
+    }
+    if (def.type === 'flightmap') {
+      newWidget.w = 46; newWidget.h = 38; newWidget.fmSubject = 'filter'; newWidget.fmFilter = { mil: true };
+      newWidget.fmFollow = false; newWidget.fmTrailMin = 30; newWidget.fmShowData = true; newWidget.fmLabels = true; newWidget.fmFontPx = 13;
+    }
+    if (def.type === 'tasks') {
+      newWidget.w = 30; newWidget.h = 40; newWidget.projectId = null; newWidget.projectName = 'Tasks';
+    }
+    if (def.type === 'news') {
+      newWidget.w = 32; newWidget.h = 45;
+    }
+    if (def.type === 'stocks') {
+      newWidget.w = 28; newWidget.h = 30; newWidget.stockTickers = [];
+    }
+    if (def.type === 'weatherCurrent') {
+      newWidget.w = 24; newWidget.h = 22; newWidget.wxForecastDays = 0;
+    }
+    if (def.type === 'weatherForecast') {
+      newWidget.w = 40; newWidget.h = 18; newWidget.wxForecastDays = 5;
+    }
+    if (def.type === 'weatherHourly') {
+      newWidget.w = 42; newWidget.h = 20; newWidget.wxHourlyStyle = 'hourly'; newWidget.wxHours = 6;
+    }
+    if (def.type === 'weatherComboForecast') {
+      newWidget.w = 42; newWidget.h = 36; newWidget.wxComboStyle = 'stacked';
+    }
+    if (def.type === 'chorechart') {
+      newWidget.w = 50; newWidget.h = 45; newWidget.choreTitle = 'Daily Chore Chart'; newWidget.choreShowDone = true; newWidget.choreShowBonus = false; newWidget.choreFontPx = 15;
+    }
+    if (def.type === 'countdown') {
+      newWidget.w = 24; newWidget.h = 22; newWidget.cdTitle = 'Countdown'; newWidget.cdFontPx = 22; newWidget.cdRepeatYearly = false;
+    }
+    if (def.type === 'moonphase') {
+      newWidget.w = 22; newWidget.h = 22; newWidget.mpFontPx = 20; newWidget.mpShowIllum = true; newWidget.mpShowAge = false;
+    }
+    if (def.type === 'airquality') {
+      newWidget.w = 26; newWidget.h = 32; newWidget.aqFontPx = 18; newWidget.aqShowUV = true; newWidget.aqShowPollen = true;
+    }
+    if (def.type === 'radar') {
+      newWidget.w = 30; newWidget.h = 30; newWidget.radarTitle = 'Radar'; newWidget.radarFontPx = 16;
+      newWidget.radarLat = ''; newWidget.radarLon = ''; newWidget.radarZoom = 6;
+      newWidget.radarAnimate = false; newWidget.radarFrameCount = 6; newWidget.radarOpacity = 80; newWidget.radarShowTime = true;
+    }
+    if (def.type === 'webpage') {
+      newWidget.w = 30; newWidget.h = 40; newWidget.wpUrl = ''; newWidget.wpTitle = ''; newWidget.wpRefreshMin = 0; newWidget.wpFontPx = 14;
+    }
+    if (def.type === 'qrcode') {
+      newWidget.w = 20; newWidget.h = 24; newWidget.qrPreset = 'text'; newWidget.qrContent = ''; newWidget.qrTitle = ''; newWidget.qrFontPx = 14;
+    }
+    if (def.type === 'timer') {
+      newWidget.w = 22; newWidget.h = 18; newWidget.timerTitle = 'Timer'; newWidget.timerMinutes = 5; newWidget.timerFontPx = 32;
+    }
+    if (def.type === 'layoutswitcher') {
+      newWidget.w = 30; newWidget.h = 12; newWidget.switcherTargets = []; newWidget.switcherSchedule = []; newWidget.switcherFontPx = 15;
+    }
+    if (def.type === 'onthisday') {
+      newWidget.w = 30; newWidget.h = 40; newWidget.otdFontPx = 15; newWidget.otdMaxItems = 4;
+    }
+    if (def.type === 'dailyquote') {
+      newWidget.w = 32; newWidget.h = 20; newWidget.dqFontPx = 20;
+    }
+    if (def.type === 'version') {
+      newWidget.w = 30; newWidget.h = 16; newWidget.verFontPx = 20; newWidget.verShowScreens = false;
+    }
+    if (def.type === 'sports') {
+      newWidget.w = 24; newWidget.h = 32; newWidget.spFontPx = 16;
+    }
+    if (def.type === 'metar') {
+      newWidget.w = 26; newWidget.h = 34; newWidget.wxIcao = ''; newWidget.wxShowTaf = true; newWidget.wxFontPx = 16;
+    }
+    if (def.type === 'agenda') {
+      newWidget.w = 32; newWidget.h = 55; newWidget.agDays = 7;
+    }
+    if (def.type === 'tasksCombined') {
+      newWidget.w = 32; newWidget.h = 55; newWidget.projectIds = []; newWidget.projectNames = {};
+    }
+    if (def.type === 'text') {
+      newWidget.w = 30; newWidget.h = 12;
+      newWidget.textContent = 'Your text';
+      newWidget.textPreset = 'plain'; newWidget.textFontPx = 28; newWidget.textWeight = 'normal'; newWidget.textAlign = 'left'; newWidget.textFontFamily = 'Inter';
+    }
+    if (def.type === 'decoration') {
+      newWidget.w = 14; newWidget.h = 14;
+      newWidget.decorEmoji = '🌿'; newWidget.decorFontPx = 60; newWidget.decorOpacity = 100; newWidget.decorRotation = 0;
+    }
+    if (def.type === 'entitystatus') {
+      newWidget.w = 20; newWidget.h = 16;
+      newWidget.haEntityId = ''; newWidget.haLabel = ''; newWidget.haLabelAutoFor = ''; newWidget.haFontPx = 20; newWidget.haShowUnit = true; newWidget.haShowSparkline = true;
+    }
+    if (def.type === 'smarthomeDashboard') {
+      newWidget.w = 40; newWidget.h = 40;
+      newWidget.haEntityIds = []; newWidget.haAreaIds = []; newWidget.haComboGroups = []; newWidget.haDashTitle = ''; newWidget.haDashFontPx = 16; newWidget.haGroupByRoom = true; newWidget.haDashView = 'grid';
+    }
+    if (def.type === 'groupcontrol') {
+      newWidget.w = 20; newWidget.h = 16;
+      newWidget.gcTitle = ''; newWidget.gcEntityIds = []; newWidget.gcAreaIds = []; newWidget.gcFontPx = 20;
+    }
+    return newWidget;
+  }
+  window.newWidgetOfType = newWidgetOfType;
+
   // Palette — add widget
   document.querySelectorAll('.palette-item').forEach(item => {
     item.addEventListener('click', () => {
       const def = WIDGET_DEFS.find(d => d.type === item.dataset.type);
-      const newWidget = { id: nextId(), type: def.type, x: 10, y: 10, w: 30, h: 20 };
-      if (def.type === 'minical') {
-        newWidget.w = 60; newWidget.h = 50; newWidget.calView = 'month';
-      }
-      if (def.type === 'datetime') {
-        newWidget.w = 34; newWidget.h = 30; newWidget.dtStyle = 'classic'; newWidget.dtFontPx = 70;
-        newWidget.dtShowSeconds = true; newWidget.dtShowDate = true; newWidget.dtShowTemp = true;
-      }
-      if (def.type === 'reminders') {
-        newWidget.w = 30; newWidget.h = 20; newWidget.remStyle = 'banner'; newWidget.remFontPx = 22;
-      }
-      if (def.type === 'messageboard') {
-        newWidget.w = 34; newWidget.h = 26; newWidget.mbFontPx = 14;
-      }
-      if (def.type === 'mealplan') {
-        newWidget.w = 30; newWidget.h = 34; newWidget.mpDays = 7; newWidget.mpFontPx = 15;
-      }
-      if (def.type === 'kiddrawing') {
-        newWidget.w = 30; newWidget.h = 40; newWidget.kdCaption = true; newWidget.kdFit = 'contain'; newWidget.kdSeconds = 15;
-      }
-      if (def.type === 'whiteboard') {
-        newWidget.w = 40; newWidget.h = 50; newWidget.wbToolbar = 'touch';
-      }
-      if (def.type === 'recipe') {
-        newWidget.w = 30; newWidget.h = 44; newWidget.rcMode = 'tonight'; newWidget.rcSlot = 'dinner'; newWidget.rcShow = 'ingredients'; newWidget.rcFontPx = 15;
-      }
-      if (def.type === 'camera') {
-        newWidget.w = 44; newWidget.h = 32; newWidget.camFit = 'contain'; newWidget.camShowTitle = true;
-      }
-      if (def.type === 'flightmap') {
-        newWidget.w = 46; newWidget.h = 38; newWidget.fmSubject = 'filter'; newWidget.fmFilter = { mil: true };
-        newWidget.fmFollow = false; newWidget.fmTrailMin = 30; newWidget.fmShowData = true; newWidget.fmLabels = true; newWidget.fmFontPx = 13;
-      }
-      if (def.type === 'tasks') {
-        newWidget.w = 30; newWidget.h = 40; newWidget.projectId = null; newWidget.projectName = 'Tasks';
-      }
-      if (def.type === 'news') {
-        newWidget.w = 32; newWidget.h = 45;
-      }
-      if (def.type === 'stocks') {
-        newWidget.w = 28; newWidget.h = 30; newWidget.stockTickers = [];
-      }
-      if (def.type === 'weatherCurrent') {
-        newWidget.w = 24; newWidget.h = 22; newWidget.wxForecastDays = 0;
-      }
-      if (def.type === 'weatherForecast') {
-        newWidget.w = 40; newWidget.h = 18; newWidget.wxForecastDays = 5;
-      }
-      if (def.type === 'weatherHourly') {
-        newWidget.w = 42; newWidget.h = 20; newWidget.wxHourlyStyle = 'hourly'; newWidget.wxHours = 6;
-      }
-      if (def.type === 'weatherComboForecast') {
-        newWidget.w = 42; newWidget.h = 36; newWidget.wxComboStyle = 'stacked';
-      }
-      if (def.type === 'chorechart') {
-        newWidget.w = 50; newWidget.h = 45; newWidget.choreTitle = 'Daily Chore Chart'; newWidget.choreShowDone = true; newWidget.choreShowBonus = false; newWidget.choreFontPx = 15;
-      }
-      if (def.type === 'countdown') {
-        newWidget.w = 24; newWidget.h = 22; newWidget.cdTitle = 'Countdown'; newWidget.cdFontPx = 22; newWidget.cdRepeatYearly = false;
-      }
-      if (def.type === 'moonphase') {
-        newWidget.w = 22; newWidget.h = 22; newWidget.mpFontPx = 20; newWidget.mpShowIllum = true; newWidget.mpShowAge = false;
-      }
-      if (def.type === 'airquality') {
-        newWidget.w = 26; newWidget.h = 32; newWidget.aqFontPx = 18; newWidget.aqShowUV = true; newWidget.aqShowPollen = true;
-      }
-      if (def.type === 'radar') {
-        newWidget.w = 30; newWidget.h = 30; newWidget.radarTitle = 'Radar'; newWidget.radarFontPx = 16;
-        newWidget.radarLat = ''; newWidget.radarLon = ''; newWidget.radarZoom = 6;
-        newWidget.radarAnimate = false; newWidget.radarFrameCount = 6; newWidget.radarOpacity = 80; newWidget.radarShowTime = true;
-      }
-      if (def.type === 'webpage') {
-        newWidget.w = 30; newWidget.h = 40; newWidget.wpUrl = ''; newWidget.wpTitle = ''; newWidget.wpRefreshMin = 0; newWidget.wpFontPx = 14;
-      }
-      if (def.type === 'qrcode') {
-        newWidget.w = 20; newWidget.h = 24; newWidget.qrPreset = 'text'; newWidget.qrContent = ''; newWidget.qrTitle = ''; newWidget.qrFontPx = 14;
-      }
-      if (def.type === 'timer') {
-        newWidget.w = 22; newWidget.h = 18; newWidget.timerTitle = 'Timer'; newWidget.timerMinutes = 5; newWidget.timerFontPx = 32;
-      }
-      if (def.type === 'layoutswitcher') {
-        newWidget.w = 30; newWidget.h = 12; newWidget.switcherTargets = []; newWidget.switcherSchedule = []; newWidget.switcherFontPx = 15;
-      }
-      if (def.type === 'onthisday') {
-        newWidget.w = 30; newWidget.h = 40; newWidget.otdFontPx = 15; newWidget.otdMaxItems = 4;
-      }
-      if (def.type === 'dailyquote') {
-        newWidget.w = 32; newWidget.h = 20; newWidget.dqFontPx = 20;
-      }
-      if (def.type === 'sports') {
-        newWidget.w = 24; newWidget.h = 32; newWidget.spFontPx = 16;
-      }
-      if (def.type === 'metar') {
-        newWidget.w = 26; newWidget.h = 34; newWidget.wxIcao = ''; newWidget.wxShowTaf = true; newWidget.wxFontPx = 16;
-      }
-      if (def.type === 'agenda') {
-        newWidget.w = 32; newWidget.h = 55; newWidget.agDays = 7;
-      }
-      if (def.type === 'tasksCombined') {
-        newWidget.w = 32; newWidget.h = 55; newWidget.projectIds = []; newWidget.projectNames = {};
-      }
-      if (def.type === 'text') {
-        newWidget.w = 30; newWidget.h = 12;
-        newWidget.textContent = 'Your text';
-        newWidget.textPreset = 'plain'; newWidget.textFontPx = 28; newWidget.textWeight = 'normal'; newWidget.textAlign = 'left'; newWidget.textFontFamily = 'Inter';
-      }
-      if (def.type === 'decoration') {
-        newWidget.w = 14; newWidget.h = 14;
-        newWidget.decorEmoji = '🌿'; newWidget.decorFontPx = 60; newWidget.decorOpacity = 100; newWidget.decorRotation = 0;
-      }
-      if (def.type === 'entitystatus') {
-        newWidget.w = 20; newWidget.h = 16;
-        newWidget.haEntityId = ''; newWidget.haLabel = ''; newWidget.haLabelAutoFor = ''; newWidget.haFontPx = 20; newWidget.haShowUnit = true; newWidget.haShowSparkline = true;
-      }
-      if (def.type === 'smarthomeDashboard') {
-        newWidget.w = 40; newWidget.h = 40;
-        newWidget.haEntityIds = []; newWidget.haAreaIds = []; newWidget.haComboGroups = []; newWidget.haDashTitle = ''; newWidget.haDashFontPx = 16; newWidget.haGroupByRoom = true; newWidget.haDashView = 'grid';
-      }
-      if (def.type === 'groupcontrol') {
-        newWidget.w = 20; newWidget.h = 16;
-        newWidget.gcTitle = ''; newWidget.gcEntityIds = []; newWidget.gcAreaIds = []; newWidget.gcFontPx = 20;
-      }
+      const newWidget = newWidgetOfType(def);
       snapshotLayout();
       layoutWidgets.push(newWidget);
+      // A new Whiteboard starts as "match the theme" (transparent, with a border); the board is kept on the server, so say so there. Existing boards keep their background.
+      if (def.type === 'whiteboard' && typeof wbBoardIdApp === 'function') apiFetch('/api/boards/' + encodeURIComponent(wbBoardIdApp(newWidget)), { method: 'PUT', body: JSON.stringify({ background: 'clear' }) }).catch(() => {});
       selectedId = newWidget.id;
       rebuildCanvas();
       renderLayerList();

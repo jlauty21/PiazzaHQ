@@ -15,6 +15,24 @@
 (function () {
   'use strict';
   const BACKGROUNDS = ['white', 'chalkboard', 'paper', 'grid', 'lined', 'clear'];     // what the background button cycles through (a picture has its own button)
+  // A background can also be any color, with an optional see-through amount: 'color:#rrggbb' or 'color:#rrggbbaa' (aa = how solid it is).
+  const BG_COLOR_RE = /^color:#([0-9a-f]{6})([0-9a-f]{2})?$/;
+  const BG_SWATCHES = ['#000000', '#1b1b1f', '#22332c', '#0f2a3d', '#3b1d5a', '#7a1f1f', '#b45309', '#14532d', '#ffffff', '#f6f0df', '#fde68a', '#fbcfe8', '#bfdbfe', '#d9f99d'];
+  const BG_BASE = { white: '#ffffff', chalkboard: '#22332c', paper: '#f6f0df', lined: '#fffef6' };
+  const isBackground = (bg) => bg === 'photo' || BACKGROUNDS.includes(bg) || BG_COLOR_RE.test(bg || '');
+  function bgRgba(bg) {
+    const m = BG_COLOR_RE.exec(bg || '');
+    if (!m) return null;
+    const h = m[1];
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16), m[2] ? parseInt(m[2], 16) / 255 : 1];
+  }
+  const bgCss = (bg) => { const c = bgRgba(bg); return c ? 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + Math.round(c[3] * 1000) / 1000 + ')' : ''; };
+  const bgHex = (bg) => { const m = BG_COLOR_RE.exec(bg || ''); return m ? '#' + m[1] : BG_BASE[bg] || ''; };          // the plain color of a background that is one
+  const bgSolid = (bg) => { const m = BG_COLOR_RE.exec(bg || ''); return m && m[2] ? parseInt(m[2], 16) / 255 : 1; };      // 1 = solid, 0 = see-through
+  const makeBg = (hex, solid) => 'color:' + hex.toLowerCase() + (solid < 0.999 ? Math.round(Math.max(0, Math.min(1, solid)) * 255).toString(16).padStart(2, '0') : '');
+  const lum = (r, g, b) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+  const lumHex = (hex) => { const h = (hex || '').replace('#', ''); return h.length === 6 ? lum(parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)) : null; };
+  const contrastOf = (a, b) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
   const COLORS = ['#111111', '#e53935', '#fb8c00', '#fdd835', '#43a047', '#1e88e5', '#8e24aa', '#ffffff'];
   const SIZE_MIN = 0.002, SIZE_MAX = 0.06;               // the size slider: a pen width as a fraction of the board's width (thin hairline to a fat brush), spaced like a camera zoom
   const sizeAt = (pos) => SIZE_MIN * Math.pow(SIZE_MAX / SIZE_MIN, Math.min(100, Math.max(0, pos)) / 100);
@@ -72,6 +90,10 @@
   .dw.bg-grid { background-color: #ffffff; background-image: linear-gradient(rgba(0,0,0,0.13) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.13) 1px, transparent 1px); background-size: 28px 28px; }
   .dw.bg-lined { background-color: #fffef6; background-image: linear-gradient(transparent 31px, rgba(60,110,200,0.28) 32px); background-size: 100% 32px; }
   .dw.bg-photo { background-color: #ffffff; background-size: cover; background-position: center; background-repeat: no-repeat; }
+  .dw-bar .bgp { border-color: rgba(255,255,255,0.45); } .dw-bar .bgp.on { border-color: #8cc0ff; }
+  .dw-bar input[type=color] { width: 42px; min-width: 42px; height: 34px; padding: 0; border: 0; border-radius: 8px; background: none; cursor: pointer; }
+  .dw-bar input.bgalpha { width: 110px; height: 34px; touch-action: none; accent-color: #8cc0ff; cursor: pointer; }
+  .dw.dw-bordered { box-shadow: inset 0 0 0 2px rgba(128,128,128,0.55); box-shadow: inset 0 0 0 2px color-mix(in srgb, currentColor 45%, transparent); }
   .dw-view > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
   .dw.ro .dw-view > canvas { pointer-events: none; }
   .dw.big .dw-bar { padding: 8px; gap: 8px; } .dw.big .dw-bar button { min-width: 56px; height: 56px; font-size: 26px; border-radius: 14px; } .dw.big .dw-bar .sw { width: 46px; min-width: 46px; height: 46px; }
@@ -261,7 +283,7 @@
   }
   // The background of a board painted into a canvas (the same look as the CSS ones). scale: how many canvas pixels one CSS pixel of the board is.
   function paintBase(g, background, img, W, H, scale) {
-    g.fillStyle = background === 'chalkboard' ? '#22332c' : background === 'paper' ? '#f6f0df' : background === 'lined' ? '#fffef6' : '#ffffff';
+    g.fillStyle = bgCss(background) || (background === 'chalkboard' ? '#22332c' : background === 'paper' ? '#f6f0df' : background === 'lined' ? '#fffef6' : '#ffffff');
     g.fillRect(0, 0, W, H);
     if (background === 'photo' && img && img.width) {
       const k = Math.max(W / img.width, H / img.height), w = img.width * k, h = img.height * k;
@@ -297,7 +319,11 @@
     const photoUrl = () => (S.photo ? '/uploads/' + encodeURIComponent(S.photo) : '');
 
     root.innerHTML = '';
-    const box = document.createElement('div'); box.className = 'dw bg-white' + (S.ro ? ' ro' : '') + (opts.big ? ' big' : '');
+    // A board that shows the theme through it (Transparent, or a see-through color) has no edge of its own, so it gets a thin border: always ('on'), never ('off'), or only then ('auto', the default).
+    const seeThrough = () => S.background === 'clear' || (BG_COLOR_RE.test(S.background) && bgSolid(S.background) < 0.999);
+    const bordered = () => opts.border === 'on' || (opts.border !== 'off' && seeThrough());
+    const boxClass = () => 'dw bg-' + (BG_COLOR_RE.test(S.background) ? 'color' : S.background) + (S.ro ? ' ro' : '') + (opts.big ? ' big' : '') + (opts.cursor ? ' dw-cur' : '') + (bordered() ? ' dw-bordered' : '');
+    const box = document.createElement('div'); box.className = boxClass();
     const main = document.createElement('canvas'), live = document.createElement('canvas');
     live.style.pointerEvents = 'none';
     const note = document.createElement('div'); note.className = 'dw-note';
@@ -340,11 +366,12 @@
     }
     function setBackground(bg, photo) {
       if (photo !== undefined && photo !== S.photo) { S.photo = photo || ''; S.photoImg = null; }
-      S.background = bg === 'photo' || BACKGROUNDS.includes(bg) ? bg : 'white';
+      S.background = isBackground(bg) ? bg : 'white';
       if (S.background === 'photo' && !S.photo) S.background = 'white';
-      box.className = 'dw bg-' + S.background + (S.ro ? ' ro' : '') + (opts.big ? ' big' : '');
+      box.className = boxClass();
       box.style.backgroundImage = S.background === 'photo' ? 'url("' + photoUrl() + '")' : '';
-      view.className = 'dw-view bg-' + S.background; view.style.backgroundImage = box.style.backgroundImage;
+      box.style.backgroundColor = bgCss(S.background);
+      view.className = 'dw-view bg-' + (BG_COLOR_RE.test(S.background) ? 'color' : S.background); view.style.backgroundImage = box.style.backgroundImage; view.style.backgroundColor = box.style.backgroundColor;
     }
 
     // ── the server ───────────────────────────────────────────────────────────────────────────────────────
@@ -355,7 +382,7 @@
       if (S.drawing || S.replaying || S.saving > 0 || S.queued > 0 || b.version < S.version) return false;        // never pull the picture out from under a finger or a replay, or step back to an older one
       if (b.version === S.version && S.strokes.length === b.strokes.length && b.background === S.background && (b.photo || '') === S.photo && (b.ink || '') === S.ink) return false;
       if ((b.ink || '') !== S.ink) { S.ink = b.ink || ''; S.inkImg = S.ink ? await loadImage('/uploads/' + encodeURIComponent(S.ink)) : null; if (S.destroyed) return false; }
-      S.strokes = b.strokes; S.version = b.version; setBackground(b.background, b.photo || ''); S.ops = []; S.redoOps = []; S.sel = null;
+      S.strokes = b.strokes; S.version = b.version; setBackground(b.background, b.photo || ''); autoInk(false); S.ops = []; S.redoOps = []; S.sel = null;
       fit(); redraw(); syncBar();
       return true;
     }
@@ -387,12 +414,13 @@
     }
     function applyPrefs(p) {
       p = p || {};
-      if (HEXRE.test(p.color || '')) S.color = p.color.toLowerCase();
+      if (HEXRE.test(p.color || '')) { S.color = p.color.toLowerCase(); S.userColor = !['#111111', '#ffffff'].includes(S.color); }
       if (Number(p.size) >= SIZE_MIN && Number(p.size) <= SIZE_MAX) S.size = Number(p.size);
       if (PREF_TOOLS.includes(p.tool)) { S.tool = p.tool; lastTool = p.tool; }
       if (typeof p.stamp === 'string' && p.stamp) S.stamp = p.stamp;
       if (SHAPES.includes(p.shape)) S.shape = p.shape;
       if (typeof p.fillShape === 'boolean') S.fillShape = p.fillShape;
+      autoInk(false);
       prefsSig = JSON.stringify(prefsNow()); prefsReady = true; syncBar();
     }
     const width = () => S.size;
@@ -462,7 +490,16 @@
     // Safari on an iPhone or iPad also has its own pinch for the whole page: on the board, the pinch is the board's
     for (const g of ['gesturestart', 'gesturechange', 'gestureend']) box.addEventListener(g, (e) => e.preventDefault());
     if (!opts.readOnly) {
-      box.addEventListener('wheel', (e) => { if (!(e.ctrlKey || e.metaKey)) return; e.preventDefault(); zoomAt(e.clientX, e.clientY, S.k * Math.exp(-e.deltaY * 0.01)); }, { passive: false });
+      box.addEventListener('wheel', (e) => {
+        if (e.ctrlKey || e.metaKey) { e.preventDefault(); zoomAt(e.clientX, e.clientY, S.k * Math.exp(-e.deltaY * 0.01)); return; }
+        if (S.ro || S.replaying || S.drawing || isEditing() || e.target.closest('.dw-pop') || !e.deltaY) return;
+        e.preventDefault();                                                                               // a mouse wheel changes the pen size
+        S.size = sizeAt(posOf(S.size) - Math.sign(e.deltaY) * 4);
+        if (!opts.prefs) { try { localStorage.setItem(SIZE_KEY, String(S.size)); } catch (x) { /* nothing remembered */ } }
+        const dot = bar && bar.querySelector('.szdot'); if (dot) dot.style.cssText = dotStyle();
+        const sl = bar && bar.querySelector('input.size'); if (sl) sl.value = posOf(S.size);
+        notePrefs();
+      }, { passive: false });
       zoomBtn.addEventListener('click', (e) => { e.stopPropagation(); resetZoom(); });
     }
 
@@ -655,7 +692,7 @@
       const [x, y] = pointOf(e);
       if (S.eyedrop) {                                        // pick the color under the finger: the ink there, or the background where there is none
         const px = mctx.getImageData(Math.min(W - 1, Math.round(x * W)), Math.min(H - 1, Math.round(y * H)), 1, 1).data;
-        const bgc = { chalkboard: '#22332c', paper: '#f6f0df', lined: '#fffef6' }[S.background] || '#ffffff';
+        const bgc = bgHex(S.background) || '#ffffff';
         const hex = px[3] > 40 ? '#' + [px[0], px[1], px[2]].map((v) => v.toString(16).padStart(2, '0')).join('') : bgc;
         S.eyedrop = false; S.pane = null; useColor(hex, true); applyColorToSelected(); syncBar(); flash(hex);
         return;
@@ -795,6 +832,21 @@
       } else if (S.pane === 'shapes') {
         bar.innerHTML = act('pane-close', '←', t('Back')) + tool('line', '╱', t('Line')) + tool('rect', '▭', t('Rectangle')) + tool('ellipse', '◯', t('Ellipse'))
           + '<span class="sep"></span>' + `<button type="button" data-act="fillshape" class="${S.fillShape ? 'on' : ''}" title="${esc(t('Filled'))}" aria-label="${esc(t('Filled'))}">◼</button>`;
+      } else if (S.pane === 'bg') {
+        const cur = S.background, hex = bgHex(cur), solid = bgSolid(cur);
+        const pre = (id, label, style) => `<button type="button" class="sw bgp ${cur === id ? 'on' : ''}" data-bg="${esc(id)}" style="${style}" title="${esc(label)}" aria-label="${esc(label)}"></button>`;
+        const ruled = 'background-color:#ffffff;background-image:linear-gradient(rgba(0,0,0,0.3) 1px,transparent 1px),linear-gradient(90deg,rgba(0,0,0,0.3) 1px,transparent 1px);background-size:8px 8px';
+        const lines = 'background-color:#fffef6;background-image:linear-gradient(transparent 6px,rgba(60,110,200,0.6) 7px);background-size:100% 8px';
+        const checker = 'background-color:#ffffff;background-image:linear-gradient(45deg,#b8b8b8 25%,transparent 25%,transparent 75%,#b8b8b8 75%),linear-gradient(45deg,#b8b8b8 25%,transparent 25%,transparent 75%,#b8b8b8 75%);background-size:10px 10px;background-position:0 0,5px 5px';
+        bar.innerHTML = act('pane-close', '←', t('Back'))
+          + pre('white', t('White'), 'background:#ffffff') + pre('chalkboard', t('Chalkboard'), 'background:#22332c') + pre('paper', t('Paper'), 'background:#f6f0df')
+          + pre('grid', t('Grid'), ruled) + pre('lined', t('Lined'), lines) + pre('clear', t('Transparent'), checker)
+          + '<span class="sep"></span>'
+          + BG_SWATCHES.map((c) => pre('color:' + c, c, 'background:' + c)).join('')
+          + '<span class="sep"></span>'
+          + `<input type="color" data-bgcolor="1" value="${hex || '#22332c'}" title="${esc(t('Custom color'))}" aria-label="${esc(t('Custom color'))}">`
+          + `<span class="ask">${esc(t('See-through'))}</span>`
+          + `<input type="range" class="bgalpha" min="0" max="90" step="5" value="${Math.round((1 - solid) * 100)}" ${hex ? '' : 'disabled'} aria-label="${esc(t('See-through'))}" title="${esc(t('See-through'))}">`;
       } else if (S.pane === 'more') {
         bar.innerHTML = act('pane-close', '←', t('Back'))
           + act('bg', '🎨', t('Background')) + act('photo', '🖼️', t('Picture'))
@@ -859,7 +911,7 @@
       const inp = pop.querySelector('input'); if (document.activeElement !== inp) inp.value = S.color;
     }
     function useColor(c, keep) {
-      S.color = c.toLowerCase(); if (S.tool === 'eraser') S.tool = 'pen';
+      S.userColor = true; S.color = c.toLowerCase(); if (S.tool === 'eraser') S.tool = 'pen';
       if (keep) rememberColor(S.color);
     }
     function buildPop() {
@@ -1020,6 +1072,39 @@
       replayRaf = requestAnimationFrame(frame);
     }
 
+    async function saveBackground(next) {
+      const r = await post('/api/boards/' + encodeURIComponent(board), { method: 'PUT', body: JSON.stringify({ background: next }) });
+      if (r && r.version) S.version = Math.max(S.version, r.version);
+      else if (r && r.error) flash(r.error);
+    }
+    async function chooseBackground(next) {
+      setBackground(next); autoInk(true); syncBar(); showBar();
+      await saveBackground(next);
+    }
+    // What is behind a see-through board: the first solid color found going up from the board (a theme that paints a picture gives nothing, and the pen is left alone).
+    function backdropLum() {
+      for (let el = root; el; el = el.parentElement) {
+        const m = /rgba?[(]([0-9. ]+),([0-9. ]+),([0-9. ]+)(?:,([0-9. ]+))?[)]/.exec(getComputedStyle(el).backgroundColor || '');
+        if (m && (m[4] === undefined || Number(m[4]) > 0.5)) return lum(Number(m[1]), Number(m[2]), Number(m[3]));
+      }
+      return null;
+    }
+    function boardLum() {
+      const c = bgRgba(S.background), hex = bgHex(S.background);
+      if (S.background === 'clear' || (c && c[3] < 0.5)) return backdropLum();
+      if (c) { const back = c[3] < 0.999 ? backdropLum() : null; const base = lum(c[0], c[1], c[2]); return back === null ? base : base * c[3] + back * (1 - c[3]); }
+      if (hex) return lumHex(hex);
+      return S.background === 'grid' ? 1 : null;                         // a picture: no way to know
+    }
+    // The pen that was never chosen (or is plainly lost on this background) turns light on a dark board and dark on a light one.
+    function autoInk(userChange) {
+      if (S.ro) return;
+      const bl = boardLum(); if (bl === null) return;
+      const pen = lumHex(S.color); if (pen === null) return;
+      if (S.userColor && !(userChange && contrastOf(bl, pen) < 3)) return;
+      const want = bl < 0.4 ? '#ffffff' : COLORS[0];
+      if (S.color !== want && contrastOf(bl, pen) < 4.5) { S.color = want; if (S.tool === 'eraser') S.tool = 'pen'; }
+    }
     async function act(a) {
       if (a === 'undo') { await undo();
       } else if (a === 'redo') { await redo();
@@ -1031,12 +1116,7 @@
         S.strokes = []; S.ops = []; S.redoOps = []; S.sel = null; S.ink = ''; S.inkImg = null; saveOps(); if (r && r.version) S.version = Math.max(S.version, r.version);
         redraw(); syncBar(); showBar();
       } else if (a === 'bg') {
-        const at = BACKGROUNDS.indexOf(S.background);
-        const next = BACKGROUNDS[(at + 1) % BACKGROUNDS.length];                    // from a picture (not in the list) this gives 'white'
-        setBackground(next);
-        const r = await post('/api/boards/' + encodeURIComponent(board), { method: 'PUT', body: JSON.stringify({ background: next }) });
-        if (r && r.version) S.version = Math.max(S.version, r.version);
-        flash(t('Background') + ': ' + t(next === 'chalkboard' ? 'Chalkboard' : next === 'paper' ? 'Paper' : next === 'grid' ? 'Grid' : next === 'lined' ? 'Lined' : next === 'clear' ? 'See-through' : 'White'));
+        S.pane = 'bg'; syncBar(); showBar();
       } else if (a === 'photo') {
         S.pane = 'photo'; syncBar(); showBar();
         if (!thumbs) { try { const l = await api('/api/photos'); thumbs = Array.isArray(l) ? l.filter((p) => p && p.filename).slice(-10).reverse() : []; } catch (e) { thumbs = []; } syncBar(); }
@@ -1090,11 +1170,22 @@
           if (r && r.version) S.version = Math.max(S.version, r.version);
           else if (r && r.error) flash(r.error);
         }
-        else if (b.dataset.color) { S.color = b.dataset.color; if (S.tool === 'eraser') S.tool = 'pen'; applyColorToSelected(); syncBar(); if (S.pane === 'color' && pop) { hsv = hexToHsv(S.color); paintPop(); } showBar(); }
+        else if (b.dataset.bg) {
+          const v = b.dataset.bg, keepSolid = bgSolid(S.background);
+          await chooseBackground(BG_COLOR_RE.test(v) && keepSolid < 0.999 ? makeBg(bgHex(v), keepSolid) : v);          // a new color keeps the see-through amount that was set
+        }
+        else if (b.dataset.color) { S.userColor = true; S.color = b.dataset.color; if (S.tool === 'eraser') S.tool = 'pen'; applyColorToSelected(); syncBar(); if (S.pane === 'color' && pop) { hsv = hexToHsv(S.color); paintPop(); } showBar(); }
         else if (b.dataset.act) act(b.dataset.act);
       });
       // The size slider. While it moves only the little dot (and a stamp just placed) change; the bar is not redrawn, which would drop the slider from under the finger.
       bar.addEventListener('input', (e) => {
+        if (e.target.dataset && (e.target.dataset.bgcolor || (e.target.classList && e.target.classList.contains('bgalpha')))) {          // live while it moves; saved when it is let go
+          const picker = bar.querySelector('input[data-bgcolor]'), slider = bar.querySelector('input.bgalpha');
+          const hex = e.target.dataset.bgcolor ? e.target.value : (bgHex(S.background) || (picker && picker.value) || '#22332c');
+          const next = makeBg(hex, 1 - Number(slider ? slider.value : 0) / 100);
+          setBackground(next); autoInk(true);
+          return;
+        }
         if (!e.target.classList || !e.target.classList.contains('size')) return;
         S.size = sizeAt(Number(e.target.value));
         const dot = bar.querySelector('.szdot'); if (dot) dot.style.cssText = dotStyle();
@@ -1107,6 +1198,7 @@
         showBar();
       });
       bar.addEventListener('change', async (e) => {
+        if (e.target.dataset && (e.target.dataset.bgcolor || (e.target.classList && e.target.classList.contains('bgalpha')))) { syncBar(); await saveBackground(S.background); return; }
         if (e.target.dataset && e.target.dataset.stampfile) { const f0 = e.target.files && e.target.files[0]; if (f0) await makeStamp(f0); return; }
         if (e.target.classList && e.target.classList.contains('size')) {
           if (!opts.prefs) { try { localStorage.setItem(SIZE_KEY, String(S.size)); } catch (x) { /* nothing remembered */ } }
@@ -1131,6 +1223,24 @@
         await setPhoto(blob);
       });
     }
+    // A mouse and keyboard (no touchscreen): while the pointer is over the board, Ctrl+Z undoes, Ctrl+Y or Ctrl+Shift+Z redoes, Delete removes what is selected,
+    // Esc lets go of it, and P M E F T V pick the pen, marker, eraser, fill, text and select tools.
+    let hover = false;
+    box.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') hover = true; });
+    box.addEventListener('pointerleave', () => { hover = false; });
+    const onKey = (e) => {
+      if (!hover || S.destroyed || S.ro || S.replaying || S.drawing || isEditing() || e.altKey) return;
+      const tg = e.target; if (tg && tg.closest && tg.closest('input, textarea, select, [contenteditable="true"]')) return;
+      const k = (e.key || '').toLowerCase(), mod = e.ctrlKey || e.metaKey;
+      if (mod && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
+      if (mod && k === 'y') { e.preventDefault(); redo(); return; }
+      if (mod) return;
+      if ((k === 'delete' || k === 'backspace') && S.sel !== null) { e.preventDefault(); deleteSelected(); return; }
+      if (k === 'escape') { if (S.pane) S.pane = null; else S.sel = null; syncBar(); redraw(); return; }
+      const tool = { p: 'pen', m: 'marker', e: 'eraser', f: 'fill', t: 'text', v: 'select' }[k];
+      if (tool && bar) { e.preventDefault(); S.pane = null; syncBar(); const b = bar.querySelector('[data-tool="' + tool + '"]'); if (b) b.click(); }
+    };
+    document.addEventListener('keydown', onKey);
     if (ur) ur.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || b.disabled) return; e.stopPropagation(); act(b.dataset.act); });
     box.addEventListener('pointerdown', () => { if (opts.toolbar === 'touch') showBar(); }, true);
 
@@ -1148,7 +1258,9 @@
       png: (cb) => pngOfBoard(cb),
       flush: () => new Promise((resolve) => { const t0 = Date.now(); const tick = () => ((S.saving === 0 && S.queued === 0) || Date.now() - t0 > 4000 ? resolve() : setTimeout(tick, 50)); tick(); }),     // every stroke is on the server
       setReadOnly(v) { S.ro = !!v; box.classList.toggle('ro', S.ro); },
-      destroy() { S.destroyed = true; clearTimeout(prefsTimer); imgWaiters.delete(onStampImage); clearTimeout(resTimer); S.replaying = false; clearTimeout(barTimer); clearTimeout(noteTimer); if (ro) ro.disconnect(); if (liveRaf) cancelAnimationFrame(liveRaf); if (replayRaf) cancelAnimationFrame(replayRaf); if (recorder && recorder.state !== 'inactive') { try { recorder.stop(); } catch (e) { /* ended */ } } },
+      setCursor(v) { opts.cursor = !!v; box.classList.toggle('dw-cur', !!v); },
+      setBorder(v) { opts.border = v; box.classList.toggle('dw-bordered', bordered()); },                       // the display's mouse pointer setting changed
+      destroy() { S.destroyed = true; document.removeEventListener('keydown', onKey); clearTimeout(prefsTimer); imgWaiters.delete(onStampImage); clearTimeout(resTimer); S.replaying = false; clearTimeout(barTimer); clearTimeout(noteTimer); if (ro) ro.disconnect(); if (liveRaf) cancelAnimationFrame(liveRaf); if (replayRaf) cancelAnimationFrame(replayRaf); if (recorder && recorder.state !== 'inactive') { try { recorder.stop(); } catch (e) { /* ended */ } } },
     };
   }
 

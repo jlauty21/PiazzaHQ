@@ -190,6 +190,7 @@ function reportPainted() {
   _paintedSent = true;
   requestAnimationFrame(() => requestAnimationFrame(() => {
     try { fetch('/api/display/painted', { method: 'POST', keepalive: true }).catch(() => {}); } catch {}
+    setTimeout(bumpPointer, 2500);                                  // the page has just loaded (a reload or a switch of screen): let the pointer hider hide the arrow
     startPaintHeartbeat();
   }));
 }
@@ -223,6 +224,55 @@ let displayConfig = { force_orientation: 'auto', rotation: 0, theme: '', screens
 // timers, so without this list they'd silently pile up every time applyTheme()
 // re-runs (theme change, orientation change, etc.).
 let _tcasIntervals = [];
+// Settings > "Always show the mouse pointer" (for a screen used with a mouse): the page stops hiding the pointer (the server stops the Pi's pointer hider, see src/pointer.js).
+// The device setting has three values: '0' hidden (the default), 'board' only over Whiteboards, '1' everywhere.
+function ptrMode() {
+  const v = state && state.settings ? String(state.settings.show_cursor || '0') : '0';
+  return v === '1' || v === 'board' ? v : '0';
+}
+const wbShowsPointer = (w) => !!w.wbCursor || ptrMode() !== '0';                                // the board's own switch, or the device setting
+function syncPointerClass() {
+  const on = ptrMode() === '1';
+  if (document.documentElement.classList.contains('show-cursor') !== on) document.documentElement.classList.toggle('show-cursor', on);
+  if (typeof wbApplyCursor === 'function') wbApplyCursor();
+  syncPointerWant();
+}
+// A Whiteboard set to "Show the mouse pointer on this board" asks the server (this machine only) to stop the Pi's pointer hider while the board is on screen, and to put it back
+// when it is not (src/pointer.js). Sent only when the answer changes, and not from a preview.
+// A reload or a layout switch makes the browser put its arrow back on a Pi, and the pointer hider only hides it again after the pointer has MOVED. So after those the page asks the server
+// (this machine only) to move the pointer a few pixels and back, which lets the hider hide it again (src/pointer.js). Not in a preview or Live Edit, not when the screen shows the pointer
+// everywhere, and at most every 4 seconds.
+let _lastBump = 0, _layoutSigForBump = null;
+function bumpPointer() {
+  if (IS_PREVIEW || editModeActive || ptrMode() === '1' || _ptrBoardWant) return;          // (a pointer that is wanted is not moved)
+  const now = Date.now();
+  if (now - _lastBump < 4000) return;
+  _lastBump = now;
+  try { fetch('/api/pointer/bump', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {}); } catch (e) { /* nothing to bump */ }
+}
+let _ptrBoardWant = null;
+function syncPointerWant() {
+  if (document.documentElement.classList.contains('preview')) return;
+  const want = ptrMode() !== '1' && !!(state && Array.isArray(state.layout) && state.layout.some((w) => w && w.type === 'whiteboard' && wbShowsPointer(w) && !w.wbReadOnly));   // (everywhere: the server already knows)
+  if (want === _ptrBoardWant) return;
+  _ptrBoardWant = want;
+  fetch('/api/pointer/board', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ show: want }) }).catch(() => { _ptrBoardWant = null; });
+}
+// Hot key on the display: Ctrl+Shift+M shows or hides the mouse pointer on this screen (the same switch as Settings > "Always show the mouse pointer"), live.
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey && e.shiftKey && !e.altKey && (e.key === 'M' || e.key === 'm'))) return;
+  const t = e.target;
+  if (t && t.closest && t.closest('input, textarea, select, [contenteditable="true"]')) return;
+  e.preventDefault();
+  fetch('/api/pointer/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j) => {
+      if (!j) return;
+      state.settings = Object.assign({}, state.settings, { show_cursor: j.show_cursor });
+      syncPointerClass();
+      if (typeof showDisplayToast === 'function') showDisplayToast(j.show_cursor === '1' ? 'Mouse pointer shown' : j.show_cursor === 'board' ? 'Mouse pointer: only over whiteboards' : 'Mouse pointer hidden');
+    }).catch(() => {});
+});
 function applyTheme() {
   _tcasIntervals.forEach(id => clearInterval(id));
   _tcasIntervals = [];
@@ -453,14 +503,20 @@ function getOrientation(){
 // applyPreviewScale), so widget positions must be relative to THAT box, not the full
 // phone viewport. _previewBox holds its pixel size.
 let _previewBox = null;
+// "Rotate this screen at the system level" (Settings): the Pi's desktop has already turned the screen, so the page must not turn it a second time. A preview (phone, Layout tab) never is that screen.
+function systemRotationOn() {
+  const v = state && state.settings ? String(state.settings.system_rotation || '') : '';
+  return v === 'left' || v === 'right' || v === 'inverted';
+}
+function browserRotation() { return (!IS_PREVIEW && systemRotationOn()) ? 0 : (displayConfig.rotation || 0); }
 function effectiveWidth(){
   if (IS_PREVIEW && _previewBox) return _previewBox.w;
-  const r = displayConfig.rotation || 0;
+  const r = browserRotation();
   return (r === 90 || r === 270) ? window.innerHeight : window.innerWidth;
 }
 function effectiveHeight(){
   if (IS_PREVIEW && _previewBox) return _previewBox.h;
-  const r = displayConfig.rotation || 0;
+  const r = browserRotation();
   return (r === 90 || r === 270) ? window.innerWidth : window.innerHeight;
 }
 
@@ -481,7 +537,7 @@ function applyRotation() {
     return;
   }
 
-  const r = displayConfig.rotation || 0;
+  const r = browserRotation();
   const vw = window.innerWidth, vh = window.innerHeight;
   if (r === 90 || r === 270) {
     // Wrapper takes the swapped dimensions, then we offset + rotate so the
@@ -895,6 +951,11 @@ function renderLayout() {
   // was actually waiting on. Doing it before yielding back to the browser
   // means the browser's next paint already reflects the fitted size —
   // there's no intermediate un-fit frame left for it to show.
+  if (typeof applyRotations === 'function') applyRotations();           // rotating widgets (14-widget-rotation.js): all but the current member hidden, dots on top
+  syncPointerClass();
+  syncPointerWant();
+  // a different set of widgets is on screen (a switch of layout, however it came about): the browser has put its arrow back, so bump the pointer (see bumpPointer)
+  { const sig = (state.layout || []).map((x) => x && x.id).join(','); if (_layoutSigForBump !== null && sig !== _layoutSigForBump) setTimeout(bumpPointer, 1800); _layoutSigForBump = sig; }
   setupWeatherAutoFit();
   setupTextAutoFit();
 
@@ -1127,6 +1188,7 @@ function renderWidget(w) {
     case 'timer': return renderTimer(w);
     case 'onthisday': return renderOnThisDay(w);
     case 'dailyquote': return renderDailyQuote(w);
+    case 'version': return renderVersion(w);
     case 'sports': return renderSports(w);
     case 'metar': return renderMetarTaf(w);
     case 'decoration': return renderDecoration(w);

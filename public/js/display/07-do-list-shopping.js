@@ -1495,6 +1495,7 @@ function wireKidDrawingAdvancedSettings(w) {
 function renderWhiteboardAdvancedSettings(w) {
   const mode = ['daily', 'hours'].includes(w.wbAutoClear) ? w.wbAutoClear : 'never';
   const o = (v, label, cur) => `<option value="${v}"${v === cur ? ' selected' : ''}>${label}</option>`;
+  const bd = w.wbBorder === 'on' || w.wbBorder === 'off' ? w.wbBorder : 'auto';
   return `
     <div class="was-row">
       <label>Board name ${infoBtn("Whiteboards with the same name share one drawing, so two screens (or two widgets) can show and draw on the same board. Leave it empty for a board of its own.")}</label>
@@ -1503,6 +1504,14 @@ function renderWhiteboardAdvancedSettings(w) {
     <div class="was-row">
       <label>Toolbar</label>
       <select class="form-input" id="wb-toolbar">${o('touch', 'Show when touched', w.wbToolbar === 'always' ? 'always' : 'touch')}${o('always', 'Always show', w.wbToolbar === 'always' ? 'always' : 'touch')}</select>
+    </div>
+    <div class="was-row">
+      <label>Background</label>
+      <select class="form-input" id="wb-bg">${o('clear', 'Match the theme (transparent)', 'white')}${o('white', 'White', 'white')}${o('chalkboard', 'Chalkboard', 'white')}${o('paper', 'Paper', 'white')}${o('grid', 'Grid', 'white')}${o('lined', 'Lined', 'white')}${'white' === 'custom' ? o('custom', 'Custom color or picture (set on the board)', 'white') : ''}</select>
+    </div>
+    <div class="was-row">
+      <label>Border</label>
+      <select class="form-input" id="wb-border">${o('auto', 'Automatic (when see-through)', bd)}${o('on', 'Always', bd)}${o('off', 'None', bd)}</select>
     </div>
     <div class="was-row">
       <label>Clear the board by itself</label>
@@ -1514,6 +1523,10 @@ function renderWhiteboardAdvancedSettings(w) {
       <label>Show only (no drawing on this screen) ${infoBtn("For a screen without a touchscreen: it shows the board, drawn from another screen.")}</label>
       <input type="checkbox" id="wb-ro" ${w.wbReadOnly ? 'checked' : ''}>
     </div>
+    <div class="was-toggle-row">
+      <label>Show the mouse pointer on this board ${infoBtn("For a screen you use with a mouse instead of a touchscreen. While this board is on the screen, the mouse pointer shows over it (a crosshair on the drawing, an arrow on the buttons). On a Raspberry Pi this also pauses the tool that hides the pointer, and puts it back when the board is not on the screen. In Settings, Mouse pointer > Only over whiteboards does this for every whiteboard. With a mouse you can also press Ctrl+Z to undo, Ctrl+Y to redo, Delete to remove the selected item, and turn the wheel to change the pen size.")}</label>
+      <input type="checkbox" id="wb-cursor" ${w.wbCursor ? 'checked' : ''}>
+    </div>
     <p class="was-hint">Draw with a finger or a stylus. The toolbar has a pen, a marker, a rubbing eraser, a paint bucket, shapes, stamps, colors, undo and redo, clear, a background or a picture behind the drawing, replay (also as a video), print and Keep (saves the drawing as a creation: a photo tagged "drawings").</p>
   `;
 }
@@ -1522,6 +1535,20 @@ function wireWhiteboardAdvancedSettings(w) {
   const get = (id) => document.getElementById(id);
   if (get('wb-board')) get('wb-board').addEventListener('change', (e) => { w.wbBoard = e.target.value.trim(); again(); });
   if (get('wb-toolbar')) get('wb-toolbar').addEventListener('change', (e) => { w.wbToolbar = e.target.value; again(); });
+  if (get('wb-border')) get('wb-border').addEventListener('change', (e) => { if (e.target.value === 'on' || e.target.value === 'off') w.wbBorder = e.target.value; else delete w.wbBorder; again(); });
+  if (get('wb-bg')) {                                                                       // the background is kept with the board: read it, and save a change there at once
+    const sel = get('wb-bg'), id = wbBoardId(w);
+    fetch('/api/boards/' + encodeURIComponent(id)).then((r) => r.json()).then((b) => {
+      const v = b && typeof b.background === 'string' ? b.background : 'white';
+      if (['clear', 'white', 'chalkboard', 'paper', 'grid', 'lined'].includes(v)) sel.value = v;
+      else { const op = document.createElement('option'); op.value = 'custom'; op.textContent = 'Custom color or picture (set on the board)'; sel.appendChild(op); sel.value = 'custom'; }
+    }).catch(() => {});
+    sel.addEventListener('change', async () => {
+      if (sel.value === 'custom') return;
+      try { await fetch('/api/boards/' + encodeURIComponent(id), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ background: sel.value }) }); } catch (e) { /* the board keeps what it had */ }
+      if (typeof wbRefreshAll === 'function') wbRefreshAll();
+    });
+  }
   if (get('wb-auto')) get('wb-auto').addEventListener('change', (e) => {
     w.wbAutoClear = e.target.value;
     get('wb-time-row').style.display = w.wbAutoClear === 'daily' ? '' : 'none';
@@ -1531,6 +1558,7 @@ function wireWhiteboardAdvancedSettings(w) {
   if (get('wb-time')) get('wb-time').addEventListener('change', (e) => { w.wbAutoTime = e.target.value || '03:00'; scheduleLayoutSave(); });
   if (get('wb-hours')) get('wb-hours').addEventListener('change', (e) => { w.wbAutoHours = Math.max(1, Math.min(720, parseInt(e.target.value, 10) || 12)); scheduleLayoutSave(); });
   if (get('wb-ro')) get('wb-ro').addEventListener('change', (e) => { w.wbReadOnly = e.target.checked; again(); });
+  if (get('wb-cursor')) get('wb-cursor').addEventListener('change', (e) => { if (e.target.checked) w.wbCursor = true; else delete w.wbCursor; again(); });
 }
 
 function renderRecipeAdvancedSettings(w) {

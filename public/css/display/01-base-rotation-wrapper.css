@@ -22,7 +22,11 @@
     /* Hide the mouse cursor on the actual wall display — this is OS/session-proof
        (works on Wayland/labwc where unclutter often fails). In PREVIEW (phone/desktop)
        we keep the cursor, since the body.preview class is present there. */
-    html:not(.preview), html:not(.preview) * { cursor: none !important; }
+    html:not(.preview):not(.show-cursor), html:not(.preview):not(.show-cursor) * { cursor: none !important; }   /* .show-cursor: Settings > "Always show the mouse pointer" */
+    /* A whiteboard set to show the mouse pointer (for a screen used with a mouse): a crosshair on the drawing, an arrow on the toolbar, a hand on the buttons. */
+    html:not(.preview) .dw.dw-cur, html:not(.preview) .dw.dw-cur * { cursor: default !important; }
+    html:not(.preview) .dw.dw-cur .dw-view, html:not(.preview) .dw.dw-cur .dw-view > canvas { cursor: crosshair !important; }
+    html:not(.preview) .dw.dw-cur button, html:not(.preview) .dw.dw-cur label.btn, html:not(.preview) .dw.dw-cur input[type=range], html:not(.preview) .dw.dw-cur input[type=color] { cursor: pointer !important; }
 
     /* ── Rotation wrapper ──
        Wraps all display layers so the entire view can be rotated in-browser

@@ -205,8 +205,15 @@ async function drawWidgetSettingsPanel_Build_kiddrawing(_c) {
     `;
 }
 
+// The board a Whiteboard widget draws on: its own name if it has one, else one of its own (the same rule the display uses).
+function wbBoardIdApp(w) { return String((w && w.wbBoard) || ('wb_' + (w && w.id))).replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 40) || 'wb'; }
 async function drawWidgetSettingsPanel_Build_whiteboard(_c) {
   const { w, _st } = _c;
+  // what the board looks like now (its background is kept with the board, not the widget)
+  let bgNow = 'white';
+  try { const b = await apiFetch('/api/boards/' + encodeURIComponent(wbBoardIdApp(w))); if (b && typeof b.background === 'string') bgNow = b.background; } catch (e) { /* the default shows */ }
+  if (!['clear', 'white', 'chalkboard', 'paper', 'grid', 'lined'].includes(bgNow)) bgNow = 'custom';
+  const bd = w.wbBorder === 'on' || w.wbBorder === 'off' ? w.wbBorder : 'auto';
     // Parallel copy of display.html's renderWhiteboardAdvancedSettings — keep in sync.
     const mode = ['daily', 'hours'].includes(w.wbAutoClear) ? w.wbAutoClear : 'never';
     const o = (v, label, cur) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${label}</option>`;
@@ -220,6 +227,14 @@ async function drawWidgetSettingsPanel_Build_whiteboard(_c) {
         <select class="form-input" id="wb-toolbar">${o('touch', 'Show when touched', w.wbToolbar === 'always' ? 'always' : 'touch')}${o('always', 'Always show', w.wbToolbar === 'always' ? 'always' : 'touch')}</select>
       </div>
       <div class="settings-row">
+        <label>Background</label>
+        <select class="form-input" id="wb-bg">${o('clear', 'Match the theme (transparent)', bgNow)}${o('white', 'White', bgNow)}${o('chalkboard', 'Chalkboard', bgNow)}${o('paper', 'Paper', bgNow)}${o('grid', 'Grid', bgNow)}${o('lined', 'Lined', bgNow)}${bgNow === 'custom' ? o('custom', 'Custom color or picture (set on the board)', bgNow) : ''}</select>
+      </div>
+      <div class="settings-row">
+        <label>Border</label>
+        <select class="form-input" id="wb-border">${o('auto', 'Automatic (when see-through)', bd)}${o('on', 'Always', bd)}${o('off', 'None', bd)}</select>
+      </div>
+      <div class="settings-row">
         <label>Clear the board by itself</label>
         <select class="form-input" id="wb-auto">${o('never', 'Never', mode)}${o('daily', 'Every day at…', mode)}${o('hours', 'After some hours with no drawing', mode)}</select>
       </div>
@@ -228,6 +243,10 @@ async function drawWidgetSettingsPanel_Build_whiteboard(_c) {
       <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
         <label style="margin-bottom:0">Show only (no drawing on this screen)</label>
         <input type="checkbox" id="wb-ro" ${w.wbReadOnly ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show the mouse pointer on this board ${infoBtn("For a screen you use with a mouse instead of a touchscreen. While this board is on the screen, the mouse pointer shows over it (a crosshair on the drawing, an arrow on the buttons). On a Raspberry Pi this also pauses the tool that hides the pointer, and puts it back when the board is not on the screen. In Settings, Mouse pointer > Only over whiteboards does this for every whiteboard. With a mouse you can also press Ctrl+Z to undo, Ctrl+Y to redo, Delete to remove the selected item, and turn the wheel to change the pen size.")}</label>
+        <input type="checkbox" id="wb-cursor" ${w.wbCursor ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">Draw with a finger or a stylus. The toolbar has a pen, a marker, a rubbing eraser, a paint bucket, shapes, stamps, colors, undo and redo, clear, a background or a picture behind the drawing, replay (also as a video), print and Keep (saves the drawing as a creation: a photo tagged "drawings").</p>
     `;

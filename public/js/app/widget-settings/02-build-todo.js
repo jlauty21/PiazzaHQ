@@ -892,6 +892,7 @@ function drawWidgetSettingsPanel_Wire_panelInnerHTML(_c) {
       </div>
       ${colorHtml}
       ${fontHtml}
+      ${typeof rotationSectionHtml === 'function' ? rotationSectionHtml(w) : ''}
       ${_st.typeSpecificHtml}
       ${_st.contentHtml}
     </div>

@@ -384,7 +384,7 @@
   // Where a touch is on the page itself: the screen can be turned (90, 180, 270 degrees) with the layer inside the turned wrapper, but pointer positions
   // are in physical screen coordinates, so they are turned back to the layer's own left-to-right, top-to-bottom.
   function localPoint(el, e) {
-    const r = Number(displayConfig && displayConfig.rotation) || 0, b = el.getBoundingClientRect();
+    const r = Number(typeof browserRotation === 'function' ? browserRotation() : (displayConfig && displayConfig.rotation)) || 0, b = el.getBoundingClientRect();
     if (r === 90) return { x: e.clientY - b.top, y: b.right - e.clientX };
     if (r === 180) return { x: b.right - e.clientX, y: b.bottom - e.clientY };
     if (r === 270) return { x: b.bottom - e.clientY, y: e.clientX - b.left };

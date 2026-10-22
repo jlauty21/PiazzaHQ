@@ -614,6 +614,7 @@ function startDrag(e, w, el, mode, corner) {
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
     if (movedSnapshotTaken) {
+      if (typeof appRotSyncGeometry === 'function') appRotSyncGeometry(w); // the other widgets in a rotation follow
       renderLayerList(); autoSaveLayout();
       // Keep the fine-tune zoom view in sync if it's currently showing this widget.
       if (selectedId === w.id && $('fine-tune-viewport')) renderFineTune(w);
