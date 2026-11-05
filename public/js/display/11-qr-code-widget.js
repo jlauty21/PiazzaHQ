@@ -1051,7 +1051,10 @@ async function fetchWeather() {
   await Promise.all([...locations.entries()].map(async ([key, loc]) => {
     try {
       const r = await fetch(`/api/weather?lat=${encodeURIComponent(loc.lat)}&lon=${encodeURIComponent(loc.lon)}`);
-      state.weatherByLoc[key] = await r.json();
+      const data = await r.json();
+      // A failed lookup (no internet for a while, the weather service down) comes back as {error: ...}. That must not replace the last good weather:
+      // drawing from it threw inside the widget and the whole Weather widget vanished until the next successful refresh.
+      if (r.ok && data && data.current) state.weatherByLoc[key] = data;
     } catch {}
   }));
 
@@ -1062,10 +1065,12 @@ async function fetchWeather() {
 // Returns the weather object a given widget should render: its own location if it
 // overrides, else the global default.
 function weatherForWidget(widget) {
+  // Only real weather (it has current conditions): anything else, such as a saved error, counts as "no weather yet" so the widget shows "Loading weather" instead of breaking.
+  const usable = (w) => (w && w.current ? w : null);
   if (widget && widget.wxLat && widget.wxLon) {
-    return (state.weatherByLoc || {})[`${widget.wxLat},${widget.wxLon}`] || null;
+    return usable((state.weatherByLoc || {})[`${widget.wxLat},${widget.wxLon}`]);
   }
-  return state.weather || null;
+  return usable(state.weather);
 }
 
 // Which display profile this screen shows. Resolution order:

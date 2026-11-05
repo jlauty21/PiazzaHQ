@@ -28,4 +28,6 @@ module.exports = function registerDisplayPainted({ crypto, app }) {
     const since = DISPLAY_STATE.lastPaintedMono === null ? null : Math.round(Number(process.hrtime.bigint() - DISPLAY_STATE.lastPaintedMono) / 1e6);
     res.json({ boot_id: DISPLAY_STATE.bootId, painted_count: DISPLAY_STATE.paintedCount, last_painted_at: DISPLAY_STATE.lastPaintedAt, since_painted_ms: since });
   });
+  // For the Screen health summary (src/screen-health.js): how long ago this device's display last drew a frame, in milliseconds, or null if it never has since the server started.
+  return { sincePaintedMs: () => (DISPLAY_STATE.lastPaintedMono === null ? null : Math.round(Number(process.hrtime.bigint() - DISPLAY_STATE.lastPaintedMono) / 1e6)) };
 };

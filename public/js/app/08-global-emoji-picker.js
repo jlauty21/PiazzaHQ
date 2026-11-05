@@ -879,10 +879,11 @@ async function renderSettings() {
   // it (the original approach) would leave a real, tappable, permanently
   // empty accordion entry on any install where neither link is
   // configured — worse than the card just quietly not existing.
-  const hasSupportLinks = !!(supportLinks && (supportLinks.stripeUrl || supportLinks.paypalUrl));
+  const hasSupportLinks = !!(supportLinks && (supportLinks.stripeUrl || supportLinks.paypalUrl || supportLinks.venmoUrl));
   const supportButtonsHtml = [
     supportLinks && supportLinks.stripeUrl ? `<a href="${supportLinks.stripeUrl.replace(/"/g,'&quot;')}" target="_blank" rel="noopener" class="settings-save" style="text-decoration:none;text-align:center;flex:1;min-width:140px">☕ Buy me a coffee</a>` : '',
     supportLinks && supportLinks.paypalUrl ? `<a href="${supportLinks.paypalUrl.replace(/"/g,'&quot;')}" target="_blank" rel="noopener" class="settings-save" style="text-decoration:none;text-align:center;flex:1;min-width:140px;background:var(--card);border:1px solid var(--border);color:var(--text)">PayPal</a>` : '',
+    supportLinks && supportLinks.venmoUrl ? `<a href="${supportLinks.venmoUrl.replace(/"/g,'&quot;')}" target="_blank" rel="noopener" class="settings-save" style="text-decoration:none;text-align:center;flex:1;min-width:140px;background:var(--card);border:1px solid var(--border);color:var(--text)">Venmo</a>` : '',
   ].filter(Boolean).join('');
   const tzOptions = buildTimezoneOptions(s.timezone_override || '');
   renderSettings_Build_contentMarkup({ s, bs, ps, cs, gs, gtk, hs, phoneAlerts, haAlerts, notifKinds, notifPrefs, isBeta, hasSupportLinks, supportButtonsHtml, tzOptions });

@@ -146,6 +146,7 @@ async function loadScreens() {
     + (showOfflineScreens ? offlineScreens.map(renderScreenCard).join('') : '')
     + previewToggleHtml
     + previewSectionHtml;
+  if (typeof shRenderSlots === 'function') shRenderSlots();      // fill each card's Health section from the last health answer, so a redraw never blanks it
   if ($('preview-cleanup-days')) {
     $('preview-cleanup-days').addEventListener('change', async (e) => {
       await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify({ preview_screen_cleanup_days: Number(e.target.value) }) });
@@ -342,6 +343,7 @@ function startScreensAutoRefresh() {
     const active = document.activeElement;
     if (active && document.getElementById('screens-list').contains(active)) return;
     loadScreens();
+    if (typeof loadScreenHealth === 'function') loadScreenHealth();
   }, 15000);
 }
 function stopScreensAutoRefresh() {

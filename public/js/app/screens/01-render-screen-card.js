@@ -67,9 +67,10 @@ function syncAmbientRows(list, id) {
 }
 function loadScreens_renderScreenCard(_c, s) {
   const { displayOptions } = _c;
+    // The dot is the screen's health once /api/screen-health has answered (13-screen-health.js recolors it); until then, online or not.
     const dot = s.online
-      ? `<span title="Online" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#34c759;margin-right:7px;vertical-align:middle"></span>`
-      : `<span title="Offline" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#8b93a7;margin-right:7px;vertical-align:middle"></span>`;
+      ? `<span data-sh-dot="${s.device_id}" title="Online" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#34c759;margin-right:7px;vertical-align:middle"></span>`
+      : `<span data-sh-dot="${s.device_id}" title="Offline" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#8b93a7;margin-right:7px;vertical-align:middle"></span>`;
     const displayName = s.name || 'Unnamed display';
     const nameStyle = s.name ? '' : 'font-style:italic;color:var(--muted)';
     const remoteBadge = s.is_remote
@@ -105,6 +106,14 @@ function loadScreens_renderScreenCard(_c, s) {
             ${displayOptions(s.assigned_display_slug)}
           </select>
           <button class="icon-btn screen-editlayout-btn" data-slug="${s.assigned_display_slug || ''}" title="Edit this screen's layout">🎛️</button>
+        </div>
+        <div class="acc-section" data-sh-acc="${s.device_id}" style="display:none">
+          <button class="acc-head" type="button" aria-expanded="false">
+            <span class="acc-ic">🩺</span>
+            <span class="acc-text"><span class="acc-label">Health</span><span class="acc-sub" data-sh-sub></span></span>
+            <span class="acc-caret">▸</span>
+          </button>
+          <div class="acc-body" style="display:none"><div data-sh-slot></div></div>
         </div>
         <div class="acc-section${openScreenAccordions.has(s.device_id) ? ' open' : ''}" data-acc="tvsettings-${s.device_id}">
           <button class="acc-head" data-acc-toggle="tvsettings-${s.device_id}">

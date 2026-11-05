@@ -1368,6 +1368,8 @@ async function renderFavoritesTab() {
   }
   if (needs.has('todos')) fetches.push(apiFetch('/api/todo-lists').then(r => data.todoLists = Array.isArray(r) ? r : []).catch(() => { data.todoLists = []; }));
   await Promise.all(fetches);
+  // Cards that look up their own data (the meal, list and health cards in 14-favorites-cards.js) do it here, after the shared lookups above.
+  await Promise.all(favoriteCards.map(c => { const d = FAVORITE_CARD_DEFS[c.type]; return d && d.fetch ? Promise.resolve().then(() => d.fetch(c, data)).catch(() => {}) : null; }));
 
   // Thermostat cards need per-entity detail (target/current temp, safe
   // range/step) that the bulk /api/ha/entities list above doesn't carry —
@@ -1723,8 +1725,12 @@ let _favoritesRefreshTimer = null;
 function startFavoritesAutoRefresh() {
   stopFavoritesAutoRefresh();
   _favoritesRefreshTimer = setInterval(() => {
-    if (currentTab === 'favorites') renderFavoritesTab();
-    else stopFavoritesAutoRefresh();
+    if (currentTab !== 'favorites') { stopFavoritesAutoRefresh(); return; }
+    // Do not redraw under someone who is typing, choosing from a list, or has a meal editor open: it would throw away what they have entered.
+    const a = document.activeElement;
+    if (a && a.closest && a.closest('#favorites-grid') && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) return;
+    if (typeof FV_EDIT !== 'undefined' && FV_EDIT.key) return;
+    renderFavoritesTab();
   }, 15000);
 }
 function stopFavoritesAutoRefresh() {

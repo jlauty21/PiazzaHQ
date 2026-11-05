@@ -126,6 +126,13 @@ for w in $(ls /sys/class/net 2>/dev/null | grep '^wlan'); do
 done
 gw="$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
 [[ -n "$gw" ]] && echo "can reach the router ($gw): $(ping -c1 -W2 "$gw" >/dev/null 2>&1 && echo yes || echo NO)"
+# What the Wi-Fi watchdog (the app switches Wi-Fi off and on again when it drops and stays down) last did, and any Wi-Fi join the driver refused this boot.
+wd="$(curl -s -m 4 http://localhost:3000/api/settings 2>/dev/null | grep -o '"wifi_watchdog_status":"[^"]*"' | sed 's/^"wifi_watchdog_status":"//; s/"$//')"
+echo "Wi-Fi watchdog: ${wd:-has not had to do anything}"
+n="$(journalctl -b --no-pager 2>/dev/null | grep -c 'Association request to the driver failed')"
+[[ "${n:-0}" -gt 0 ]] && echo "Wi-Fi joins the driver refused this boot: $n"
+WDLOG="${XDG_STATE_HOME:-$HOME/.local/state}/piazzahq/wifi-watchdog.log"
+if [[ -s "$WDLOG" ]]; then echo "Wi-Fi watchdog log (last 10 of $(wc -l < "$WDLOG") lines, kept across reboots: $WDLOG):"; tail -10 "$WDLOG" | cut -c1-200 | sed 's/^/    /'; fi
 echo "recent network messages from the kernel:"
 dmesg 2>/dev/null | grep -iE 'power save|brcmfmac.*(error|fail|timeout|reset|crash)|link is (up|down)|NETDEV WATCHDOG|wlan0: (deauth|disassoc)' | tail -6 | cut -c1-200 | sed 's/^/    /'
 

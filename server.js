@@ -1430,6 +1430,11 @@ if (!columnExists('screens', 'screen_version')) {
   db.exec(`ALTER TABLE screens ADD COLUMN screen_version TEXT DEFAULT ''`);
   console.log('Migrated: added screen_version column to screens');
 }
+// The last Screen health summary a mirror sent with its check-in (src/screen-health.js)
+if (!columnExists('screens', 'health_json')) {
+  db.exec(`ALTER TABLE screens ADD COLUMN health_json TEXT DEFAULT ''`);
+  console.log('Migrated: added health_json column to screens');
+}
 // Floating Layout Switcher — screen-level, see the fresh-install schema's own
 // comment above for the full explanation.
 if (!columnExists('screens', 'floating_switcher_enabled')) {
@@ -2204,14 +2209,14 @@ async function fetchSupportLinks() {
     return _supportLinksCache.data;
   }
   const serverUrl = resolveUpdateServerUrl();
-  if (!serverUrl) return _supportLinksCache.data || { stripeUrl: '', paypalUrl: '' };
+  if (!serverUrl) return _supportLinksCache.data || { stripeUrl: '', paypalUrl: '', venmoUrl: '' };
   try {
     const res = await fetchWithTimeout(serverUrl + '/api/v1/support-links', { timeoutMs: 8000 });
     const parsed = await res.json();
     _supportLinksCache = { data: parsed, at: now };
     return parsed;
   } catch {
-    return _supportLinksCache.data || { stripeUrl: '', paypalUrl: '' };
+    return _supportLinksCache.data || { stripeUrl: '', paypalUrl: '', venmoUrl: '' };
   }
 }
 const UPDATE_TMP   = path.join(__dirname, '.update-tmp');     // staging for the uploaded zip
@@ -3612,7 +3617,7 @@ app.use('/api', (req, res, next) => {
 
 // ── Display "painted" signal ─────────────────────────────────────────────────
 // This code lives in src/display-painted.js. It runs here, at the same place in the file as before.
-require('./src/display-painted.js')({ crypto, app });
+const displayPainted = require('./src/display-painted.js')({ crypto, app });
 
 // ── Remote access: Cloudflare tunnel (Phase 1) ───────────────────────────────
 // One switch on the HOST device (Settings -> Remote Access) that gives the
@@ -4674,7 +4679,7 @@ function fetchJSONPost(url, timeoutMs) {
 // and flows host → slave. The role/host-address/identity/update keys stay per-device.
 const LOCAL_ONLY_SETTINGS = new Set([
   'device_role', 'host_lan_address', 'host_ts_address', 'host_port', 'setup_complete',
-  'wifi_powersave_status', 'wifi_powersave_off', 'kiosk_link_status', 'kiosk_link_fix', // what THIS box's Wi-Fi / `kiosk` command housekeeping did (and its opt-outs) - a mirror must not show or inherit the host's
+  'wifi_powersave_status', 'wifi_powersave_off', 'wifi_watchdog_status', 'wifi_watchdog_off', 'kiosk_link_status', 'kiosk_link_fix', // what THIS box's Wi-Fi / `kiosk` command housekeeping did (and its opt-outs) - a mirror must not show or inherit the host's
   'remote_access_require_auth', // per-device: whether THIS box demands the remote login from LAN devices
   'remote_alert_mode', 'remote_alert_email', 'remote_known_devices', 'remote_alert_last_sent', 'remote_alert_last_error',   // this box's own alert choices - never synced
   'remote_access_allow_control', 'remote_access_notice', // this box's own remote-access choices - never synced
@@ -5167,7 +5172,7 @@ async function registerWithHost(base) {
     const addrs = getReachableAddresses();
     const myAddr = encodeURIComponent((addrs.preferred || '') + ':' + (addrs.port || PORT));
     const reg = await fetchJSONPost(
-      `${base}/api/screen-checkin?screen=${myId}&remote=1&name=${myName}&addr=${myAddr}&version=${encodeURIComponent(APP_VERSION)}`, 5000
+      `${base}/api/screen-checkin?screen=${myId}&remote=1&name=${myName}&addr=${myAddr}&version=${encodeURIComponent(APP_VERSION)}${(() => { try { return '&health=' + encodeURIComponent(JSON.stringify(screenHealth.snapshot())); } catch { return ''; } })()}`, 5000
     );
     if (reg && typeof reg.assigned_display_slug === 'string') {
       const cur = getSetting('assigned_display_slug_remote');
@@ -5402,6 +5407,7 @@ function slaveWriteGuard(req, res, next) {
                     p.startsWith('/api/auth') ||        // local login/PIN
                     p.startsWith('/api/remote-auth') || // this device's own remote password/sessions — never proxied to the host
                     p.startsWith('/api/display/') ||    // this device's own kiosk browser reporting that it drew (must not be forwarded to the host)
+                    p === '/api/display/reload' ||         // this device's own display page: the host asks a mirror to reload ITS display, never forwarded back
                     p.startsWith('/api/system-rotation') || // this device's own screen: the host cannot turn it
                     p.startsWith('/api/pointer/') ||    // this device's own screen asking for its own mouse pointer (the host would refuse it: not its loopback)
                     p.startsWith('/api/remote-access') || // this device's own tunnel - a mirror must answer "use your host" itself, not switch the HOST's tunnel on
@@ -5939,6 +5945,8 @@ const systemRotation = require('./src/system-rotation.js')({ app, fs, path, os, 
 // Version status for the Version widget (GET /api/version-status): this device's version, the newest one, and each screen's version. src/version-status.js.
 const versionStatus = require('./src/version-status.js')({ app, db, http, https, URL, APP_VERSION, DEPLOYMENT, IS_CONTAINER, isBetaVersion, isSlave, hostBaseURL, hostHeaders: () => ({ 'x-host-pin': getSetting('app_pin') || '', 'x-mirror-license': getSetting('update_license_key') || '' }), fetchUpdateInfo, SCREEN_ONLINE_MS, log: (m) => console.log(m) });
 require('./src/wifi-power.js')({ fs, path, os, execFile, DEPLOYMENT, IS_DEMO, getSetting: (k) => getSetting(k), setSetting });
+// A Pi whose Wi-Fi drops and does not come back gets it switched off and on again (and further steps), by itself; src/wifi-watchdog.js. Starts a timer, adds no routes.
+require('./src/wifi-watchdog.js')({ fs, path, os, execFile, DEPLOYMENT, IS_DEMO, getSetting: (k) => getSetting(k), setSetting });
 
 // ── The `kiosk` command: repair a stale root-owned copy (Pi only) ──
 // This code lives in src/kiosk-link.js. It runs here, after setSetting(); it only starts a timer and adds no routes.
@@ -5978,7 +5986,9 @@ const recipesApi = require('./src/recipes.js')({ path, fs, crypto, app, db, UPLO
 require('./src/voice-recipes.js')({ app, db, voiceAuth, recipes: recipesApi, presentations });
 // The community recipe library (share your own, browse and copy): src/recipe-library.js; the library itself is on the central server.
 require('./src/recipe-library.js')({ app, db, fs, path, URL, UPLOAD_DIR, recipes: recipesApi, isSlave: () => isSlave(), broadcastUpdate, central: { base: () => resolveFeedbackUrl(), key: () => resolveFeedbackKey(), fetch: fetchWithTimeout, deviceId: () => updateSetting('screen_device_id_cache', '') || DEVICE_ID || '' } });
-require('./src/screens.js')({ getReachableAddresses, app, PORT, IS_DEMO, db, broadcastUpdate, sendScreenCommand, SCREEN_ONLINE_MS, DEVICE_ID, getSetting, isSlave, resolveDisplay, previewScreenName, updateSetting });
+require('./src/screens.js')({ getReachableAddresses, app, PORT, IS_DEMO, db, broadcastUpdate, sendScreenCommand, SCREEN_ONLINE_MS, DEVICE_ID, getSetting, isSlave, resolveDisplay, previewScreenName, updateSetting, sanitizeScreenHealth: (...a) => screenHealth.sanitize(...a) });
+// Screen health (Devices tab): each screen's summary, and "Reload display". src/screen-health.js.
+const screenHealth = require('./src/screen-health.js')({ app, fs, os, path, db, DEVICE_ID, APP_VERSION, DEPLOYMENT, SCREEN_ONLINE_MS, PORT, isSlave, displayPainted, sendScreenCommand, fetchWithTimeout, getSetting: (k) => getSetting(k) });
 
 // ── Layout API ────────────────────────────────────────────────────────────────
 // This code lives in src/layout-api.js. It runs here, at the same place in the file as before.
@@ -6106,7 +6116,7 @@ app.post('/api/kiosk/exit', (req, res) => {
 // there's no real "failure" state worth surfacing to the user for this.
 app.get('/api/support-links', async (req, res) => {
   const links = await fetchSupportLinks();
-  res.json({ stripeUrl: links.stripeUrl || '', paypalUrl: links.paypalUrl || '' });
+  res.json({ stripeUrl: links.stripeUrl || '', paypalUrl: links.paypalUrl || '', venmoUrl: /^https:\/\//i.test(links.venmoUrl || '') ? links.venmoUrl : '' });
 });
 
 // True only when this device is actually running a beta-suffixed version

@@ -1,20 +1,16 @@
 // ── Countdown widget ─────────────────────────────────────────────────────────
 // Purely local — no network needed. Counts down to (or up from) a target date,
 // optionally rolling forward a year at a time for recurring things like birthdays.
-function renderCountdown(widget) {
-  const w = widget || {};
-  const fontPx = w.cdFontPx || 22;
-  const title = w.cdTitle || 'Countdown';
-  if (!w.cdDate) {
-    return `<div class="w-countdown" style="--cd-font:calc(${fontPx}px * var(--ui-scale,1))"><div class="cd-title">${escapeHtmlD(title)}</div><div class="no-data">Set a date in widget settings</div></div>`;
-  }
+// Where a countdown stands right now: { diffMs, today }. diffMs is calendar-day corrected (see the DST note in renderCountdown); today is true on the date itself.
+// Null when no date is set.
+function countdownMath(w, now) {
+  if (!w || !w.cdDate) return null;
   const [y, m, d] = w.cdDate.split('-').map(Number);
   let target = new Date(y, (m || 1) - 1, d || 1, 0, 0, 0, 0);
   if (w.cdTime) {
     const [th, tm] = w.cdTime.split(':').map(Number);
     target.setHours(th || 0, tm || 0, 0, 0);
   }
-  const now = new Date();
   if (w.cdRepeatYearly) {
     // Roll the target forward by whole years until it's not in the past, so a
     // birthday/anniversary just keeps counting down to the NEXT occurrence.
@@ -31,9 +27,28 @@ function renderCountdown(widget) {
   // DST offsets, so the math reflects wall-clock calendar days the way a
   // person would count them, not true physical elapsed time.
   const diffMs = (target - now) + (now.getTimezoneOffset() - target.getTimezoneOffset()) * 60000;
+  return { diffMs, today: Math.abs(diffMs) < 86400000 && target.toDateString() === now.toDateString() };
+}
+// True when a countdown that is set to remove itself ("Remove when the date has passed") has passed: from the moment it would start saying "N days ago", so the
+// date itself ("Today!") is still shown. A yearly countdown never passes. The display skips such a widget (in Live Edit it stays, so it can still be changed).
+function countdownIsPast(widget, now) {
+  const w = widget || {};
+  if (w.type !== 'countdown' || !w.cdHideWhenPast || w.cdRepeatYearly) return false;
+  const c = countdownMath(w, now || new Date());
+  return !!c && !c.today && c.diffMs <= 0;
+}
+
+function renderCountdown(widget) {
+  const w = widget || {};
+  const fontPx = w.cdFontPx || 22;
+  const title = w.cdTitle || 'Countdown';
+  if (!w.cdDate) {
+    return `<div class="w-countdown" style="--cd-font:calc(${fontPx}px * var(--ui-scale,1))"><div class="cd-title">${escapeHtmlD(title)}</div><div class="no-data">Set a date in widget settings</div></div>`;
+  }
+  const { diffMs, today } = countdownMath(w, new Date());
   const dayMs = 86400000;
   let body;
-  if (Math.abs(diffMs) < dayMs && target.toDateString() === now.toDateString()) {
+  if (today) {
     body = `<div class="cd-today">🎉 Today!</div>`;
   } else if (diffMs > 0) {
     const days = Math.ceil(diffMs / dayMs);

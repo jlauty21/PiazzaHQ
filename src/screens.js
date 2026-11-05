@@ -2,7 +2,7 @@
 // Screens manager: the list of screens, per-screen settings, assigning a profile, a screen checking in / fetching its config, forgetting a screen and deleting a profile.
 // Moved out of server.js (part of the split, see TODO.md). Behavior is unchanged: the code runs at the same point in server.js as before (route
 // order matters in Express), and everything it uses comes in through the one object below. Covered by test/api/screens-displays.test.js.
-module.exports = function registerScreens({ getReachableAddresses, app, PORT, IS_DEMO, db, broadcastUpdate, sendScreenCommand, SCREEN_ONLINE_MS, DEVICE_ID, getSetting, isSlave, resolveDisplay, previewScreenName, updateSetting }) {
+module.exports = function registerScreens({ getReachableAddresses, app, PORT, IS_DEMO, db, broadcastUpdate, sendScreenCommand, SCREEN_ONLINE_MS, DEVICE_ID, getSetting, isSlave, resolveDisplay, previewScreenName, updateSetting, sanitizeScreenHealth }) {
   // The automatic screensaver's schedule: up to 6 rules of { start: 'HH:MM', end: 'HH:MM', days: [0-6] } (days empty = every day; an end earlier than the
   // start means "into the next morning"). Stored as JSON text on the screen; always returned normalised.
   const HM = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -483,6 +483,11 @@ module.exports = function registerScreens({ getReachableAddresses, app, PORT, IS
       db.prepare(`INSERT INTO screens (device_id, name, last_seen, is_remote, remote_addr, screen_version) VALUES (?, ?, ?, ?, ?, ?)`)
         .run(screenId, previewScreenName(screenId) || defaultName, now, isRemote, remoteAddr, reportedVersion);
       broadcastUpdate('screens');
+    }
+    // A mirror's own summary (version, uptime, Wi-Fi, repairs ...) for the Screen health card: only known fields are kept (see src/screen-health.js)
+    if (isRemote && req.query.health) {
+      const h = sanitizeScreenHealth(String(req.query.health));
+      if (h) db.prepare(`UPDATE screens SET health_json = ? WHERE device_id = ?`).run(JSON.stringify(h), screenId);
     }
     // Physical resolution: only the device's OWN server should store its resolution
     // setting. A remote check-in must NOT overwrite the host's local display_res.

@@ -30,6 +30,17 @@ let currentTab = getDefaultTab();
 // version bump with no entry here just won't trigger a popup for it,
 // silently (not an error), so it's fine to skip purely-internal versions.
 const RELEASE_NOTES = {
+  '1.93.3': [
+    'New: Screen health, inside each screen\'s card on the Devices tab. Every screen has a Health section showing its status, how long it has been running, when its display last drew a frame, whether it is on Wi-Fi (with the signal strength) or a cable, and anything that was repaired in the last week, with Reload display and Copy details buttons. The dot in the screen\'s title shows the same status at a glance. A thin line above the list says All good, Fixed itself recently or Needs attention.',
+    'New: twelve Favorites cards. In Favorites, tap + Add a Card: Tonight\'s Dinner, This Week\'s Dinners, Cook Tonight (put tonight\'s recipe on a screen and add its ingredients to your shopping list), To-Do Checklist, Shopping Checklist and Chore Checklist (tick items off right from Favorites), Quick Event, Weekly Reminder, One-tap Messages, Add a Photo, Screens Needing Attention and Update Available.',
+    'New: a Raspberry Pi whose Wi-Fi drops and does not come back now fixes itself, one step at a time, and keeps a log that survives restarts. It does nothing when a network cable is plugged in or when you turned Wi-Fi off yourself.',
+    'New: Countdown widgets can remove themselves. A switch, "Remove when the date has passed", takes the countdown off the screen the day after its date.',
+    'New: a Venmo option under Settings → Support the Project.',
+    'Fixed: a blank screen at start-up while the internet is slow or down. The screen now draws within about a second and a half and fills in each widget as its data arrives.',
+    'Fixed: the Weather widget disappearing when the weather cannot be fetched. The last weather stays on screen.',
+    'Fixed: Ctrl+Alt+K and the kiosk command on a Pi where a system service also starts the browser.',
+    'Fixed: the Favorites tab no longer redraws while you are typing in it.',
+  ],
   '1.93.2': [
     'New: rotating widgets. Put several widgets in the same spot and let them take turns: give each the same rotation group (Live Edit, Rotation), then choose the order, how long each stays, a fade or slide, whether to skip empty ones, and the hours and days it runs. Rotations can also be set to change together.',
     'New: Whiteboard backgrounds and mouse use. Pick a background color, a transparent background (the screen shows through), or a border for a Whiteboard. Pens pick a readable color on their own, and with a mouse you get shortcuts and a scroll wheel for the pen size.',

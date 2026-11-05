@@ -422,10 +422,22 @@ async function init() {
   // Load the layout + data, each guarded. A failure in one doesn't blank the screen.
   let _layoutBootOk = false;
   try { await fetchLayout(currentOrientation); _layoutBootOk = true; } catch (e) { console.error('init: layout', e); state.layout = state.layout || []; }
-  await Promise.allSettled([fetchEvents(), fetchReminders(), fetchMessages(), fetchCameras(), fetchMeals(), fetchWeather(), fetchPhotos(), fetchProfiles(), fetchFlightmap(true)]);
-  await Promise.allSettled([fetchTasksForLayout(), fetchTodoForLayout(), fetchShoppingListForLayout(), fetchNews(), fetchStocks(), fetchChoreChart(), fetchStickersForLayout(), fetchAirQuality(), fetchTravelTimes(), fetchOnThisDay(), fetchDailyQuote(), fetchSports(), fetchMetarTaf(), fetchHaEntities()]);
+  // Every data lookup starts at once. The first draw of the screen used to wait for ALL of them, so one slow lookup - the internet lookups (weather, news, stocks, ...) can
+  // take the server's whole 10 second limit when the Pi is up before the internet is, after a power cut or a router restart - left the wall blank until it finished or
+  // gave up. Now: normally everything arrives well inside 1.5 seconds and the screen is drawn once, as before; if not, it is drawn with what has arrived by then, and each
+  // lookup that lands later draws it again (a moment apart, so several landing together make one redraw).
+  let _bootDrawn = false, _redrawTimer = 0;
+  const redrawSoon = () => {
+    if (!_bootDrawn || _redrawTimer) return;
+    _redrawTimer = setTimeout(() => { _redrawTimer = 0; try { renderLayout(); } catch (e) { console.error('init: render', e); } }, 300);
+  };
+  const _lookups = [fetchEvents(), fetchReminders(), fetchMessages(), fetchCameras(), fetchMeals(), fetchWeather(), fetchPhotos(), fetchProfiles(), fetchFlightmap(true),
+    fetchTasksForLayout(), fetchTodoForLayout(), fetchShoppingListForLayout(), fetchNews(), fetchStocks(), fetchChoreChart(), fetchStickersForLayout(), fetchAirQuality(), fetchTravelTimes(), fetchOnThisDay(), fetchDailyQuote(), fetchSports(), fetchMetarTaf(), fetchHaEntities()]
+    .map((pr) => Promise.resolve(pr).then(redrawSoon, redrawSoon));
+  await Promise.race([Promise.allSettled(_lookups), new Promise((r) => setTimeout(r, 1500))]);
   fetchEventHistory().then(renderLayout).catch(()=>{}); // deep history in background
   try { renderLayout(); } catch (e) { console.error('init: render', e); }
+  _bootDrawn = true;
   // If the boot layout fetch failed outright (not just "no widgets"), keep
   // retrying hard for a couple of minutes so the screen fills itself in,
   // rather than waiting on the next SSE/settings event or a manual switch.
@@ -448,6 +460,14 @@ async function init() {
 
   // Clock ticks every second
   setInterval(tickClock, 1000);
+
+  // A countdown set to "Remove when the date has passed" has to go by itself when midnight comes (and be back when its date is changed): every 30 seconds, look at which
+  // of them have passed, and draw the screen again only when that has changed.
+  const cdPastSignature = () => (state.layout || []).filter((w) => w.type === 'countdown' && w.cdHideWhenPast).map((w) => w.id + ':' + (countdownIsPast(w) ? 1 : 0)).join(',');
+  let _cdPastSig = cdPastSignature();
+  setInterval(() => {
+    try { const sig = cdPastSignature(); if (sig !== _cdPastSig) { _cdPastSig = sig; if (!editModeActive) renderLayout(); } } catch {}
+  }, 30 * 1000);
 
   // Auto-reload after a software update: capture the running server version at boot,
   // then poll periodically. When the server comes back on a NEW version (e.g. after

@@ -21,6 +21,12 @@
 
 set -uo pipefail
 
+# Run through sudo, this would put the "turned off on purpose" marker (below) in root's home folder, where nothing looks for it, and `kiosk on` would start the
+# browser as root. So it runs again as the person who typed sudo (PIAZZA_KIOSK_EUID is only for the tests).
+if [[ "${PIAZZA_KIOSK_EUID:-${EUID:-$(id -u)}}" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" && -z "${PIAZZA_KIOSK_REEXEC:-}" ]]; then
+  exec sudo -n -u "${SUDO_USER}" -H env PIAZZA_KIOSK_REEXEC=1 bash "${BASH_SOURCE[0]}" "$@"
+fi
+
 URL="${PI_CALENDAR_URL:-http://localhost:3000?nopreview}"
 # ?nopreview is explicit and deterministic — without it, the page guesses "preview
 # mode" from viewport size alone, and a smaller or portrait-oriented real display
@@ -55,6 +61,24 @@ GRN=$'\033[32m'; YLW=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
 # checks for this first and must never fight it. `kiosk on`/`toggle`-to-on
 # clear it; only `kiosk off`/`toggle`-to-off set it.
 OFF_SENTINEL="$HOME/.config/piazzahq-kiosk-off"
+
+# A systemd service somebody made to run the kiosk browser (a hand-made "pi-kiosk.service" with Restart=always is the real-world case, found on 2026-10-26: killing the
+# browser did nothing, since systemd started it again 2 seconds later, so `kiosk off` and the Ctrl+Alt+K shortcut kept bouncing the kiosk back). Name of the first
+# enabled or running one, or nothing. PIAZZA_SYSTEMD_DIR is only for the tests.
+SYSTEMD_DIR="${PIAZZA_SYSTEMD_DIR:-/etc/systemd/system}"
+kiosk_unit() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  local f u
+  for f in "$SYSTEMD_DIR"/*.service; do
+    [[ -f "$f" ]] || continue
+    grep -qE '^[[:space:]]*ExecStart=.*(chromium|chrome).*--kiosk' "$f" || continue
+    u="$(basename "$f")"
+    if systemctl is-enabled --quiet "$u" 2>/dev/null || systemctl is-active --quiet "$u" 2>/dev/null; then echo "$u"; return 0; fi
+  done
+  return 1
+}
+# systemctl start|stop <unit>: as this user, then through passwordless sudo (the default Pi user has it).
+unit_ctl() { systemctl "$1" "$2" >/dev/null 2>&1 || sudo -n systemctl "$1" "$2" >/dev/null 2>&1; }
 
 # Chromium goes by a few binary names depending on the OS build.
 chromium_bin() {
@@ -154,7 +178,15 @@ is_running() {
 
 kiosk_off() {
   mkdir -p "$(dirname "$OFF_SENTINEL")" && touch "$OFF_SENTINEL"
-  if is_running; then
+  local was_running=0 unit=""
+  is_running && was_running=1
+  # A service that restarts the browser has to be stopped first, or it comes straight back (see kiosk_unit)
+  if unit="$(kiosk_unit)"; then
+    if unit_ctl stop "$unit"; then echo "${DIM}Stopped $unit (it restarts the browser by itself).${RST}"
+    else echo "${YLW}$unit restarts the browser by itself and could not be stopped from here.${RST} Run:  sudo systemctl stop $unit"; fi
+    sleep 1
+  fi
+  if [[ $was_running -eq 1 ]] || is_running; then
     # Kill the WHOLE kiosk Chromium process tree, not just the one process
     # matching --kiosk. A real incident (2026-09-12) traced a display that
     # got progressively less stable across repeated auto-recoveries back to
@@ -202,6 +234,13 @@ kiosk_on() {
   rm -f "$OFF_SENTINEL"
   if is_running; then
     echo "Kiosk is already running."
+    return 0
+  fi
+  # The service that runs the browser on this Pi (see kiosk_unit) starts it again, rather than a second copy next to it
+  local unit
+  if unit="$(kiosk_unit)" && unit_ctl start "$unit"; then
+    sleep 2
+    if is_running; then echo "${GRN}Kiosk started${RST} (through $unit)."; else echo "${YLW}Started $unit, but the kiosk is not showing as running yet.${RST}"; fi
     return 0
   fi
   discover_display_env
@@ -252,10 +291,32 @@ kiosk_status() {
   fi
 }
 
+# One change at a time: a key held down repeats, and two copies working on the browser at once fight each other.
+case "${1:-}" in
+  off|stop|on|start|toggle|restart)
+    if command -v flock >/dev/null 2>&1; then
+      exec 9>"${TMPDIR:-/tmp}/piazzahq-kiosk-$(id -u).lock"
+      flock -n 9 || { echo "Another kiosk command is still running."; exit 0; }
+    fi ;;
+esac
+# `toggle` flips the state, so a held Ctrl+Alt+K (the key repeats about 30 times a second) turned the kiosk off, on, off, on... Anything within 3 seconds of the last toggle
+# is ignored, and counts as the last toggle itself, so holding the keys changes it once. PIAZZA_KIOSK_DEBOUNCE_MS=0 turns this off.
+TOGGLE_STAMP="$HOME/.config/piazzahq-kiosk-last-toggle"
+now_ms() { date +%s%3N 2>/dev/null || echo "$(( $(date +%s) * 1000 ))"; }
+toggle_too_soon() {
+  local gap="${PIAZZA_KIOSK_DEBOUNCE_MS:-3000}" last now
+  [[ "$gap" -gt 0 ]] || return 1
+  last="$(cat "$TOGGLE_STAMP" 2>/dev/null || echo 0)"; now="$(now_ms)"
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  if [[ $(( now - last )) -lt "$gap" ]]; then mkdir -p "$(dirname "$TOGGLE_STAMP")"; echo "$now" > "$TOGGLE_STAMP"; return 0; fi
+  return 1
+}
+mark_toggle() { mkdir -p "$(dirname "$TOGGLE_STAMP")"; now_ms > "$TOGGLE_STAMP"; }
+
 case "${1:-}" in
   off|stop)    kiosk_off ;;
   on|start)    kiosk_on ;;
-  toggle)      if is_running; then kiosk_off; else kiosk_on; fi ;;
+  toggle)      if toggle_too_soon; then exit 0; fi; if is_running; then kiosk_off; else kiosk_on; fi; mark_toggle ;;
   restart)     kiosk_off; sleep 1; kiosk_on ;;
   status|"")   kiosk_status ;;
   *)

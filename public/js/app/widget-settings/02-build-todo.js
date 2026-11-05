@@ -172,6 +172,10 @@ function drawWidgetSettingsPanel_Build_countdown(_c) {
         <label style="margin-bottom:0">Repeats every year ${infoBtn("For birthdays/anniversaries — always counts down to the next occurrence instead of going negative once the date passes.")}</label>
         <input type="checkbox" id="cd-repeat" ${w.cdRepeatYearly?'checked':''} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
+      <div class="settings-row" id="cd-hide-row" style="display:flex;justify-content:space-between;align-items:center;${w.cdRepeatYearly?'opacity:.5':''}">
+        <label style="margin-bottom:0">Remove when the date has passed ${infoBtn("The countdown disappears from the screen the day after its date (the date itself still shows Today!). It stays in the layout, so you can set a new date. Not used with Repeats every year.")}</label>
+        <input type="checkbox" id="cd-hide-past" ${w.cdHideWhenPast?'checked':''} ${w.cdRepeatYearly?'disabled':''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
       <div class="settings-row" id="cd-font-row">
         <label>Font Size (px)</label>
         <div class="range-row">

@@ -797,6 +797,8 @@ function renderLayout() {
   Array.from(canvas.childNodes).forEach(n => { if (!keepWebEls.has(n)) canvas.removeChild(n); });
 
   state.layout.forEach((w, i) => {
+    // a countdown set to "Remove when the date has passed" is simply not drawn once it has (in Live Edit it stays, so its settings can be reached)
+    if (w.type === 'countdown' && !editModeActive && countdownIsPast(w)) return;
     let el = null;
     let reused = false;
     if (w.type === 'webpage') {

@@ -459,6 +459,10 @@ function renderCountdownAdvancedSettings(w) {
       <label>Repeats every year ${infoBtn("For birthdays/anniversaries — always counts down to the next occurrence instead of going negative once the date passes.")}</label>
       <input type="checkbox" id="cd-repeat" ${w.cdRepeatYearly?'checked':''}>
     </div>
+    <div class="was-toggle-row" id="cd-hide-row" style="${w.cdRepeatYearly?'opacity:.5':''}">
+      <label>Remove when the date has passed ${infoBtn("The countdown disappears from the screen the day after its date (the date itself still shows Today!). It stays in the layout, and in Live Edit, so you can set a new date. Not used with Repeats every year.")}</label>
+      <input type="checkbox" id="cd-hide-past" ${w.cdHideWhenPast?'checked':''} ${w.cdRepeatYearly?'disabled':''}>
+    </div>
     <div class="was-row" id="cd-font-row">
       <label>Font Size (px)</label>
       <div class="was-range-row">
@@ -488,8 +492,16 @@ function wireCountdownAdvancedSettings(w) {
     scheduleLayoutSave();
   });
   const repeatToggle = document.getElementById('cd-repeat');
+  const hidePast = document.getElementById('cd-hide-past');
   if (repeatToggle) repeatToggle.addEventListener('change', (e) => {
     w.cdRepeatYearly = e.target.checked;
+    if (hidePast) hidePast.disabled = !!w.cdRepeatYearly;                    // a yearly countdown never passes
+    const row = document.getElementById('cd-hide-row'); if (row) row.style.opacity = w.cdRepeatYearly ? '.5' : '';
+    rerenderSingleWidget(w.id);
+    scheduleLayoutSave();
+  });
+  if (hidePast) hidePast.addEventListener('change', (e) => {
+    w.cdHideWhenPast = e.target.checked;
     rerenderSingleWidget(w.id);
     scheduleLayoutSave();
   });

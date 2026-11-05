@@ -1440,7 +1440,12 @@ async function drawWidgetSettingsPanel() {
     if ($('cd-title')) $('cd-title').addEventListener('input', (e) => { w.cdTitle = e.target.value; });
     if ($('cd-date')) $('cd-date').addEventListener('change', (e) => { w.cdDate = e.target.value; });
     if ($('cd-time')) $('cd-time').addEventListener('change', (e) => { w.cdTime = e.target.value; });
-    if ($('cd-repeat')) $('cd-repeat').addEventListener('change', (e) => { w.cdRepeatYearly = e.target.checked; });
+    if ($('cd-repeat')) $('cd-repeat').addEventListener('change', (e) => {
+      w.cdRepeatYearly = e.target.checked;
+      if ($('cd-hide-past')) $('cd-hide-past').disabled = !!w.cdRepeatYearly;           // a yearly countdown never passes
+      if ($('cd-hide-row')) $('cd-hide-row').style.opacity = w.cdRepeatYearly ? '.5' : '';
+    });
+    if ($('cd-hide-past')) $('cd-hide-past').addEventListener('change', (e) => { w.cdHideWhenPast = e.target.checked; });
     if ($('cd-font-range')) $('cd-font-range').addEventListener('input', (e) => {
       w.cdFontPx = parseInt(e.target.value);
       $('cd-font-val').textContent = w.cdFontPx + 'px';

@@ -1281,10 +1281,12 @@ async function renderDisplaysTab() {
   $('content').innerHTML = `
     <div style="margin-bottom:6px">
       <p style="font-size:12px;color:var(--muted);margin:0 0 12px;padding:0 2px">Your screens, and the layout each one shows. Pick a profile for a screen and it switches instantly — no SSH or reboot.</p>
+      <div id="screen-health"></div>
       <div id="screens-list"><div style="color:var(--muted);font-size:13px;padding:8px">Loading…</div></div>
       <div id="add-display-section" style="margin-top:20px"></div>
     </div>`;
   loadScreens();
+  if (typeof loadScreenHealth === 'function') loadScreenHealth();
   startScreensAutoRefresh();
   renderAddDisplaySection();
 }
