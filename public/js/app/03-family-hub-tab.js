@@ -1299,19 +1299,25 @@ async function renderDisplaysTab() {
 // just anything with a browser pointed at this URL: an old tablet, a Fire
 // Stick's browser, a spare monitor plugged into a cheap streaming box —
 // none of that requires a Raspberry Pi at all.
+// What is being added: a screen that shows one of the layouts ('screen'), or a touch tile display for a tablet or a phone ('tablet', the /tablet and /phone pages: see 15-tablet-editor.js).
+let addDisplayMode = 'screen', addTabletId = '', addTabletPath = '/tablet';
 async function renderAddDisplaySection() {
   const section = $('add-display-section');
   if (!section) return;
-  let displays = [], ts = { installed: false, ip: null, port: null };
+  let displays = [], tablets = [], ts = { installed: false, ip: null, port: null };
   try {
-    [displays, ts] = await Promise.all([
+    [displays, tablets, ts] = await Promise.all([
       getDisplaysList(),
+      apiFetch('/api/tablets').catch(() => []),
       apiFetch('/api/tailscale-status').catch(() => ({ installed: false, ip: null, port: null })),
     ]);
   } catch {}
-  if (!displays || !displays.length) { section.innerHTML = ''; return; }
+  displays = Array.isArray(displays) ? displays : [];
+  tablets = Array.isArray(tablets) ? tablets : [];
+  if (!displays.length && !tablets.length) { section.innerHTML = ''; return; }
+  if (!displays.length) addDisplayMode = 'tablet';                                           // only touch tile displays can be added without a layout
 
-  const defaultSlug = displays[0].slug;
+  const defaultSlug = displays.length ? displays[0].slug : '';
   // Prefer this Pi's own Tailscale IP for the generated URL/QR — it works
   // regardless of what network the NEW device is on, as long as it's also
   // on the same tailnet. window.location.origin only works if the new
@@ -1320,16 +1326,8 @@ async function renderAddDisplaySection() {
   const baseUrl = ts.installed
     ? `http://${ts.ip}:${ts.port || 3000}`
     : window.location.origin;
-
-  section.innerHTML = `
-    <div class="settings-card" style="margin-top:4px">
-      <div style="padding:14px 16px 4px">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-          <span style="font-size:18px">📺</span>
-          <b style="font-size:14px">Add a Display</b>
-        </div>
-        <p style="font-size:12px;color:var(--muted);margin:0 0 14px">Any screen with a web browser can show your layout — an old tablet, a Fire Stick or Chromecast's browser, a spare monitor on a cheap streaming box. No Pi, no install script needed.</p>
-        ${ts.installed ? `
+  const chip = (mode, label) => `<button type="button" class="btn add-display-mode" data-mode="${mode}" style="width:auto;margin:0;padding:6px 14px;font-size:13px;${addDisplayMode === mode ? '' : 'background:var(--card);border:1px solid var(--border)'}">${label}</button>`;
+  const notice = ts.installed ? `
           <div style="background:rgba(52,211,153,0.12);border:1px solid rgba(52,211,153,0.35);border-radius:10px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#34d399">
             ✓ Tailscale detected on this server — the link/QR below will work from any device on your tailnet, not just this Wi-Fi network.
           </div>
@@ -1341,7 +1339,76 @@ async function renderAddDisplaySection() {
             install Tailscale on <b>both</b> this server and the new device first —
             <a href="https://tailscale.com/download" target="_blank" rel="noopener" style="color:#ffb020">tailscale.com/download</a>.
           </div>
-        `}
+        `;
+  const head = `
+      <div style="padding:14px 16px 4px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span style="font-size:18px">📺</span>
+          <b style="font-size:14px">Add a Display</b>
+        </div>
+        ${displays.length ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px" role="group" aria-label="What are you adding?">${chip('screen', 'A screen')}${chip('tablet', 'A tablet or phone')}</div>` : ''}`;
+
+  if (addDisplayMode === 'tablet') {
+    // A tablet or phone: pick one that exists (or make a new one), then its address and QR code. The tiles are edited in Layout, Tablet.
+    if (!tablets.some((t) => t.id === addTabletId) && addTabletId !== 'new') addTabletId = tablets.length ? tablets[0].id : 'new';
+    const isNew = addTabletId === 'new';
+    const url = isNew ? '' : `${baseUrl}${addTabletPath}?t=${encodeURIComponent(addTabletId)}`;
+    const pathChip = (path, label) => `<button type="button" class="btn add-tablet-path" data-path="${path}" style="width:auto;margin:0;padding:4px 10px;font-size:12px;${addTabletPath === path ? '' : 'background:var(--card);border:1px solid var(--border)'}">${label}</button>`;
+    section.innerHTML = `
+    <div class="settings-card" style="margin-top:4px">${head}
+        <p style="font-size:12px;color:var(--muted);margin:0 0 14px">A touch dashboard for a wall tablet or a phone, with your lights, locks, scenes, remotes and family lists. Open its address on the device, then add it to the home screen.</p>
+        ${notice}
+      </div>
+      <div class="settings-row" style="margin-bottom:12px">
+        <label>Which tablet or phone?</label>
+        <select class="form-input" id="add-tablet-pick">
+          ${tablets.map((t) => `<option value="${escapeHtml(t.id)}" ${t.id === addTabletId ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}
+          <option value="new" ${isNew ? 'selected' : ''}>＋ A new tablet or phone…</option>
+        </select>
+      </div>
+      ${isNew ? `
+      <div style="padding:0 16px 14px;display:flex;flex-direction:column;gap:8px">
+        <input class="form-input" id="add-tablet-name" maxlength="40" placeholder="Name, for example Kitchen tablet or Dad's phone" aria-label="Name of the tablet or phone">
+        ${tablets.length ? `<label style="font-size:12px;color:var(--muted)">Start with the tiles of <select class="form-input" id="add-tablet-copy" style="margin-top:4px"><option value="">No tiles (start empty)</option>${tablets.map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('')}</select></label>` : ''}
+        <button type="button" class="btn btn-primary" id="add-tablet-create" style="width:auto;margin:0;align-self:flex-start">Add it</button>
+      </div>` : `
+      <div style="padding:0 16px 14px;display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+        <div id="add-display-qr" style="background:#fff;padding:10px;border-radius:10px;flex-shrink:0"></div>
+        <div style="flex:1;min-width:180px">
+          <div style="display:flex;gap:6px;margin:0 0 8px" role="group" aria-label="Which device">${pathChip('/tablet', 'For a tablet')}${pathChip('/phone', 'For a phone')}</div>
+          <p style="font-size:11px;color:var(--muted);margin:0 0 6px">Scan on the device, or open this address in its browser:</p>
+          <div style="display:flex;gap:8px;align-items:center">
+            <code id="add-display-url" style="font-size:11px;word-break:break-all;background:var(--bg,#0f1420);border-radius:6px;padding:8px 10px;flex:1">${escapeHtml(url)}</code>
+            <button id="add-display-copy-btn" style="background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 10px;font-size:13px;cursor:pointer;flex-shrink:0">📋</button>
+          </div>
+          <button type="button" id="add-display-tablet-link" style="background:none;border:none;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;padding:8px 0 0">Choose its tiles ›</button>
+        </div>
+      </div>`}
+    </div>`;
+    section.querySelectorAll('.add-display-mode').forEach((b) => b.addEventListener('click', () => { addDisplayMode = b.dataset.mode; renderAddDisplaySection(); }));
+    $('add-tablet-pick').addEventListener('change', (e) => { addTabletId = e.target.value; renderAddDisplaySection(); });
+    if (isNew) {
+      $('add-tablet-create').addEventListener('click', async () => {
+        const name = ($('add-tablet-name').value || '').trim();
+        if (!name) { showToast('Give it a name first.'); return; }
+        const copy = $('add-tablet-copy') ? $('add-tablet-copy').value : '';
+        const r = await apiFetch('/api/tablets', { method: 'POST', body: JSON.stringify(copy ? { name, copy_from: copy } : { name }) });
+        if (r && r.id) { addTabletId = r.id; renderAddDisplaySection(); } else showToast('❌ ' + ((r && r.error) || 'Could not add'));
+      });
+    } else {
+      const qrEl = $('add-display-qr');
+      try { new QRCode(qrEl, { text: url, width: 130, height: 130, colorDark: '#000000', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M }); } catch {}
+      section.querySelectorAll('.add-tablet-path').forEach((b) => b.addEventListener('click', () => { addTabletPath = b.dataset.path; renderAddDisplaySection(); }));
+      $('add-display-copy-btn').addEventListener('click', () => copyToClipboard($('add-display-url').textContent));
+      $('add-display-tablet-link').addEventListener('click', () => { try { localStorage.setItem('phq_edit_tablet', addTabletId); } catch { /* ignore */ } if (typeof TE !== 'undefined') TE.id = addTabletId; layoutSubTab = 'tablet'; const b = document.querySelector('.tab[data-tab="layout"]'); if (b) b.click(); });
+    }
+    return;
+  }
+
+  section.innerHTML = `
+    <div class="settings-card" style="margin-top:4px">${head}
+        <p style="font-size:12px;color:var(--muted);margin:0 0 14px">Any screen with a web browser can show your layout — an old tablet, a Fire Stick or Chromecast's browser, a spare monitor on a cheap streaming box. No Pi, no install script needed.</p>
+        ${notice}
       </div>
       <div class="settings-row" style="margin-bottom:12px">
         <label>Which layout should it show?</label>
@@ -1369,6 +1436,7 @@ async function renderAddDisplaySection() {
     try { new QRCode(qrEl, { text: url, width: 130, height: 130, colorDark: '#000000', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M }); } catch {}
   };
   renderQr(defaultSlug);
+  section.querySelectorAll('.add-display-mode').forEach((b) => b.addEventListener('click', () => { addDisplayMode = b.dataset.mode; renderAddDisplaySection(); }));
   $('add-display-profile-select').addEventListener('change', (e) => renderQr(e.target.value));
   $('add-display-copy-btn').addEventListener('click', () => copyToClipboard($('add-display-url').textContent));
 }

@@ -580,6 +580,17 @@ function renderSettings_Build_contentMarkup(_c) {
       </div>
     </div>
 
+    <div class="section-header">Cameras</div>
+    <div class="settings-card">
+      <p style="font-size:13px;color:var(--muted);margin:0 0 12px">The cameras Piazza HQ can show: as tiles on a tablet, or in a Camera widget on a display. Cameras from Home Assistant, Google Nest included, need no stream address.</p>
+      <div id="s-cam-list" style="display:flex;flex-direction:column;gap:6px"></div>
+      <div class="settings-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <button id="s-cam-ha-btn" type="button" style="background:var(--accent);border:none;border-radius:9px;color:#fff;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer">Add from Home Assistant</button>
+        <span id="s-cam-status" style="font-size:12px;color:var(--muted)"></span>
+      </div>
+      <div id="s-cam-picker" style="display:none;margin-top:8px;flex-direction:column;gap:6px"></div>
+    </div>
+
     <div class="section-header">Home Assistant Control</div>
     <div class="settings-card">
       <p style="font-size:13px;color:var(--muted);margin:0 0 14px">The reverse direction from the Home Assistant card above: let Home Assistant (or any automation tool that can make an HTTP request) trigger actions here — turn a TV/monitor on or off, or switch a display to a saved layout (which also switches its light/dark theme, since each saved layout stores its own). Generates a long-lived token; wire it into Home Assistant's <code>rest_command:</code> once.</p>
@@ -969,6 +980,17 @@ function renderSettings_Build_contentMarkup(_c) {
         <div id="s-pin-hint" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
         <button type="button" class="btn btn-primary" id="s-pin-save-btn" style="display:none;margin-top:8px">Set PIN</button>
         ${s.app_pin ? `<button type="button" id="s-pin-remove-btn" style="background:none;border:none;color:var(--danger);font-size:12px;font-weight:600;cursor:pointer;padding:6px 0;margin-top:2px">Remove PIN protection</button>` : ''}
+      </div>
+      <div class="settings-row">
+        <label>Tablet PIN ${infoBtn("A PIN just for the wall tablet. It is asked for before tiles are rearranged on the tablet and by tiles that need a PIN (locks, garage doors, alarm panels). It does not lock this app. Four digits. Without one, the tablet uses the App PIN.")}</label>
+        <input class="form-input" id="s-tpin" type="password" inputmode="numeric" maxlength="4"
+          placeholder="${s.tablet_pin_set ? 'Tablet PIN is set — leave blank to keep it' : (s.app_pin ? 'No tablet PIN — the tablet uses the App PIN' : 'No tablet PIN — leave blank for none')}" autocomplete="new-password">
+        <input class="form-input" id="s-tpin-confirm" type="password" inputmode="numeric" maxlength="4"
+          placeholder="Confirm tablet PIN" autocomplete="new-password" style="margin-top:8px;display:none">
+        <div id="s-tpin-hint" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+        <button type="button" class="btn btn-primary" id="s-tpin-save-btn" style="display:none;margin-top:8px">Set tablet PIN</button>
+        <label style="display:flex;align-items:flex-start;gap:8px;margin-top:10px;font-size:13px"><input type="checkbox" id="s-tpin-optional" ${s.tablet_pin_optional === '1' ? 'checked' : ''} style="margin-top:2px"><span>Let tiles that need a PIN work without one<small style="display:block;font-size:11px;color:var(--muted)">With no PIN set, tiles for locks, garage doors and alarm panels ask you to set one. Turn this on to let them work without a PIN. Once a PIN is set, it is asked for as usual.</small></span></label>
+        ${s.tablet_pin_set ? `<button type="button" id="s-tpin-remove-btn" style="background:none;border:none;color:var(--danger);font-size:12px;font-weight:600;cursor:pointer;padding:6px 0;margin-top:2px">Remove tablet PIN</button>` : ''}
       </div>
       <div class="settings-row">
         <label>Remote access login ${infoBtn("A separate password that is only asked for when someone reaches this device from outside your home network, for example through a remote-access link. Your home network and this screen never ask for it, so setting it changes nothing for anyone at home. Signing in with it also covers the App PIN.")}</label>

@@ -623,8 +623,21 @@ function renderTab() {
 // so re-running it whenever the page becomes visible again catches it back
 // up for free. Skipped while the PIN lock screen is showing (nothing real
 // to refresh behind it yet).
+// Two things keep that from getting in the way of editing (a phone leaves the page for a moment all the time: to copy an address, to answer a message): a short absence (under
+// 20 seconds) does not refresh at all, and after a longer one the page is put back where it was scrolled to unless the person has already touched or scrolled it again.
+let _hiddenAt = 0;
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && $('pin-screen').style.display !== 'flex') renderTab();
+  if (document.visibilityState === 'hidden') { _hiddenAt = Date.now(); return; }
+  if (document.visibilityState !== 'visible' || $('pin-screen').style.display === 'flex') return;
+  if (_hiddenAt && Date.now() - _hiddenAt < 20000) return;
+  const sc = document.getElementById('content'), y = sc ? sc.scrollTop : 0;
+  let touched = false;
+  const stop = () => { touched = true; };
+  ['touchstart', 'wheel', 'pointerdown', 'keydown'].forEach((ev) => document.addEventListener(ev, stop, { once: true, capture: true, passive: true }));
+  renderTab();
+  if (!sc || y < 5) return;
+  let n = 0;
+  const hold = setInterval(() => { if (touched || ++n > 25 || !sc.isConnected) { clearInterval(hold); return; } if (sc.scrollTop < y - 3 && sc.scrollHeight - sc.clientHeight >= y) sc.scrollTop = y; }, 120);       // (the tab draws as its data arrives, so for a few seconds)
 });
 
 // ── Favorites tab ────────────────────────────────────────────────────────────

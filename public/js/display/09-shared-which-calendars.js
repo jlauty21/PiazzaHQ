@@ -570,6 +570,7 @@ const WIDGET_DEFS = [
   { type:'entitystatus', label:'Entity Status', icon:'🏠' },
   { type:'smarthomeDashboard', label:'Smart Home Grid', icon:'🏘️' },
   { type:'groupcontrol', label:'Group Control', icon:'🎚️' },
+  { type:'actions', label:'Actions', icon:'🎛️' },
 ];
 const WIDGET_CATEGORIES = [
   { id:'time',     label:'Time',     icon:'🕐', types:['clock','date','datetime','countdown','timer'] },
@@ -581,7 +582,7 @@ const WIDGET_CATEGORIES = [
   { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan','recipe','whiteboard','kiddrawing'] },
   { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode','webpage'] },
   { id:'decor',    label:'Decor',    icon:'🌿', types:['decoration'] },
-  { id:'smarthome', label:'Smart Home', icon:'🏠', types:['entitystatus','smarthomeDashboard','groupcontrol','camera'] },
+  { id:'smarthome', label:'Smart Home', icon:'🏠', types:['entitystatus','smarthomeDashboard','groupcontrol','actions','camera'] },
 ];
 // Collision-safe without needing to track/sync a counter against whatever
 // IDs the server or the app's own editor have already handed out — app.html
@@ -635,6 +636,7 @@ function buildNewWidgetDefaults(type) {
   else if (type === 'decoration') { w.w = 14; w.h = 14; w.decorEmoji = '🌿'; w.decorFontPx = 60; w.decorOpacity = 100; w.decorRotation = 0; }
   else if (type === 'entitystatus') { w.w = 20; w.h = 16; w.haEntityId = ''; w.haLabel = ''; w.haLabelAutoFor = ''; w.haFontPx = 20; w.haShowUnit = true; w.haShowSparkline = true; }
   else if (type === 'smarthomeDashboard') { w.w = 40; w.h = 40; w.haEntityIds = []; w.haAreaIds = []; w.haComboGroups = []; w.haDashTitle = ''; w.haDashFontPx = 16; w.haGroupByRoom = true; w.haDashView = 'grid'; }
+  else if (type === 'actions') { w.w = 24; w.h = 24; w.actTablet = ''; w.actFontPx = 16; }
   else if (type === 'groupcontrol') { w.w = 20; w.h = 16; w.gcTitle = ''; w.gcEntityIds = []; w.gcAreaIds = []; w.gcFontPx = 20; }
   return w;
 }

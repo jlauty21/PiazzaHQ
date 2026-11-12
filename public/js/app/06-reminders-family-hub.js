@@ -1006,6 +1006,14 @@ async function drawWidgetSettingsPanel() {
     drawWidgetSettingsPanel_Build_entitystatus({ w, _st });
   } else if (w.type === 'smarthomeDashboard') {
     drawWidgetSettingsPanel_Build_smarthomeDashboard({ w, _st });
+  } else if (w.type === 'actions') {
+    const fontPx = w.actFontPx || 16;
+    _st.typeSpecificHtml = `
+      <div class="settings-row"><label>Tablet</label><select class="form-input" id="act-tablet"><option value="">Loading…</option></select></div>
+      <p style="font-size:11px;color:var(--muted);margin-top:6px">Shows that tablet's Actions tiles as buttons. Edit the tiles under Layout, Tablet. Tiles that ask for the PIN or have a lock in them stay on the tablet.</p>
+      <div class="settings-row"><label>Heading</label><input class="form-input" id="act-title" type="text" maxlength="40" placeholder="(none)" value="${(w.actTitle || '').replace(/"/g, '&quot;')}"></div>
+      <div class="settings-row"><label>Font Size (px)</label><div class="range-row"><input type="range" id="act-font" min="10" max="48" step="1" value="${fontPx}"><span class="range-val" id="act-font-val">${fontPx}px</span></div></div>
+    `;
   } else if (w.type === 'groupcontrol') {
     drawWidgetSettingsPanel_Build_groupcontrol({ w, _st });
   }
@@ -1624,6 +1632,14 @@ async function drawWidgetSettingsPanel() {
     }
   } else if (w.type === 'smarthomeDashboard') {
     drawWidgetSettingsPanel_Wire_smarthomeDashboard({ w });
+  } else if (w.type === 'actions') {
+    apiFetch('/api/tablet-actions').catch(() => []).then((list) => {
+      const sel = $('act-tablet'); if (!sel) return;
+      sel.innerHTML = '<option value="">Choose a tablet…</option>' + (Array.isArray(list) ? list : []).map((t) => `<option value="${escapeHtml(t.id)}" ${t.id === w.actTablet ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('');
+    });
+    $('act-tablet').addEventListener('change', (e) => { if (e.target.value) w.actTablet = e.target.value; else delete w.actTablet; });
+    $('act-title').addEventListener('input', (e) => { const v = e.target.value.trim(); if (v) w.actTitle = v; else delete w.actTitle; });
+    $('act-font').addEventListener('input', (e) => { w.actFontPx = parseInt(e.target.value, 10); $('act-font-val').textContent = w.actFontPx + 'px'; });
   } else if (w.type === 'groupcontrol') {
     drawWidgetSettingsPanel_Wire_groupcontrol({ w });
   }

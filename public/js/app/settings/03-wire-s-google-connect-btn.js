@@ -522,7 +522,9 @@ function renderSettings_Wire_settingsFormEl(_c) {
       const t = e.target;
       if (!t.matches('input, select, textarea')) return;
       if (t.id === 's-pin') return; // manual-only, see saveAllSettings() comment
+      if (t.id && t.id.indexOf('s-tpin') === 0) return; // the tablet PIN saves itself, with its own button
       if (t.id && t.id.indexOf('ra-') === 0) return; // remote-login panel saves itself
+      if (t.id === 's-show-cursor') return; // the pointer switch saves itself the moment it changes (02-wire-block1982-etc.), so saving every setting on top of it is redundant
       // These already have their own dedicated save-on-change handlers elsewhere
       // (uploading something, adding a briefing recipient, etc.) — auto-saving
       // the whole form on top would be redundant, not incorrect, but let's not
@@ -534,7 +536,7 @@ function renderSettings_Wire_settingsFormEl(_c) {
     };
     window._settingsChangeHandler = (e) => {
       const t = e.target;
-      if (!t.matches('input, select, textarea') || t.id === 's-pin' || (t.id && t.id.indexOf('ra-') === 0)) return;
+      if (!t.matches('input, select, textarea') || t.id === 's-pin' || t.id === 's-show-cursor' || (t.id && (t.id.indexOf('ra-') === 0 || t.id.indexOf('s-tpin') === 0))) return;
       if (t.type === 'checkbox' || t.tagName === 'SELECT') scheduleSettingsAutoSave(400);
     };
     settingsFormEl.addEventListener('input', window._settingsInputHandler);
@@ -704,4 +706,56 @@ function renderSettings_Wire_sGoogleTasks() {
       await renderSettingsKeepPlace();
     });
   }
+}
+
+// Settings, Cameras: the cameras Piazza HQ knows about, rename and remove them, and add the Home Assistant ones in one go (no Camera widget needed).
+function renderSettings_Wire_sCameras() {
+  const list = $('s-cam-list'), status = $('s-cam-status'), picker = $('s-cam-picker'), btn = $('s-cam-ha-btn');
+  const say = (t, bad) => { status.textContent = t || ''; status.style.color = bad ? '#e85454' : 'var(--muted)'; };
+  const row = (c) => `<div class="s-cam-row" data-id="${c.id}" style="display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:9px;padding:8px 10px"><div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(c.name)}</div><div style="font-size:11px;color:var(--muted)">${c.kind === 'ha' ? 'Home Assistant · ' + escapeHtml(c.host_hint) : escapeHtml(c.host_hint || 'Stream address')}</div></div><button type="button" class="icon-btn s-cam-ren" title="Rename" style="width:30px;height:30px">✏️</button><button type="button" class="icon-btn del s-cam-del" title="Remove" style="width:30px;height:30px">🗑️</button></div>`;
+  async function load() {
+    const cams = await apiFetch('/api/cameras').catch(() => null);
+    if (!Array.isArray(cams)) { list.innerHTML = '<p style="font-size:12px;color:var(--muted);margin:0">Could not load the cameras.</p>'; return []; }
+    window._teCameras = cams;
+    list.innerHTML = cams.length ? cams.map(row).join('') : '<p style="font-size:12px;color:var(--muted);margin:0">No cameras yet.</p>';
+    list.querySelectorAll('.s-cam-row').forEach((r) => {
+      const id = r.dataset.id, cam = cams.find((c) => String(c.id) === id);
+      r.querySelector('.s-cam-ren').addEventListener('click', async () => {
+        const name = (prompt('Camera name', cam.name) || '').trim(); if (!name || name === cam.name) return;
+        const res = await apiFetch('/api/cameras/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify({ name }) }).catch(() => null);
+        if (res && res.id) load(); else showToast('❌ ' + ((res && res.error) || 'Could not rename'));
+      });
+      r.querySelector('.s-cam-del').addEventListener('click', async () => {
+        if (!confirm('Remove this camera? Tiles and widgets that use it will stop showing it.')) return;
+        const res = await apiFetch('/api/cameras/' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => null);
+        if (res && res.ok) load(); else showToast('❌ Could not remove');
+      });
+    });
+    return cams;
+  }
+  btn.addEventListener('click', async () => {
+    picker.style.display = 'none'; say('Looking in Home Assistant…');
+    const [cams, ents] = await Promise.all([load(), apiFetch('/api/ha/entities').catch(() => null)]);
+    if (!Array.isArray(ents) || !ents.length) { say('Home Assistant is not connected. Add its address and token above first.', true); return; }
+    const found = tmCamCandidates(ents, cams);
+    if (!found.length) { say(ents.some((e) => tmDomain(e.entity_id) === 'camera') ? 'Every camera in Home Assistant is already added.' : 'Home Assistant has no cameras yet.'); return; }
+    say(found.length + (found.length === 1 ? ' camera' : ' cameras') + ' found. Choose the ones to add.');
+    picker.innerHTML = found.map((c) => `<label style="display:flex;gap:8px;align-items:center;padding:4px 2px"><input type="checkbox" class="s-cam-pick" data-ent="${escapeHtml(c.entity_id)}" data-name="${escapeHtml(c.name)}" checked><span style="min-width:0"><span style="display:block">${escapeHtml(c.name)}</span><span style="display:block;font-size:11px;color:var(--muted)">${escapeHtml(c.entity_id)}</span></span></label>`).join('')
+      + '<div style="display:flex;gap:8px;margin-top:4px"><button type="button" id="s-cam-add-go" style="background:var(--accent);border:none;border-radius:9px;color:#fff;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer">Add the chosen cameras</button><button type="button" id="s-cam-add-cancel" class="ghost small">Cancel</button></div>';
+    picker.style.display = 'flex';
+    $('s-cam-add-cancel').addEventListener('click', () => { picker.style.display = 'none'; say(''); });
+    $('s-cam-add-go').addEventListener('click', async () => {
+      const chosen = [...picker.querySelectorAll('.s-cam-pick')].filter((x) => x.checked);
+      if (!chosen.length) { say('Choose at least one camera.', true); return; }
+      $('s-cam-add-go').disabled = true; let added = 0, failed = '';
+      for (const x of chosen) {
+        const res = await apiFetch('/api/cameras', { method: 'POST', body: JSON.stringify({ name: x.dataset.name, kind: 'ha', url: 'ha:' + x.dataset.ent }) }).catch(() => null);
+        if (res && res.id) added++; else failed = (res && res.error) || 'Could not add one of them';
+      }
+      picker.style.display = 'none'; await load();
+      say(added ? 'Added ' + added + (added === 1 ? ' camera. You can now put it on a tablet: Layout, Tablet, Add a tile, Camera.' : ' cameras. You can now put them on a tablet: Layout, Tablet, Add a tile, Camera.') : failed, !added);
+      if (failed && added) showToast('Some cameras could not be added');
+    });
+  });
+  load();
 }

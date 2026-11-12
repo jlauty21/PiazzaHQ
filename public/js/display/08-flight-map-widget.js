@@ -337,6 +337,11 @@ function renderCameraAdvancedSettings(w) {
       <label>Show title</label>
       <input type="checkbox" id="cam-show-title" ${w.camShowTitle !== false ? 'checked' : ''}>
     </div>
+    <div class="was-toggle-row">
+      <label>Show a speaker button</label>
+      <input type="checkbox" id="cam-speaker" ${w.camSpeaker ? 'checked' : ''}>
+    </div>
+    <p class="was-hint">The button turns this camera's sound on and off for every screen.</p>
     <p class="was-hint">Live H.264/H.265 needs some CPU — a Pi 4 or 5 handles one or two streams; on an older Pi, run the server on Docker or Windows instead.</p>
   `;
 }
@@ -353,6 +358,8 @@ function wireCameraAdvancedSettings(w) {
   if (fit) fit.addEventListener('change', (e) => { w.camFit = e.target.value; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
   const showTitle = document.getElementById('cam-show-title');
   if (showTitle) showTitle.addEventListener('change', (e) => { w.camShowTitle = e.target.checked; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
+  const speaker = document.getElementById('cam-speaker');
+  if (speaker) speaker.addEventListener('change', (e) => { if (e.target.checked) w.camSpeaker = true; else delete w.camSpeaker; rerenderSingleWidget(w.id); scheduleLayoutSave(); });
 
   const addBtn = document.getElementById('cam-add-btn');
   if (addBtn) addBtn.addEventListener('click', () => { _camFormOpen = true; _camFormEditId = null; _camFormSource = 'url'; openWidgetAdvancedPanel(w.id); });

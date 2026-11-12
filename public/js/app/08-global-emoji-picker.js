@@ -1292,6 +1292,7 @@ async function renderSettings() {
     updateHaTokenLink(); // reflect whatever's already saved, on first render
   }
 
+  if ($('s-cam-list')) renderSettings_Wire_sCameras();
   if ($('s-ha-test-btn')) {
     renderSettings_Wire_sHaTestBtn();
   }
@@ -1703,6 +1704,38 @@ async function renderSettings() {
       }
     } finally { btn.disabled = false; }
   });
+
+  // The tablet's own PIN: set from here (four digits, typed twice), removed by giving the current one. Saved on its own, never with the rest of the settings.
+  if ($('s-tpin')) {
+    const hint = $('s-tpin-hint'), say = (t, bad) => { hint.textContent = t; hint.style.color = bad ? '#ff8585' : ''; };
+    const typing = () => { const t = !!$('s-tpin').value.trim(); $('s-tpin-confirm').style.display = t ? 'block' : 'none'; $('s-tpin-save-btn').style.display = t ? 'block' : 'none'; };
+    $('s-tpin').addEventListener('input', typing);
+    const saveTabletPin = async () => {
+      const v = $('s-tpin').value.trim(), c = $('s-tpin-confirm').value.trim();
+      if (!/^\d{4}$/.test(v)) { say('A tablet PIN is four digits.', true); return; }
+      if (v !== c) { say("PINs don't match — try again.", true); $('s-tpin-confirm').focus(); return; }
+      const res = await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify({ tablet_pin: v }) });
+      if (res && res.__authFailed) return;
+      if (res && res.error) { say(res.error, true); return; }
+      showToast('Tablet PIN set ✓');
+      await renderSettingsKeepPlace();
+    };
+    $('s-tpin-optional').addEventListener('change', async (e) => {
+      const res = await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify({ tablet_pin_optional: e.target.checked ? '1' : '0' }) });
+      if (res && (res.error || res.__authFailed)) { e.target.checked = !e.target.checked; if (res.error) showToast('❌ ' + res.error); return; }
+      showToast(e.target.checked ? 'Tiles that need a PIN will work without one ✓' : 'Tiles that need a PIN will ask you to set one ✓');
+    });
+    $('s-tpin-save-btn').addEventListener('click', saveTabletPin);
+    for (const id of ['s-tpin', 's-tpin-confirm']) $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveTabletPin(); } });
+    if ($('s-tpin-remove-btn')) $('s-tpin-remove-btn').addEventListener('click', async () => {
+      const entered = prompt('Enter the current tablet PIN to remove it:');
+      if (entered === null) return;
+      const res = await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify({ tablet_pin: '', current_tablet_pin_confirm: entered.trim() }) });
+      if (res && res.__authFailed) return;
+      if (res && res.error) { alert(res.error); return; }
+      renderSettings();
+    });
+  }
 
   renderSettings_Wire_block4365({ saveAllSettings, saveAppPin, _st });
 

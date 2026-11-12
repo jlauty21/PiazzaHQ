@@ -1185,6 +1185,7 @@ function renderWidget(w) {
     case 'travel': return renderTravelTime(w);
     case 'entitystatus': return renderEntityStatus(w);
     case 'groupcontrol': return renderGroupControl(w);
+    case 'actions': return renderActions(w);
     case 'qrcode': return renderQRCode(w);
     case 'webpage': return renderWebPage(w);
     case 'timer': return renderTimer(w);

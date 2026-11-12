@@ -356,6 +356,76 @@ module.exports = function registerCamera({ path, http, fs, crypto, IS_WIN, WebSo
         client.on('close', closeBoth);
       });
     });
+
+    // Live video of a Home Assistant camera that only offers WebRTC (Google Nest cameras do): /api/camera/:id/ha-webrtc.
+    // The page makes a WebRTC offer and sends it here; this opens one connection to Home Assistant, passes the offer on (camera/webrtc/offer) and hands the answer back.
+    // The video itself then flows between the page and the camera's service, not through here. Home Assistant ends the camera session when its connection closes, so the
+    // connection stays open for as long as the page watches. The token never leaves the server. Messages from the page: { type: "offer", sdp } and { type: "candidate", candidate };
+    // to the page: { type: "config", iceServers, getCandidatesUpfront, dataChannel }, { type: "answer", sdp }, { type: "candidate", candidate } and { type: "error", message }.
+    const HA_RTC_MAX = 4, HA_RTC_MAX_MS = 15 * 60 * 1000;
+    let _haRtcOpen = 0;
+    function relayHaWebrtc(client, entityId) {
+      const send = (o) => { try { client.send(JSON.stringify(o)); } catch {} };
+      const fail = (message) => { send({ type: 'error', message }); try { client.close(); } catch {} };
+      const base = getSetting('ha_base_url'), token = getSetting('ha_token');
+      if (!base || !token) return fail('Home Assistant is not set up.');
+      if (_haRtcOpen >= HA_RTC_MAX) return fail('Too many cameras are open at once. Close one and try again.');
+      let wsUrl;
+      try { const u = new URL(String(base).replace(/\/+$/, '')); wsUrl = (u.protocol === 'https:' ? 'wss' : 'ws') + '://' + u.host + '/api/websocket'; } catch { return fail('The Home Assistant address is not valid.'); }
+      let ha;
+      try { ha = new WebSocketClient(wsUrl); } catch (e) { return fail('Could not reach Home Assistant.'); }
+      _haRtcOpen++;
+      let closed = false, nextId = 1, configId = 0, offerId = 0, sessionId = '';
+      const waiting = [];                                          // messages from the page that came before Home Assistant was ready or before the session was known
+      const close = () => {
+        if (closed) return; closed = true; _haRtcOpen--; clearTimeout(cap);
+        try { client.close(); } catch {} try { ha.close(); } catch {}
+      };
+      const cap = setTimeout(close, HA_RTC_MAX_MS);
+      const haSend = (o) => { try { ha.send(JSON.stringify(o)); } catch {} };
+      const handle = (m) => {
+        if (m.type === 'offer' && typeof m.sdp === 'string' && m.sdp.length < 20000 && !offerId) { offerId = nextId++; haSend({ id: offerId, type: 'camera/webrtc/offer', entity_id: entityId, offer: m.sdp }); }
+        else if (m.type === 'candidate' && m.candidate && typeof m.candidate === 'object') {
+          if (!sessionId) { waiting.push(m); return; }
+          haSend({ id: nextId++, type: 'camera/webrtc/candidate', entity_id: entityId, session_id: sessionId, candidate: { candidate: String(m.candidate.candidate || ''), sdpMid: m.candidate.sdpMid, sdpMLineIndex: m.candidate.sdpMLineIndex } });
+        }
+      };
+      let ready = false;
+      client.on('message', (raw) => { let m; try { m = JSON.parse(raw); } catch { return; } if (!ready) waiting.push(m); else handle(m); });
+      ha.on('message', (raw) => {
+        let m; try { m = JSON.parse(raw); } catch { return; }
+        if (m.type === 'auth_required') haSend({ type: 'auth', access_token: token });
+        else if (m.type === 'auth_invalid') { fail('Home Assistant did not accept the saved token.'); close(); }
+        else if (m.type === 'auth_ok') { configId = nextId++; haSend({ id: configId, type: 'camera/webrtc/get_client_config', entity_id: entityId }); }
+        else if (m.id === configId && m.type === 'result') {
+          const c = (m.success && m.result) || {}, conf = c.configuration || {};
+          send({ type: 'config', iceServers: Array.isArray(conf.iceServers) ? conf.iceServers : [], getCandidatesUpfront: !!c.getCandidatesUpfront, dataChannel: typeof c.dataChannel === 'string' ? c.dataChannel.slice(0, 40) : '' });
+          ready = true; const q = waiting.splice(0); q.forEach(handle);
+        } else if (offerId && m.id === offerId) {
+          if (m.type === 'event' && m.event) {
+            const e = m.event;
+            if (e.type === 'session') { sessionId = String(e.session_id || ''); const q = waiting.splice(0); q.forEach(handle); }
+            else if (e.type === 'answer') send({ type: 'answer', sdp: e.answer });
+            else if (e.type === 'candidate') send({ type: 'candidate', candidate: e.candidate });
+            else if (e.type === 'error') { fail(String(e.message || e.code || 'The camera did not answer.').slice(0, 160)); close(); }
+          } else if (m.type === 'result' && m.success === false) { fail(String((m.error && m.error.message) || 'The camera did not answer.').slice(0, 160)); close(); }
+        }
+      });
+      ha.on('error', () => { fail('Could not reach Home Assistant.'); close(); });
+      ha.on('close', close);
+      client.on('error', close);
+      client.on('close', close);
+    }
+    server.on('upgrade', (req, socket, head) => {
+      let pathname;
+      try { pathname = new URL(req.url, 'http://localhost').pathname; } catch { return; }
+      const m = pathname.match(/^\/api\/camera\/(\d+)\/ha-webrtc$/);
+      if (!m) return;
+      if (remoteGateEnabled(req) && (requestIsRemote(req) || !findRemoteSession(req))) { socket.destroy(); return; }
+      const cam = db.prepare(`SELECT * FROM cameras WHERE id = ?`).get(parseInt(m[1], 10));
+      if (!cam || cam.kind !== 'ha' || !/^ha:camera\.[a-z0-9_]+$/.test(cam.url)) { socket.destroy(); return; }
+      _camWss.handleUpgrade(req, socket, head, (client) => relayHaWebrtc(client, cam.url.slice(3)));
+    });
   }
 
   // ── Camera API ──
@@ -412,9 +482,27 @@ module.exports = function registerCamera({ path, http, fs, crypto, IS_WIN, WebSo
     res.json(redactCamera(db.prepare(`SELECT * FROM cameras WHERE id = ?`).get(existing.id)));
   });
 
+  // Whether a camera plays its sound on the wall displays: one household choice per camera, kept in the setting camera_sound ({ "<camera id>": true }). The speaker button on a
+  // Camera widget, the Favorites card and the widget's settings all change it here. Under /api/cameras, so it is reachable from a display the same way the rest of the camera routes are.
+  const soundMap = () => {
+    let m = {};
+    try { m = JSON.parse((db.prepare(`SELECT value FROM settings WHERE key = 'camera_sound'`).get() || {}).value || '{}'); } catch { m = {}; }
+    return m && typeof m === 'object' && !Array.isArray(m) ? m : {};
+  };
+  const saveSoundMap = (m) => { db.prepare(`INSERT INTO settings (key, value) VALUES ('camera_sound', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(m)); broadcastUpdate('settings'); };
+  app.put('/api/cameras/:id/sound', (req, res) => {
+    const cam = db.prepare(`SELECT id FROM cameras WHERE id = ?`).get(req.params.id);
+    if (!cam) return res.status(404).json({ error: 'Camera not found' });
+    const m = soundMap();
+    if (req.body && req.body.on) m[cam.id] = true; else delete m[cam.id];
+    saveSoundMap(m);
+    res.json({ ok: true, on: !!m[cam.id] });
+  });
+
   app.delete('/api/cameras/:id', (req, res) => {
     const r = db.prepare(`DELETE FROM cameras WHERE id = ?`).run(req.params.id);
     if (r.changes === 0) return res.status(404).json({ error: 'Camera not found' });
+    { const m = soundMap(); if (m[req.params.id]) { delete m[req.params.id]; saveSoundMap(m); } }      // a removed camera leaves no sound choice behind
     broadcastUpdate('cameras');
     reloadCameraService();
     res.json({ ok: true });

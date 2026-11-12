@@ -431,5 +431,11 @@ case "${1##*/}" in
     if [[ -n "${WAYLAND_DISPLAY:-}" && -n "${DISPLAY:-}" && "${PI_CALENDAR_NATIVE_WAYLAND:-0}" != "1" && " $* " != *" --ozone-platform"* ]]; then set -- "$@" "--ozone-platform=x11"; fi ;;
 esac
 
+# A Camera widget that has its sound turned on has to be allowed to play it with nobody touching the screen; Chromium keeps sound off until someone does unless it is told otherwise.
+case "${1##*/}" in
+  chromium*|chrome*|google-chrome*)
+    if [[ " $* " != *" --autoplay-policy"* ]]; then set -- "$@" "--autoplay-policy=no-user-gesture-required"; fi ;;
+esac
+
 log "launching: $1"
 exec "$@"

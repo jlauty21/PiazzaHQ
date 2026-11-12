@@ -437,3 +437,216 @@ function fvMessages(card) {
   const m = card.config && Array.isArray(card.config.messages) ? card.config.messages.filter((s) => typeof s === 'string' && s.trim()) : [];
   return m.length ? m.slice(0, 6) : ["Dinner's ready", 'Time to go', 'Come here, please'];
 }
+
+// ── Checklists: lists of things to do that clear themselves every day, each limited to certain days and hours ────────────────────────────
+// One card shows one checklist at a time. The one meant for right now (its days and hours, src/checklists.js) is in front; a choice made on the card is kept until a different checklist
+// becomes the one for the moment. "Edit checklists" turns the card into the editor: new, rename, days, hours, dates, items.
+const FV_CHK = { card: '', sel: '' };              // the card that is being edited, and which list in it
+const FV_DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const fvClock = (t) => { const [h, m] = String(t).split(':').map(Number); return new Date(2000, 0, 1, h, m).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); };
+const fvShortDate = (d) => { const [y, m, dd] = String(d).split('-').map(Number); return new Date(y, m - 1, dd).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }); };
+function fvChkWhen(l) {
+  const d = l.days || [], parts = [];
+  parts.push(!d.length || d.length === 7 ? 'Every day' : d.join() === '1,2,3,4,5' ? 'Mon–Fri' : d.join() === '0,6' ? 'Weekends' : d.map((n) => FV_DOW[n]).join(', '));
+  if (l.from && l.to) parts.push(`${fvClock(l.from)}–${fvClock(l.to)}`);
+  else if (l.from) parts.push(`from ${fvClock(l.from)}`);
+  else if (l.to) parts.push(`until ${fvClock(l.to)}`);
+  if (l.start_date && l.end_date) parts.push(`${fvShortDate(l.start_date)} – ${fvShortDate(l.end_date)}`);
+  else if (l.start_date) parts.push(`from ${fvShortDate(l.start_date)}`);
+  else if (l.end_date) parts.push(`until ${fvShortDate(l.end_date)}`);
+  return parts.join(' · ');
+}
+// Which checklist the card shows: the person's own pick while the same ones are meant for now, otherwise the first one that is, otherwise the first there is.
+function fvChkPick(card, lists) {
+  const shown = lists.filter((l) => !l.hide_outside || l.active), now = shown.filter((l) => l.active), key = now.map((l) => l.id).join(',');
+  const [id, k] = fvSaved('fv_chk_' + card.id).split('|');
+  const mine = shown.find((l) => String(l.id) === id);
+  return { shown, key, list: mine && k === key ? mine : now[0] || shown[0] || null };
+}
+const fvChkBtn = 'width:auto;margin:0;padding:6px 10px;background:var(--card);border:1px solid var(--border)';
+
+FAVORITE_CARD_DEFS.checklist = {
+  label: 'Checklist', icon: '✅', category: 'Lists', needs: [],
+  async fetch(card, data) {
+    const r = await fvOnce(data, 'checklists', () => apiFetch('/api/checklists'));
+    data.fvChk = fvBad(r) || !Array.isArray(r.lists) ? { lists: [], failed: true } : r;
+  },
+  render(card, data) {
+    const c = data.fvChk, lists = c.lists;
+    if (c.failed) return fvTitle('✅', 'Checklist') + fvMuted('Could not load the checklists right now.');
+    if (FV_CHK.card === String(card.id)) return fvChkEditor(card, lists);
+    if (!lists.length) return fvTitle('✅', 'Checklist') + fvMuted('Make a checklist for things you do every day, like leaving the house for work. It clears itself each day.')
+      + `<button class="btn btn-primary fv-chk-edit" style="margin:8px 0 0;padding:8px 12px;width:auto">Make a checklist</button>`;
+    const { shown, key, list } = fvChkPick(card, lists);
+    if (!list) return fvTitle('✅', 'Checklist') + fvMuted('No checklist is scheduled right now.') + `<button class="fv-chk-edit" style="${fvBtn}">Edit checklists</button>`;
+    const sel = shown.length > 1
+      ? `<select class="form-input fv-chk-list" data-key="${key}" style="width:auto;max-width:60%;padding:5px 8px;font-size:12px;margin:0 0 6px">${shown.map((l) => `<option value="${l.id}" ${l.id === list.id ? 'selected' : ''}>${l.active ? '● ' : ''}${escapeHtml(l.name)}</option>`).join('')}</select>` : '';
+    const rows = list.items.map((i) => `<label style="display:flex;align-items:center;gap:10px;padding:6px 0;cursor:pointer;${i.done ? 'opacity:.55;text-decoration:line-through' : ''}"><input type="checkbox" class="fv-chk-item" data-id="${i.id}" ${i.done ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent);flex-shrink:0"><span style="font-size:14px;min-width:0;overflow-wrap:anywhere">${escapeHtml(i.text)}</span></label>`).join('');
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px"><div style="font-weight:600;font-size:12.5px">${escapeHtml(list.icon || '✅')} ${shown.length > 1 ? 'Checklist' : escapeHtml(list.name)}</div><div style="font-size:11px;color:var(--muted)">${list.total ? `${list.done} of ${list.total} done` : ''}</div></div>`
+      + sel + (shown.length > 1 ? `<div style="font-weight:600;font-size:13px;margin-bottom:2px">${escapeHtml(list.name)}</div>` : '')
+      + fvMuted(escapeHtml(fvChkWhen(list)))
+      + (list.total ? rows : fvMuted('Nothing on this checklist yet.'))
+      + (list.total && list.done === list.total ? `<p style="font-size:13px;color:#34d399;font-weight:600;margin:6px 0 0">All done ✓</p>` : '')
+      + `<div style="display:flex;gap:14px"><button class="fv-chk-edit" style="${fvBtn}">Edit checklists</button>${list.done ? `<button class="fv-chk-reset" data-id="${list.id}" style="${fvBtn}">Start over</button>` : ''}</div>`;
+  },
+  wire(card, data) {
+    const root = fvRoot(card);
+    if (!root || data.fvChk.failed) return;
+    if (FV_CHK.card === String(card.id)) { fvWireChkEditor(card, data.fvChk.lists); return; }
+    const edit = root.querySelector('.fv-chk-edit');
+    if (edit) edit.addEventListener('click', () => { FV_CHK.card = String(card.id); FV_CHK.sel = ''; renderFavoritesTab(); });
+    const sel = root.querySelector('.fv-chk-list');
+    if (sel) sel.addEventListener('change', () => { fvSave('fv_chk_' + card.id, sel.value + '|' + sel.dataset.key); renderFavoritesTab(); });
+    root.querySelectorAll('.fv-chk-item').forEach((c) => c.addEventListener('change', async () => {
+      const r = await fvSend(`/api/checklist-items/${c.dataset.id}/tick`, { done: c.checked });
+      if (fvBad(r)) showToast('❌ ' + ((r && r.error) || 'Could not update'));
+      renderFavoritesTab();
+    }));
+    const reset = root.querySelector('.fv-chk-reset');
+    if (reset) reset.addEventListener('click', async () => { await fvSend(`/api/checklists/${reset.dataset.id}/reset`, {}); renderFavoritesTab(); });
+  },
+};
+
+function fvChkEditor(card, lists) {
+  const l = lists.find((x) => String(x.id) === FV_CHK.sel) || lists[0] || null;
+  FV_CHK.sel = l ? String(l.id) : '';
+  const head = `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px"><div style="font-weight:600;font-size:12.5px">✅ Edit checklists</div><button class="btn btn-primary fv-ce-done" style="margin:0;padding:6px 12px;width:auto">Done</button></div>`;
+  const pick = `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px">${lists.length ? `<select class="form-input fv-ce-pick" style="width:auto;max-width:60%;padding:5px 8px;font-size:12px;margin:0">${lists.map((x) => `<option value="${x.id}" ${l && x.id === l.id ? 'selected' : ''}>${escapeHtml(x.name)}</option>`).join('')}</select>` : ''}<button class="btn fv-ce-new" style="${fvChkBtn}">+ New checklist</button></div>`;
+  if (!l) return head + pick + fvMuted('Add your first checklist, then give it items.');
+  const field = 'padding:7px 9px;font-size:13px;margin:0';
+  const day = (n) => `<button type="button" class="fv-ce-day" data-d="${n}" aria-pressed="${l.days.includes(n)}" style="min-width:40px;padding:6px 4px;font-size:12px;border-radius:8px;cursor:pointer;border:1px solid var(--border);${l.days.includes(n) ? 'background:var(--accent);color:#fff' : 'background:var(--card);color:inherit'}">${FV_DOW[n]}</button>`;
+  const item = (i, k) => `<div style="display:flex;gap:4px;align-items:center;margin-bottom:4px"><input class="form-input fv-ce-item" data-id="${i.id}" maxlength="120" value="${escapeHtml(i.text)}" style="flex:1;min-width:0;${field}"><button class="icon-btn fv-ce-up" data-id="${i.id}" title="Move up" ${k === 0 ? 'disabled' : ''} style="width:26px;height:26px;font-size:12px">▲</button><button class="icon-btn fv-ce-down" data-id="${i.id}" title="Move down" ${k === l.items.length - 1 ? 'disabled' : ''} style="width:26px;height:26px;font-size:12px">▼</button><button class="icon-btn del fv-ce-del" data-id="${i.id}" title="Remove" style="width:26px;height:26px;font-size:12px">✕</button></div>`;
+  const lab = (t) => `<div style="font-size:11px;color:var(--muted);margin:10px 0 4px">${t}</div>`;
+  return head + pick
+    + `<div style="display:flex;gap:6px"><input class="form-input fv-ce-icon" maxlength="4" value="${escapeHtml(l.icon)}" placeholder="✅" aria-label="Icon" style="width:52px;text-align:center;${field}"><input class="form-input fv-ce-name" maxlength="60" value="${escapeHtml(l.name)}" aria-label="Name" style="flex:1;min-width:0;${field}"></div>`
+    + lab('Show it on')
+    + `<div style="display:flex;gap:4px;flex-wrap:wrap">${[1, 2, 3, 4, 5, 6, 0].map(day).join('')}</div>`
+    + `<div style="display:flex;gap:12px"><button class="fv-ce-days" data-set="1,2,3,4,5" style="${fvBtn}">Weekdays</button><button class="fv-ce-days" data-set="0,6" style="${fvBtn}">Weekends</button><button class="fv-ce-days" data-set="" style="${fvBtn}">Every day</button></div>`
+    + lab('Between these times (leave both empty for all day)')
+    + `<div style="display:flex;gap:6px"><input type="time" class="form-input fv-ce-from" value="${l.from}" aria-label="From" style="flex:1;min-width:0;${field}"><input type="time" class="form-input fv-ce-to" value="${l.to}" aria-label="Until" style="flex:1;min-width:0;${field}"></div>`
+    + lab('Only between these dates (optional)')
+    + `<div style="display:flex;gap:6px"><input type="date" class="form-input fv-ce-sdate" value="${l.start_date}" aria-label="First date" style="flex:1;min-width:0;${field}"><input type="date" class="form-input fv-ce-edate" value="${l.end_date}" aria-label="Last date" style="flex:1;min-width:0;${field}"></div>`
+    + `<label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px;cursor:pointer"><input type="checkbox" class="fv-ce-hide" ${l.hide_outside ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--accent)"> Hide it outside these days and times</label>`
+    + lab('Things to do')
+    + (l.items.length ? l.items.map(item).join('') : fvMuted('No items yet.'))
+    + `<div style="display:flex;gap:6px;margin-top:6px"><input class="form-input fv-ce-add-text" maxlength="120" placeholder="Add an item" style="flex:1;min-width:0;${field}"><button class="btn btn-primary fv-ce-add" style="margin:0;padding:7px 14px;width:auto">Add</button></div>`
+    + `<button class="fv-ce-delete" style="${fvBtn};color:#f87171">Delete this checklist</button>`;
+}
+function fvWireChkEditor(card, lists) {
+  const root = fvRoot(card), l = lists.find((x) => String(x.id) === FV_CHK.sel);
+  if (!root) return;
+  const redraw = () => renderFavoritesTab();
+  const fail = (r) => showToast('❌ ' + ((r && r.error) || 'Could not save'));
+  const q = (s) => root.querySelector(s);
+  q('.fv-ce-done').addEventListener('click', () => { FV_CHK.card = ''; redraw(); });
+  const pick = q('.fv-ce-pick');
+  if (pick) pick.addEventListener('change', () => { FV_CHK.sel = pick.value; redraw(); });
+  q('.fv-ce-new').addEventListener('click', async () => {
+    const r = await fvSend('/api/checklists', { name: 'New checklist' });
+    if (fvBad(r)) { fail(r); return; }
+    FV_CHK.sel = String(r.id); redraw();
+  });
+  if (!l) return;
+  const put = async (body, again) => { const r = await fvSend(`/api/checklists/${l.id}`, body, 'PUT'); if (fvBad(r)) { fail(r); redraw(); return; } if (again) redraw(); };
+  q('.fv-ce-name').addEventListener('change', (e) => { if (!e.target.value.trim()) { redraw(); return; } put({ name: e.target.value }, true); });
+  q('.fv-ce-icon').addEventListener('change', (e) => put({ icon: e.target.value.trim() }));
+  q('.fv-ce-from').addEventListener('change', (e) => put({ from: e.target.value }));
+  q('.fv-ce-to').addEventListener('change', (e) => put({ to: e.target.value }));
+  q('.fv-ce-sdate').addEventListener('change', (e) => put({ start_date: e.target.value }));
+  q('.fv-ce-edate').addEventListener('change', (e) => put({ end_date: e.target.value }));
+  q('.fv-ce-hide').addEventListener('change', (e) => put({ hide_outside: e.target.checked }));
+  root.querySelectorAll('.fv-ce-day').forEach((b) => b.addEventListener('click', () => {
+    const n = Number(b.dataset.d), days = l.days.includes(n) ? l.days.filter((x) => x !== n) : l.days.concat(n);
+    put({ days }, true);
+  }));
+  root.querySelectorAll('.fv-ce-days').forEach((b) => b.addEventListener('click', () => put({ days: b.dataset.set ? b.dataset.set.split(',').map(Number) : [] }, true)));
+  root.querySelectorAll('.fv-ce-item').forEach((inp) => inp.addEventListener('change', async () => {
+    const r = await fvSend(`/api/checklist-items/${inp.dataset.id}`, { text: inp.value }, 'PUT');
+    if (fvBad(r)) { fail(r); redraw(); }
+  }));
+  const move = (cls, dir) => root.querySelectorAll(cls).forEach((b) => b.addEventListener('click', async () => { await fvSend(`/api/checklist-items/${b.dataset.id}/move`, { direction: dir }); redraw(); }));
+  move('.fv-ce-up', 'up'); move('.fv-ce-down', 'down');
+  root.querySelectorAll('.fv-ce-del').forEach((b) => b.addEventListener('click', async () => { await fvSend(`/api/checklist-items/${b.dataset.id}`, {}, 'DELETE'); redraw(); }));
+  fvWireAdd(root, 'fv-ce-add-text', 'fv-ce-add', async (text) => {
+    const r = await fvSend(`/api/checklists/${l.id}/items`, { text });
+    if (fvBad(r)) { fail(r); return false; }
+    redraw(); return true;
+  });
+  q('.fv-ce-delete').addEventListener('click', async () => {
+    if (!confirm('Delete this checklist and everything on it?')) return;
+    await fvSend(`/api/checklists/${l.id}`, {}, 'DELETE'); FV_CHK.sel = ''; redraw();
+  });
+}
+
+// ── Camera Sound: whether each camera plays its sound on the wall screens that show it ──────────────────────────────────────────────────
+// One household choice per camera (the setting camera_sound, PUT /api/cameras/:id/sound). The Camera widget's speaker button and the widget's settings change the same choice.
+FAVORITE_CARD_DEFS.camera_sound = {
+  label: 'Camera Sound', icon: '🔊', category: 'Quick actions', needs: [],
+  async fetch(card, data) {
+    const [cams, settings] = await Promise.all([fvOnce(data, 'cameras', () => apiFetch('/api/cameras')), fvOnce(data, 'settings', () => apiFetch('/api/settings'))]);
+    let map = {}; try { map = JSON.parse((settings && settings.camera_sound) || '{}') || {}; } catch { map = {}; }
+    data.fvCamSound = { cams: fvArr(cams), map };
+  },
+  render(card, data) {
+    const { cams, map } = data.fvCamSound;
+    if (!cams.length) return fvTitle('🔊', 'Camera Sound') + fvMuted('Add a camera first, in Settings, Cameras.');
+    return fvTitle('🔊', 'Camera Sound') + fvMuted('Whether a camera plays its sound on the wall screens that show it.')
+      + cams.map((c) => `<label style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;cursor:pointer"><span style="font-size:14px;min-width:0;overflow-wrap:anywhere">${escapeHtml(c.name)}</span><input type="checkbox" class="fv-cs-chk" data-id="${c.id}" ${map[c.id] ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent);flex-shrink:0" aria-label="Sound on"></label>`).join('');
+  },
+  wire(card) {
+    const root = fvRoot(card);
+    if (!root) return;
+    root.querySelectorAll('.fv-cs-chk').forEach((c) => c.addEventListener('change', async () => {
+      const r = await fvSend(`/api/cameras/${c.dataset.id}/sound`, { on: c.checked }, 'PUT');
+      if (fvBad(r)) { showToast('❌ ' + ((r && r.error) || 'Could not update')); c.checked = !c.checked; }
+    }));
+  },
+};
+
+// ── Actions: a tablet's Actions tiles as buttons, to run from the phone or the Family Hub ───────────────────────────────────────────────────
+// The tiles are the ones made for a tablet (Layout, Tablet), so there is one place to edit them. Only tiles that need no PIN and have no lock in them are shown. The card is for
+// Home Assistant devices, so it is left out when Home Assistant is not set up. Which tablet is shown is remembered on this device.
+const FV_ACT = { open: '' };          // the menu tile whose choices are showing
+FAVORITE_CARD_DEFS.tablet_actions = {
+  label: 'Actions', icon: '🎛️', category: 'Home Assistant', needs: [],
+  async fetch(card, data) {
+    const tablets = fvArr(await fvOnce(data, 'tabletActions', () => apiFetch('/api/tablet-actions')));
+    const saved = fvSaved('fv_act_' + card.id), id = tablets.some((t) => t.id === saved) ? saved : (tablets[0] || {}).id;
+    const [res, ents] = await Promise.all([id ? apiFetch('/api/tablet-actions/' + encodeURIComponent(id)).catch(() => null) : null, fvOnce(data, 'haEntsAll', () => apiFetch('/api/ha/entities'))]);
+    const map = {}; fvArr(ents).forEach((e) => { map[e.entity_id] = e; });
+    data.fvAct = { tablets, id, tiles: res && !fvBad(res) ? fvArr(res.tiles) : [], state: (res && res.state) || {}, ents: map, failed: !!id && fvBad(res) };
+  },
+  render(card, data) {
+    const a = data.fvAct;
+    if (!a.tablets.length) return fvTitle('🎛️', 'Actions') + fvMuted('Make a tablet in Layout, Tablet and add Actions tiles to it. They show up here.');
+    const sel = a.tablets.length > 1 ? `<select class="form-input fv-act-tablet" style="width:auto;max-width:60%;padding:5px 8px;font-size:12px;margin:0 0 6px">${a.tablets.map((t) => `<option value="${escapeHtml(t.id)}" ${t.id === a.id ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}</select>` : '';
+    if (a.failed) return fvTitle('🎛️', 'Actions') + sel + fvMuted('Could not load the actions right now.');
+    if (!a.tiles.length) return fvTitle('🎛️', 'Actions') + sel + fvMuted('This tablet has no Actions tiles that can be used here. Tiles with a lock in them, or that ask for the PIN, stay on the tablet.');
+    const btn = (v, extra, data_) => `<button type="button" class="fv-act-btn" ${data_} style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;min-width:0;padding:9px 11px;border-radius:12px;cursor:pointer;color:var(--text);border:1px solid ${v.on ? 'var(--accent)' : 'var(--border)'};background:${v.on ? 'color-mix(in srgb, var(--accent) 16%, var(--card))' : 'var(--bg)'}${extra}"><span style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;max-width:100%"><span style="width:18px;height:18px;flex:0 0 auto;display:inline-flex">${typeof tbSvg === 'function' ? tbSvg(v.icon) : ''}</span><span style="overflow-wrap:anywhere">${escapeHtml(v.label)}</span></span><span style="font-size:11px;color:var(--muted)">${escapeHtml(v.state)}</span></button>`;
+    const tiles = a.tiles.map((t) => {
+      const v = tmActionView(t, a.ents, a.state), main = btn(v, '', `data-tile="${escapeHtml(t.id)}"`);
+      const choices = v.mode === 'menu' && FV_ACT.open === t.id ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">${v.choices.map((c) => `<button type="button" class="fv-act-choice" data-tile="${escapeHtml(t.id)}" data-index="${c.index}" style="padding:6px 10px;border-radius:16px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:12px;cursor:pointer">${escapeHtml(c.label)}</button>`).join('')}</div>` : '';
+      return `<div style="min-width:0">${main}${choices}</div>`;
+    }).join('');
+    return fvTitle('🎛️', 'Actions') + sel + `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">${tiles}</div>`;
+  },
+  wire(card, data) {
+    const root = fvRoot(card), a = data.fvAct;
+    if (!root) return;
+    const sel = root.querySelector('.fv-act-tablet');
+    if (sel) sel.addEventListener('change', () => { fvSave('fv_act_' + card.id, sel.value); renderFavoritesTab(); });
+    const run = async (tileId, body) => {
+      const r = await fvSend(`/api/tablet-actions/${encodeURIComponent(a.id)}/run`, { tileId, ...body });
+      const said = tmActionResult(r || {}, a.ents);
+      showToast(said ? '❌ ' + said : '✅ Done');
+      renderFavoritesTab();
+    };
+    root.querySelectorAll('.fv-act-btn').forEach((b) => b.addEventListener('click', () => {
+      const t = a.tiles.find((x) => x.id === b.dataset.tile); if (!t) return;
+      const plan = tmActionTap(t, a.ents, a.state);
+      if (plan === null) { FV_ACT.open = FV_ACT.open === t.id ? '' : t.id; renderFavoritesTab(); return; }
+      run(t.id, plan);
+    }));
+    root.querySelectorAll('.fv-act-choice').forEach((b) => b.addEventListener('click', () => { FV_ACT.open = ''; run(b.dataset.tile, { index: Number(b.dataset.index) }); }));
+  },
+};

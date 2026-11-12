@@ -1075,6 +1075,7 @@ function drawWidgetSettingsPanel_Wire_camera(_c) {
     });
     if ($('cam-fit')) $('cam-fit').addEventListener('change', (e) => { w.camFit = e.target.value; });
     if ($('cam-show-title')) $('cam-show-title').addEventListener('change', (e) => { w.camShowTitle = e.target.checked; });
+    if ($('cam-speaker')) $('cam-speaker').addEventListener('change', (e) => { if (e.target.checked) w.camSpeaker = true; else delete w.camSpeaker; });
     if ($('cam-add-btn')) $('cam-add-btn').addEventListener('click', () => { _appCamForm = { open: true, editId: null, source: 'url' }; drawWidgetSettingsPanel(); });
     if ($('cam-edit-btn')) $('cam-edit-btn').addEventListener('click', () => {
       const cam = _appCamList.find(c => String(c.id) === String(w.camId));

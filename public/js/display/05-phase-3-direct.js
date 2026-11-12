@@ -861,7 +861,7 @@ async function deleteWidget(id) {
 // separately-built settings UI ported field-for-field from app.html's own
 // drawWidgetSettingsPanel(), not a generic renderer. Add to this list only
 // alongside actually building that type's render/wire functions.
-const WIDGET_ADVANCED_TYPES = ['webpage', 'minical', 'weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast', 'todo', 'shoppinglist', 'chorechart', 'chorelb', 'countdown', 'radar', 'qrcode', 'timer', 'moonphase', 'airquality', 'onthisday', 'dailyquote', 'metar', 'clock', 'date', 'news', 'stocks', 'travel', 'sports', 'text', 'decoration', 'upcoming', 'today', 'agenda', 'photo', 'tasks', 'tasksCombined', 'entitystatus', 'smarthomeDashboard', 'groupcontrol', 'messageboard', 'mealplan', 'recipe', 'whiteboard', 'kiddrawing', 'camera', 'flightmap'];
+const WIDGET_ADVANCED_TYPES = ['actions', 'webpage', 'minical', 'weather', 'weatherCurrent', 'weatherForecast', 'weatherHourly', 'weatherComboForecast', 'todo', 'shoppinglist', 'chorechart', 'chorelb', 'countdown', 'radar', 'qrcode', 'timer', 'moonphase', 'airquality', 'onthisday', 'dailyquote', 'metar', 'clock', 'date', 'news', 'stocks', 'travel', 'sports', 'text', 'decoration', 'upcoming', 'today', 'agenda', 'photo', 'tasks', 'tasksCombined', 'entitystatus', 'smarthomeDashboard', 'groupcontrol', 'messageboard', 'mealplan', 'recipe', 'whiteboard', 'kiddrawing', 'camera', 'flightmap'];
 
 function openWidgetSettingsPanel(id) {
   const w = state.layout.find(x => String(x.id) === String(id));
@@ -1330,6 +1330,10 @@ async function openWidgetAdvancedPanel(id) {
     title.textContent = 'Meal Plan Settings';
     body.innerHTML = renderMealPlanAdvancedSettings(w);
     wireMealPlanAdvancedSettings(w);
+  } else if (w.type === 'actions') {
+    title.textContent = 'Actions Settings';
+    body.innerHTML = renderActionsAdvancedSettings(w);
+    wireActionsAdvancedSettings(w);
   } else if (w.type === 'camera') {
     title.textContent = 'Camera Settings';
     if (_camPanelWidgetId !== w.id) { _camFormOpen = false; _camFormEditId = null; _camPanelWidgetId = w.id; }

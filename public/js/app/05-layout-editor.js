@@ -126,6 +126,7 @@ const WIDGET_DEFS = [
   { type:'entitystatus', label:'Entity Status', icon:'🏠' },
   { type:'smarthomeDashboard', label:'Smart Home Grid', icon:'🏘️' },
   { type:'groupcontrol', label:'Group Control', icon:'🎚️' },
+  { type:'actions', label:'Actions', icon:'🎛️' },
 ];
 
 // Widget palette grouped into expandable categories. Tapping a category reveals the
@@ -140,7 +141,7 @@ const WIDGET_CATEGORIES = [
   { id:'family',   label:'Family',   icon:'🧹', types:['chorechart','chorelb','shoppinglist','reminders','messageboard','mealplan','recipe','whiteboard','kiddrawing'] },
   { id:'utility',  label:'Utility',  icon:'▦', types:['qrcode','webpage','layoutswitcher'] },
   { id:'decor',    label:'Decor',    icon:'🌿', types:['decoration'] },
-  { id:'smarthome', label:'Smart Home', icon:'🏠', types:['entitystatus','smarthomeDashboard','groupcontrol','camera'] },
+  { id:'smarthome', label:'Smart Home', icon:'🏠', types:['entitystatus','smarthomeDashboard','groupcontrol','actions','camera'] },
 ];
 const widgetDefByType = (t) => WIDGET_DEFS.find(d => d.type === t);
 let openWidgetCategory = null; // which palette category is expanded
@@ -318,7 +319,7 @@ function nextId() { return 'w' + (idCounter++); }
 function snap(v) { return snapEnabled ? Math.round(v / GRID) * GRID : Math.round(v * 10) / 10; }
 function clamp(v, mn, mx) { return Math.max(mn, Math.min(mx, v)); }
 
-let layoutSubTab = 'editor'; // 'editor' | 'profiles' | 'templates' | 'saved'
+let layoutSubTab = 'editor'; // 'editor' | 'profiles' | 'templates' | 'saved' | 'tablet'
 async function renderLayoutTab() {
   $('content').innerHTML = `
     <div class="subtab-bar">
@@ -326,6 +327,7 @@ async function renderLayoutTab() {
       <button class="subtab-btn${layoutSubTab==='profiles'?' active':''}" data-subtab="profiles">Profiles</button>
       <button class="subtab-btn${layoutSubTab==='templates'?' active':''}" data-subtab="templates">Templates</button>
       <button class="subtab-btn${layoutSubTab==='saved'?' active':''}" data-subtab="saved">Saved Layouts</button>
+      <button class="subtab-btn${layoutSubTab==='tablet'?' active':''}" data-subtab="tablet">Tablet</button>
     </div>
     <div id="layout-subtab-content"></div>
   `;
@@ -345,6 +347,7 @@ async function renderLayoutTab() {
   else if (layoutSubTab === 'profiles') await renderLayoutProfilesSubTab();
   else if (layoutSubTab === 'templates') await renderLayoutTemplatesSubTab();
   else if (layoutSubTab === 'saved') await renderLayoutSavedSubTab();
+  else if (layoutSubTab === 'tablet') await renderLayoutTabletSubTab();      // 15-tablet-editor.js
 }
 
 async function renderLayoutEditorSubTab() {
@@ -793,6 +796,9 @@ function drawEditor(displays, visibleDisplays, inactiveCount) {
     if (def.type === 'smarthomeDashboard') {
       newWidget.w = 40; newWidget.h = 40;
       newWidget.haEntityIds = []; newWidget.haAreaIds = []; newWidget.haComboGroups = []; newWidget.haDashTitle = ''; newWidget.haDashFontPx = 16; newWidget.haGroupByRoom = true; newWidget.haDashView = 'grid';
+    }
+    if (def.type === 'actions') {
+      newWidget.w = 24; newWidget.h = 24; newWidget.actTablet = ''; newWidget.actFontPx = 16;
     }
     if (def.type === 'groupcontrol') {
       newWidget.w = 20; newWidget.h = 16;

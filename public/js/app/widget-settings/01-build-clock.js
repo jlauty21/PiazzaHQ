@@ -492,6 +492,11 @@ async function drawWidgetSettingsPanel_Build_camera(_c) {
         <label style="margin-bottom:0">Show title</label>
         <input type="checkbox" id="cam-show-title" ${w.camShowTitle !== false ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
+      <div class="settings-row" style="display:flex;justify-content:space-between;align-items:center">
+        <label style="margin-bottom:0">Show a speaker button</label>
+        <input type="checkbox" id="cam-speaker" ${w.camSpeaker ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin:4px 0 0">The button turns this camera's sound on and off for every screen. You can also do that from the Camera Sound card on the Favorites tab.</p>
       <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0">Live H.264/H.265 needs some CPU — a Pi 4 or 5 handles one or two streams; on an older Pi, run the server on Docker or Windows.</p>
     `;
 }

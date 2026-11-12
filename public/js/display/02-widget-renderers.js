@@ -1015,24 +1015,29 @@ function renderCamera(widget) {
   // The <video-stream> gets its src wired in wireCameraStreams() (it's a JS
   // property setter, not an attribute) so we can also set background/media/
   // muted first and kill the built-in controls.
+  const picture = cam.kind === 'ha'                // a Nest camera plays through the relay (js/display/16-camera-live.js), the others through go2rtc
+    ? `<div class="cam-ha" data-ha-cam="${cam.id}"></div>`
+    : `<video-stream data-cam-src="/api/camera/${cam.id}/ws" data-cam-poster="/api/camera/${cam.id}/frame.jpeg"></video-stream>`;
   return `<div class="w-camera" style="--cam-fit:${fit}">
     ${head}
     <div class="cam-frame" data-interactive="1" data-cam-id="${cam.id}">
-      <video-stream data-cam-src="/api/camera/${cam.id}/ws" data-cam-poster="/api/camera/${cam.id}/frame.jpeg"></video-stream>
+      ${picture}${w.camSpeaker ? camSpeakerHtml(cam.id) : ''}
     </div>
   </div>`;
 }
 function wireCameraStreams() {
+  try { camHaWire(); } catch (e) { console.warn('camera relay wire failed', e); }
   document.querySelectorAll('.w-camera video-stream[data-cam-src]').forEach(el => {
     if (el._camWired) return;
     el._camWired = true;
     try {
       el.background = true;          // keep streaming even if the tab hides (kiosk never hides; a phone preview benefits)
-      el.media = 'video';           // no audio negotiation — it's a wall display
+      el.media = 'video,audio';     // sound too; it starts silent and is unmuted when the household has turned sound on (camApplySound)
       el.mode = 'webrtc,mse,mjpeg'; // WebRTC first (co-located go2rtc), fall back through MSE to MJPEG
       if (el.video) { el.video.controls = false; el.video.muted = true; if (el.dataset.camPoster) el.video.poster = el.dataset.camPoster; }
       el.src = el.dataset.camSrc;   // setter -> connects
       if (el.closest('.widget.rot-off')) { try { el.ondisconnect(); } catch {} }   // in a rotation but not on show: stay disconnected until its turn (rotPauseHidden reconnects)
+      setTimeout(camApplySound, 800); setTimeout(camApplySound, 3000);              // the player makes its <video> a moment after it connects
       // oninit() may run a tick later on first paint; make sure controls stay off.
       setTimeout(() => { if (el.video) { el.video.controls = false; el.video.muted = true; if (el.dataset.camPoster && !el.video.poster) el.video.poster = el.dataset.camPoster; } }, 0);
     } catch (e) { console.warn('camera wire failed', e); }
@@ -1042,8 +1047,10 @@ function wireCameraTaps() {
   document.querySelectorAll('.w-camera .cam-frame[data-cam-id]').forEach(el => {
     if (el._tapWired) return;
     el._tapWired = true;
-    el.addEventListener('click', () => {
+    el.addEventListener('click', (e) => {
       if (editModeActive) return;
+      const spk = e.target.closest('.cam-spk');
+      if (spk) { e.stopPropagation(); camToggleSound(el.dataset.camId); return; }   // the speaker button, not the big view
       openCameraOverlay(el.dataset.camId);
     });
   });
@@ -1075,12 +1082,14 @@ function openCameraOverlay(camId) {
     overlay.innerHTML = `
       <button id="camera-overlay-close" aria-label="Close">✕</button>
       <div id="camera-overlay-title"></div>
-      <div id="camera-overlay-frame"></div>`;
+      <div id="camera-overlay-frame"></div>
+      <span id="camera-overlay-spk"></span>`;
     document.body.appendChild(overlay);
     const close = () => {
       overlay.style.display = 'none';
       const f = document.getElementById('camera-overlay-frame');
-      if (f) f.innerHTML = ''; // drop the extra go2rtc consumer
+      if (f) { f.innerHTML = ''; delete f.dataset.camId; } // drop the extra go2rtc consumer
+      camOverlayStop();
     };
     document.getElementById('camera-overlay-close').addEventListener('click', close);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
@@ -1089,13 +1098,18 @@ function openCameraOverlay(camId) {
   document.getElementById('camera-overlay-title').textContent = cam.name || 'Camera';
   const frame = document.getElementById('camera-overlay-frame');
   frame.innerHTML = '';
+  frame.dataset.camId = cam.id;
+  document.getElementById('camera-overlay-spk').innerHTML = camSpeakerHtml(cam.id);
+  const spk = document.querySelector('#camera-overlay-spk .cam-spk'); spk.addEventListener('click', () => camToggleSound(cam.id));
+  if (cam.kind === 'ha') { camOverlayStartHa(cam.id, frame); overlay.style.display = 'flex'; return; }   // a Nest camera: through the relay
   const vs = document.createElement('video-stream');
   vs.background = true;
-  vs.media = 'video';
+  vs.media = 'video,audio';
   vs.mode = 'webrtc,mse,mjpeg';
   frame.appendChild(vs);
   vs.src = `/api/camera/${cam.id}/ws`;
-  setTimeout(() => { if (vs.video) { vs.video.controls = false; vs.video.muted = true; vs.video.poster = `/api/camera/${cam.id}/frame.jpeg`; } }, 0);
+  setTimeout(() => { if (vs.video) { vs.video.controls = false; vs.video.muted = true; vs.video.poster = `/api/camera/${cam.id}/frame.jpeg`; } camApplySound(); }, 0);
+  setTimeout(camApplySound, 1500);
   overlay.style.display = 'flex';
 }
 

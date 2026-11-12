@@ -158,6 +158,20 @@ module.exports = function registerHaAreas({ URL, WebSocketClient, app, getSettin
   // overlap when several displays poll the same entity. Cleared outright after
   // an action so a tap's confirm read is always live.
   const HA_STATE_CACHE_MS = 4_000;
+  // POST /api/ha/refresh/:entityId — ask Home Assistant to poll the device now (homeassistant.update_entity) and answer with its state. A device Home Assistant polls (a Vizio TV is looked at about
+  // every 30 seconds) can be on while Home Assistant still says off; the tablet's routines look here before deciding whether a "turn on" or "turn off" is needed. If the refresh fails the
+  // state Home Assistant already has is answered. { entity_id, state, source }.
+  app.post('/api/ha/refresh/:entityId', async (req, res) => {
+    const id = String(req.params.entityId || '');
+    if (!/^[a-z_]+\.[a-zA-Z0-9_]+$/.test(id)) return res.status(400).json({ error: 'That is not a device.' });
+    try { await haRequest('/api/services/homeassistant/update_entity', 'POST', { entity_id: id }, { timeoutMs: 6000 }); } catch { /* answer with what is known */ }
+    haStateCache.delete(id);
+    try {
+      const e = await haRequest('/api/states/' + encodeURIComponent(id));
+      const attrs = e.attributes || {};
+      res.json({ entity_id: e.entity_id, state: e.state, friendly_name: attrs.friendly_name || e.entity_id, source: attrs.source ? String(attrs.source) : undefined });
+    } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+  });
   app.get('/api/ha/state/:entityId', async (req, res) => {
     const id = req.params.entityId;
     const cached = haStateCache.get(id);
@@ -186,6 +200,10 @@ module.exports = function registerHaAreas({ URL, WebSocketClient, app, getSettin
       if (attrs.min_temp !== undefined) trimmed.minTemp = attrs.min_temp;
       if (attrs.max_temp !== undefined) trimmed.maxTemp = attrs.max_temp;
       if (attrs.target_temp_step !== undefined) trimmed.tempStep = attrs.target_temp_step;
+      // Thermostat modes and what it is doing right now (heating, cooling, idle), and a media player's artist, for the tablet's full control panels.
+      if (Array.isArray(attrs.hvac_modes)) trimmed.hvacModes = attrs.hvac_modes.map(String).slice(0, 10);
+      if (attrs.hvac_action) trimmed.hvacAction = String(attrs.hvac_action);
+      if (attrs.media_artist) trimmed.mediaArtist = String(attrs.media_artist);
       // Light brightness (0-255) for the dimmer slider — only present on a
       // dimmable light that's currently on, a no-op trim for everything else.
       if (attrs.brightness !== undefined && attrs.brightness !== null) trimmed.brightness = attrs.brightness;
@@ -200,6 +218,23 @@ module.exports = function registerHaAreas({ URL, WebSocketClient, app, getSettin
       if (attrs.media_title !== undefined && attrs.media_title !== null) trimmed.mediaTitle = String(attrs.media_title);
       if (attrs.volume_level !== undefined && attrs.volume_level !== null) trimmed.volumeLevel = attrs.volume_level;
       if (attrs.is_volume_muted !== undefined) trimmed.volumeMuted = !!attrs.is_volume_muted;
+      // The inputs a media player offers (a TV's HDMI ports, apps) and the one it is on, and the choices of a dropdown helper (input_select, select), for the tablet's "switch input" step.
+      // A TV that is switched off often reports no list at all; the editor then lets the person type the name.
+      if (Array.isArray(attrs.source_list)) trimmed.sourceList = attrs.source_list.map(String).slice(0, 60);
+      if (attrs.source) trimmed.source = String(attrs.source);
+      if (Array.isArray(attrs.options)) trimmed.options = attrs.options.map(String).slice(0, 60);
+      // A robot vacuum's battery, an update's versions, a number's range, a humidifier's target, and the kind of code an alarm panel wants (number or text), for the tablet's control panels.
+      if (attrs.battery_level !== undefined && attrs.battery_level !== null) trimmed.battery = attrs.battery_level;
+      if (attrs.installed_version) trimmed.installedVersion = String(attrs.installed_version).slice(0, 60);
+      if (attrs.latest_version) trimmed.latestVersion = String(attrs.latest_version).slice(0, 60);
+      if (attrs.title) trimmed.updateTitle = String(attrs.title).slice(0, 80);
+      if (attrs.release_summary) trimmed.releaseSummary = String(attrs.release_summary).slice(0, 300);
+      if (attrs.min !== undefined && attrs.max !== undefined) { trimmed.numMin = attrs.min; trimmed.numMax = attrs.max; if (attrs.step !== undefined) trimmed.numStep = attrs.step; }
+      if (attrs.humidity !== undefined && attrs.humidity !== null) trimmed.targetHumidity = attrs.humidity;
+      if (attrs.current_humidity !== undefined && attrs.current_humidity !== null) trimmed.currentHumidity = attrs.current_humidity;
+      if (attrs.min_humidity !== undefined) trimmed.minHumidity = attrs.min_humidity;
+      if (attrs.max_humidity !== undefined) trimmed.maxHumidity = attrs.max_humidity;
+      if (attrs.code_format) trimmed.codeFormat = String(attrs.code_format);
       // Fan speed (0-100) for the speed slider — only on a variable-speed fan.
       if (attrs.percentage !== undefined && attrs.percentage !== null) trimmed.fanPercentage = attrs.percentage;
       haStateCache.set(id, { data: trimmed, fetchedAt: Date.now() });

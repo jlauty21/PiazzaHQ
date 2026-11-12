@@ -30,6 +30,14 @@ let currentTab = getDefaultTab();
 // version bump with no entry here just won't trigger a popup for it,
 // silently (not an error), so it's fine to skip purely-internal versions.
 const RELEASE_NOTES = {
+  '1.94.0': [
+    'New: Tablet and phone display. A touch dashboard for a wall tablet or a phone, opened in its browser. Build its pages and tiles in the app (Layout → Tablet, or Devices → Add a Display) or right on the tablet: lights, switches, locks, scenes, thermostats, cameras, sensors, and Piazza HQ tiles such as the shopping list, chores, calendar and timers. Open /phone on a phone for a layout made for it.',
+    'New: tiles that do several things. One tap can run several actions, switch on and off, take turns, or offer a list of choices. An optional Ask first confirms before a tile acts.',
+    'New: an on-screen remote for TVs and streamers, with ready-made buttons (Roku, Samsung, Vizio, Apple TV) or your own for a learning remote.',
+    'New: Nest and other live-stream cameras, live on a tile and with sound. Favorites gains a Checklist card and a Camera Sound card, and the Camera widget shows Nest cameras.',
+    'Fixed: a TV switching itself off when told to turn on while already on.',
+    'German, French and Spanish are included for the new screens.',
+  ],
   '1.93.3': [
     'New: Screen health, inside each screen\'s card on the Devices tab. Every screen has a Health section showing its status, how long it has been running, when its display last drew a frame, whether it is on Wi-Fi (with the signal strength) or a cable, and anything that was repaired in the last week, with Reload display and Copy details buttons. The dot in the screen\'s title shows the same status at a glance. A thin line above the list says All good, Fixed itself recently or Needs attention.',
     'New: twelve Favorites cards. In Favorites, tap + Add a Card: Tonight\'s Dinner, This Week\'s Dinners, Cook Tonight (put tonight\'s recipe on a screen and add its ingredients to your shopping list), To-Do Checklist, Shopping Checklist and Chore Checklist (tick items off right from Favorites), Quick Event, Weekly Reminder, One-tap Messages, Add a Photo, Screens Needing Attention and Update Available.',
@@ -807,7 +815,7 @@ async function duplicateDisplayById(id, name) {
 // opening one closes the others. "Advanced" sections are tucked behind a toggle.
 const SETTINGS_ICONS = {
   'General':'🏠', 'Display':'🖥️', 'Photo Widget Defaults':'🖼️', 'Features & Family Hub':'✨', 'Weather':'☀️', 'Calendar Sync':'🔄', 'Todoist':'✅', 'Google Tasks':'☑️', 'To-Do Lists':'📝',
-  'Stocks':'📈', 'News':'📰', 'Daily Briefing':'✉️', 'Feedback & Ideas':'💬', 'Version & License':'⬆️', 'Security':'🔒', 'Multi-Device':'🖥️', 'Home Assistant':'🏠', 'Home Assistant Control':'🏠', 'Severe Weather Alerts':'⚠️', 'App Preferences':'📱', 'Beta Checklist':'✅',
+  'Stocks':'📈', 'News':'📰', 'Daily Briefing':'✉️', 'Feedback & Ideas':'💬', 'Version & License':'⬆️', 'Security':'🔒', 'Multi-Device':'🖥️', 'Home Assistant':'🏠', 'Cameras':'📷', 'Home Assistant Control':'🏠', 'Severe Weather Alerts':'⚠️', 'App Preferences':'📱', 'Beta Checklist':'✅',
   'Support the Project':'☕',
   'Push to iCloud Calendar':'📅', 'Push to Google Calendar':'📅', 'Handwriting input':'✍️',
   'Family profiles':'👥',
@@ -833,6 +841,7 @@ const SETTINGS_GROUPS = {
   'Todoist':                 'Data Sources',
   'Google Tasks':            'Data Sources',
   'Home Assistant':          'Data Sources',
+  'Cameras':                 'Data Sources',
   'Severe Weather Alerts':   'Data Sources',
   'Calendar Sync':           'Data Sources',
   'Push to iCloud Calendar': 'Data Sources',
@@ -861,7 +870,7 @@ const BOTTOM_ANCHORED_SECTIONS = ['Feedback & Ideas', 'Support the Project'];
 // transformSettingsToAccordion) whenever /api/version reports demo mode.
 const DEMO_HIDDEN_SETTINGS_SECTIONS = new Set([
   'Custom Theme', 'Calendar Sync', 'Push to iCloud Calendar', 'Push to Google Calendar',
-  'Handwriting input', 'Todoist', 'Google Tasks', 'Home Assistant', 'Home Assistant Control', 'Voice Control (Siri Shortcuts)',
+  'Handwriting input', 'Todoist', 'Google Tasks', 'Home Assistant', 'Cameras', 'Home Assistant Control', 'Voice Control (Siri Shortcuts)',
   'Daily Briefing', 'Security', 'Feedback & Ideas', 'Multi-Device', 'Version & License',
   'Update Backups', 'Beta Checklist', 'Backup',
 ]);

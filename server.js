@@ -966,6 +966,16 @@ db.exec(`
   -- a kid-shortcut card's config is {"kid_id":3, "sheet":"stickers"}) — kept
   -- freeform per-type rather than a rigid column set, since the card catalog
   -- is expected to grow.
+  -- The /tablet web app: one row per tablet that has opened it, with its layout (src/tablet.js).
+  CREATE TABLE IF NOT EXISTS tablets (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    layout_json TEXT NOT NULL DEFAULT '{}',
+    version     INTEGER NOT NULL DEFAULT 1,
+    created_at  INTEGER NOT NULL DEFAULT 0,
+    last_seen   INTEGER NOT NULL DEFAULT 0
+  );
+
   CREATE TABLE IF NOT EXISTS favorite_cards (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     type       TEXT NOT NULL,
@@ -3473,7 +3483,11 @@ function requireAuth(req, res, next) {
     { method: 'GET', path: '/api/ha/entities' },
     { method: 'GET', path: '/api/ha/state' },
     { method: 'POST', path: '/api/ha/call-action' },
+    { method: 'POST', path: '/api/ha/refresh' },          // ask Home Assistant to look at a device again (read-only)
     { method: 'POST', path: '/api/ha/call-group-action' },
+    // The Actions widget on a wall display: a tablet's shareable Actions tiles (no PIN, no locks) and running one. The tablet's own routes (/api/tablets) stay behind the login.
+    { method: 'GET', path: '/api/tablet-actions' },
+    { method: 'POST', path: '/api/tablet-actions' },
     // Windows full-screen kiosk "Exit full-screen" button (display.html,
     // ?kiosk=1). No login on the wall display by design (same trust boundary
     // as Live Editing above); the route itself is Windows-only + localhost-
@@ -4298,6 +4312,8 @@ require('./src/rewards.js')({ app, db, broadcastUpdate, getKidStickerBalance, lo
 // ── Favorites tab ────────────────────────────────────────────────────────────
 // This code lives in src/favorites.js. It runs here, at the same place in the file as before.
 require('./src/favorites.js')({ app, db, broadcastUpdate });
+// Checklists for the Favorites tab: lists that clear themselves daily, limited to days and hours. This code lives in src/checklists.js.
+require('./src/checklists.js')({ app, db, demoCleanText, broadcastUpdate, appNow, localDateStr });
 
 // ── Reassign a chore for one day ──────────────────────────────
 // This code lives in src/chore-reassign.js. It runs here, at the same place in the file as before.
@@ -4419,6 +4435,9 @@ app.get('/api/settings', (req, res) => {
       if (SENSITIVE_SETTING_RE.test(k)) delete settings[k];
     }
   }
+  // The tablet's own PIN is never sent back, to anyone: only whether there is one (tablet_pin_set), which is what the app's Settings shows.
+  if (settings.tablet_pin) settings.tablet_pin_set = '1';
+  delete settings.tablet_pin;
   res.json(settings);
 });
 
@@ -4432,7 +4451,7 @@ app.put('/api/settings', (req, res) => {
     // these sections anyway, so a soft no-op on the rest of the save is
     // friendlier than a hard failure.
     const demoSettingBlocked = (k) =>
-      k === 'app_pin' || k === 'app_pin_previous' || k === 'current_pin_confirm' ||
+      k === 'app_pin' || k === 'app_pin_previous' || k === 'current_pin_confirm' || k === 'tablet_pin' || k === 'current_tablet_pin_confirm' ||
       k === 'device_role' || k === 'host_url' || k === 'update_server_url' ||
       k === 'auto_push_updates' || k === 'update_schedule_mode' || k === 'update_schedule_time' ||
       k === 'license_key' || k === 'voice_token' ||
@@ -4472,6 +4491,15 @@ app.put('/api/settings', (req, res) => {
       }
     }
   }
+  // The wall tablet's own PIN: four digits (what its number pad takes), and removing a PIN that exists asks for the current one, like the app PIN.
+  if ('tablet_pin' in req.body) {
+    const v = String(req.body.tablet_pin || '');
+    if (v !== '' && !/^\d{4}$/.test(v)) return res.status(400).json({ error: 'A tablet PIN is four digits.' });
+    if (v === '') {
+      const cur = getSetting('tablet_pin') || '';
+      if (cur !== '' && String(req.body.current_tablet_pin_confirm || '') !== cur) return res.status(400).json({ error: 'Incorrect PIN — enter the current tablet PIN to confirm removing it.' });
+    }
+  }
   // Changing the household LANGUAGE also moves the two settings that carry a language's conventions (24-hour clock, date order) - but only while they
   // still hold the shipped defaults, so a choice someone made on purpose is never overwritten. Going back to English undoes exactly what this did.
   if ('ui_language' in req.body) {
@@ -4495,7 +4523,7 @@ app.put('/api/settings', (req, res) => {
   const upsert = db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`);
   const updateMany = db.transaction((pairs) => {
     for (const [key, value] of pairs) {
-      if (key === 'current_pin_confirm') continue; // not a real setting — only used for the check above
+      if (key === 'current_pin_confirm' || key === 'current_tablet_pin_confirm') continue; // not real settings — only used for the checks above
       // Remember the PIN's previous value across a change (set, changed, or
       // removed) — see the grace-period check in requireAuth() and the
       // ALWAYS_AUTH_ROUTES block below for why: a mirror's own stored copy
@@ -5990,6 +6018,9 @@ require('./src/screens.js')({ getReachableAddresses, app, PORT, IS_DEMO, db, bro
 // Screen health (Devices tab): each screen's summary, and "Reload display". src/screen-health.js.
 const screenHealth = require('./src/screen-health.js')({ app, fs, os, path, db, DEVICE_ID, APP_VERSION, DEPLOYMENT, SCREEN_ONLINE_MS, PORT, isSlave, displayPainted, sendScreenCommand, fetchWithTimeout, getSetting: (k) => getSetting(k) });
 
+// Tablet display: layouts for the /tablet web app, and PIN-checked device actions. src/tablet.js.
+const tabletModule = require('./src/tablet.js')({ app, db, broadcastUpdate, getSetting: (k) => getSetting(k), setSetting: (k, v) => setSetting(k, v), fetchWithTimeout, PORT, randomId: () => crypto.randomBytes(5).toString('hex') });
+
 // ── Layout API ────────────────────────────────────────────────────────────────
 // This code lives in src/layout-api.js. It runs here, at the same place in the file as before.
 require('./src/layout-api.js')({ app, db, markHostEditing, broadcastUpdate, reloadCameraService, resolveDisplay, updateSetting });
@@ -6012,7 +6043,7 @@ const { haWsRequest, haStateCache } = require('./src/ha-areas.js')({ URL, WebSoc
 
 // ── Home Assistant Tier 2: controlling devices, not just reading them ──────
 // This code lives in src/ha-actions.js. It runs here, at the same place in the file as before.
-require('./src/ha-actions.js')({ app, getSetting, haRequestWith, haStateCache });
+require('./src/ha-actions.js')({ app, getSetting, haRequestWith, haStateCache, onRemoteCommand: tabletModule.onRemoteCommand });
 
 // ── News (Google News RSS — no key required) ──────────────────────────────────
 // This code lives in src/news.js. It runs here, at the same place in the file as before.
@@ -7331,6 +7362,17 @@ app.get('/', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dir
 app.get('/app', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'app.html')));
 app.get(['/kids', '/chores'], demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'kids.html')));
 app.get('/hub', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'hub.html')));
+app.get('/tablet', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'tablet.html')));   // the wall-tablet dashboard (src/tablet.js)
+// /phone: the same page as /tablet, always laid out for a phone (window.TB_PHONE), with its own name and Home Screen entry (public/phone-manifest.json), and asking "which phone is this?" the first time.
+let _phoneHtml = null;
+app.get('/phone', demoLeaseGate, (req, res) => {
+  const file = path.join(__dirname, 'public', 'tablet.html');
+  try {
+    if (!_phoneHtml) _phoneHtml = require('./src/phone-page.js')(fs.readFileSync(file, 'utf8'));
+    if (_phoneHtml) { res.set('Cache-Control', 'no-store'); return res.type('html').send(_phoneHtml); }
+  } catch { /* fall back to the plain page below */ }
+  sendCorePage(req, res, file);
+});
 app.get('/remote', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'remote.html')));
 app.get('/recipe-print', demoLeaseGate, (req, res) => sendCorePage(req, res, path.join(__dirname, 'public', 'recipe-print.html')));   // a recipe laid out to print, share or copy   // the presentation remote for phones
 

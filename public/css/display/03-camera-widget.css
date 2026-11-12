@@ -31,6 +31,17 @@
     .cam-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:14px; text-align:center; }
     .cam-emoji { font-size:2.4em; opacity:0.4; }
     .cam-hint { font-size:13px; color:var(--text2); opacity:0.8; max-width:34ch; line-height:1.4; }
+    /* A Home Assistant (Nest) camera: the relay's video fills the frame; a message sits over it while it connects or cannot. */
+    .cam-ha { position:absolute; inset:0; }
+    .cam-ha video, #camera-overlay-frame video.cam-ha-video { position:absolute; inset:0; width:100%; height:100%; object-fit:var(--cam-fit, contain); background:#000; pointer-events:none; }
+    #camera-overlay-frame video.cam-ha-video { position:static; object-fit:contain; }
+    .cam-ha-msg { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:14px; color:var(--text2); font-size:13px; opacity:0.85; }
+    /* The speaker button: a small round button in the corner of the picture. */
+    .cam-spk { position:absolute; top:8px; right:8px; z-index:3; width:36px; height:36px; border-radius:50%; border:none; padding:0; display:flex; align-items:center; justify-content:center;
+      background:rgba(0,0,0,0.5); color:#fff; opacity:0.75; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+    .cam-spk.on { opacity:1; background:var(--accent, #5aa2f0); }
+    #camera-overlay-spk { position:absolute; top:3vmin; right:calc(3vmin + 52px); z-index:1; }
+    #camera-overlay-spk .cam-spk { position:static; width:40px; height:40px; }
 
     #camera-overlay {
       position:fixed; inset:0; z-index:95; display:none;
