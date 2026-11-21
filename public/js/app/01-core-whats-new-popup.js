@@ -30,6 +30,9 @@ let currentTab = getDefaultTab();
 // version bump with no entry here just won't trigger a popup for it,
 // silently (not an error), so it's fine to skip purely-internal versions.
 const RELEASE_NOTES = {
+  '1.94.1': [
+    'New: an on-screen keyboard for the wall display: on a touch screen with no keyboard, touching a text field opens one at the bottom of the screen, in English, German, French or Spanish. A display used with a mouse looks exactly as before, and Settings, Display, On-screen keyboard can turn it off.',
+  ],
   '1.94.0': [
     'New: Tablet and phone display. A touch dashboard for a wall tablet or a phone, opened in its browser. Build its pages and tiles in the app (Layout → Tablet, or Devices → Add a Display) or right on the tablet: lights, switches, locks, scenes, thermostats, cameras, sensors, and Piazza HQ tiles such as the shopping list, chores, calendar and timers. Open /phone on a phone for a layout made for it.',
     'New: tiles that do several things. One tap can run several actions, switch on and off, take turns, or offer a list of choices. An optional Ask first confirms before a tile acts.',

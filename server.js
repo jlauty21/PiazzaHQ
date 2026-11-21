@@ -1960,6 +1960,7 @@ const defaultSettings = {
                                    // comment below for the full three-tier resolution (this ->
                                    // per-feed -> per-widget override, most-specific wins).
   text_shadow:        'off',      // 'off' | 'soft' | 'strong' — a drop shadow behind every widget's text so clocks, dates and weather stay readable over photos
+  onscreen_keyboard:  'auto',     // 'auto' | 'on' | 'always' | 'off' — the keyboard drawn on the wall display for a touch screen that has none (public/js/shared/osk.js); auto = a touch on a text field, Linux screens only
   time_format:        '12',       // '12' or '24' — affects the clock widget and any time-of-day text
   ampm_case:          'lower',    // 'lower' or 'upper' — casing for am/pm in 12-hour time (clock + any
                                    // widget showing a time-of-day); the standalone widgets can override

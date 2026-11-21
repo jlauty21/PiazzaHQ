@@ -4297,6 +4297,11 @@
   "On a phone: height": "En un teléfono: alto",
   "Smaller tiles": "Mosaicos más pequeños",
   "Simple tiles are a third of a row wide and one line high. A tile can choose its own size in its options.": "Los mosaicos sencillos ocupan un tercio de la fila de ancho y una línea de alto. Un mosaico puede elegir su propio tamaño en sus opciones.",
-  "A touch by accident then asks \"Do this now?\" first. A tile can also ask on its own, in its options.": "Un toque accidental preguntará primero «¿Hacerlo ahora?». Un mosaico también puede preguntar por sí solo, en sus opciones."
+  "A touch by accident then asks \"Do this now?\" first. A tile can also ask on its own, in its options.": "Un toque accidental preguntará primero «¿Hacerlo ahora?». Un mosaico también puede preguntar por sí solo, en sus opciones.",
+  "On-screen keyboard": "Teclado en pantalla",
+  "For a wall display with a touch screen and no keyboard. When someone touches a text field on the display, a keyboard appears at the bottom of the screen. Automatic does this only on Linux screens such as a Raspberry Pi, where the system has no keyboard of its own for the browser, and only when the screen was touched, so a display that is used with a mouse or not touched at all looks exactly as before. Choose 'Whenever a screen is touched' to use it on any system, or 'Whenever a text field is selected' for a touch panel that behaves like a mouse. It never appears when a keyboard is being used.": "Para una pantalla de pared táctil sin teclado. Cuando alguien toca un campo de texto en la pantalla, aparece un teclado en la parte inferior. El modo Automático lo hace solo en pantallas Linux como una Raspberry Pi, donde el sistema no tiene teclado propio para el navegador, y solo cuando se tocó la pantalla, así que una pantalla que se usa con ratón o que nadie toca se ve exactamente igual que antes. Elige «Cada vez que se toca la pantalla» para usarlo en cualquier sistema, o «Cada vez que se selecciona un campo de texto» para un panel táctil que se comporta como un ratón. Nunca aparece cuando se usa un teclado.",
+  "Automatic (touch screens on Linux)": "Automático (pantallas táctiles en Linux)",
+  "Whenever a screen is touched": "Cada vez que se toca la pantalla",
+  "Whenever a text field is selected": "Cada vez que se selecciona un campo de texto"
  }
 }

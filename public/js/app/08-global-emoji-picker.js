@@ -1483,6 +1483,7 @@ async function renderSettings() {
       travel_provider: $('s-travel-provider') ? $('s-travel-provider').value : 'osrm',
       travel_api_key: $('s-travel-api-key') ? $('s-travel-api-key').value.trim() : '',
       text_shadow: $('s-text-shadow') ? $('s-text-shadow').value : 'off',
+      ...($('s-onscreen-keyboard') ? { onscreen_keyboard: $('s-onscreen-keyboard').value } : {}),
       display_refresh_min: $('s-display-refresh') ? $('s-display-refresh').value : '0',
       force_real_display: ($('s-force-real-display') && $('s-force-real-display').checked) ? '1' : '0',
       ...($('s-show-cursor') ? { show_cursor: $('s-show-cursor').value } : {}),

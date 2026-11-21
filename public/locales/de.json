@@ -4297,6 +4297,11 @@
   "On a phone: height": "Auf einem Handy: Höhe",
   "Smaller tiles": "Kleinere Kacheln",
   "Simple tiles are a third of a row wide and one line high. A tile can choose its own size in its options.": "Einfache Kacheln sind ein Drittel einer Zeile breit und eine Zeile hoch. Eine Kachel kann in ihren Optionen eine eigene Größe wählen.",
-  "A touch by accident then asks \"Do this now?\" first. A tile can also ask on its own, in its options.": "Eine versehentliche Berührung fragt dann zuerst „Jetzt ausführen?“. Eine Kachel kann auch selbst nachfragen, in ihren Optionen."
+  "A touch by accident then asks \"Do this now?\" first. A tile can also ask on its own, in its options.": "Eine versehentliche Berührung fragt dann zuerst „Jetzt ausführen?“. Eine Kachel kann auch selbst nachfragen, in ihren Optionen.",
+  "On-screen keyboard": "Bildschirmtastatur",
+  "For a wall display with a touch screen and no keyboard. When someone touches a text field on the display, a keyboard appears at the bottom of the screen. Automatic does this only on Linux screens such as a Raspberry Pi, where the system has no keyboard of its own for the browser, and only when the screen was touched, so a display that is used with a mouse or not touched at all looks exactly as before. Choose 'Whenever a screen is touched' to use it on any system, or 'Whenever a text field is selected' for a touch panel that behaves like a mouse. It never appears when a keyboard is being used.": "Für ein Wanddisplay mit Touchscreen, aber ohne Tastatur. Wenn jemand ein Textfeld auf dem Display berührt, erscheint unten auf dem Bildschirm eine Tastatur. „Automatisch“ tut das nur auf Linux-Bildschirmen wie einem Raspberry Pi, wo das System keine eigene Tastatur für den Browser hat, und nur, wenn der Bildschirm berührt wurde – ein Display, das mit der Maus bedient oder gar nicht berührt wird, sieht also genau aus wie bisher. Wähle „Bei jeder Berührung des Bildschirms“, um sie auf jedem System zu nutzen, oder „Immer wenn ein Textfeld ausgewählt wird“ für ein Touchpanel, das sich wie eine Maus verhält. Sie erscheint nie, wenn eine Tastatur benutzt wird.",
+  "Automatic (touch screens on Linux)": "Automatisch (Touchscreens unter Linux)",
+  "Whenever a screen is touched": "Bei jeder Berührung des Bildschirms",
+  "Whenever a text field is selected": "Immer wenn ein Textfeld ausgewählt wird"
  }
 }

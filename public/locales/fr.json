@@ -4297,6 +4297,11 @@
   "On a phone: height": "Sur un téléphone : hauteur",
   "Smaller tiles": "Tuiles plus petites",
   "Simple tiles are a third of a row wide and one line high. A tile can choose its own size in its options.": "Les tuiles simples occupent un tiers de la ligne en largeur et une ligne en hauteur. Une tuile peut choisir sa propre taille dans ses options.",
-  "A touch by accident then asks \"Do this now?\" first. A tile can also ask on its own, in its options.": "Un contact accidentel demande alors d'abord « Le faire maintenant ? ». Une tuile peut aussi demander de son côté, dans ses options."
+  "A touch by accident then asks \"Do this now?\" first. A tile can also ask on its own, in its options.": "Un contact accidentel demande alors d'abord « Le faire maintenant ? ». Une tuile peut aussi demander de son côté, dans ses options.",
+  "On-screen keyboard": "Clavier à l'écran",
+  "For a wall display with a touch screen and no keyboard. When someone touches a text field on the display, a keyboard appears at the bottom of the screen. Automatic does this only on Linux screens such as a Raspberry Pi, where the system has no keyboard of its own for the browser, and only when the screen was touched, so a display that is used with a mouse or not touched at all looks exactly as before. Choose 'Whenever a screen is touched' to use it on any system, or 'Whenever a text field is selected' for a touch panel that behaves like a mouse. It never appears when a keyboard is being used.": "Pour un affichage mural avec écran tactile et sans clavier. Quand quelqu'un touche un champ de texte sur l'affichage, un clavier apparaît en bas de l'écran. Le mode Automatique ne le fait que sur les écrans Linux comme un Raspberry Pi, où le système n'a pas de clavier propre pour le navigateur, et seulement quand l'écran a été touché ; un affichage utilisé avec une souris ou jamais touché reste donc exactement comme avant. Choisissez « Chaque fois que l'écran est touché » pour l'utiliser sur n'importe quel système, ou « Chaque fois qu'un champ de texte est sélectionné » pour un panneau tactile qui se comporte comme une souris. Il n'apparaît jamais quand un clavier est utilisé.",
+  "Automatic (touch screens on Linux)": "Automatique (écrans tactiles sous Linux)",
+  "Whenever a screen is touched": "Chaque fois que l'écran est touché",
+  "Whenever a text field is selected": "Chaque fois qu'un champ de texte est sélectionné"
  }
 }

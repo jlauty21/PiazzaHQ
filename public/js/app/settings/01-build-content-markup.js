@@ -199,6 +199,15 @@ function renderSettings_Build_contentMarkup(_c) {
         </select>
       </div>
       <div class="settings-row">
+        <label>On-screen keyboard ${infoBtn("For a wall display with a touch screen and no keyboard. When someone touches a text field on the display, a keyboard appears at the bottom of the screen. Automatic does this only on Linux screens such as a Raspberry Pi, where the system has no keyboard of its own for the browser, and only when the screen was touched, so a display that is used with a mouse or not touched at all looks exactly as before. Choose 'Whenever a screen is touched' to use it on any system, or 'Whenever a text field is selected' for a touch panel that behaves like a mouse. It never appears when a keyboard is being used.")}</label>
+        <select class="form-input" id="s-onscreen-keyboard">
+          <option value="auto" ${(!s.onscreen_keyboard||s.onscreen_keyboard==='auto')?'selected':''}>Automatic (touch screens on Linux)</option>
+          <option value="on" ${s.onscreen_keyboard==='on'?'selected':''}>Whenever a screen is touched</option>
+          <option value="always" ${s.onscreen_keyboard==='always'?'selected':''}>Whenever a text field is selected</option>
+          <option value="off" ${s.onscreen_keyboard==='off'?'selected':''}>Off</option>
+        </select>
+      </div>
+      <div class="settings-row">
         <label>Auto-refresh display <span class="info-btn" onclick="showInfoPopup('autorefresh-help')">ⓘ</span></label>
         <select class="form-input" id="s-display-refresh">
           <option value="0"    ${(!s.display_refresh_min||s.display_refresh_min==='0')?'selected':''}>Off</option>

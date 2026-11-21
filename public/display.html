@@ -17,6 +17,7 @@
 <script src="/js/shared/cam-webrtc.js"></script>
 <script src="/js/shared/tablet-icons.js"></script>
 <script src="/js/shared/tablet-model.js"></script>
+<script src="/js/shared/osk.js"></script>
   <!-- Fonts load asynchronously (preload, then swap to stylesheet once fetched) so
        first paint never blocks on reaching fonts.googleapis.com. A CSS @import here
        used to be render-blocking — on a boot where the Pi's internet/DNS is still
@@ -339,5 +340,7 @@
 <script src="/js/display/16-camera-live.js"></script>
 <script src="/js/display/17-actions-widget.js"></script>
 <script src="/js/display/13-clock-tick.js"></script>
+<script>/* On-screen keyboard (Settings > Display): idle until a text field is touched on a screen that has no keyboard, see js/shared/osk.js */
+if (window.PhqOsk) PhqOsk.init({ mode: function () { return (state.settings && state.settings.onscreen_keyboard) || "auto"; } });</script>
 </body>
 </html>
